@@ -505,6 +505,86 @@ tbody td { padding: 8px 10px; vertical-align: middle; }
 body.loggedout > div:not(#login-overlay) { display: none !important; }
 
 </style>
+
+  <!-- Firebase SDK -->
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+    import { getFirestore, doc, setDoc, getDoc, collection, getDocs, deleteDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+
+    const firebaseConfig = {
+      apiKey: "AIzaSyC73pXz_txRknUZVvcDjjQuqCp7oaniWqk",
+      authDomain: "farmers-app-70a3a.firebaseapp.com",
+      projectId: "farmers-app-70a3a",
+      storageBucket: "farmers-app-70a3a.firebasestorage.app",
+      messagingSenderId: "214792467331",
+      appId: "1:214792467331:web:ea91e7c044038a9e0b7cb6"
+    };
+
+    const fbApp = initializeApp(firebaseConfig);
+    const db    = getFirestore(fbApp);
+
+    // ── BRIDGE: expose Firestore methods to main script ──────────
+    window._db = db;
+    window._fbReady = false;
+    window._fbQueue = [];
+
+    // ── INVENTORY ────────────────────────────────────────────────
+    window.fbGetInventory = async function() {
+      try {
+        const snap = await getDoc(doc(db, 'data', 'inventory'));
+        return snap.exists() ? snap.data().inv : null;
+      } catch(e) { return null; }
+    };
+    window.fbSaveInventory = async function(inv) {
+      try { await setDoc(doc(db, 'data', 'inventory'), { inv }); } catch(e) {}
+    };
+
+    // ── SALES ────────────────────────────────────────────────────
+    window.fbGetSales = async function() {
+      try {
+        const snap = await getDoc(doc(db, 'data', 'sales'));
+        return snap.exists() ? (snap.data().list || []) : [];
+      } catch(e) { return []; }
+    };
+    window.fbSaveSales = async function(list) {
+      try { await setDoc(doc(db, 'data', 'sales'), { list }); } catch(e) {}
+    };
+
+    // ── RETURNS ──────────────────────────────────────────────────
+    window.fbGetReturns = async function() {
+      try {
+        const snap = await getDoc(doc(db, 'data', 'returns'));
+        return snap.exists() ? (snap.data().list || []) : [];
+      } catch(e) { return []; }
+    };
+    window.fbSaveReturns = async function(list) {
+      try { await setDoc(doc(db, 'data', 'returns'), { list }); } catch(e) {}
+    };
+
+    // ── REAL-TIME LISTENER (sync across devices) ─────────────────
+    onSnapshot(doc(db, 'data', 'sales'), function(snap) {
+      if (snap.exists()) {
+        localStorage.setItem('farmers_sales', JSON.stringify(snap.data().list || []));
+        if (typeof renderHistorial === 'function' && window._fbReady) renderHistorial();
+      }
+    });
+    onSnapshot(doc(db, 'data', 'inventory'), function(snap) {
+      if (snap.exists() && snap.data().inv) {
+        localStorage.setItem('farmers_inv', JSON.stringify(snap.data().inv));
+        if (typeof syncInventoryToProducts === 'function' && window._fbReady) syncInventoryToProducts();
+      }
+    });
+    onSnapshot(doc(db, 'data', 'returns'), function(snap) {
+      if (snap.exists()) {
+        localStorage.setItem('farmers_returns', JSON.stringify(snap.data().list || []));
+      }
+    });
+
+    // Mark Firebase as ready and load initial data
+    window._fbReady = true;
+    console.log('✅ Firebase conectado');
+  </script>
+
 </head>
 <body class="loggedout">
 
@@ -1497,6 +1577,10 @@ function showOrderModal() {
       <td colspan="8" style="padding:8px 12px;background:#f0f2ff;
         border-top:2px solid #c5cae9;border-bottom:1px solid #e0e4f0;">
         <div style="display:flex;align-items:center;gap:8px;">
+      <div id="sync-indicator" title="Sincronización Firebase" style="font-size:.7rem;color:rgba(255,255,255,.5);display:flex;align-items:center;gap:4px;">
+        <span id="sync-dot" style="width:7px;height:7px;border-radius:50%;background:#6b7280;display:inline-block;"></span>
+        <span id="sync-txt">Conectando...</span>
+      </div>
           ${meta?.logo ? `<img src="${meta.logo}" style="height:20px;object-fit:contain;">` : ''}
           <span style="font-family:'Barlow Condensed',sans-serif;font-weight:700;
             font-size:0.82rem;letter-spacing:1.5px;text-transform:uppercase;color:#1a2050;">
@@ -1703,7 +1787,10 @@ var _devSaleId = null;
 function getReturns() {
   try { return JSON.parse(localStorage.getItem('farmers_returns') || '[]'); } catch(e) { return []; }
 }
-function saveReturns(r) { localStorage.setItem('farmers_returns', JSON.stringify(r)); }
+function saveReturns(r) {
+  localStorage.setItem('farmers_returns', JSON.stringify(r));
+  if (window.fbSaveReturns) window.fbSaveReturns(r);
+}
 
 function showDevolucion(saleId) {
   var sales = getSales();
@@ -1820,6 +1907,8 @@ function hideDevolucion() {
       if (av) av.textContent = found.u.slice(0,2);
       if (nm) nm.textContent = found.u;
       tries = 0;
+      // Load latest data from Firebase on login
+      loadFromFirebase();
     } else {
       tries++;
       var remaining = MAX_TRIES - tries;
@@ -2001,6 +2090,70 @@ function runSearch(q) {
   }
   resultsEl.innerHTML = html;
 }
+
+
+
+/* ═══════════════════════════════════════════════════════
+   FIREBASE SYNC
+════════════════════════════════════════════════════════ */
+function setSyncStatus(status) {
+  var dot = document.getElementById('sync-dot');
+  var txt = document.getElementById('sync-txt');
+  if (!dot || !txt) return;
+  if (status === 'ok') {
+    dot.style.background = '#22c55e';
+    txt.textContent = 'Sincronizado';
+  } else if (status === 'syncing') {
+    dot.style.background = '#f59e0b';
+    txt.textContent = 'Sincronizando...';
+  } else if (status === 'error') {
+    dot.style.background = '#ef4444';
+    txt.textContent = 'Sin conexión';
+  } else {
+    dot.style.background = '#6b7280';
+    txt.textContent = 'Conectando...';
+  }
+}
+
+async function loadFromFirebase() {
+  setSyncStatus('syncing');
+  try {
+    // Load inventory
+    if (window.fbGetInventory) {
+      var inv = await window.fbGetInventory();
+      if (inv) {
+        localStorage.setItem('farmers_inv', JSON.stringify(inv));
+        syncInventoryToProducts();
+      }
+    }
+    // Load sales
+    if (window.fbGetSales) {
+      var sales = await window.fbGetSales();
+      if (sales) localStorage.setItem('farmers_sales', JSON.stringify(sales));
+    }
+    // Load returns
+    if (window.fbGetReturns) {
+      var returns = await window.fbGetReturns();
+      if (returns) localStorage.setItem('farmers_returns', JSON.stringify(returns));
+    }
+    setSyncStatus('ok');
+    setTimeout(function(){ setSyncStatus('ok'); }, 1000);
+  } catch(e) {
+    console.error('Firebase load error:', e);
+    setSyncStatus('error');
+  }
+}
+
+// Check Firebase connection every 30 seconds
+setInterval(function() {
+  if (window.fbGetSales) {
+    window.fbGetSales().then(function() {
+      setSyncStatus('ok');
+    }).catch(function() {
+      setSyncStatus('error');
+    });
+  }
+}, 30000);
 
 </script>
 
