@@ -614,6 +614,55 @@ body.loggedout > div:not(#login-overlay) { display: none !important; }
   </div>
 </div>
 
+<script>
+function doLogin() {
+  var u = (document.getElementById('login-user').value || '').trim().toUpperCase();
+  var p = document.getElementById('login-pass').value || '';
+  var USERS = [
+    { u: 'OGK', p: 'Farmersve2026*!' },
+    { u: 'GKK', p: 'Farmersve2026*!' }
+  ];
+  var ok = USERS.some(function(x){ return x.u === u && x.p === p; });
+  var msg = document.getElementById('login-error-msg');
+  if (ok) {
+    if (msg) msg.style.display = 'none';
+    var overlay = document.getElementById('login-overlay');
+    if (overlay) overlay.style.display = 'none';
+    var av = document.getElementById('usr-av');
+    var nm = document.getElementById('usr-name');
+    if (av) av.textContent = u.slice(0,2);
+    if (nm) nm.textContent = u;
+    // loadFromFirebase will be available by now
+    setTimeout(function(){ if(typeof loadFromFirebase==='function') loadFromFirebase(); }, 100);
+  } else {
+    if (msg) {
+      msg.style.display = 'block';
+      msg.innerHTML = '❌ Usuario o contraseña incorrectos.';
+    }
+    var passEl = document.getElementById('login-pass');
+    if (passEl) { passEl.value = ''; passEl.focus(); }
+  }
+}
+
+function doLogout() {
+  if (!confirm('¿Cerrar sesión?')) return;
+  var overlay = document.getElementById('login-overlay');
+  if (overlay) overlay.style.display = 'flex';
+  var userEl = document.getElementById('login-user');
+  var passEl = document.getElementById('login-pass');
+  if (userEl) userEl.value = '';
+  if (passEl) passEl.value = '';
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+  var lp = document.getElementById('login-pass');
+  var lu = document.getElementById('login-user');
+  if (lp) lp.addEventListener('keydown', function(e){ if(e.key==='Enter') doLogin(); });
+  if (lu) lu.addEventListener('keydown', function(e){ if(e.key==='Enter'){ var p=document.getElementById('login-pass'); if(p) p.focus(); }});
+});
+</script>
+
+
 
 
 <div class="header" id="app-header">
@@ -914,6 +963,71 @@ const BRAND_META = {
   VARIOS:    { code:'VAR', logo:null }
 };
 
+
+/* ═══════════════════════════════════════════════════════
+   LOGIN / AUTH
+════════════════════════════════════════════════════════ */
+var _USERS = [
+  { u: 'OGK', p: 'Farmersve2026*!' },
+  { u: 'GKK', p: 'Farmersve2026*!' }
+];
+var _loginTries = 0;
+var _loginMax = 5;
+
+function doLogin() {
+  var u = (document.getElementById('login-user').value || '').trim().toUpperCase();
+  var p = document.getElementById('login-pass').value || '';
+  var ok = _USERS.some(function(x){ return x.u === u && x.p === p; });
+  var msg = document.getElementById('login-error-msg');
+  if (ok) {
+    if (msg) msg.style.display = 'none';
+    _loginTries = 0;
+    var overlay = document.getElementById('login-overlay');
+    if (overlay) overlay.style.display = 'none';
+    var av = document.getElementById('usr-av');
+    var nm = document.getElementById('usr-name');
+    if (av) av.textContent = u.slice(0,2);
+    if (nm) nm.textContent = u;
+    loadFromFirebase();
+  } else {
+    _loginTries++;
+    if (msg) {
+      msg.style.display = 'block';
+      var submitBtn = document.getElementById('login-submit');
+      if (_loginTries >= _loginMax) {
+        if (submitBtn) submitBtn.disabled = true;
+        msg.innerHTML = '🔒 Bloqueado por ' + _loginMax + ' intentos fallidos. Recarga la página.';
+      } else {
+        msg.innerHTML = '❌ Usuario o contraseña incorrectos. Intentos restantes: ' + (_loginMax - _loginTries);
+      }
+    }
+    var passEl = document.getElementById('login-pass');
+    if (passEl) { passEl.value = ''; passEl.focus(); }
+  }
+}
+
+function doLogout() {
+  if (!confirm('¿Cerrar sesión?')) return;
+  var overlay = document.getElementById('login-overlay');
+  if (overlay) overlay.style.display = 'flex';
+  var userEl = document.getElementById('login-user');
+  var passEl = document.getElementById('login-pass');
+  var msgEl  = document.getElementById('login-error-msg');
+  var btnEl  = document.getElementById('login-submit');
+  if (userEl) userEl.value = '';
+  if (passEl) passEl.value = '';
+  if (msgEl)  msgEl.style.display = 'none';
+  if (btnEl)  btnEl.disabled = false;
+  _loginTries = 0;
+}
+
+// Enter key support
+document.addEventListener('DOMContentLoaded', function() {
+  var lp = document.getElementById('login-pass');
+  var lu = document.getElementById('login-user');
+  if (lp) lp.addEventListener('keydown', function(e){ if(e.key==='Enter') doLogin(); });
+  if (lu) lu.addEventListener('keydown', function(e){ if(e.key==='Enter'){ var p=document.getElementById('login-pass'); if(p) p.focus(); } });
+});
 let selectedBrands = new Set();
 let selectedMoneda = null;
 let orders = {};
