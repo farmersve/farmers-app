@@ -877,6 +877,15 @@ body.loggedout > div:not(#login-overlay) { display: none !important; }
       id="hist-summary-cards">
     </div>
 
+    <!-- Search bar -->
+    <div style="padding:12px 20px;border-bottom:1px solid var(--border);background:white;">
+      <input type="text" id="hist-search" placeholder="🔍 Buscar por cliente, N° pedido, referencia, vendedor..."
+        oninput="filterHistorial(this.value)"
+        style="width:100%;padding:10px 16px;border:1.5px solid #e0e4f0;border-radius:8px;
+          font-size:.88rem;outline:none;font-family:'Barlow',sans-serif;box-sizing:border-box;"
+        onfocus="this.style.borderColor='#1a2050'" onblur="this.style.borderColor='#e0e4f0'">
+    </div>
+
     <!-- Sales list -->
     <div style="padding:16px 20px;" id="hist-list">
       <div style="text-align:center;padding:48px;color:var(--text2);">
@@ -1426,918 +1435,10 @@ function renderHistorial(){
     listEl.innerHTML='<div style="text-align:center;padding:48px;color:var(--text2);"><div style="font-size:3rem;margin-bottom:12px;">📭</div><p>No hay ventas registradas aún</p></div>';
     return;
   }
-  const ml={USD:'USD $',BCV:'BCV Bs.',TF:'TF Bs.'};
-  listEl.innerHTML=sales.map(sale=>`
-    <div style="border:1.5px solid #e0e4f0;border-radius:12px;margin-bottom:16px;overflow:hidden;">
-      <div style="background:linear-gradient(135deg,#f0f2ff,#e8eaf6);padding:12px 18px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
-        <div>
-          <span style="font-family:'Barlow Condensed',sans-serif;font-weight:900;font-size:1.1rem;color:#1a2050;">Pedido #${sale.numpedido}</span>
-          <span style="font-size:0.72rem;color:#8892b0;margin-left:8px;">${sale.fecha} ${sale.hora}</span>
-          <div style="display:flex;gap:6px;margin-top:5px;flex-wrap:wrap;">
-            <span style="background:#1a2050;color:white;padding:2px 10px;border-radius:12px;font-size:0.72rem;font-weight:700;">${sale.cliente}</span>
-            <span style="background:rgba(232,105,42,0.15);color:#e8692a;padding:2px 10px;border-radius:12px;font-size:0.72rem;font-weight:700;">${ml[sale.moneda]||sale.moneda}</span>
-            ${sale.vendedor&&sale.vendedor!=='—'?`<span style="background:#e8f5e9;color:#2e7d32;padding:2px 10px;border-radius:12px;font-size:0.72rem;font-weight:700;">${sale.vendedor}</span>`:''}${sale.totalDevuelto?`<span style="background:#fff7ed;color:#b45309;padding:2px 10px;border-radius:12px;font-size:0.72rem;font-weight:700;border:1px solid #fed7aa;">↩ Dev: $ ${fmt(sale.totalDevuelto)}</span>`:''}
-          </div>
-        </div>
-        <div style="text-align:right;">
-          <div style="font-family:'Barlow Condensed',sans-serif;font-weight:900;font-size:1.4rem;color:#e8692a;">$ ${fmt(sale.total)}</div>
-          ${sale.totalBs?`<div style="font-size:0.75rem;color:#16a34a;font-weight:600;">Bs. ${fmt(sale.totalBs)}</div>`:''}
-          <div style="font-size:0.72rem;color:#8892b0;">${sale.units} uds · ${sale.items.length} refs</div>
-        </div>
-      </div>
-      <div style="overflow-x:auto;">
-        <table style="width:100%;border-collapse:collapse;font-size:0.8rem;min-width:500px;">
-          <thead><tr style="background:#f8f9ff;border-bottom:1px solid #e0e4f0;">
-            <th style="padding:7px 12px;text-align:left;font-weight:700;color:#5a6080;font-size:0.7rem;text-transform:uppercase;">Ref</th>
-            <th style="padding:7px 12px;text-align:left;font-weight:700;color:#5a6080;font-size:0.7rem;text-transform:uppercase;">Descripción</th>
-            <th style="padding:7px 12px;text-align:center;font-weight:700;color:#5a6080;font-size:0.7rem;text-transform:uppercase;">Marca</th>
-            <th style="padding:7px 12px;text-align:center;font-weight:700;color:#5a6080;font-size:0.7rem;text-transform:uppercase;">Precio</th>
-            <th style="padding:7px 12px;text-align:center;font-weight:700;color:#5a6080;font-size:0.7rem;text-transform:uppercase;">Orden</th>
-            <th style="padding:7px 12px;text-align:right;font-weight:700;color:#5a6080;font-size:0.7rem;text-transform:uppercase;">Total</th>
-          </tr></thead>
-          <tbody>${sale.items.map((it,idx)=>`
-            <tr style="background:${idx%2===0?'white':'#f8f9ff'};border-bottom:1px solid #f0f2f8;">
-              <td style="padding:7px 12px;font-family:'Barlow Condensed',sans-serif;font-weight:700;color:#1a2050;">${it.r}</td>
-              <td style="padding:7px 12px;color:#2d3a6b;">${it.d}</td>
-              <td style="padding:7px 12px;text-align:center;">${BRAND_META[it.br]?.logo?`<img src="${BRAND_META[it.br].logo}" style="height:16px;object-fit:contain;">`:it.br}</td>
-              <td style="padding:7px 12px;text-align:center;font-weight:600;color:#1a2050;">$ ${fmt(it.precio)}</td>
-              <td style="padding:7px 12px;text-align:center;"><span style="background:#1a2050;color:white;border-radius:5px;padding:2px 8px;font-weight:700;">${it.orden}</span></td>
-              <td style="padding:7px 12px;text-align:right;font-weight:700;color:#e8692a;">$ ${fmt(it.total)}</td>
-            </tr>`).join('')}
-          </tbody>
-        </table>
-      </div>
-      <div style="padding:8px 14px;border-top:1px solid #f0f2f8;display:flex;justify-content:flex-end;gap:8px;">
-        <button onclick="showDevolucion(${sale.id})" style="background:rgba(232,105,42,.08);border:1.5px solid #e8692a;color:#e8692a;border-radius:6px;padding:5px 14px;cursor:pointer;font-size:.78rem;font-weight:700;">↩ Procesar Devolución</button>
-        <button onclick="deleteSale(${sale.id})" style="background:none;border:1px solid #fca5a5;color:#dc2626;border-radius:6px;padding:4px 12px;cursor:pointer;font-size:0.75rem;font-weight:600;">🗑 Eliminar registro</button>
-      </div>
-    </div>`).join('');
-}
-
-function deleteSale(id){
-  if(!confirm('¿Eliminar este registro?')) return;
-  saveSales(getSales().filter(s=>s.id!==id));
-  renderHistorial();
-}
-
-function confirmClearHistorial(){
-  if(!confirm('¿Limpiar TODO el historial? Esta acción no se puede deshacer.')) return;
-  saveSales([]);
-  renderHistorial();
-  showToast('Historial limpiado','success');
-}
-
-function exportHistorial(){
-  const sales=getSales();
-  if(!sales.length){ alert('No hay ventas para exportar.'); return; }
-  const wb=XLSX.utils.book_new();
-  const sum=[['FARMERS C.A. — HISTORIAL DE VENTAS'],['Exportado:',new Date().toLocaleDateString('es-VE')],[],['N° Pedido','Fecha','Hora','Cliente','RIF','Vendedor','Sucursal','Moneda','Tasa BCV','Unidades','Total $','Total Bs.']];
-  sales.forEach(s=>sum.push([s.numpedido,s.fecha,s.hora,s.cliente,s.rif,s.vendedor,s.sucursal,s.moneda,s.tasa||'',s.units,s.total,s.totalBs||'']));
-  const ws1=XLSX.utils.aoa_to_sheet(sum);
-  ws1['!cols']=[{wch:12},{wch:12},{wch:8},{wch:30},{wch:16},{wch:14},{wch:20},{wch:8},{wch:12},{wch:10},{wch:12},{wch:14}];
-  XLSX.utils.book_append_sheet(wb,ws1,'Resumen');
-  const det=[['DETALLE DE VENTAS'],[],['N° Pedido','Fecha','Cliente','Referencia','Descripción','Marca','Precio','Orden','Total','Exist. Antes','Exist. Después']];
-  sales.forEach(s=>s.items.forEach(it=>det.push([s.numpedido,s.fecha,s.cliente,it.r,it.d,it.br,it.precio,it.orden,it.total,it.ex_antes,it.ex_despues])));
-  const ws2=XLSX.utils.aoa_to_sheet(det);
-  ws2['!cols']=[{wch:12},{wch:12},{wch:30},{wch:12},{wch:40},{wch:12},{wch:10},{wch:8},{wch:12},{wch:12},{wch:14}];
-  XLSX.utils.book_append_sheet(wb,ws2,'Detalle');
-  XLSX.writeFile(wb,'FARMERS_Historial_'+new Date().toLocaleDateString('es-VE').replace(/\//g,'-')+'.xlsx');
-}
-
-const styleAnim=document.createElement('style');
-styleAnim.textContent='@keyframes fadeInUp{from{opacity:0;transform:translate(-50%,20px)}to{opacity:1;transform:translate(-50%,0)}}';
-document.head.appendChild(styleAnim);
-
-// ── ORDER MODAL ───────────────────────────────────────────────────
-function showOrderModal() {
-  const orderedProducts = PRODUCTS.filter(p => orders[p.r] > 0);
-  if (!orderedProducts.length) {
-    alert('No hay productos con orden ingresada.');
-    return;
-  }
-
-  const today  = new Date().toLocaleDateString('es-VE', {day:'2-digit',month:'long',year:'numeric'});
-  const monedaLabel = {USD:'USD — Dólar ($)', BCV:'BCV — Bolívares Tasa BCV', TF:'Tierra Firme — Bs. TF'};
-  const cur    = '$';
-
-  // Logo
-  document.getElementById('oc-logo').src = document.querySelector('.header-logo').src;
-
-  // Header info
-  document.getElementById('oc-numpedido').textContent =
-    document.getElementById('f_numpedido').value || 'S/N';
-  document.getElementById('oc-fecha').textContent = today;
-
-  // Badges
-  const badgesEl = document.getElementById('oc-badges');
-  const brandColors = {
-    EXCALIBUR:'#1565c0', GENIAL:'#c62828', MATRIX:'#1565c0',
-    LUMEN:'#e65100', MAXKILLER:'#2e7d32', VARIOS:'#555'
-  };
-  const activeBrands = [...new Set(orderedProducts.map(p => p.br))];
-  badgesEl.innerHTML =
-    `<span style="padding:4px 12px;border-radius:20px;background:rgba(232,105,42,0.25);
-      color:#f5a623;font-size:0.75rem;font-weight:700;letter-spacing:1px;border:1px solid rgba(245,166,35,0.4)">
-      💰 ${monedaLabel[selectedMoneda]}
-    </span>` +
-    activeBrands.map(b =>
-      `<span style="padding:4px 12px;border-radius:20px;background:rgba(255,255,255,0.12);
-        color:rgba(255,255,255,0.85);font-size:0.75rem;font-weight:700;letter-spacing:1px;
-        border:1px solid rgba(255,255,255,0.2)">
-        ${BRAND_META[b]?.code || b}
-      </span>`
-    ).join('');
-
-  // Client grid
-  const cd = {
-    'Cliente':   document.getElementById('f_cliente').value   || '—',
-    'RIF':       document.getElementById('f_rif').value        || '—',
-    'Teléfono':  document.getElementById('f_telefono').value   || '—',
-    'Correo':    document.getElementById('f_correo').value     || '—',
-    'Vendedor':  document.getElementById('f_vendedor').value   || '—',
-    'Crédito':   document.getElementById('f_credito').value    || '—',
-    'Sucursal':  document.getElementById('f_sucursal').value   || '—',
-    'Dirección': document.getElementById('f_direccion').value  || '—',
-  };
-  document.getElementById('oc-client-grid').innerHTML = Object.entries(cd).map(([k,v]) =>
-    `<div style="background:white;border-radius:8px;padding:10px 14px;
-      border:1px solid #e0e4f0;">
-      <div style="font-size:0.65rem;font-weight:700;text-transform:uppercase;
-        letter-spacing:1px;color:#8892b0;margin-bottom:3px;">${k}</div>
-      <div style="font-size:0.88rem;font-weight:600;color:#1a2050;
-        word-break:break-word;">${v}</div>
-    </div>`
-  ).join('');
-
-  // Table rows
-  let grandTotal = 0;
-  let grandUnits = 0;
-  const tbody = document.getElementById('oc-table-body');
-
-  // Group by brand
-  const byBrand = {};
-  orderedProducts.forEach(p => {
-    if (!byBrand[p.br]) byBrand[p.br] = [];
-    byBrand[p.br].push(p);
-  });
-
-  let rows = '';
-  let rowIdx = 0;
-  Object.entries(byBrand).forEach(([brand, prods]) => {
-    // Brand separator row
-    const meta = BRAND_META[brand];
-    rows += `<tr>
-      <td colspan="8" style="padding:8px 12px;background:#f0f2ff;
-        border-top:2px solid #c5cae9;border-bottom:1px solid #e0e4f0;">
-        <div style="display:flex;align-items:center;gap:8px;">
-      <div id="sync-indicator" title="Sincronización Firebase" style="font-size:.7rem;color:rgba(255,255,255,.5);display:flex;align-items:center;gap:4px;">
-        <span id="sync-dot" style="width:7px;height:7px;border-radius:50%;background:#6b7280;display:inline-block;"></span>
-        <span id="sync-txt">Conectando...</span>
-      </div>
-          ${meta?.logo ? `<img src="${meta.logo}" style="height:20px;object-fit:contain;">` : ''}
-          <span style="font-family:'Barlow Condensed',sans-serif;font-weight:700;
-            font-size:0.82rem;letter-spacing:1.5px;text-transform:uppercase;color:#1a2050;">
-            ${brand}
-          </span>
-        </div>
-      </td>
-    </tr>`;
-
-    prods.forEach(p => {
-      const price    = getPrice(p);
-      const ord      = orders[p.r];
-      const total    = ord * price;
-      const existFin = p.ex - ord;
-      grandTotal    += total;
-      grandUnits    += ord;
-      const bg       = rowIdx % 2 === 0 ? '#ffffff' : '#f8f9ff';
-      const efColor  = existFin < 0 ? '#dc2626' : existFin < 20 ? '#d97706' : '#16a34a';
-      rows += `<tr style="background:${bg};border-bottom:1px solid #eef0f8;">
-        <td style="padding:9px 12px;font-family:'Barlow Condensed',sans-serif;
-          font-weight:700;font-size:0.82rem;color:#1a2050;white-space:nowrap;">
-          ${p.r}
-        </td>
-        <td style="padding:9px 12px;font-weight:500;color:#2d3a6b;max-width:220px;">
-          ${p.d}
-        </td>
-        <td style="padding:9px 12px;text-align:center;color:#5a6080;font-size:0.8rem;">
-          ${p.e || ''}
-        </td>
-        <td style="padding:9px 12px;text-align:center;font-weight:600;color:#1a2050;">
-          ${cur} ${fmt(price)}
-        </td>
-        <td style="padding:9px 12px;text-align:center;">
-          <span style="background:#1a2050;color:white;border-radius:6px;
-            padding:3px 10px;font-weight:700;font-size:0.9rem;">${ord}</span>
-        </td>
-        <td style="padding:9px 12px;text-align:right;font-weight:700;
-          color:#1a2050;white-space:nowrap;">
-          ${cur} ${fmt(total)}
-        </td>
-        <td style="padding:9px 12px;text-align:center;font-weight:600;color:#16a34a;">
-          ${p.ex}
-        </td>
-        <td style="padding:9px 12px;text-align:center;font-weight:700;color:${efColor};">
-          ${existFin}
-        </td>
-      </tr>`;
-      rowIdx++;
-    });
-  });
-  tbody.innerHTML = rows;
-
-  // Tfoot totals row
-  document.getElementById('oc-tfoot').innerHTML = `
-    <tr style="background:linear-gradient(135deg,#1a2050,#252b6b);">
-      <td colspan="4" style="padding:12px;color:white;font-family:'Barlow Condensed',sans-serif;
-        font-weight:700;letter-spacing:1px;text-transform:uppercase;font-size:0.85rem;">
-        TOTAL GENERAL
-      </td>
-      <td style="padding:12px;text-align:center;color:#f5a623;font-family:'Barlow Condensed',sans-serif;
-        font-weight:900;font-size:1.1rem;">${grandUnits} uds</td>
-      <td style="padding:12px;text-align:right;color:#f5a623;font-family:'Barlow Condensed',sans-serif;
-        font-weight:900;font-size:1.1rem;">${cur} ${fmt(grandTotal)}</td>
-      <td colspan="2" style="padding:12px;"></td>
-    </tr>`;
-
-  // Totals cards
-  const tasa  = parseFloat(document.getElementById('tasa-bcv').value) || 0;
-  const bsTotal = tasa > 0 ? `Bs. ${fmt(grandTotal * tasa)}` : '—  (ingresa tasa BCV)';
-  document.getElementById('oc-totals').innerHTML = `
-    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;">
-      <div style="background:linear-gradient(135deg,#f0f2ff,#e8eaf6);border-radius:10px;
-        padding:16px 20px;border:1.5px solid #c5cae9;">
-        <div style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:1.5px;
-          color:#5c6bc0;margin-bottom:6px;">Líneas Ordenadas</div>
-        <div style="font-family:'Barlow Condensed',sans-serif;font-weight:900;font-size:1.8rem;
-          color:#1a2050;">${orderedProducts.length}</div>
-      </div>
-      <div style="background:linear-gradient(135deg,#f0f2ff,#e8eaf6);border-radius:10px;
-        padding:16px 20px;border:1.5px solid #c5cae9;">
-        <div style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:1.5px;
-          color:#5c6bc0;margin-bottom:6px;">Total Unidades</div>
-        <div style="font-family:'Barlow Condensed',sans-serif;font-weight:900;font-size:1.8rem;
-          color:#1a2050;">${grandUnits}</div>
-      </div>
-      <div style="background:linear-gradient(135deg,#fff8f0,#fff3e0);border-radius:10px;
-        padding:16px 20px;border:1.5px solid #ffcc80;">
-        <div style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:1.5px;
-          color:#e65100;margin-bottom:6px;">Total en $</div>
-        <div style="font-family:'Barlow Condensed',sans-serif;font-weight:900;font-size:1.8rem;
-          color:#e65100;">${cur} ${fmt(grandTotal)}</div>
-      </div>
-      <div style="background:linear-gradient(135deg,#f0faf4,#e8f5e9);border-radius:10px;
-        padding:16px 20px;border:1.5px solid #a5d6a7;">
-        <div style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:1.5px;
-          color:#2e7d32;margin-bottom:6px;">Equivalente en Bs.</div>
-        <div style="font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:1.1rem;
-          color:#1b5e20;margin-top:4px;">${bsTotal}</div>
-        ${tasa > 0 ? `<div style="font-size:0.7rem;color:#4caf50;margin-top:3px;">Tasa: Bs. ${fmt(tasa)}</div>` : ''}
-      </div>
-    </div>`;
-
-  // Show modal
-  const modal = document.getElementById('order-modal');
-  modal.style.display = 'flex';
-  document.body.style.overflow = 'hidden';
-}
-
-function hideOrderModal() {
-  document.getElementById('order-modal').style.display = 'none';
-  document.body.style.overflow = '';
-}
-
-function printOrder() {
-  window.print();
-}
-
-// ── CLIENT DATA ──────────────────────────────────────────────────
-const CLIENTS = [{"nombre":"PRECIO JUSTO III, C.A.","rif":"J501870764","tel":"4123504922","vendedor":"OGK","direccion":""},{"nombre":"FARMADEPOT, C.A .","rif":"J-501577587","tel":"0412-3588255","vendedor":"OGK","direccion":"Av Jovito Villalba, Pampatar, Edo NE Venez Z P 6316"},{"nombre":"H. J. INVERSORES MARACAY, C.A. (H. J. INVERSORES MARACAY, C.A.)","rif":"J-505952412","tel":"04142630809","vendedor":"OGK","direccion":"AVENIDA CAJIGAL,CENTRO COMERCIAL STAR CENTER PLANTA BAJA, LOCAL UNICO, PB-02, EN LA CIUDAD DE CAGUA, MUNICIPIO SUCRE, ESTADO LARA"},{"nombre":"CUCHITA, C.A.","rif":"J065010177","tel":"04166966767","vendedor":"OGK","direccion":"Boulevard Guevara C/C Calle Zamora, Porlamar, Isla de Margarita, Edo. N E - Venez Z P 6301"},{"nombre":"SIGO, S.A.","rif":"J080030486","tel":"0295-2652000","vendedor":"OGK","direccion":"C. C. Sigo, Avenida Juan Bautista Arismendi con Calle Prica, Porlamar, Edo N E Venez Z P 6301"},{"nombre":"KEI MARKET, C.A.","rif":"J294536433","tel":"0414-7927573","vendedor":"OGK","direccion":"Calle Colon, cerca de la plaza, local s/n, Sector Punta de Piedras, Punta de Piedras, Municipio Tubores, NE Venez. ZP 6318"},{"nombre":"INVERSIONES BARCELONA ORIENTE,C.A.","rif":"J294734677","tel":"0414-2630809","vendedor":"OGK","direccion":"Av. Nueva Esparta, Edif CUATRO Piso PB Local 4 Urb Barcelona, Barcelona Anzoategui, Venez Z. P. 6001"},{"nombre":"IMPORTADORA DAYANG, C.A.","rif":"J29740153-9","tel":"04123512579","vendedor":"OGK","direccion":"PORLAMAR, CALLE GOMEZ ENTRE CALLE MARCANO Y CALLE IGUALDAD"},{"nombre":"MUNDO HOGAR 2020, C.A.","rif":"J298365170","tel":"0414-2630809","vendedor":"OGK","direccion":"Av Bolivar Local MUNDO HOGAR 2020, C.A. Nº 110, Sector Centro Puerto La Cruz, Anzoategui, Venez. - Z.P. 6023"},{"nombre":"SUPERMERCADO CENTRAL GUACUCO, C.A.","rif":"J301321421","tel":"0295 2423190","vendedor":"OGK","direccion":"Av 31 Julio C/C Ruiz, Sector Crucero de Guacuco, La Asunción, ENE, Venez. ZP 6311"},{"nombre":"COMERCIAL 88 C.A.","rif":"J306964789","tel":"04248299556","vendedor":"OGK","direccion":"Calle Libertad C/C Velàsquez, Edificio Comercial 88, Porlamar, Isla de Margarita Edo Nueva Esparta Venezuela Zona Postal 6301"},{"nombre":"TOMMY SHOES, C.A.","rif":"J308689777","tel":"0424 8117991","vendedor":"OGK","direccion":"CC SAMBIL MARGARITA  Av Jóvito Villalba, Sector San Lorenzo, Pampatar NE Venez ZP 6316"},{"nombre":"SUPERMERCADO PALITOS CHINOS, C.A,","rif":"J311406131","tel":"04248433280","vendedor":"OGK","direccion":"LA ASUNCION"},{"nombre":"TODOHOGAR VISTAMAR, C.A.","rif":"J311876103","tel":"04265821988","vendedor":"OGK","direccion":"Avenida Guzmán Lander Sector Colinas Del Neveri Edificio TodoHogar Barcelona Diagonal A Pastelitos El Zuliano Al Lado Del Fogón Barcelona Anzoategui."},{"nombre":"FERREGAMA CENTER C.A.","rif":"J312292750","tel":"04249306028","vendedor":"OGK","direccion":"Av Terranova C/C Calle El Colegio, CC Terranova Nivel P.B., Local 5 Sector El Poblado, Porlamar, Edo. Nueva Esparta - Venezuela"},{"nombre":"IKO FARMA, C.A.","rif":"J313162906","tel":"0424-8171757","vendedor":"OGK","direccion":"AV IGUALDAD ENTRE CALLE DIAZ Y SAN RAFAEL LOCAL NRO\nS/N SECTOR CENTRO PORLAMAR NUEVA ESPARTA ZONA POSTAL 6301"},{"nombre":"SUPERMERCADO POZO BLANCO, C.A.","rif":"J314461885","tel":"","vendedor":"OGK","direccion":"Calle Carabobo, Santa Ana, Local S/N, Sector La Plaza, Municipio Gòmez, Santa Ana, NE, Venez. ZP 6322"},{"nombre":"COMERCIAL BINGWU, C.A.","rif":"J314546740","tel":"04121967929","vendedor":"OGK","direccion":"CALLE IGUALDAD ENTRE LIBERTAD Y MARTINEZ"},{"nombre":"NUEVO MUNDO 2012, C.A.","rif":"J400640571","tel":"04148005816","vendedor":"OGK","direccion":"Carretera Nacional, Vía San Juan Bautista Local 1.2.3.4.5, Sector Carapacho, Edo. Nueva Esparta Venezuela Z.P. 6320"},{"nombre":"COMERCIAL SANTA BELLA C.A.","rif":"J401392776","tel":"0412 359 8900","vendedor":"OGK","direccion":"Calle Igualdad,  Porlamar Estado Nueva Esparta - Venezuela ZP 6301 0412 359 8900"},{"nombre":"FARMACIA ECOLOGICA 2012, C.A.","rif":"J401498531","tel":"0424 818 7833","vendedor":"OGK","direccion":"C.C. Eco Center, Porlamar, Nueva Esparta Venezuela ZP 6301 0058 424 818 7833"},{"nombre":"INSIDE MARKET, SUPERMERCADO RIO, C.A","rif":"J401583806","tel":"0414 7942595","vendedor":"OGK","direccion":"AV JUAN BAUTISTA ARISMENDI CC CENTRO EMPRESARIAL PLAZAS DEL SOL (I ETAPA) NIVEL  P/B LOCAL L5, L6, L7, L8 Y D1 SECTOR MACHO MUERTO VILLA ROSA NUEVA ESPARTA"},{"nombre":"ALTA PESCA, C.A.","rif":"J401705445","tel":"","vendedor":"OGK","direccion":"CALLE GOMEZ LOCAL NRO S/N SECTOR EL SUR BOCA POZO NUEVA ESPARTA"},{"nombre":"IMPORTADORA SARA 2013, C.A.","rif":"J401990363","tel":"","vendedor":"OGK","direccion":"Calle Fraternidad Local Los Robles S/N Conjunto Residencial Los Robles, Pampatar N.E. Venez Z P 6316"},{"nombre":"COMERCIAL TIA YULI, C.A.","rif":"J402247249","tel":"04127950383","vendedor":"OGK","direccion":"Calle Bolivar, Casa S/N, Sector Champoturo, Boca de Pozo, Municipio Peninsula de Macanao, NE, Venez. ZP 6303"},{"nombre":"COMERCIAL ABC 88,C.A.","rif":"J402646836","tel":"0412-3527682","vendedor":"OGK","direccion":"CALLE PRINCIPAL DE VILLAROSA"},{"nombre":"JIAN, C.A.","rif":"J404824731","tel":"04241978566","vendedor":"OGK","direccion":"Calle Colòn Local S/N, Sector Punta de Piedras, Edo. Nueva Esparta Venezuela"},{"nombre":"GENERICOS MARGARITA, C.A.","rif":"J405970286","tel":"0412-2394446","vendedor":"OGK","direccion":"Pampatar"},{"nombre":"COMERCIALIZADORA PRECIO JUSTO CA.","rif":"J406040258","tel":"04123504922","vendedor":"OGK","direccion":"Av. Miranda entre Calle Marcano y Calle Igualdad, Local S/N Porlamar Edo. Nueva Esparta - Venezuela Zona Postal 6301"},{"nombre":"ZAAPTV, C.A.","rif":"J406296449","tel":"","vendedor":"OGK","direccion":"Calle Los Uveros con Av. Bolivar y Calle Guayacan CC La Vela Nivel Mar, Local MAR-34, Sector Costa Azul, Municipio Mariño, Porlamar, NE Venez. ZP 6301"},{"nombre":"INVERSIONES LAHA 2015, C.A","rif":"J407253492","tel":"0424-8378922","vendedor":"OGK","direccion":"CALLE MARCANO CASA NRO SN URB CHIGUANA  ALTAGRACIA NUEVA ESPARTA ZONA POSTAL 6301"},{"nombre":"INVERS SELAIA BM, C.A.","rif":"J407952307","tel":"","vendedor":"OGK","direccion":""},{"nombre":"LIMPIEZA PROFESIONAL, C.A.","rif":"J408882655","tel":"","vendedor":"OGK","direccion":"PORLAMAR"},{"nombre":"INVERSIONES MI MARIA PANCHA, C.A.","rif":"J409142868","tel":"+58 424-9386740","vendedor":"OGK","direccion":"Calle Augusto Ramos, Casa S/N, Sector La Salina,Municipio Marcano, Juan Griego, NE, Venez. ZP 6309"},{"nombre":"INVERSIONES NARVAEZ NARVAEZ, C.A.","rif":"J409430740","tel":"0412 0950963","vendedor":"OGK","direccion":"Calle Narvaéz, Boca de Pozo Edo NE Venez ZP 6303"},{"nombre":"LA PLAZA NORTE, C.A.","rif":"J410242400","tel":"04123526128","vendedor":"OGK","direccion":""},{"nombre":"PANADERIA EL PUEBLO MISMO, C.A.","rif":"J410515589","tel":"04123599871","vendedor":"OGK","direccion":"Calle Bonilla, Sector Boca de Pozo Municipio Peninsula de Macanao Edo NE Venez ZP 6303"},{"nombre":"COMERCIAL SOFIA, C.A.","rif":"J410910291","tel":"0412 359 2536","vendedor":"OGK","direccion":"Centro de Juangriego Diagonal a la Plaza Estado Nueva Esparta - Venezuela"},{"nombre":"FAMILY MARKET, C.A.","rif":"J412254928","tel":"0414 1091392","vendedor":"OGK","direccion":"Esq Av Aldonza Manrique C/C La Sardina, Local Nº S/N Urb Playa El Angel Zona Postal 6316"},{"nombre":"VIVERES KEVIN, C.A.","rif":"J412964968","tel":"04120946888","vendedor":"OGK","direccion":"Calle Igualdad, entre Arismendi y Libertad, Local Centro, Porlamar Edo. Nueva Esparta - Venezuela"},{"nombre":"INVERSIONES ORIENTE 20.20, C.A.","rif":"J413138530","tel":"04142630809","vendedor":"OGK","direccion":"Av. Principal de Lechería Edif. Rivadeo Piso 4 Local P 4-1 Sector Principal de Lechería. Anzoátegui"},{"nombre":"GRUPO VESUVIO, C.A.","rif":"J500209983","tel":"04123546280","vendedor":"OGK","direccion":"Av Jose Maria Lozada Loc S/N Urb Sabanamar, Porlamar Edo. NE Venez ZP 6301"},{"nombre":"JUMBO MARKET EXPRESS,C.A.","rif":"J500332700","tel":"04123505858","vendedor":"OGK","direccion":"AV 4 DE MAYO PORLAMAR AL LADO CC JUMBO"},{"nombre":"PLAZA MANSION, C. A.","rif":"J500366922","tel":"04127578054","vendedor":"OGK","direccion":"Calle Igualdad, Porlamar, Isla de Margarita Edo Nueva Esparta - Venezuela Zona Postal 6301 04127578054"},{"nombre":"INVERSIONES HM 888, C.A.","rif":"J500430841","tel":"0412-9803001","vendedor":"OGK","direccion":"Calle PPL de Pedregales Edif MEIXIAN Piso PB Local S/N Sector Pedregales, Los Millanes, N.E. Venez ZP 6315"},{"nombre":"FARMACIA 2409, C.A.","rif":"J500558392","tel":"04120226500","vendedor":"OGK","direccion":"C.C. La Redoma, Los Robles Municipio Maneiro, Edo Nueva Esparta Venezuela ZP 6316"},{"nombre":"INVERSIONES BARCELONA ORIENTE 20.21, C.A.","rif":"J500769300","tel":"0414-2630809","vendedor":"OGK","direccion":"Calle Principal  Local Nº 01 Zona Lecheria, Lecherias Anzoategui Venez. -  Z.P.6016"},{"nombre":"FULLFARMA, C.A.","rif":"J500783973","tel":"04161986701","vendedor":"OGK","direccion":"CALLE REAL CARACAS LOCAL NRO S/N SECTOR CARACAS\nBOCA DE RIO NUEVA ESPARTA ZONA POSTAL 6304"},{"nombre":"MINIMARKET ALEX & SARA, C.A.","rif":"J500970200","tel":"0412-3900770","vendedor":"OGK","direccion":"Calle 8 Local S/N, Urb Morel Rodriguez, Robredal Vìa Los Conucos, San Antonio del Sur, NE, Venez, ZP 6301"},{"nombre":"INVERSIONES ORIENTE 20.21, HAD, C.A.","rif":"J500985649","tel":"0414-2630809","vendedor":"OGK","direccion":"Av Principal de Lecheria c/c Calle 6, Local Nº S/N, Sector Lecheria, Lecherias Anzoategui Venez - Z.P. 6016"},{"nombre":"VILLAFARMA C.A.","rif":"J501170819","tel":"+58 412 996 5852","vendedor":"OGK","direccion":"Calle Principal c/c 4 Casa Nº 2 Urb Villa Rosa, Nueva Esparta Z P 6319 Venezuela"},{"nombre":"INVERSIONES ORIENTE 20.22, C.A .","rif":"J501224978","tel":"0414-2630809","vendedor":"OGK","direccion":"Av Ppl de lecherias con Leonardo Ruiz Pineda, Edif Ribadeo, Piso 04 Local P4-7 Zona Lecherias, Anzoatgui, Venez  ZP 6016"},{"nombre":"INVERSIONES BARCELONA ORIENTE 20.22, CA.","rif":"J501227527","tel":"0414-2630809","vendedor":"OGK","direccion":"Av Ppl de Lecherias con Leonardo Ruiz Pineda, Edif Ribadeo, Piso PB Local 07 Zona Lecherias, Anzoatgui, Venez  ZP 6016"},{"nombre":"PRECIO JUSTO MARGARITA,C.A.","rif":"J501346615","tel":"04123504922","vendedor":"OGK","direccion":"Terminal de Buses en Porlamar, Edo Mueva Esparta - Venezuela - Zona Postal 6301"},{"nombre":"ALTA PESCA, C.A.","rif":"J501705445","tel":"","vendedor":"OGK","direccion":"Calle Gomez, Local S/N Sector El Sur, Boca de Pozo, NE, Venez. ZP 6304"},{"nombre":"GRAN VARIEDAD, C.A.","rif":"J503192909","tel":"0412-3546995","vendedor":"OGK","direccion":"CALLE ARISMENDI ENTRE CALLE IGUALDAD Y VELASQUEZ"},{"nombre":"INVERSIONES ORIENTE 20.24, C.A","rif":"J503676884","tel":"0414-2630809","vendedor":"OGK","direccion":"Av. Principal de Lechería Edif. Rivadeo Piso 4 Local P 4-1 Sector Principal de Lechería. Anzoátegui"},{"nombre":"INVERSIONES BARCELONA ORIENTE 20.23, C.A.","rif":"J503676990","tel":"0414-2630809","vendedor":"OGK","direccion":"Av. Principal de Lecheria C/C Leonardo Ruiz Pineda Edif RIBADEO Piso 4 Local 4-7 Zona Lecheria, Lecherias Edo Anz ZP 6016"},{"nombre":"INV BARCELONA ORIENTE 20.25 C.A","rif":"J503677147","tel":"0414-2630809","vendedor":"OGK","direccion":"Av. Principal de Lechería Edif. Rivadeo Piso 4 Local P 4-1 Sector Principal de Lechería. Anzoátegui"},{"nombre":"OFERTAS TERMINAL,C.A.","rif":"J503914793","tel":"04121960086","vendedor":"OGK","direccion":"CALLE CRUCE DE LAS CALLES IGUALDAD Y MENESES DE LA CIUDAD PORLAMAR"},{"nombre":"PLAZA MARKET 2023, C.A.","rif":"J504103489","tel":"04123526128","vendedor":"OGK","direccion":"Calle Santa Ana en la Poblaciòn de Altagracia, Local S/N, Sector Altagracia, Municipio Gomez, NE, Venez. ZP 6302"},{"nombre":"LA PLAZA TURISTICA K, C.A","rif":"J504115290","tel":"0412-3598357","vendedor":"OGK","direccion":"CALLE RISQUEZ LOCAL 1 NRO 1 SECTOR CENTRO JUAN GRIEGO"},{"nombre":"INVERSIONES ORIENTE 20.32 LA COLINA, C.A","rif":"J504183610","tel":"0414-2630809","vendedor":"OGK","direccion":"Av. Principal de Lechería Edif. Rivadeo Piso 4 Local P 4-1 Sector Principal de Lechería. Anzoátegui"},{"nombre":"MUNDO HOGAR MARGARITA, C.A.","rif":"J504317500","tel":"04140842514","vendedor":"OGK","direccion":"Calle Igualdad Edif. El Saman Piso PB Local 1-A  Sector Porlamar, Municipio Mariño, NE Venez. ZP 6301"},{"nombre":"INVERSIONES ORIENTE 20.38 MARACAY PLAZA, C.A","rif":"J504492434","tel":"0414-2630809","vendedor":"OGK","direccion":"Av. Principal de Lechería Edif. Rivadeo Piso 4 Local P 4-1 Sector Principal de Lechería. Anzoátegui"},{"nombre":"INVERSIONES ORIENTE 20.34 LA BARRACA, C.A","rif":"J504633070","tel":"0414-2630809","vendedor":"OGK","direccion":"Av. Principal de Lechería Edif. Rivadeo Piso 4 Local P 4-1 Sector Principal de Lechería. Anzoátegui"},{"nombre":"BUGABOO MGTA, C.A.","rif":"J504653918","tel":"0412-9513407","vendedor":"OGK","direccion":"Calle Los Uveros con Avenida Bolivar y Calle Guayacan, CC La Vela Nivel ARENA, Local AR-19, Sector Costa Azul, Municipio Mariño, Porlamar, NE, Venez ZP 6301"},{"nombre":"H. J. INVERSORES MARACAY, C.A.","rif":"J505952412","tel":"0414-2630809","vendedor":"OGK","direccion":"Av. Principal de Lechería Edif. Rivadeo Piso 4 Local P 4-1 Sector Principal de Lechería. Anzoátegui"}];
-let _filteredClients = [...CLIENTS];
-
-function _filterClients() {
-  const q = (document.getElementById('client-search').value || '').toLowerCase().trim();
-  _filteredClients = q
-    ? CLIENTS.filter(c => c.nombre.toLowerCase().includes(q) || c.rif.toLowerCase().includes(q))
-    : [...CLIENTS];
-  _renderDropdown();
-}
-
-function _renderDropdown() {
-  const dd = document.getElementById('client-dropdown');
-  if (!_filteredClients.length) {
-    dd.innerHTML = '<div style="padding:12px 16px;color:#999;font-size:0.85rem;text-align:center;">Sin resultados</div>';
-    return;
-  }
-  dd.innerHTML = _filteredClients.map((c, i) =>
-    `<div class="dd-item" onclick="_selectClient(${i})"
-      style="padding:10px 14px;cursor:pointer;border-bottom:1px solid #eef0f8;"
-      onmouseover="this.style.background='#f5f7ff'"
-      onmouseout="this.style.background=''"
-    >
-      <div style="font-weight:600;font-size:0.88rem;color:#1a2050">${c.nombre}</div>
-      <div style="font-size:0.73rem;color:#888;margin-top:1px;">${c.rif}${c.vendedor ? ' · ' + c.vendedor : ''}</div>
-    </div>`
-  ).join('');
-}
-
-function _openDropdown() {
-  const dd = document.getElementById('client-dropdown');
-  _filterClients();
-  dd.style.display = 'block';
-}
-
-function _closeDropdown() {
-  setTimeout(() => {
-    document.getElementById('client-dropdown').style.display = 'none';
-  }, 180);
-}
-
-function _selectClient(i) {
-  const c = _filteredClients[i];
-  if (!c) return;
-  document.getElementById('f_cliente').value   = c.nombre    || '';
-  document.getElementById('f_rif').value        = c.rif       || '';
-  document.getElementById('f_telefono').value   = c.tel       || '';
-  document.getElementById('f_vendedor').value   = c.vendedor  || '';
-  document.getElementById('f_direccion').value  = c.direccion || '';
-  // Show selected badge
-  const tag  = document.getElementById('client-tag');
-  const name = document.getElementById('client-tag-name');
-  if (tag && name) { name.textContent = c.nombre; tag.style.display = 'flex'; }
-  document.getElementById('client-search').value = '';
-  document.getElementById('client-dropdown').style.display = 'none';
-}
-
-function _clearClient() {
-  ['f_cliente','f_rif','f_telefono','f_vendedor','f_direccion'].forEach(id =>
-    document.getElementById(id).value = '');
-  const tag = document.getElementById('client-tag');
-  if (tag) tag.style.display = 'none';
+  renderSaleCards(sales, listEl);
 }
 
 
-
-
-
-
-
-// Enter key on password field - added via DOMContentLoaded
-document.addEventListener('DOMContentLoaded', function() {
-  var lp = document.getElementById('login-pass');
-  var lu = document.getElementById('login-user');
-  if (lp) lp.addEventListener('keydown', function(e){ if (e.key === 'Enter') window.doLogin(); });
-  if (lu) lu.addEventListener('keydown', function(e){ if (e.key === 'Enter') { var p = document.getElementById('login-pass'); if(p) p.focus(); } });
-});
-
-
-
-/* ═══════════════════════════════════════════════════════
-   MÓDULO DE DEVOLUCIONES
-════════════════════════════════════════════════════════ */
-var _devSaleId = null;
-
-function getReturns() {
-  try { return JSON.parse(localStorage.getItem('farmers_returns') || '[]'); } catch(e) { return []; }
-}
-function saveReturns(r) {
-  localStorage.setItem('farmers_returns', JSON.stringify(r));
-  if (window.fbSaveReturns) window.fbSaveReturns(r);
-}
-
-function showDevolucion(saleId) {
-  var sales = getSales();
-  var sale  = sales.find(function(s){ return s.id === saleId; });
-  if (!sale) return;
-  _devSaleId = saleId;
-
-  document.getElementById('dev-pedido-info').textContent =
-    'Pedido #' + sale.numpedido + ' \u00b7 ' + sale.fecha + ' \u00b7 ' + sale.cliente;
-
-  document.getElementById('dev-client-info').innerHTML =
-    '<span><strong>Cliente:</strong> ' + sale.cliente + '</span>' +
-    '<span><strong>RIF:</strong> ' + sale.rif + '</span>' +
-    '<span><strong>Vendedor:</strong> ' + sale.vendedor + '</span>' +
-    '<span><strong>Moneda:</strong> ' + sale.moneda + '</span>' +
-    '<span><strong>Venta Total:</strong> $ ' + fmt(sale.total) + '</span>';
-
-  var allReturns = getReturns();
-  var prevReturned = {};
-  allReturns.filter(function(r){ return r.saleId === saleId; }).forEach(function(r){
-    r.items.forEach(function(it){
-      prevReturned[it.r] = (prevReturned[it.r] || 0) + it.qty;
-    });
-  });
-
-  var rows = '';
-  sale.items.forEach(function(it, rowIdx) {
-    var maxReturn = it.orden - (prevReturned[it.r] || 0);
-    var ref = it.r.replace(/'/g, '');
-    if (maxReturn <= 0) {
-      rows += `<tr style="background:#f8f9ff;opacity:.5;">
-        <td style="padding:9px 12px;text-align:center;"><input type="checkbox" disabled></td>
-        <td style="padding:9px 12px;font-weight:700;color:#1a2050;">${it.r}</td>
-        <td style="padding:9px 12px;color:#5a6080;">${it.d}</td>
-        <td style="padding:9px 12px;text-align:center;font-weight:600;">$ ${fmt(it.precio)}</td>
-        <td style="padding:9px 12px;text-align:center;">${it.orden}</td>
-        <td style="padding:9px 12px;text-align:center;color:#16a34a;font-weight:700;">\u2713 Ya devuelto</td>
-        <td style="padding:9px 12px;text-align:right;">\u2014</td>
-      </tr>`;
-      return;
-    }
-    var bg = rowIdx % 2 === 0 ? '#ffffff' : '#f8f9ff';
-    var prevTxt = prevReturned[it.r] ? `<span style="font-size:.72rem;color:#e8692a;display:block;margin-top:2px;">(${prevReturned[it.r]} ya devuelto)</span>` : '';
-    rows += `<tr style="background:${bg};border-bottom:1px solid #eef0f8;" id="dev-row-${ref}">
-      <td style="padding:9px 12px;text-align:center;">
-        <input type="checkbox" class="dev-chk"
-          data-ref="${ref}" data-precio="${it.precio}" data-max="${maxReturn}"
-          onchange="devUpdateRow(this)"
-          style="width:15px;height:15px;cursor:pointer;accent-color:#e8692a;">
-      </td>
-      <td style="padding:9px 12px;font-weight:700;color:#1a2050;">${it.r}</td>
-      <td style="padding:9px 12px;color:#2d3a6b;">${it.d}</td>
-      <td style="padding:9px 12px;text-align:center;font-weight:600;color:#1a2050;">$ ${fmt(it.precio)}</td>
-      <td style="padding:9px 12px;text-align:center;">
-        <span style="background:#1a2050;color:white;border-radius:5px;padding:2px 8px;font-weight:700;">${it.orden}</span>
-        ${prevTxt}
-      </td>
-      <td style="padding:9px 12px;text-align:center;">
-        <input type="number" id="dev-qty-${ref}" min="1" max="${maxReturn}" value="${maxReturn}"
-          disabled onchange="devCalcTotal()"
-          style="width:65px;padding:5px 8px;border:1.5px solid #e0e4f0;border-radius:6px;text-align:center;font-weight:700;font-size:.9rem;">
-      </td>
-      <td style="padding:9px 12px;text-align:right;font-weight:700;color:#92400e;" id="dev-nc-${ref}">\u2014</td>
-    </tr>`;
-  });
-
-  document.getElementById('dev-table-body').innerHTML = rows;
-  document.getElementById('dev-check-all').checked = false;
-  document.getElementById('dev-total-nc').textContent = '$ 0.00';
-  document.getElementById('dev-items-count').textContent = '0 productos seleccionados';
-  document.getElementById('dev-motivo').value = '';
-
-  var modal = document.getElementById('dev-modal');
-  modal.style.display = 'flex';
-  document.body.style.overflow = 'hidden';
-}
-
-function hideDevolucion() {
-  document.getElementById('dev-modal').style.display = 'none';
-  document.body.style.overflow = '';
-  _devSaleId = null;
-}
-
-
-
-/* ══ AUTH ══════════════════════════════════════════════════════ */
-(function() {
-  var MAX_TRIES = 3;
-  var tries = 0;
-  var USERS = [
-    { u: 'OGK', ph: 'RmFybWVyc3ZlMjAyNioh' },
-    { u: 'GKK', ph: 'RmFybWVyc3ZlMjAyNioh' }
-  ];
-
-  function b64decode(s) {
-    try { return atob(s); } catch(e) { return ''; }
-  }
-
-  window.doLogin = function() {
-    var userVal = (document.getElementById('login-user').value || '').trim().toUpperCase();
-    var passVal = document.getElementById('login-pass').value || '';
-    var errEl   = document.getElementById('login-error-msg');
-
-    var found = USERS.find(function(u) {
-      return u.u === userVal && b64decode(u.ph) === passVal;
-    });
-
-    if (found) {
-      // Success - show app
-      document.body.classList.remove('loggedout');
-      document.getElementById('login-overlay').style.display = 'none';
-      var av = document.getElementById('usr-av');
-      var nm = document.getElementById('usr-name');
-      if (av) av.textContent = found.u.slice(0,2);
-      if (nm) nm.textContent = found.u;
-      tries = 0;
-      // Load latest data from Firebase on login
-      loadFromFirebase();
-    } else {
-      tries++;
-      var remaining = MAX_TRIES - tries;
-      if (tries >= MAX_TRIES) {
-        errEl.textContent = '🔒 Acceso bloqueado. Recarga la página para intentar de nuevo.';
-        document.getElementById('login-submit').disabled = true;
-      } else {
-        errEl.textContent = '❌ Usuario o contraseña incorrectos. Intentos restantes: ' + remaining;
-      }
-      errEl.style.display = 'block';
-      document.getElementById('login-pass').value = '';
-      document.getElementById('login-pass').focus();
-    }
-  };
-
-  window.doLogout = function() {
-    if (!confirm('¿Cerrar sesión?')) return;
-    document.body.classList.add('loggedout');
-    document.getElementById('login-overlay').style.display = 'flex';
-    document.getElementById('login-user').value = '';
-    document.getElementById('login-pass').value = '';
-    document.getElementById('login-error-msg').style.display = 'none';
-    document.getElementById('login-submit').disabled = false;
-    tries = 0;
-  };
-
-  // Enter key support
-  document.getElementById('login-pass').addEventListener('keydown', function(e) {
-    if (e.key === 'Enter') window.doLogin();
-  });
-  document.getElementById('login-user').addEventListener('keydown', function(e) {
-    if (e.key === 'Enter') document.getElementById('login-pass').focus();
-  });
-})();
-
-
-
-/* ═══════════════════════════════════════════════════════
-   BUSCADOR DE REFERENCIAS
-════════════════════════════════════════════════════════ */
-function openSearch() {
-  document.getElementById('search-modal').style.display = 'flex';
-  document.body.style.overflow = 'hidden';
-  setTimeout(function(){ 
-    var inp = document.getElementById('search-input');
-    if(inp){ inp.value=''; inp.focus(); }
-    document.getElementById('search-results').innerHTML = '<div style="text-align:center;padding:40px;color:#8892b0;"><div style="font-size:2.5rem;margin-bottom:10px;">📦</div><div style="font-family:\'Barlow Condensed\',sans-serif;font-size:1.1rem;">Ingresa un término de búsqueda</div></div>';
-    document.getElementById('search-count').textContent = 'Escribe para buscar entre ' + PRODUCTS.length + ' referencias';
-  }, 50);
-}
-
-function closeSearch() {
-  document.getElementById('search-modal').style.display = 'none';
-  document.body.style.overflow = '';
-}
-
-// Close on backdrop click
-document.addEventListener('DOMContentLoaded', function() {
-  var modal = document.getElementById('search-modal');
-  if(modal) modal.addEventListener('click', function(e){ if(e.target === modal) closeSearch(); });
-  // Escape key
-  document.addEventListener('keydown', function(e){ if(e.key === 'Escape') closeSearch(); });
-});
-
-function runSearch(q) {
-  q = (q || '').trim().toLowerCase();
-  var countEl = document.getElementById('search-count');
-  var resultsEl = document.getElementById('search-results');
-
-  if (!q || q.length < 2) {
-    resultsEl.innerHTML = '<div style="text-align:center;padding:40px;color:#8892b0;"><div style="font-size:2.5rem;margin-bottom:10px;">📦</div><div style="font-family:\'Barlow Condensed\',sans-serif;font-size:1.1rem;">Ingresa al menos 2 caracteres</div></div>';
-    countEl.textContent = 'Escribe para buscar entre ' + PRODUCTS.length + ' referencias';
-    return;
-  }
-
-  var results = PRODUCTS.filter(function(p) {
-    return (p.r  && p.r.toLowerCase().includes(q))  ||
-           (p.b  && p.b.toLowerCase().includes(q))  ||
-           (p.c  && p.c.toLowerCase().includes(q))  ||
-           (p.d  && p.d.toLowerCase().includes(q));
-  });
-
-  countEl.textContent = results.length + ' resultado' + (results.length !== 1 ? 's' : '') + ' encontrado' + (results.length !== 1 ? 's' : '');
-
-  if (!results.length) {
-    resultsEl.innerHTML = '<div style="text-align:center;padding:40px;color:#8892b0;"><div style="font-size:2.5rem;margin-bottom:10px;">🔎</div><div style="font-family:\'Barlow Condensed\',sans-serif;font-size:1.1rem;">Sin resultados para "' + q + '"</div></div>';
-    return;
-  }
-
-  var brandColors = {
-    EXCALIBUR:'#1a2050', GENIAL:'#2e7d32', MATRIX:'#b45309',
-    LUMEN:'#6a1b9a', MAXKILLER:'#c62828', VARIOS:'#37474f'
-  };
-
-  var html = '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(380px,1fr));gap:14px;">';
-
-  results.slice(0, 60).forEach(function(p) {
-    var inv = getInventory();
-    var stock = inv[p.r] !== undefined ? inv[p.r] : p.ex;
-    var stockColor = stock > 10 ? '#16a34a' : stock > 0 ? '#d97706' : '#dc2626';
-    var stockBg    = stock > 10 ? '#f0fdf4' : stock > 0 ? '#fffbeb' : '#fef2f2';
-    var stockLabel = stock > 10 ? 'En stock' : stock > 0 ? 'Bajo stock' : 'Agotado';
-    var bColor = brandColors[p.br] || '#37474f';
-
-    // Prices
-    var pUSD = p.u  ? '$ ' + p.u.toFixed(2)  : '—';
-    var pBCV = p.bv ? '$ ' + p.bv.toFixed(2) : '—';
-    var pTF  = p.t  ? '$ ' + p.t.toFixed(2)  : '—';
-
-    // Highlight match
-    function hl(text) {
-      if (!text) return '';
-      var re = new RegExp('(' + q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'gi');
-      return String(text).replace(re, '<mark style="background:#fef08a;border-radius:2px;padding:0 1px;">$1</mark>');
-    }
-
-    html += `
-    <div style="border:1.5px solid #e0e4f0;border-radius:12px;overflow:hidden;background:white;box-shadow:0 2px 8px rgba(0,0,0,.06);">
-      <!-- Card header -->
-      <div style="background:${bColor};padding:10px 14px;display:flex;align-items:center;justify-content:space-between;">
-        <div style="font-family:'Barlow Condensed',sans-serif;font-weight:900;font-size:1.1rem;color:white;letter-spacing:1px;">${hl(p.r)}</div>
-        <div style="background:${stockBg};color:${stockColor};border-radius:20px;padding:3px 10px;font-size:.7rem;font-weight:700;">${stockLabel}</div>
-      </div>
-      <!-- Description -->
-      <div style="padding:12px 14px 8px;">
-        <div style="font-weight:700;color:#1a2050;font-size:.92rem;margin-bottom:8px;">${hl(p.d)}</div>
-        <!-- Info grid -->
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:.78rem;">
-          <div style="background:#f8f9ff;border-radius:6px;padding:6px 10px;">
-            <div style="color:#8892b0;font-size:.65rem;font-weight:700;text-transform:uppercase;letter-spacing:1px;margin-bottom:2px;">Código de Barra</div>
-            <div style="font-weight:700;color:#1a2050;">${hl(p.b) || '—'}</div>
-          </div>
-          <div style="background:#f8f9ff;border-radius:6px;padding:6px 10px;">
-            <div style="color:#8892b0;font-size:.65rem;font-weight:700;text-transform:uppercase;letter-spacing:1px;margin-bottom:2px;">Código Interno</div>
-            <div style="font-weight:700;color:#1a2050;">${hl(p.c) || '—'}</div>
-          </div>
-          <div style="background:#f8f9ff;border-radius:6px;padding:6px 10px;">
-            <div style="color:#8892b0;font-size:.65rem;font-weight:700;text-transform:uppercase;letter-spacing:1px;margin-bottom:2px;">Empaque</div>
-            <div style="font-weight:700;color:#1a2050;">${p.e || '—'}</div>
-          </div>
-          <div style="background:#f8f9ff;border-radius:6px;padding:6px 10px;">
-            <div style="color:#8892b0;font-size:.65rem;font-weight:700;text-transform:uppercase;letter-spacing:1px;margin-bottom:2px;">Unid. por Caja</div>
-            <div style="font-weight:700;color:#1a2050;">${p.m || '—'}</div>
-          </div>
-          <div style="background:#f8f9ff;border-radius:6px;padding:6px 10px;">
-            <div style="color:#8892b0;font-size:.65rem;font-weight:700;text-transform:uppercase;letter-spacing:1px;margin-bottom:2px;">Marca</div>
-            <div style="font-weight:700;color:${bColor};">${p.br}</div>
-          </div>
-          <div style="background:${stockBg};border-radius:6px;padding:6px 10px;border:1px solid ${stockColor}33;">
-            <div style="color:#8892b0;font-size:.65rem;font-weight:700;text-transform:uppercase;letter-spacing:1px;margin-bottom:2px;">Existencia</div>
-            <div style="font-weight:900;color:${stockColor};font-size:1rem;">${stock} uds</div>
-          </div>
-        </div>
-        <!-- Prices -->
-        <div style="margin-top:8px;background:linear-gradient(135deg,#f0f4ff,#e8f0fe);border-radius:8px;padding:8px 10px;">
-          <div style="font-size:.65rem;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#5c6bc0;margin-bottom:6px;">Precios</div>
-          <div style="display:flex;gap:8px;flex-wrap:wrap;">
-            <div style="flex:1;text-align:center;background:white;border-radius:6px;padding:5px 8px;border:1px solid #c5cae9;">
-              <div style="font-size:.6rem;color:#8892b0;font-weight:700;text-transform:uppercase;">USD</div>
-              <div style="font-weight:900;color:#1a2050;font-size:.95rem;">${pUSD}</div>
-            </div>
-            <div style="flex:1;text-align:center;background:white;border-radius:6px;padding:5px 8px;border:1px solid #c5cae9;">
-              <div style="font-size:.6rem;color:#8892b0;font-weight:700;text-transform:uppercase;">BCV</div>
-              <div style="font-weight:900;color:#1a2050;font-size:.95rem;">${pBCV}</div>
-            </div>
-            <div style="flex:1;text-align:center;background:white;border-radius:6px;padding:5px 8px;border:1px solid #c5cae9;">
-              <div style="font-size:.6rem;color:#8892b0;font-weight:700;text-transform:uppercase;">TF</div>
-              <div style="font-weight:900;color:#1a2050;font-size:.95rem;">${pTF}</div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>`;
-  });
-
-  html += '</div>';
-  if (results.length > 60) {
-    html += '<div style="text-align:center;padding:14px;color:#8892b0;font-size:.82rem;">Mostrando 60 de ' + results.length + ' resultados. Refina tu búsqueda para ver más.</div>';
-  }
-  resultsEl.innerHTML = html;
-}
-
-
-
-/* ═══════════════════════════════════════════════════════
-   FIREBASE SYNC
-════════════════════════════════════════════════════════ */
-function setSyncStatus(status) {
-  var dot = document.getElementById('sync-dot');
-  var txt = document.getElementById('sync-txt');
-  if (!dot || !txt) return;
-  if (status === 'ok') {
-    dot.style.background = '#22c55e';
-    txt.textContent = 'Sincronizado';
-  } else if (status === 'syncing') {
-    dot.style.background = '#f59e0b';
-    txt.textContent = 'Sincronizando...';
-  } else if (status === 'error') {
-    dot.style.background = '#ef4444';
-    txt.textContent = 'Sin conexión';
-  } else {
-    dot.style.background = '#6b7280';
-    txt.textContent = 'Conectando...';
-  }
-}
-
-async function loadFromFirebase() {
-  setSyncStatus('syncing');
-  try {
-    // Load inventory
-    if (window.fbGetInventory) {
-      var inv = await window.fbGetInventory();
-      if (inv) {
-        localStorage.setItem('farmers_inv', JSON.stringify(inv));
-        syncInventoryToProducts();
-      }
-    }
-    // Load sales
-    if (window.fbGetSales) {
-      var sales = await window.fbGetSales();
-      if (sales) localStorage.setItem('farmers_sales', JSON.stringify(sales));
-    }
-    // Load returns
-    if (window.fbGetReturns) {
-      var returns = await window.fbGetReturns();
-      if (returns) localStorage.setItem('farmers_returns', JSON.stringify(returns));
-    }
-    setSyncStatus('ok');
-    window.dispatchEvent(new Event('fbSyncOk'));
-    setTimeout(function(){ setSyncStatus('ok'); window.dispatchEvent(new Event('fbSyncOk')); }, 500);
-    setTimeout(function(){ setSyncStatus('ok'); }, 1500);
-  } catch(e) {
-    console.error('Firebase load error:', e);
-    setSyncStatus('error');
-  }
-}
-
-// Check Firebase connection every 30 seconds
-setInterval(function() {
-  if (window.fbGetSales) {
-    window.fbGetSales().then(function() {
-      setSyncStatus('ok');
-    }).catch(function() {
-      setSyncStatus('error');
-    });
-  }
-}, 30000);
-
-
-
-/* ═══════════════════════════════════════════════════════
-   IMPORTAR FACTURA CON IA
-════════════════════════════════════════════════════════ */
-var _importData = null;
-
-function openImport() {
-  document.getElementById('import-modal').style.display = 'flex';
-  document.body.style.overflow = 'hidden';
-  showImportStep(1);
-  setTimeout(function(){ var t = document.getElementById('import-text'); if(t){ t.value=''; t.style.borderColor='#e0e4f0'; } }, 50);
-}
-
-function closeImport() {
-  document.getElementById('import-modal').style.display = 'none';
-  document.body.style.overflow = '';
-  // If success, go to historial
-  if (document.getElementById('import-step4').style.display !== 'none') {
-    goToStep(4);
-    renderHistorial();
-  }
-}
-
-function showImportStep(n) {
-  [1,2,3,4].forEach(function(i){
-    var el = document.getElementById('import-step' + i);
-    if(el) el.style.display = i === n ? 'block' : 'none';
-  });
-}
-
-function backImport() { showImportStep(1); }
-
-
-function handleImportDrop(e) {
-  e.preventDefault();
-  document.getElementById('import-dropzone').style.borderColor = '#c5cae9';
-  document.getElementById('import-dropzone').style.background = '#f8f9ff';
-  var file = e.dataTransfer.files[0];
-  if (file) loadImportFile(file);
-}
-
-function handleImportFile(input) {
-  if (input.files && input.files[0]) loadImportFile(input.files[0]);
-}
-
-async function loadImportFile(file) {
-  var name = file.name;
-  document.getElementById('import-file-name').textContent = '📎 ' + name + ' — cargado';
-  document.getElementById('import-dropzone').style.borderColor = '#16a34a';
-
-  try {
-    if (name.toLowerCase().endsWith('.pdf')) {
-      // Read PDF with PDF.js
-      var arrayBuffer = await file.arrayBuffer();
-      if (typeof pdfjsLib === 'undefined') {
-        // PDF.js not loaded yet, use text area fallback
-        alert('Para PDF, por favor copia el texto del documento y pégalo en el área de texto.');
-        return;
-      }
-      pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
-      var pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-      var text = '';
-      for (var i = 1; i <= pdf.numPages; i++) {
-        var page = await pdf.getPage(i);
-        var content = await page.getTextContent();
-        text += content.items.map(function(s){ return s.str; }).join(' ') + '\n';
-      }
-      document.getElementById('import-text').value = text;
-      document.getElementById('import-text').style.borderColor = '#16a34a';
-
-    } else if (name.toLowerCase().endsWith('.xlsx') || name.toLowerCase().endsWith('.xls')) {
-      // Read Excel with SheetJS
-      var arrayBuffer = await file.arrayBuffer();
-      var wb = XLSX.read(arrayBuffer, { type: 'array' });
-      var text = '';
-      wb.SheetNames.forEach(function(sheetName) {
-        var ws = wb.Sheets[sheetName];
-        text += XLSX.utils.sheet_to_csv(ws) + '\n';
-      });
-      document.getElementById('import-text').value = text;
-      document.getElementById('import-text').style.borderColor = '#16a34a';
-    }
-  } catch(e) {
-    console.error('File read error:', e);
-    alert('Error al leer el archivo. Intenta copiar y pegar el texto manualmente.');
-  }
-}
-
-async function processImport() {
-  var text = (document.getElementById('import-text').value || '').trim();
-  if (!text || text.length < 10) {
-    alert('Por favor sube un archivo o pega el contenido de la factura.');
-    return;
-  }
-
-  showImportStep(2);
-
-  // Build full product reference list
-  var refList = PRODUCTS.map(function(p){ 
-    return p.r + '|' + (p.b||'') + '|' + (p.c||'') + '|' + p.d; 
-  }).join('\n');
-
-  var prompt = "Eres un asistente que procesa facturas para la empresa FARMERS C.A.\n" +
-    "Analiza el siguiente texto de factura y extrae TODOS los productos con sus cantidades.\n\n" +
-    "REFERENCIAS DEL SISTEMA (formato: REF|CODIGO_BARRA|CODIGO_INTERNO|DESCRIPCION):\n" +
-    refList + "\n\n" +
-    "Devuelve ÚNICAMENTE un JSON válido sin texto adicional:\n" +
-    "{\n" +
-    '  "cliente": "nombre",\n' +
-    '  "rif": "RIF",\n' +
-    '  "telefono": "tel",\n' +
-    '  "direccion": "dir",\n' +
-    '  "vendedor": "vendedor",\n' +
-    '  "numpedido": "numero",\n' +
-    '  "fecha": "DD/MM/YYYY",\n' +
-    '  "moneda": "USD",\n' +
-    '  "items": [{"r": "REF_EXACTA", "qty": CANTIDAD, "precio": PRECIO_UNITARIO}],\n' +
-    '  "total": TOTAL\n' +
-    "}\n\n" +
-    "REGLAS:\n" +
-    "- Usa la referencia EXACTA del sistema (ej: EXC001, MAT046)\n" +
-    "- Busca coincidencia por codigo de barra, codigo interno o descripcion\n" +
-    "- qty = numero entero, precio y total = numeros decimales\n" +
-    "- Si dos lineas tienen la misma referencia, sumalas\n\n" +
-    "TEXTO DE LA FACTURA:\n" + text;
-
-  try {
-    var response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
-        max_tokens: 3000,
-        messages: [{ role: 'user', content: prompt }]
-      })
-    });
-
-    if (!response.ok) {
-      throw new Error('Error de red: ' + response.status);
-    }
-
-    var data = await response.json();
-    var rawText = '';
-    if (data.content && data.content[0] && data.content[0].text) {
-      rawText = data.content[0].text;
-    } else if (data.error) {
-      throw new Error(data.error.message || 'Error de API');
-    }
-
-    var jsonMatch = rawText.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) throw new Error('La IA no devolvió un formato válido');
-    var parsed = JSON.parse(jsonMatch[0]);
-
-    if (!parsed.items || !parsed.items.length) {
-      throw new Error('No se detectaron productos en el documento');
-    }
-
-    _importData = parsed;
-    renderImportReview(parsed);
-    showImportStep(3);
-
-  } catch(e) {
-    console.error('Import error:', e);
-    showImportStep(1);
-    alert('Error al analizar: ' + e.message);
-  }
-}
 function renderImportReview(data) {
   // Client info
   var clientEl = document.getElementById('import-client-info');
@@ -2457,6 +1558,214 @@ function confirmImport() {
 
   showImportStep(4);
   _importData = null;
+}
+
+
+
+/* ═══════════════════════════════════════════════════════
+   HISTORIAL — BUSCAR, EDITAR, IMPRIMIR
+════════════════════════════════════════════════════════ */
+
+// ── FILTER HISTORIAL ─────────────────────────────────
+function filterHistorial(q) {
+  q = (q || '').toLowerCase().trim();
+  var sales = getSales();
+  var filtered = q ? sales.filter(function(s) {
+    return (s.cliente && s.cliente.toLowerCase().includes(q)) ||
+           (s.numpedido && String(s.numpedido).toLowerCase().includes(q)) ||
+           (s.vendedor && s.vendedor.toLowerCase().includes(q)) ||
+           (s.rif && s.rif.toLowerCase().includes(q)) ||
+           (s.items && s.items.some(function(it){ return it.r && it.r.toLowerCase().includes(q); }));
+  }) : sales;
+
+  var listEl = document.getElementById('hist-list');
+  if (!listEl) return;
+  if (!filtered.length) {
+    listEl.innerHTML = '<div style="text-align:center;padding:40px;color:#8892b0;"><div style="font-size:2rem;margin-bottom:10px;">🔎</div><div>Sin resultados para "' + q + '"</div></div>';
+    return;
+  }
+  renderSaleCards(filtered, listEl);
+}
+
+function renderSaleCards(sales, listEl) {
+  var ml = {USD:'USD $', BCV:'BCV Bs.', TF:'TF Bs.'};
+  listEl.innerHTML = sales.map(function(sale) {
+    var devBadge = sale.totalDevuelto ? '<span style="background:#fff7ed;color:#b45309;padding:2px 10px;border-radius:12px;font-size:0.72rem;font-weight:700;border:1px solid #fed7aa;">↩ Dev: $ ' + fmt(sale.totalDevuelto) + '</span>' : '';
+    var importBadge = sale.importado ? '<span style="background:#f0fdf4;color:#16a34a;padding:2px 10px;border-radius:12px;font-size:0.72rem;font-weight:700;border:1px solid #bbf7d0;">📄 Importado</span>' : '';
+    var rows = (sale.items || []).map(function(it, idx) {
+      var br = it.br || '';
+      return '<tr style="background:' + (idx%2===0?'white':'#f8f9ff') + ';border-bottom:1px solid #f0f2f8;">' +
+        '<td style="padding:7px 12px;font-family:\'Barlow Condensed\',sans-serif;font-weight:700;color:#1a2050;">' + it.r + '</td>' +
+        '<td style="padding:7px 12px;color:#2d3a6b;">' + it.d + '</td>' +
+        '<td style="padding:7px 12px;text-align:center;font-size:.75rem;color:#5a6080;">' + (br || '—') + '</td>' +
+        '<td style="padding:7px 12px;text-align:center;font-weight:600;color:#1a2050;">$ ' + fmt(it.precio) + '</td>' +
+        '<td style="padding:7px 12px;text-align:center;"><span style="background:#1a2050;color:white;border-radius:5px;padding:2px 8px;font-weight:700;">' + it.orden + '</span></td>' +
+        '<td style="padding:7px 12px;text-align:right;font-weight:700;color:#e8692a;">$ ' + fmt(it.total) + '</td>' +
+      '</tr>';
+    }).join('');
+
+    return '<div style="border:1.5px solid #e0e4f0;border-radius:12px;margin-bottom:16px;overflow:hidden;">' +
+      '<div style="background:linear-gradient(135deg,#f0f2ff,#e8eaf6);padding:12px 18px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">' +
+        '<div>' +
+          '<span style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;font-size:1.1rem;color:#1a2050;">Pedido #' + sale.numpedido + '</span>' +
+          '<span style="font-size:0.72rem;color:#8892b0;margin-left:8px;">' + sale.fecha + ' ' + (sale.hora||'') + '</span>' +
+          '<div style="display:flex;gap:6px;margin-top:5px;flex-wrap:wrap;">' +
+            '<span style="background:#1a2050;color:white;padding:2px 10px;border-radius:12px;font-size:0.72rem;font-weight:700;">' + (sale.cliente||'Sin cliente') + '</span>' +
+            '<span style="background:rgba(232,105,42,0.15);color:#e8692a;padding:2px 10px;border-radius:12px;font-size:0.72rem;font-weight:700;">' + (ml[sale.moneda]||sale.moneda||'USD') + '</span>' +
+            (sale.vendedor && sale.vendedor !== '—' ? '<span style="background:#e8f5e9;color:#2e7d32;padding:2px 10px;border-radius:12px;font-size:0.72rem;font-weight:700;">' + sale.vendedor + '</span>' : '') +
+            devBadge + importBadge +
+          '</div>' +
+        '</div>' +
+        '<div style="text-align:right;">' +
+          '<div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;font-size:1.4rem;color:#e8692a;">$ ' + fmt(sale.total) + '</div>' +
+          (sale.totalBs ? '<div style="font-size:0.75rem;color:#16a34a;font-weight:600;">Bs. ' + fmt(sale.totalBs) + '</div>' : '') +
+          '<div style="font-size:0.72rem;color:#8892b0;">' + (sale.units||0) + ' uds · ' + (sale.items||[]).length + ' refs</div>' +
+        '</div>' +
+      '</div>' +
+      '<div style="overflow-x:auto;">' +
+        '<table style="width:100%;border-collapse:collapse;font-size:0.8rem;min-width:500px;">' +
+          '<thead><tr style="background:#f8f9ff;border-bottom:1px solid #e0e4f0;">' +
+            '<th style="padding:7px 12px;text-align:left;font-weight:700;color:#5a6080;font-size:0.7rem;text-transform:uppercase;">Ref</th>' +
+            '<th style="padding:7px 12px;text-align:left;font-weight:700;color:#5a6080;font-size:0.7rem;text-transform:uppercase;">Descripción</th>' +
+            '<th style="padding:7px 12px;text-align:center;font-weight:700;color:#5a6080;font-size:0.7rem;text-transform:uppercase;">Marca</th>' +
+            '<th style="padding:7px 12px;text-align:center;font-weight:700;color:#5a6080;font-size:0.7rem;text-transform:uppercase;">Precio</th>' +
+            '<th style="padding:7px 12px;text-align:center;font-weight:700;color:#5a6080;font-size:0.7rem;text-transform:uppercase;">Orden</th>' +
+            '<th style="padding:7px 12px;text-align:right;font-weight:700;color:#5a6080;font-size:0.7rem;text-transform:uppercase;">Total</th>' +
+          '</tr></thead>' +
+          '<tbody>' + rows + '</tbody>' +
+        '</table>' +
+      '</div>' +
+      '<div style="padding:8px 14px;border-top:1px solid #f0f2f8;display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap;">' +
+        '<button onclick="printSale(\'' + sale.id + '\')" style="background:rgba(26,32,80,.08);border:1.5px solid #1a2050;color:#1a2050;border-radius:6px;padding:5px 14px;cursor:pointer;font-size:.78rem;font-weight:700;">🖨 Imprimir PDF</button>' +
+        '<button onclick="editSale(\'' + sale.id + '\')" style="background:rgba(99,102,241,.08);border:1.5px solid #6366f1;color:#6366f1;border-radius:6px;padding:5px 14px;cursor:pointer;font-size:.78rem;font-weight:700;">✏️ Editar</button>' +
+        '<button onclick="showDevolucion(\'' + sale.id + '\')" style="background:rgba(232,105,42,.08);border:1.5px solid #e8692a;color:#e8692a;border-radius:6px;padding:5px 14px;cursor:pointer;font-size:.78rem;font-weight:700;">↩ Devolución</button>' +
+        '<button onclick="deleteSale(\'' + sale.id + '\')" style="background:none;border:1px solid #fca5a5;color:#dc2626;border-radius:6px;padding:4px 12px;cursor:pointer;font-size:0.75rem;font-weight:600;">🗑 Eliminar</button>' +
+      '</div>' +
+    '</div>';
+  }).join('');
+}
+
+// ── EDIT SALE ─────────────────────────────────────────
+function editSale(saleId) {
+  var sales = getSales();
+  var sale = sales.find(function(s){ return s.id === saleId; });
+  if (!sale) return;
+  document.getElementById('edit-sale-id').value = saleId;
+  document.getElementById('edit-cliente').value   = sale.cliente   || '';
+  document.getElementById('edit-rif').value       = sale.rif       || '';
+  document.getElementById('edit-telefono').value  = sale.telefono  || '';
+  document.getElementById('edit-vendedor').value  = sale.vendedor  || '';
+  document.getElementById('edit-numpedido').value = sale.numpedido || '';
+  document.getElementById('edit-fecha').value     = sale.fecha     || '';
+  document.getElementById('edit-direccion').value = sale.direccion || '';
+  document.getElementById('edit-moneda').value    = sale.moneda    || 'USD';
+  document.getElementById('edit-total').value     = sale.total     || 0;
+  document.getElementById('edit-sucursal').value  = sale.sucursal  || '';
+  document.getElementById('edit-credito').value   = sale.credito   || '';
+  document.getElementById('edit-modal').style.display = 'flex';
+  document.body.style.overflow = 'hidden';
+}
+
+function closeEditSale() {
+  document.getElementById('edit-modal').style.display = 'none';
+  document.body.style.overflow = '';
+}
+
+function saveEditSale() {
+  var saleId = document.getElementById('edit-sale-id').value;
+  var sales = getSales();
+  var idx = sales.findIndex(function(s){ return s.id === saleId; });
+  if (idx === -1) return;
+  sales[idx].cliente   = document.getElementById('edit-cliente').value;
+  sales[idx].rif       = document.getElementById('edit-rif').value;
+  sales[idx].telefono  = document.getElementById('edit-telefono').value;
+  sales[idx].vendedor  = document.getElementById('edit-vendedor').value;
+  sales[idx].numpedido = document.getElementById('edit-numpedido').value;
+  sales[idx].fecha     = document.getElementById('edit-fecha').value;
+  sales[idx].direccion = document.getElementById('edit-direccion').value;
+  sales[idx].moneda    = document.getElementById('edit-moneda').value;
+  sales[idx].total     = parseFloat(document.getElementById('edit-total').value) || 0;
+  sales[idx].sucursal  = document.getElementById('edit-sucursal').value;
+  sales[idx].credito   = document.getElementById('edit-credito').value;
+  saveSales(sales);
+  closeEditSale();
+  renderHistorial();
+  showToast('Pedido actualizado correctamente', 'success');
+}
+
+// ── PRINT SALE PDF ────────────────────────────────────
+function printSale(saleId) {
+  var sales = getSales();
+  var sale = sales.find(function(s){ return s.id === saleId; });
+  if (!sale) return;
+
+  var rows = (sale.items || []).map(function(it, i) {
+    return '<tr style="background:' + (i%2===0?'#fff':'#f8f9ff') + ';border-bottom:1px solid #eee;">' +
+      '<td style="padding:6px 10px;font-weight:700;color:#1a2050;">' + it.r + '</td>' +
+      '<td style="padding:6px 10px;color:#2d3a6b;">' + it.d + '</td>' +
+      '<td style="padding:6px 10px;text-align:center;font-size:.75rem;">' + (it.br||'—') + '</td>' +
+      '<td style="padding:6px 10px;text-align:center;">$ ' + fmt(it.precio) + '</td>' +
+      '<td style="padding:6px 10px;text-align:center;font-weight:700;">' + it.orden + '</td>' +
+      '<td style="padding:6px 10px;text-align:right;font-weight:700;color:#e8692a;">$ ' + fmt(it.total) + '</td>' +
+    '</tr>';
+  }).join('');
+
+  var printContent = '<!DOCTYPE html><html><head><meta charset="UTF-8">' +
+    '<title>Pedido #' + sale.numpedido + ' - FARMERS C.A.</title>' +
+    '<style>body{font-family:Arial,sans-serif;margin:0;padding:20px;color:#1a2050;}' +
+    'table{width:100%;border-collapse:collapse;font-size:.82rem;}' +
+    'th{background:#1a2050;color:white;padding:8px 10px;text-align:left;}' +
+    '.header{background:linear-gradient(135deg,#1a2050,#252b6b);color:white;padding:20px;border-radius:8px;margin-bottom:20px;}' +
+    '.info-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:16px;}' +
+    '.info-item{background:#f8f9ff;border-radius:6px;padding:8px 12px;}' +
+    '.label{font-size:.65rem;font-weight:700;text-transform:uppercase;color:#8892b0;letter-spacing:1px;}' +
+    '.value{font-weight:700;color:#1a2050;margin-top:2px;}' +
+    '.total-row{background:#1a2050;color:white;font-weight:700;}' +
+    '@media print{body{padding:10px;}}' +
+    '</style></head><body>' +
+    '<div class="header">' +
+      '<div style="font-size:1.5rem;font-weight:900;letter-spacing:2px;">FARMERS C.A.</div>' +
+      '<div style="font-size:.8rem;opacity:.8;margin-top:2px;">NOTA DE ENTREGA / PEDIDO</div>' +
+    '</div>' +
+    '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px;flex-wrap:wrap;gap:10px;">' +
+      '<div>' +
+        '<div style="font-size:1.2rem;font-weight:900;color:#1a2050;">Pedido #' + sale.numpedido + '</div>' +
+        '<div style="color:#8892b0;font-size:.82rem;">' + sale.fecha + (sale.hora?' · '+sale.hora:'') + '</div>' +
+      '</div>' +
+      '<div style="text-align:right;">' +
+        '<div style="font-size:1.6rem;font-weight:900;color:#e8692a;">$ ' + fmt(sale.total) + '</div>' +
+        '<div style="font-size:.75rem;color:#8892b0;">' + (sale.units||0) + ' unidades · ' + (sale.items||[]).length + ' referencias</div>' +
+      '</div>' +
+    '</div>' +
+    '<div class="info-grid">' +
+      '<div class="info-item"><div class="label">Cliente</div><div class="value">' + (sale.cliente||'—') + '</div></div>' +
+      '<div class="info-item"><div class="label">RIF</div><div class="value">' + (sale.rif||'—') + '</div></div>' +
+      '<div class="info-item"><div class="label">Teléfono</div><div class="value">' + (sale.telefono||'—') + '</div></div>' +
+      '<div class="info-item"><div class="label">Vendedor</div><div class="value">' + (sale.vendedor||'—') + '</div></div>' +
+      '<div class="info-item" style="grid-column:1/-1;"><div class="label">Dirección</div><div class="value">' + (sale.direccion||'—') + '</div></div>' +
+    '</div>' +
+    '<table>' +
+      '<thead><tr>' +
+        '<th>Referencia</th><th>Descripción</th><th>Marca</th><th>Precio Unit.</th><th style="text-align:center;">Cantidad</th><th style="text-align:right;">Total</th>' +
+      '</tr></thead>' +
+      '<tbody>' + rows + '</tbody>' +
+      '<tfoot><tr class="total-row">' +
+        '<td colspan="4" style="padding:10px;font-size:.8rem;letter-spacing:1px;">TOTAL GENERAL</td>' +
+        '<td style="padding:10px;text-align:center;">' + (sale.units||0) + ' uds</td>' +
+        '<td style="padding:10px;text-align:right;font-size:1.1rem;">$ ' + fmt(sale.total) + '</td>' +
+      '</tr></tfoot>' +
+    '</table>' +
+    '<div style="margin-top:40px;display:grid;grid-template-columns:1fr 1fr;gap:40px;">' +
+      '<div style="border-top:1.5px solid #1a2050;padding-top:8px;text-align:center;font-size:.75rem;color:#8892b0;">Firma y Sello del Cliente</div>' +
+      '<div style="border-top:1.5px solid #1a2050;padding-top:8px;text-align:center;font-size:.75rem;color:#8892b0;">Firma del Vendedor</div>' +
+    '</div>' +
+    '</body></html>';
+
+  var printWin = window.open('', '_blank', 'width=900,height=700');
+  printWin.document.write(printContent);
+  printWin.document.close();
+  printWin.focus();
+  setTimeout(function(){ printWin.print(); }, 500);
 }
 
 </script>
@@ -2850,6 +2159,77 @@ function confirmImport() {
 <style>
 @keyframes pulse { 0%,100%{opacity:.3;transform:scale(.8)} 50%{opacity:1;transform:scale(1)} }
 </style>
+
+
+<!-- ═══════════════ MODAL EDITAR PEDIDO ═══════════════ -->
+<div id="edit-modal" style="display:none;position:fixed;inset:0;z-index:99997;
+  background:rgba(10,15,40,.82);backdrop-filter:blur(5px);
+  align-items:flex-start;justify-content:center;padding:20px 16px;overflow-y:auto;">
+  <div style="background:white;border-radius:16px;width:100%;max-width:700px;
+    box-shadow:0 24px 60px rgba(0,0,0,.45);overflow:hidden;margin:auto;">
+    <div style="background:linear-gradient(135deg,#4338ca,#6366f1);padding:20px 28px;display:flex;align-items:center;justify-content:space-between;">
+      <div style="font-family:'Barlow Condensed',sans-serif;font-weight:900;font-size:1.3rem;color:white;letter-spacing:2px;">✏️ EDITAR PEDIDO</div>
+      <button onclick="closeEditSale()" style="background:rgba(255,255,255,.15);border:none;color:white;font-size:1.2rem;cursor:pointer;border-radius:50%;width:32px;height:32px;">✕</button>
+    </div>
+    <div style="padding:24px;">
+      <input type="hidden" id="edit-sale-id">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;">
+        <div>
+          <label style="font-size:.75rem;font-weight:700;color:#5a6080;text-transform:uppercase;letter-spacing:1px;">Cliente</label>
+          <input id="edit-cliente" type="text" style="width:100%;padding:9px 12px;border:1.5px solid #e0e4f0;border-radius:8px;font-size:.9rem;margin-top:4px;box-sizing:border-box;outline:none;" onfocus="this.style.borderColor='#6366f1'" onblur="this.style.borderColor='#e0e4f0'">
+        </div>
+        <div>
+          <label style="font-size:.75rem;font-weight:700;color:#5a6080;text-transform:uppercase;letter-spacing:1px;">RIF</label>
+          <input id="edit-rif" type="text" style="width:100%;padding:9px 12px;border:1.5px solid #e0e4f0;border-radius:8px;font-size:.9rem;margin-top:4px;box-sizing:border-box;outline:none;" onfocus="this.style.borderColor='#6366f1'" onblur="this.style.borderColor='#e0e4f0'">
+        </div>
+        <div>
+          <label style="font-size:.75rem;font-weight:700;color:#5a6080;text-transform:uppercase;letter-spacing:1px;">Teléfono</label>
+          <input id="edit-telefono" type="text" style="width:100%;padding:9px 12px;border:1.5px solid #e0e4f0;border-radius:8px;font-size:.9rem;margin-top:4px;box-sizing:border-box;outline:none;" onfocus="this.style.borderColor='#6366f1'" onblur="this.style.borderColor='#e0e4f0'">
+        </div>
+        <div>
+          <label style="font-size:.75rem;font-weight:700;color:#5a6080;text-transform:uppercase;letter-spacing:1px;">Vendedor</label>
+          <input id="edit-vendedor" type="text" style="width:100%;padding:9px 12px;border:1.5px solid #e0e4f0;border-radius:8px;font-size:.9rem;margin-top:4px;box-sizing:border-box;outline:none;" onfocus="this.style.borderColor='#6366f1'" onblur="this.style.borderColor='#e0e4f0'">
+        </div>
+        <div>
+          <label style="font-size:.75rem;font-weight:700;color:#5a6080;text-transform:uppercase;letter-spacing:1px;">N° Pedido</label>
+          <input id="edit-numpedido" type="text" style="width:100%;padding:9px 12px;border:1.5px solid #e0e4f0;border-radius:8px;font-size:.9rem;margin-top:4px;box-sizing:border-box;outline:none;" onfocus="this.style.borderColor='#6366f1'" onblur="this.style.borderColor='#e0e4f0'">
+        </div>
+        <div>
+          <label style="font-size:.75rem;font-weight:700;color:#5a6080;text-transform:uppercase;letter-spacing:1px;">Fecha</label>
+          <input id="edit-fecha" type="text" style="width:100%;padding:9px 12px;border:1.5px solid #e0e4f0;border-radius:8px;font-size:.9rem;margin-top:4px;box-sizing:border-box;outline:none;" onfocus="this.style.borderColor='#6366f1'" onblur="this.style.borderColor='#e0e4f0'">
+        </div>
+        <div style="grid-column:1/-1;">
+          <label style="font-size:.75rem;font-weight:700;color:#5a6080;text-transform:uppercase;letter-spacing:1px;">Dirección</label>
+          <input id="edit-direccion" type="text" style="width:100%;padding:9px 12px;border:1.5px solid #e0e4f0;border-radius:8px;font-size:.9rem;margin-top:4px;box-sizing:border-box;outline:none;" onfocus="this.style.borderColor='#6366f1'" onblur="this.style.borderColor='#e0e4f0'">
+        </div>
+        <div>
+          <label style="font-size:.75rem;font-weight:700;color:#5a6080;text-transform:uppercase;letter-spacing:1px;">Moneda</label>
+          <select id="edit-moneda" style="width:100%;padding:9px 12px;border:1.5px solid #e0e4f0;border-radius:8px;font-size:.9rem;margin-top:4px;box-sizing:border-box;outline:none;">
+            <option value="USD">USD</option>
+            <option value="BCV">BCV</option>
+            <option value="TF">TF</option>
+          </select>
+        </div>
+        <div>
+          <label style="font-size:.75rem;font-weight:700;color:#5a6080;text-transform:uppercase;letter-spacing:1px;">Total $</label>
+          <input id="edit-total" type="number" step="0.01" style="width:100%;padding:9px 12px;border:1.5px solid #e0e4f0;border-radius:8px;font-size:.9rem;margin-top:4px;box-sizing:border-box;outline:none;" onfocus="this.style.borderColor='#6366f1'" onblur="this.style.borderColor='#e0e4f0'">
+        </div>
+        <div>
+          <label style="font-size:.75rem;font-weight:700;color:#5a6080;text-transform:uppercase;letter-spacing:1px;">Sucursal</label>
+          <input id="edit-sucursal" type="text" style="width:100%;padding:9px 12px;border:1.5px solid #e0e4f0;border-radius:8px;font-size:.9rem;margin-top:4px;box-sizing:border-box;outline:none;" onfocus="this.style.borderColor='#6366f1'" onblur="this.style.borderColor='#e0e4f0'">
+        </div>
+        <div>
+          <label style="font-size:.75rem;font-weight:700;color:#5a6080;text-transform:uppercase;letter-spacing:1px;">Crédito</label>
+          <input id="edit-credito" type="text" style="width:100%;padding:9px 12px;border:1.5px solid #e0e4f0;border-radius:8px;font-size:.9rem;margin-top:4px;box-sizing:border-box;outline:none;" onfocus="this.style.borderColor='#6366f1'" onblur="this.style.borderColor='#e0e4f0'">
+        </div>
+      </div>
+      <div style="display:flex;gap:10px;margin-top:20px;justify-content:flex-end;">
+        <button onclick="closeEditSale()" style="background:#f1f5f9;color:#1a2050;border:1.5px solid #e0e4f0;border-radius:10px;padding:10px 20px;cursor:pointer;font-family:'Barlow Condensed',sans-serif;font-weight:700;">Cancelar</button>
+        <button onclick="saveEditSale()" style="background:linear-gradient(135deg,#4338ca,#6366f1);color:white;border:none;border-radius:10px;padding:10px 24px;cursor:pointer;font-family:'Barlow Condensed',sans-serif;font-weight:900;font-size:1rem;letter-spacing:1px;">💾 GUARDAR CAMBIOS</button>
+      </div>
+    </div>
+  </div>
+</div>
 
 </body>
 </html>
