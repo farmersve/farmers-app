@@ -506,6 +506,10 @@ body.loggedout > div:not(#login-overlay) { display: none !important; }
 
 </style>
 
+  <!-- PDF.js for PDF reading -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <!-- SheetJS for Excel reading -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
   <!-- Firebase SDK -->
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
@@ -627,6 +631,7 @@ body.loggedout > div:not(#login-overlay) { display: none !important; }
       <span id="usr-name">—</span>
     </div>
     <button onclick="openSearch()" style="background:rgba(255,255,255,0.12);border:1.5px solid rgba(255,255,255,0.3);color:white;border-radius:8px;padding:7px 16px;cursor:pointer;font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:.88rem;letter-spacing:1px;">🔍 Buscar</button>
+    <button onclick="openImport()" style="background:rgba(232,105,42,0.25);border:1.5px solid rgba(232,105,42,0.6);color:white;border-radius:8px;padding:7px 16px;cursor:pointer;font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:.88rem;letter-spacing:1px;">📄 Importar Factura</button>
     <button class="btn btn-sm btn-secondary" onclick="resetSoft()">↺ Nuevo Pedido</button>
     <button class="btn btn-sm" onclick="doLogout()"
       style="background:rgba(255,255,255,0.1);color:white;border:1px solid rgba(255,255,255,0.2);">
@@ -2165,6 +2170,295 @@ setInterval(function() {
   }
 }, 30000);
 
+
+
+/* ═══════════════════════════════════════════════════════
+   IMPORTAR FACTURA CON IA
+════════════════════════════════════════════════════════ */
+var _importData = null;
+
+function openImport() {
+  document.getElementById('import-modal').style.display = 'flex';
+  document.body.style.overflow = 'hidden';
+  showImportStep(1);
+  setTimeout(function(){ var t = document.getElementById('import-text'); if(t){ t.value=''; t.style.borderColor='#e0e4f0'; } }, 50);
+}
+
+function closeImport() {
+  document.getElementById('import-modal').style.display = 'none';
+  document.body.style.overflow = '';
+  // If success, go to historial
+  if (document.getElementById('import-step4').style.display !== 'none') {
+    goToStep(4);
+    renderHistorial();
+  }
+}
+
+function showImportStep(n) {
+  [1,2,3,4].forEach(function(i){
+    var el = document.getElementById('import-step' + i);
+    if(el) el.style.display = i === n ? 'block' : 'none';
+  });
+}
+
+function backImport() { showImportStep(1); }
+
+
+function handleImportDrop(e) {
+  e.preventDefault();
+  document.getElementById('import-dropzone').style.borderColor = '#c5cae9';
+  document.getElementById('import-dropzone').style.background = '#f8f9ff';
+  var file = e.dataTransfer.files[0];
+  if (file) loadImportFile(file);
+}
+
+function handleImportFile(input) {
+  if (input.files && input.files[0]) loadImportFile(input.files[0]);
+}
+
+async function loadImportFile(file) {
+  var name = file.name;
+  document.getElementById('import-file-name').textContent = '📎 ' + name + ' — cargado';
+  document.getElementById('import-dropzone').style.borderColor = '#16a34a';
+
+  try {
+    if (name.toLowerCase().endsWith('.pdf')) {
+      // Read PDF with PDF.js
+      var arrayBuffer = await file.arrayBuffer();
+      if (typeof pdfjsLib === 'undefined') {
+        // PDF.js not loaded yet, use text area fallback
+        alert('Para PDF, por favor copia el texto del documento y pégalo en el área de texto.');
+        return;
+      }
+      pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+      var pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+      var text = '';
+      for (var i = 1; i <= pdf.numPages; i++) {
+        var page = await pdf.getPage(i);
+        var content = await page.getTextContent();
+        text += content.items.map(function(s){ return s.str; }).join(' ') + '\n';
+      }
+      document.getElementById('import-text').value = text;
+      document.getElementById('import-text').style.borderColor = '#16a34a';
+
+    } else if (name.toLowerCase().endsWith('.xlsx') || name.toLowerCase().endsWith('.xls')) {
+      // Read Excel with SheetJS
+      var arrayBuffer = await file.arrayBuffer();
+      var wb = XLSX.read(arrayBuffer, { type: 'array' });
+      var text = '';
+      wb.SheetNames.forEach(function(sheetName) {
+        var ws = wb.Sheets[sheetName];
+        text += XLSX.utils.sheet_to_csv(ws) + '\n';
+      });
+      document.getElementById('import-text').value = text;
+      document.getElementById('import-text').style.borderColor = '#16a34a';
+    }
+  } catch(e) {
+    console.error('File read error:', e);
+    alert('Error al leer el archivo. Intenta copiar y pegar el texto manualmente.');
+  }
+}
+
+async function processImport() {
+  var text = (document.getElementById('import-text').value || '').trim();
+  if (!text || text.length < 10) {
+    alert('Por favor sube un archivo o pega el contenido de la factura.');
+    return;
+  }
+
+  showImportStep(2);
+
+  // Build full product reference list
+  var refList = PRODUCTS.map(function(p){ 
+    return p.r + '|' + (p.b||'') + '|' + (p.c||'') + '|' + p.d; 
+  }).join('\n');
+
+  var prompt = "Eres un asistente que procesa facturas para la empresa FARMERS C.A.\n" +
+    "Analiza el siguiente texto de factura y extrae TODOS los productos con sus cantidades.\n\n" +
+    "REFERENCIAS DEL SISTEMA (formato: REF|CODIGO_BARRA|CODIGO_INTERNO|DESCRIPCION):\n" +
+    refList + "\n\n" +
+    "Devuelve ÚNICAMENTE un JSON válido sin texto adicional:\n" +
+    "{\n" +
+    '  "cliente": "nombre",\n' +
+    '  "rif": "RIF",\n' +
+    '  "telefono": "tel",\n' +
+    '  "direccion": "dir",\n' +
+    '  "vendedor": "vendedor",\n' +
+    '  "numpedido": "numero",\n' +
+    '  "fecha": "DD/MM/YYYY",\n' +
+    '  "moneda": "USD",\n' +
+    '  "items": [{"r": "REF_EXACTA", "qty": CANTIDAD, "precio": PRECIO_UNITARIO}],\n' +
+    '  "total": TOTAL\n' +
+    "}\n\n" +
+    "REGLAS:\n" +
+    "- Usa la referencia EXACTA del sistema (ej: EXC001, MAT046)\n" +
+    "- Busca coincidencia por codigo de barra, codigo interno o descripcion\n" +
+    "- qty = numero entero, precio y total = numeros decimales\n" +
+    "- Si dos lineas tienen la misma referencia, sumalas\n\n" +
+    "TEXTO DE LA FACTURA:\n" + text;
+
+  try {
+    var response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 3000,
+        messages: [{ role: 'user', content: prompt }]
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error('Error de red: ' + response.status);
+    }
+
+    var data = await response.json();
+    var rawText = '';
+    if (data.content && data.content[0] && data.content[0].text) {
+      rawText = data.content[0].text;
+    } else if (data.error) {
+      throw new Error(data.error.message || 'Error de API');
+    }
+
+    var jsonMatch = rawText.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) throw new Error('La IA no devolvió un formato válido');
+    var parsed = JSON.parse(jsonMatch[0]);
+
+    if (!parsed.items || !parsed.items.length) {
+      throw new Error('No se detectaron productos en el documento');
+    }
+
+    _importData = parsed;
+    renderImportReview(parsed);
+    showImportStep(3);
+
+  } catch(e) {
+    console.error('Import error:', e);
+    showImportStep(1);
+    alert('Error al analizar: ' + e.message);
+  }
+}
+function renderImportReview(data) {
+  // Client info
+  var clientEl = document.getElementById('import-client-info');
+  clientEl.innerHTML = `
+    <div style="font-family:'Barlow Condensed',sans-serif;font-weight:900;font-size:1.1rem;color:#1a2050;margin-bottom:8px;">
+      👤 ${data.cliente || 'Cliente no identificado'}
+    </div>
+    <div style="display:flex;flex-wrap:wrap;gap:12px;font-size:.8rem;color:#5a6080;">
+      ${data.rif ? '<span><strong>RIF:</strong> ' + data.rif + '</span>' : ''}
+      ${data.telefono ? '<span><strong>Tel:</strong> ' + data.telefono + '</span>' : ''}
+      ${data.vendedor ? '<span><strong>Vendedor:</strong> ' + data.vendedor + '</span>' : ''}
+      ${data.numpedido ? '<span><strong>N° Pedido:</strong> ' + data.numpedido + '</span>' : ''}
+      ${data.fecha ? '<span><strong>Fecha:</strong> ' + data.fecha + '</span>' : ''}
+      ${data.moneda ? '<span><strong>Moneda:</strong> ' + data.moneda + '</span>' : ''}
+      <span style="color:#e8692a;font-weight:700;"><strong>Total:</strong> $ ${fmt(data.total || 0)}</span>
+    </div>`;
+
+  // Products list
+  var inv = getInventory();
+  var warnings = [];
+  var rows = '';
+
+  (data.items || []).forEach(function(it, i) {
+    var prod = PRODUCTS.find(function(p){ return p.r === it.r; });
+    var stock = inv[it.r] !== undefined ? inv[it.r] : (prod ? prod.ex : 0);
+    var bg = i % 2 === 0 ? '#ffffff' : '#f8f9ff';
+    var stockOk = stock >= it.qty;
+    if (!stockOk) warnings.push(it.r + ': stock insuficiente (' + stock + ' disponible, ' + it.qty + ' solicitado)');
+    if (!prod) warnings.push(it.r + ': referencia no encontrada en el sistema');
+
+    rows += `<tr style="background:${bg};border-bottom:1px solid #eef0f8;">
+      <td style="padding:8px 12px;font-weight:700;color:${prod ? '#1a2050' : '#dc2626'};">${it.r}</td>
+      <td style="padding:8px 12px;color:#5a6080;font-size:.82rem;">${prod ? prod.d : '⚠ No encontrado'}</td>
+      <td style="padding:8px 12px;text-align:center;font-weight:700;">${it.qty}</td>
+      <td style="padding:8px 12px;text-align:center;">$ ${fmt(it.precio || 0)}</td>
+      <td style="padding:8px 12px;text-align:right;font-weight:700;color:#e8692a;">$ ${fmt((it.qty||0)*(it.precio||0))}</td>
+      <td style="padding:8px 12px;text-align:center;font-size:.75rem;color:${stockOk ? '#16a34a' : '#dc2626'};font-weight:700;">${stock} uds</td>
+    </tr>`;
+  });
+
+  document.getElementById('import-products-list').innerHTML = `
+    <table style="width:100%;border-collapse:collapse;font-size:.82rem;">
+      <thead>
+        <tr style="background:linear-gradient(135deg,#1a2050,#252b6b);color:white;">
+          <th style="padding:10px 12px;text-align:left;">Referencia</th>
+          <th style="padding:10px 12px;text-align:left;">Descripción</th>
+          <th style="padding:10px 12px;text-align:center;">Cant.</th>
+          <th style="padding:10px 12px;text-align:center;">Precio</th>
+          <th style="padding:10px 12px;text-align:right;">Subtotal</th>
+          <th style="padding:10px 12px;text-align:center;">Stock</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+
+  // Warnings
+  var warnEl = document.getElementById('import-warnings');
+  if (warnings.length) {
+    warnEl.innerHTML = '<div style="background:#fef2f2;border:1.5px solid #fecaca;border-radius:8px;padding:10px 14px;">' +
+      '<div style="font-weight:700;color:#dc2626;margin-bottom:4px;">⚠ Advertencias:</div>' +
+      warnings.map(function(w){ return '<div style="font-size:.8rem;color:#7f1d1d;">• ' + w + '</div>'; }).join('') +
+      '</div>';
+  } else {
+    warnEl.innerHTML = '<div style="background:#f0fdf4;border:1.5px solid #bbf7d0;border-radius:8px;padding:10px 14px;color:#16a34a;font-weight:700;font-size:.85rem;">✅ Todos los productos encontrados y con stock suficiente</div>';
+  }
+}
+
+function confirmImport() {
+  if (!_importData) return;
+  var d = _importData;
+
+  // Build sale object
+  var inv = getInventory();
+  var items = (d.items || []).map(function(it) {
+    var prod = PRODUCTS.find(function(p){ return p.r === it.r; });
+    return {
+      r: it.r,
+      d: prod ? prod.d : it.r,
+      orden: it.qty,
+      precio: it.precio || 0,
+      subtotal: (it.qty||0) * (it.precio||0)
+    };
+  });
+
+  var sale = {
+    id: 'sale_' + Date.now(),
+    numpedido: d.numpedido || ('IMP-' + Date.now()),
+    fecha: d.fecha || new Date().toLocaleDateString('es-VE'),
+    cliente: d.cliente || '',
+    rif: d.rif || '',
+    telefono: d.telefono || '',
+    direccion: d.direccion || '',
+    vendedor: d.vendedor || '',
+    moneda: d.moneda || 'USD',
+    total: d.total || 0,
+    items: items,
+    importado: true
+  };
+
+  // Discount inventory
+  items.forEach(function(it) {
+    if (inv[it.r] !== undefined) {
+      inv[it.r] = Math.max(0, inv[it.r] - it.orden);
+    }
+  });
+
+  saveInventory(inv);
+  syncInventoryToProducts();
+
+  var sales = getSales();
+  sales.unshift(sale);
+  saveSales(sales);
+
+  document.getElementById('import-success-info').innerHTML =
+    'Pedido #' + sale.numpedido + ' de <strong>' + sale.cliente + '</strong><br>' +
+    items.length + ' productos procesados · Total: $ ' + fmt(sale.total);
+
+  showImportStep(4);
+  _importData = null;
+}
+
 </script>
 
 <!-- ═══════════════════════════════════════════════════════
@@ -2449,6 +2743,113 @@ setInterval(function() {
     </div>
   </div>
 </div>
+
+
+<!-- ═══════════════ MODAL IMPORTAR FACTURA ═══════════════ -->
+<div id="import-modal" style="display:none;position:fixed;inset:0;z-index:99999;
+  background:rgba(10,15,40,.85);backdrop-filter:blur(5px);
+  align-items:flex-start;justify-content:center;padding:20px 16px;overflow-y:auto;">
+  <div style="background:white;border-radius:16px;width:100%;max-width:860px;
+    box-shadow:0 24px 60px rgba(0,0,0,.45);overflow:hidden;margin:auto;">
+
+    <!-- Header -->
+    <div style="background:linear-gradient(135deg,#7c2d12,#c2410c,#e8692a);padding:20px 28px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;">
+        <div>
+          <div style="font-family:'Barlow Condensed',sans-serif;font-weight:900;font-size:1.4rem;color:white;letter-spacing:2px;">📄 IMPORTAR FACTURA / NOTA DE ENTREGA</div>
+          <div style="font-size:.78rem;color:rgba(255,255,255,.7);margin-top:4px;">La IA detectará automáticamente los productos y cantidades</div>
+        </div>
+        <button onclick="closeImport()" style="background:rgba(255,255,255,.15);border:none;color:white;font-size:1.2rem;cursor:pointer;border-radius:50%;width:32px;height:32px;display:flex;align-items:center;justify-content:center;">✕</button>
+      </div>
+    </div>
+
+    <!-- Step 1: Input -->
+    <div id="import-step1" style="padding:24px;">
+      
+      <!-- File upload zone -->
+      <div id="import-dropzone" onclick="document.getElementById('import-file').click()"
+        style="border:2.5px dashed #c5cae9;border-radius:12px;padding:28px;text-align:center;
+          cursor:pointer;margin-bottom:16px;transition:all .2s;background:#f8f9ff;"
+        ondragover="event.preventDefault();this.style.borderColor='#e8692a';this.style.background='#fff7f0'"
+        ondragleave="this.style.borderColor='#c5cae9';this.style.background='#f8f9ff'"
+        ondrop="handleImportDrop(event)">
+        <div style="font-size:2rem;margin-bottom:8px;">📎</div>
+        <div style="font-family:'Barlow Condensed',sans-serif;font-weight:700;color:#1a2050;font-size:1rem;">
+          Arrastra aquí tu PDF o Excel
+        </div>
+        <div style="color:#8892b0;font-size:.8rem;margin-top:4px;">o haz clic para seleccionar archivo</div>
+        <div style="color:#8892b0;font-size:.75rem;margin-top:2px;">Formatos: PDF, XLS, XLSX</div>
+        <input type="file" id="import-file" accept=".pdf,.xls,.xlsx" style="display:none" onchange="handleImportFile(this)">
+        <div id="import-file-name" style="margin-top:10px;font-size:.82rem;color:#e8692a;font-weight:700;"></div>
+      </div>
+
+      <!-- Divider -->
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;">
+        <div style="flex:1;height:1px;background:#e0e4f0;"></div>
+        <div style="color:#8892b0;font-size:.78rem;font-weight:700;">O PEGA EL TEXTO DIRECTAMENTE</div>
+        <div style="flex:1;height:1px;background:#e0e4f0;"></div>
+      </div>
+
+      <!-- Text area -->
+      <div style="margin-bottom:16px;">
+        <textarea id="import-text" rows="6" placeholder="Pega aquí el contenido de la factura, nota de entrega o pedido..."
+          style="width:100%;padding:12px;border:2px solid #e0e4f0;border-radius:10px;
+            font-family:'Barlow',sans-serif;font-size:.85rem;resize:vertical;outline:none;
+            box-sizing:border-box;color:#1a2050;line-height:1.5;"
+          oninput="this.style.borderColor='#e8692a'"></textarea>
+      </div>
+
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+        <button onclick="processImport()" style="background:linear-gradient(135deg,#e8692a,#c2410c);color:white;border:none;border-radius:10px;padding:12px 28px;cursor:pointer;font-family:'Barlow Condensed',sans-serif;font-weight:900;font-size:1rem;letter-spacing:1px;">
+          🤖 ANALIZAR CON IA
+        </button>
+        <div style="font-size:.75rem;color:#8892b0;">La IA detectará referencias, cantidades y datos del cliente automáticamente</div>
+      </div>
+    </div>
+
+    <!-- Step 2: Loading -->
+    <div id="import-step2" style="display:none;padding:40px;text-align:center;">
+      <div style="font-size:2.5rem;margin-bottom:16px;">🤖</div>
+      <div style="font-family:'Barlow Condensed',sans-serif;font-size:1.3rem;color:#1a2050;font-weight:700;">Analizando factura...</div>
+      <div style="color:#8892b0;margin-top:8px;font-size:.85rem;">La IA está identificando productos, cantidades y datos del cliente</div>
+      <div style="margin-top:20px;display:flex;justify-content:center;gap:6px;">
+        <span style="width:8px;height:8px;border-radius:50%;background:#e8692a;display:inline-block;animation:pulse 1s infinite;"></span>
+        <span style="width:8px;height:8px;border-radius:50%;background:#e8692a;display:inline-block;animation:pulse 1s .2s infinite;"></span>
+        <span style="width:8px;height:8px;border-radius:50%;background:#e8692a;display:inline-block;animation:pulse 1s .4s infinite;"></span>
+      </div>
+    </div>
+
+    <!-- Step 3: Review -->
+    <div id="import-step3" style="display:none;padding:20px 24px;">
+      <div id="import-client-info" style="background:#f0f4ff;border-radius:10px;padding:14px 18px;margin-bottom:16px;border-left:4px solid #1a2050;"></div>
+      <div style="font-family:'Barlow Condensed',sans-serif;font-weight:700;color:#1a2050;font-size:.9rem;letter-spacing:1px;text-transform:uppercase;margin-bottom:8px;">Productos detectados:</div>
+      <div id="import-products-list" style="max-height:320px;overflow-y:auto;border:1.5px solid #e0e4f0;border-radius:10px;"></div>
+      <div id="import-warnings" style="margin-top:10px;"></div>
+      <div style="display:flex;gap:10px;margin-top:16px;flex-wrap:wrap;">
+        <button onclick="confirmImport()" style="background:linear-gradient(135deg,#16a34a,#15803d);color:white;border:none;border-radius:10px;padding:12px 28px;cursor:pointer;font-family:'Barlow Condensed',sans-serif;font-weight:900;font-size:1rem;letter-spacing:1px;">
+          ✅ CONFIRMAR Y PROCESAR
+        </button>
+        <button onclick="backImport()" style="background:#f1f5f9;color:#1a2050;border:1.5px solid #e0e4f0;border-radius:10px;padding:12px 20px;cursor:pointer;font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:.9rem;">
+          ← Volver
+        </button>
+      </div>
+    </div>
+
+    <!-- Step 4: Success -->
+    <div id="import-step4" style="display:none;padding:40px;text-align:center;">
+      <div style="font-size:3rem;margin-bottom:16px;">✅</div>
+      <div style="font-family:'Barlow Condensed',sans-serif;font-size:1.5rem;color:#16a34a;font-weight:900;">¡Venta procesada exitosamente!</div>
+      <div id="import-success-info" style="color:#5a6080;margin-top:8px;font-size:.9rem;"></div>
+      <button onclick="closeImport()" style="margin-top:24px;background:linear-gradient(135deg,#1a2050,#252b6b);color:white;border:none;border-radius:10px;padding:12px 28px;cursor:pointer;font-family:'Barlow Condensed',sans-serif;font-weight:900;font-size:1rem;letter-spacing:1px;">
+        IR AL HISTORIAL
+      </button>
+    </div>
+  </div>
+</div>
+
+<style>
+@keyframes pulse { 0%,100%{opacity:.3;transform:scale(.8)} 50%{opacity:1;transform:scale(1)} }
+</style>
 
 </body>
 </html>
