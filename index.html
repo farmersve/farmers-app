@@ -2017,8 +2017,99 @@ function editSale(saleId) {
   });
   var m = document.getElementById('edit-moneda'); if (m) m.value = sale.moneda || 'USD';
   var t = document.getElementById('edit-total');  if (t) t.value = sale.total || 0;
+
+  // Render items table
+  renderEditItemsTable(sale.items || []);
+
   document.getElementById('edit-modal').style.display = 'flex';
   document.body.style.overflow = 'hidden';
+}
+
+function renderEditItemsTable(items) {
+  var inv = getInventory();
+  var tbody = document.getElementById('edit-items-body');
+  if (!tbody) return;
+  tbody.innerHTML = '';
+  items.forEach(function(it) {
+    var stock = inv[it.r] !== undefined ? inv[it.r] : 0;
+    var tr = document.createElement('tr');
+    tr.setAttribute('data-ref', it.r);
+    tr.style.borderBottom = '1px solid #eef0f8';
+    tr.innerHTML =
+      '<td style="padding:6px 8px;font-weight:700;color:#1a2050;font-size:.8rem;">' + it.r + '</td>' +
+      '<td class="ei-desc" style="padding:6px 8px;font-size:.78rem;color:#5a6080;">' + (it.d||it.r) + '</td>' +
+      '<td style="padding:6px 8px;text-align:center;">' +
+        '<input class="ei-qty" type="number" min="1" value="' + (it.orden||0) + '" onchange="recalcEditTotal()" ' +
+        'style="width:60px;padding:4px 6px;border:1.5px solid #e0e4f0;border-radius:6px;text-align:center;font-weight:700;font-size:.82rem;">' +
+      '</td>' +
+      '<td style="padding:6px 8px;text-align:center;">' +
+        '<input class="ei-price" type="number" min="0" step="0.01" value="' + (it.precio||0).toFixed(2) + '" onchange="recalcEditTotal()" ' +
+        'style="width:75px;padding:4px 6px;border:1.5px solid #e0e4f0;border-radius:6px;text-align:center;font-size:.82rem;">' +
+      '</td>' +
+      '<td style="padding:6px 8px;text-align:right;font-weight:700;color:#e8692a;font-size:.82rem;" class="ei-sub">$ ' + fmt((it.orden||0)*(it.precio||0)) + '</td>' +
+      '<td style="padding:6px 8px;text-align:center;font-size:.75rem;font-weight:700;color:' + (stock > 0 ? '#16a34a' : '#dc2626') + ';">' + stock + '</td>' +
+      '<td style="padding:6px 8px;text-align:center;">' +
+        '<button onclick="removeEditRow(this)" style="background:#fef2f2;color:#dc2626;border:1px solid #fecaca;border-radius:6px;padding:3px 8px;cursor:pointer;font-size:.75rem;font-weight:700;">✕</button>' +
+      '</td>';
+    tbody.appendChild(tr);
+  });
+  recalcEditTotal();
+}
+
+function removeEditRow(btn) {
+  btn.closest('tr').remove();
+  recalcEditTotal();
+}
+
+function recalcEditTotal() {
+  var rows = document.querySelectorAll('#edit-items-body tr');
+  var total = 0;
+  rows.forEach(function(row){
+    var qty   = parseFloat(row.querySelector('.ei-qty')  ? row.querySelector('.ei-qty').value  : 0) || 0;
+    var price = parseFloat(row.querySelector('.ei-price') ? row.querySelector('.ei-price').value : 0) || 0;
+    var sub = qty * price;
+    total += sub;
+    var subEl = row.querySelector('.ei-sub');
+    if (subEl) subEl.textContent = '$ ' + fmt(sub);
+  });
+  var t = document.getElementById('edit-total'); if(t) t.value = fmt(total);
+  var tDisp = document.getElementById('edit-total-display'); if(tDisp) tDisp.textContent = '$ ' + fmt(total);
+}
+
+function addEditProductRow() {
+  var ref = (document.getElementById('edit-add-ref') ? document.getElementById('edit-add-ref').value : '').trim().toUpperCase();
+  if (!ref) return;
+  var prod = PRODUCTS.find(function(p){ return p.r === ref || p.b === ref || p.c === ref; });
+  if (!prod) { alert('Referencia no encontrada: ' + ref); return; }
+  // Check if already in table
+  var existing = document.querySelector('#edit-items-body tr[data-ref="' + prod.r + '"]');
+  if (existing) { alert('Este producto ya está en el pedido. Edita la cantidad directamente.'); return; }
+  var inv = getInventory();
+  var stock = inv[prod.r] !== undefined ? inv[prod.r] : prod.ex || 0;
+  var tbody = document.getElementById('edit-items-body');
+  var tr = document.createElement('tr');
+  tr.setAttribute('data-ref', prod.r);
+  tr.style.borderBottom = '1px solid #eef0f8';
+  tr.style.background = '#f0fdf4';
+  tr.innerHTML =
+    '<td style="padding:6px 8px;font-weight:700;color:#1a2050;font-size:.8rem;">' + prod.r + '</td>' +
+    '<td class="ei-desc" style="padding:6px 8px;font-size:.78rem;color:#5a6080;">' + prod.d + '</td>' +
+    '<td style="padding:6px 8px;text-align:center;">' +
+      '<input class="ei-qty" type="number" min="1" value="1" onchange="recalcEditTotal()" ' +
+      'style="width:60px;padding:4px 6px;border:1.5px solid #e0e4f0;border-radius:6px;text-align:center;font-weight:700;font-size:.82rem;">' +
+    '</td>' +
+    '<td style="padding:6px 8px;text-align:center;">' +
+      '<input class="ei-price" type="number" min="0" step="0.01" value="' + (prod.u||0).toFixed(2) + '" onchange="recalcEditTotal()" ' +
+      'style="width:75px;padding:4px 6px;border:1.5px solid #e0e4f0;border-radius:6px;text-align:center;font-size:.82rem;">' +
+    '</td>' +
+    '<td style="padding:6px 8px;text-align:right;font-weight:700;color:#e8692a;font-size:.82rem;" class="ei-sub">$ ' + fmt(prod.u||0) + '</td>' +
+    '<td style="padding:6px 8px;text-align:center;font-size:.75rem;font-weight:700;color:' + (stock > 0 ? '#16a34a' : '#dc2626') + ';">' + stock + '</td>' +
+    '<td style="padding:6px 8px;text-align:center;">' +
+      '<button onclick="removeEditRow(this)" style="background:#fef2f2;color:#dc2626;border:1px solid #fecaca;border-radius:6px;padding:3px 8px;cursor:pointer;font-size:.75rem;font-weight:700;">✕</button>' +
+    '</td>';
+  tbody.appendChild(tr);
+  document.getElementById('edit-add-ref').value = '';
+  recalcEditTotal();
 }
 function closeEditSale() {
   document.getElementById('edit-modal').style.display = 'none';
@@ -2028,20 +2119,65 @@ function saveEditSale() {
   var sid = document.getElementById('edit-sale-id').value;
   var sales = getSales();
   var i = sales.findIndex(function(s){ return String(s.id) === String(sid); });
-  if (i === -1) return;
+  if (i < 0) return;
+  var old = sales[i];
+
+  // Restore old inventory before recalculating
+  var inv = getInventory();
+  (old.items||[]).forEach(function(it){
+    if (inv[it.r] !== undefined) inv[it.r] += it.orden;
+    else inv[it.r] = it.orden;
+  });
+
+  // Read edited items from edit-items table
+  var newItems = [];
+  var rows = document.querySelectorAll('#edit-items-body tr');
+  rows.forEach(function(row){
+    var ref   = row.getAttribute('data-ref');
+    var qty   = parseInt(row.querySelector('.ei-qty')  ? row.querySelector('.ei-qty').value  : 0) || 0;
+    var price = parseFloat(row.querySelector('.ei-price') ? row.querySelector('.ei-price').value : 0) || 0;
+    if (!ref || qty <= 0) return;
+    var prod = PRODUCTS.find(function(p){ return p.r === ref; });
+    newItems.push({ r:ref, d:prod?prod.d:(row.querySelector('.ei-desc')?row.querySelector('.ei-desc').textContent:ref), br:prod?prod.br:'', orden:qty, precio:price, total:qty*price });
+  });
+
+  // Check stock for new items
+  var blocked = newItems.filter(function(it){
+    var avail = inv[it.r] !== undefined ? inv[it.r] : 0;
+    return avail < it.orden;
+  });
+  if (blocked.length > 0) {
+    alert('⛔ Stock insuficiente para: ' + blocked.map(function(b){
+      var avail = inv[b.r] !== undefined ? inv[b.r] : 0;
+      return b.r + ' (disp: ' + avail + ', sol: ' + b.orden + ')';
+    }).join(', '));
+    return;
+  }
+
+  // Apply new inventory
+  newItems.forEach(function(it){
+    if (inv[it.r] !== undefined) inv[it.r] = Math.max(0, inv[it.r] - it.orden);
+  });
+
+  var newTotal = newItems.reduce(function(s,it){ return s + it.total; }, 0);
+
   ['cliente','rif','telefono','vendedor','numpedido','fecha','direccion','sucursal','credito'].forEach(function(f){
     var el = document.getElementById('edit-' + f);
-    if (el) sales[i][f] = el.value;
+    if(el) sales[i][f] = el.value;
   });
-  var m = document.getElementById('edit-moneda'); if (m) sales[i].moneda = m.value;
-  var t = document.getElementById('edit-total');  if (t) sales[i].total = parseFloat(t.value) || 0;
+  var m = document.getElementById('edit-moneda'); if(m) sales[i].moneda = m.value;
+  sales[i].items = newItems;
+  sales[i].units = newItems.reduce(function(s,it){ return s + it.orden; }, 0);
+  sales[i].total = newTotal;
+
+  saveInventory(inv);
+  syncInventoryToProducts();
   saveSales(sales);
-  closeEditSale();
   renderHistorial();
-  if (typeof showToast === 'function') showToast('Pedido actualizado', 'success');
+  closeEditSale();
+  alert('✓ Pedido actualizado correctamente.');
 }
 
-/* printSale - uses DOM to build popup, avoids </body> in any string */
 function printSale(saleId) {
   var sale = getSales().find(function(s){ return String(s.id) === String(saleId); });
   if (!sale) return;
@@ -2125,7 +2261,7 @@ function printSale(saleId) {
 var _importData = null;
 function openImport() { document.getElementById('import-modal').style.display = 'flex'; document.body.style.overflow = 'hidden'; showImportStep(1); }
 function closeImport() { document.getElementById('import-modal').style.display = 'none'; document.body.style.overflow = ''; }
-function showImportStep(n) { [1,2,3,4].forEach(function(i){ var el = document.getElementById('import-step'+i); if(el) el.style.display = (i===n ? 'block' : 'none'); }); }
+function showImportStep(n) { [1,2,3,4,5].forEach(function(i){ var el = document.getElementById('import-step'+i); if(el) el.style.display = (i===n ? 'block' : 'none'); }); }
 function backImport() { showImportStep(1); }
 function handleImportDrop(e) { e.preventDefault(); var f = e.dataTransfer.files[0]; if(f) loadImportFile(f); }
 function handleImportFile(input) { if(input.files && input.files[0]) loadImportFile(input.files[0]); }
@@ -2193,8 +2329,7 @@ async function processImport() {
     var parsed = JSON.parse(m[0]);
     if (!parsed.items || !parsed.items.length) throw new Error('No se detectaron productos');
     _importData = parsed;
-    renderImportReview(parsed);
-    showImportStep(3);
+    showImportEditStep();
   } catch(e) {
     console.error(e);
     showImportStep(1);
@@ -2275,7 +2410,7 @@ function confirmImport() {
   saveSales(sales);
   var si = document.getElementById('import-success-info');
   if(si) si.innerHTML = 'Pedido #' + sale.numpedido + ' de <strong>' + sale.cliente + '</strong><br>' + items.length + ' productos &middot; Total: $ ' + fmt(sale.total);
-  showImportStep(4);
+  showImportStep(5);
   _importData = null;
 }
 
@@ -2330,13 +2465,79 @@ function confirmImport() {
       <div style="font-size:2.5rem;margin-bottom:16px;">&#129302;</div>
       <div style="font-weight:700;color:#1a2050;font-size:1.2rem;">Analizando con IA...</div>
     </div>
-    <div id="import-step3" style="display:none;padding:20px 24px;">
-      <div id="import-client-info" style="background:#f0f4ff;border-radius:10px;padding:14px 18px;margin-bottom:16px;border-left:4px solid #1a2050;"></div>
-      <div id="import-products-list" style="max-height:320px;overflow-y:auto;border:1.5px solid #e0e4f0;border-radius:10px;"></div>
-      <div id="import-warnings"></div>
-      <div style="display:flex;gap:10px;margin-top:16px;flex-wrap:wrap;">
-        <button onclick="confirmImport()" style="background:linear-gradient(135deg,#16a34a,#15803d);color:white;border:none;border-radius:10px;padding:12px 28px;cursor:pointer;font-weight:900;font-size:1rem;">CONFIRMAR Y PROCESAR</button>
-        <button onclick="backImport()" style="background:#f1f5f9;color:#1a2050;border:1.5px solid #e0e4f0;border-radius:10px;padding:12px 20px;cursor:pointer;font-weight:700;">Volver</button>
+    <!-- STEP 3: EDITAR PEDIDO IMPORTADO -->
+    <div id="import-step3" style="display:none;padding:20px 24px 16px;">
+      <div style="font-family:'Barlow Condensed',sans-serif;font-weight:900;font-size:1.1rem;color:#1a2050;letter-spacing:1px;margin-bottom:14px;">✏️ EDITAR DATOS DEL PEDIDO</div>
+      
+      <!-- Client fields grid -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px;">
+        <div>
+          <label style="font-size:.72rem;font-weight:700;color:#8892b0;text-transform:uppercase;letter-spacing:.8px;">Cliente</label>
+          <input id="ie-cliente" style="width:100%;margin-top:3px;padding:8px 10px;border:1.5px solid #e0e4f0;border-radius:8px;font-size:.88rem;box-sizing:border-box;font-family:'Barlow',sans-serif;">
+        </div>
+        <div>
+          <label style="font-size:.72rem;font-weight:700;color:#8892b0;text-transform:uppercase;letter-spacing:.8px;">RIF</label>
+          <input id="ie-rif" style="width:100%;margin-top:3px;padding:8px 10px;border:1.5px solid #e0e4f0;border-radius:8px;font-size:.88rem;box-sizing:border-box;font-family:'Barlow',sans-serif;">
+        </div>
+        <div>
+          <label style="font-size:.72rem;font-weight:700;color:#8892b0;text-transform:uppercase;letter-spacing:.8px;">N° Pedido</label>
+          <input id="ie-numpedido" style="width:100%;margin-top:3px;padding:8px 10px;border:1.5px solid #e0e4f0;border-radius:8px;font-size:.88rem;box-sizing:border-box;font-family:'Barlow',sans-serif;">
+        </div>
+        <div>
+          <label style="font-size:.72rem;font-weight:700;color:#8892b0;text-transform:uppercase;letter-spacing:.8px;">Fecha</label>
+          <input id="ie-fecha" style="width:100%;margin-top:3px;padding:8px 10px;border:1.5px solid #e0e4f0;border-radius:8px;font-size:.88rem;box-sizing:border-box;font-family:'Barlow',sans-serif;">
+        </div>
+        <div>
+          <label style="font-size:.72rem;font-weight:700;color:#8892b0;text-transform:uppercase;letter-spacing:.8px;">Vendedor</label>
+          <input id="ie-vendedor" style="width:100%;margin-top:3px;padding:8px 10px;border:1.5px solid #e0e4f0;border-radius:8px;font-size:.88rem;box-sizing:border-box;font-family:'Barlow',sans-serif;">
+        </div>
+        <div>
+          <label style="font-size:.72rem;font-weight:700;color:#8892b0;text-transform:uppercase;letter-spacing:.8px;">Teléfono</label>
+          <input id="ie-telefono" style="width:100%;margin-top:3px;padding:8px 10px;border:1.5px solid #e0e4f0;border-radius:8px;font-size:.88rem;box-sizing:border-box;font-family:'Barlow',sans-serif;">
+        </div>
+        <div style="grid-column:span 2;">
+          <label style="font-size:.72rem;font-weight:700;color:#8892b0;text-transform:uppercase;letter-spacing:.8px;">Dirección</label>
+          <input id="ie-direccion" style="width:100%;margin-top:3px;padding:8px 10px;border:1.5px solid #e0e4f0;border-radius:8px;font-size:.88rem;box-sizing:border-box;font-family:'Barlow',sans-serif;">
+        </div>
+        <div>
+          <label style="font-size:.72rem;font-weight:700;color:#8892b0;text-transform:uppercase;letter-spacing:.8px;">Moneda</label>
+          <select id="ie-moneda" style="width:100%;margin-top:3px;padding:8px 10px;border:1.5px solid #e0e4f0;border-radius:8px;font-size:.88rem;box-sizing:border-box;">
+            <option>USD</option><option>BCV</option><option>TF</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- Items table header -->
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+        <div style="font-family:'Barlow Condensed',sans-serif;font-weight:900;font-size:1rem;color:#1a2050;letter-spacing:1px;">PRODUCTOS DEL PEDIDO</div>
+        <button onclick="ieAddRow()" style="background:#1a2050;color:white;border:none;border-radius:8px;padding:5px 14px;cursor:pointer;font-weight:700;font-size:.8rem;">+ Agregar</button>
+      </div>
+      <div id="ie-items-wrap" style="max-height:260px;overflow-y:auto;border:1.5px solid #e0e4f0;border-radius:10px;"></div>
+
+      <div style="display:flex;gap:10px;margin-top:14px;flex-wrap:wrap;">
+        <button onclick="goToImportPreview()" style="background:linear-gradient(135deg,#1a2050,#252b6b);color:white;border:none;border-radius:10px;padding:11px 24px;cursor:pointer;font-weight:900;font-size:.95rem;">Ver Stock y Vista Previa →</button>
+        <button onclick="backImport()" style="background:#f1f5f9;color:#1a2050;border:1.5px solid #e0e4f0;border-radius:10px;padding:11px 18px;cursor:pointer;font-weight:700;">Volver</button>
+      </div>
+    </div>
+
+    <!-- STEP 4: STOCK REPORT + PREVIEW + CONFIRM -->
+    <div id="import-step5" style="display:none;padding:20px 24px 16px;">
+      <div style="font-family:'Barlow Condensed',sans-serif;font-weight:900;font-size:1.1rem;color:#1a2050;letter-spacing:1px;margin-bottom:14px;">📊 DISPONIBILIDAD Y VISTA PREVIA</div>
+      
+      <!-- Stock availability panel -->
+      <div id="ie-stock-panel" style="margin-bottom:14px;"></div>
+
+      <!-- Preview buttons -->
+      <div style="display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap;">
+        <button onclick="importPreviewPDF()" style="background:linear-gradient(135deg,#dc2626,#b91c1c);color:white;border:none;border-radius:10px;padding:10px 20px;cursor:pointer;font-weight:700;font-size:.88rem;display:flex;align-items:center;gap:6px;">📄 Ver / Descargar PDF</button>
+        <button onclick="importPreviewExcel()" style="background:linear-gradient(135deg,#16a34a,#15803d);color:white;border:none;border-radius:10px;padding:10px 20px;cursor:pointer;font-weight:700;font-size:.88rem;display:flex;align-items:center;gap:6px;">📊 Descargar Excel</button>
+      </div>
+
+      <div id="ie-preview-table" style="max-height:280px;overflow-y:auto;border:1.5px solid #e0e4f0;border-radius:10px;margin-bottom:14px;"></div>
+
+      <div style="display:flex;gap:10px;flex-wrap:wrap;">
+        <button id="ie-confirm-btn" onclick="finalizeImport()" style="background:linear-gradient(135deg,#16a34a,#15803d);color:white;border:none;border-radius:10px;padding:12px 28px;cursor:pointer;font-weight:900;font-size:1rem;">✓ CONFIRMAR Y PROCESAR</button>
+        <button onclick="showImportStep(3)" style="background:#f1f5f9;color:#1a2050;border:1.5px solid #e0e4f0;border-radius:10px;padding:12px 18px;cursor:pointer;font-weight:700;">← Editar</button>
       </div>
     </div>
     <div id="import-step4" style="display:none;padding:40px;text-align:center;">
@@ -2577,6 +2778,364 @@ function doRefSearch() {
     more.textContent = 'Mostrando 80 de ' + results.length + ' resultados. Refina la búsqueda para ver más.';
     resultsEl.appendChild(more);
   }
+}
+
+
+
+/* ══════════════════════════════════════════════════════════════════════
+   IMPORT EDIT FLOW — v7
+══════════════════════════════════════════════════════════════════════ */
+
+function showImportEditStep() {
+  if (!_importData) return;
+  var d = _importData;
+  // Fill header fields
+  ['cliente','rif','numpedido','fecha','vendedor','telefono','direccion'].forEach(function(f){
+    var el = document.getElementById('ie-' + f);
+    if (el) el.value = d[f] || '';
+  });
+  var m = document.getElementById('ie-moneda'); if(m) m.value = d.moneda || 'USD';
+
+  // ── Ordenar ítems según el orden del catálogo PRODUCTS ──────────────
+  var catalogOrder = {};
+  PRODUCTS.forEach(function(p, idx){ catalogOrder[p.r] = idx; });
+  var sorted = (d.items || []).slice().sort(function(a, b){
+    var ia = catalogOrder[a.r] !== undefined ? catalogOrder[a.r] : 999999;
+    var ib = catalogOrder[b.r] !== undefined ? catalogOrder[b.r] : 999999;
+    if (ia !== ib) return ia - ib;
+    return (a.r || '').localeCompare(b.r || '');
+  });
+  d.items = sorted;
+  // ────────────────────────────────────────────────────────────────────
+
+  // Render items
+  ieRenderItems(d.items || []);
+  showImportStep(3);
+}
+
+function ieEnrichItems(items, moneda) {
+  return items.map(function(it) {
+    var prod = PRODUCTS.find(function(p){
+      return p.r === it.r || p.b === it.r || p.c === it.r;
+    });
+    if (!prod) return it;
+    var precio = it.precio || 0;
+    if (!precio) {
+      if      (moneda === 'BCV') precio = prod.bv || prod.u || 0;
+      else if (moneda === 'TF')  precio = prod.t  || prod.u || 0;
+      else                        precio = prod.u  || 0;
+    }
+    return { r:prod.r, d:prod.d, b:prod.b||'', c:prod.c||'',
+             e:prod.e||'', m:prod.m||'', br:prod.br||'',
+             qty:it.qty||1, precio:precio, ex:prod.ex||0 };
+  });
+}
+
+function ieRenderItems(items) {
+  var wrap = document.getElementById('ie-items-wrap');
+  if (!wrap) return;
+  var inv = getInventory();
+  var moneda = document.getElementById('ie-moneda') ? document.getElementById('ie-moneda').value : 'USD';
+  items = ieEnrichItems(items, moneda);
+  var brandColors = { EXCALIBUR:'#1a2050', GENIAL:'#2e7d32', MATRIX:'#b45309', LUMEN:'#6a1b9a', MAXKILLER:'#c62828', VARIOS:'#37474f' };
+  var tbody = document.createElement('tbody');
+  items.forEach(function(it, idx) {
+    var prod = PRODUCTS.find(function(p){ return p.r === it.r; });
+    var stock = inv[it.r] !== undefined ? inv[it.r] : (it.ex||0);
+    var stockColor = stock >= it.qty ? '#16a34a' : stock > 0 ? '#d97706' : '#dc2626';
+    var stockBg    = stock >= it.qty ? '#f0fdf4'  : stock > 0 ? '#fffbeb'  : '#fef2f2';
+    var bColor     = brandColors[it.br] || '#37474f';
+    var notFound   = !prod;
+    var tr = document.createElement('tr');
+    tr.setAttribute('data-idx', idx);
+    tr.setAttribute('data-ref', it.r);
+    tr.style.borderBottom = '1px solid #eef0f8';
+    if (notFound) tr.style.background = '#fef2f2';
+    tr.innerHTML =
+      '<td style="padding:6px 10px;vertical-align:top;">' +
+        '<div style="font-weight:900;color:' + (notFound?'#dc2626':bColor) + ';font-size:.82rem;">' + it.r + '</div>' +
+        (it.br ? '<div style="display:inline-block;background:' + bColor + ';color:white;border-radius:4px;padding:1px 6px;font-size:.58rem;font-weight:700;margin-top:2px;">' + it.br + '</div>' : '') +
+        (notFound ? '<div style="font-size:.65rem;color:#dc2626;font-weight:700;margin-top:2px;">No en catlogo</div>' : '') +
+      '</td>' +
+      '<td style="padding:6px 10px;vertical-align:top;">' +
+        '<div style="font-weight:700;color:#1a2050;font-size:.8rem;margin-bottom:3px;">' + (it.d||it.r) + '</div>' +
+        '<div style="display:flex;gap:6px;flex-wrap:wrap;">' +
+          (it.b ? '<span style="font-size:.62rem;color:#5a6080;background:#f0f4ff;border-radius:4px;padding:1px 5px;">CB: ' + it.b + '</span>' : '') +
+          (it.c ? '<span style="font-size:.62rem;color:#5a6080;background:#f0f4ff;border-radius:4px;padding:1px 5px;">Cd: ' + it.c + '</span>' : '') +
+          (it.e ? '<span style="font-size:.62rem;color:#5a6080;background:#f0f4ff;border-radius:4px;padding:1px 5px;">Emp: ' + it.e + '</span>' : '') +
+          (it.m ? '<span style="font-size:.62rem;color:#5a6080;background:#f0f4ff;border-radius:4px;padding:1px 5px;">x' + it.m + '</span>' : '') +
+        '</div>' +
+      '</td>' +
+      '<td style="padding:6px 10px;text-align:center;vertical-align:middle;">' +
+        '<input class="ie-qty" type="number" min="1" value="' + (it.qty||1) + '" style="width:58px;padding:4px 6px;border:1.5px solid #e0e4f0;border-radius:6px;text-align:center;font-weight:700;font-size:.82rem;">' +
+      '</td>' +
+      '<td style="padding:6px 10px;text-align:center;vertical-align:middle;">' +
+        '<input class="ie-price" type="number" min="0" step="0.01" value="' + (it.precio||0).toFixed(2) + '" style="width:74px;padding:4px 6px;border:1.5px solid #e0e4f0;border-radius:6px;text-align:center;font-size:.82rem;">' +
+      '</td>' +
+      '<td style="padding:6px 10px;text-align:center;vertical-align:middle;">' +
+        '<div style="background:' + stockBg + ';color:' + stockColor + ';border-radius:6px;padding:3px 8px;font-weight:900;font-size:.8rem;white-space:nowrap;">' + stock + ' uds</div>' +
+      '</td>' +
+      '<td style="padding:6px 10px;text-align:center;vertical-align:middle;">' +
+        '<button onclick="ieRemoveRow(this)" style="background:#fef2f2;color:#dc2626;border:1px solid #fecaca;border-radius:6px;padding:3px 8px;cursor:pointer;font-size:.75rem;font-weight:700;">X</button>' +
+      '</td>';
+    tbody.appendChild(tr);
+  });
+  var table = document.createElement('table');
+  table.style.cssText = 'width:100%;border-collapse:collapse;font-size:.8rem;';
+  var thead = document.createElement('thead');
+  thead.innerHTML =
+    '<tr style="background:#1a2050;color:white;position:sticky;top:0;">' +
+    '<th style="padding:7px 10px;text-align:left;font-size:.68rem;">Referencia</th>' +
+    '<th style="padding:7px 10px;text-align:left;font-size:.68rem;">Descripcion / Detalles</th>' +
+    '<th style="padding:7px 10px;text-align:center;font-size:.68rem;">Cant.</th>' +
+    '<th style="padding:7px 10px;text-align:center;font-size:.68rem;">Precio</th>' +
+    '<th style="padding:7px 10px;text-align:center;font-size:.68rem;">Stock</th>' +
+    '<th style="padding:7px 10px;font-size:.68rem;"></th>' +
+    '</tr>';
+  table.appendChild(thead);
+  table.appendChild(tbody);
+  wrap.innerHTML = '';
+  wrap.appendChild(table);
+}
+
+function ieRemoveRow(btn) {
+  btn.closest('tr').remove();
+}
+
+function ieAddRow() {
+  var ref = prompt('Ingresa la referencia a agregar:');
+  if (!ref) return;
+  ref = ref.trim().toUpperCase();
+  var prod = PRODUCTS.find(function(p){ return p.r === ref || p.b === ref || p.c === ref; });
+  if (!prod) { alert('Referencia no encontrada: ' + ref); return; }
+  var inv = getInventory();
+  var stock = inv[prod.r] !== undefined ? inv[prod.r] : (prod.ex || 0);
+  var wrap = document.getElementById('ie-items-wrap');
+  var tbody = wrap ? wrap.querySelector('tbody') : null;
+  if (!tbody) return;
+  var tr = document.createElement('tr');
+  tr.style.borderBottom = '1px solid #eef0f8';
+  tr.style.background = '#f0fdf4';
+  tr.innerHTML =
+    '<td style="padding:6px 10px;font-weight:700;color:#1a2050;font-size:.8rem;">' + prod.r + '</td>' +
+    '<td style="padding:6px 10px;font-size:.78rem;color:#5a6080;">' + prod.d + '</td>' +
+    '<td style="padding:6px 10px;text-align:center;">' +
+      '<input class="ie-qty" type="number" min="1" value="1" style="width:60px;padding:4px 6px;border:1.5px solid #e0e4f0;border-radius:6px;text-align:center;font-weight:700;font-size:.82rem;">' +
+    '</td>' +
+    '<td style="padding:6px 10px;text-align:center;">' +
+      '<input class="ie-price" type="number" min="0" step="0.01" value="' + (prod.u||0).toFixed(2) + '" style="width:75px;padding:4px 6px;border:1.5px solid #e0e4f0;border-radius:6px;text-align:center;font-size:.82rem;">' +
+    '</td>' +
+    '<td style="padding:6px 10px;text-align:center;font-weight:700;color:' + (stock > 0 ? '#16a34a' : '#dc2626') + ';font-size:.8rem;">' + stock + ' uds</td>' +
+    '<td style="padding:6px 10px;text-align:center;">' +
+      '<button onclick="ieRemoveRow(this)" style="background:#fef2f2;color:#dc2626;border:1px solid #fecaca;border-radius:6px;padding:3px 8px;cursor:pointer;font-size:.75rem;font-weight:700;">✕</button>' +
+    '</td>';
+  tbody.appendChild(tr);
+}
+
+function goToImportPreview() {
+  // Read edited data from step 3 form
+  var fields = ['cliente','rif','numpedido','fecha','vendedor','telefono','direccion'];
+  fields.forEach(function(f){
+    var el = document.getElementById('ie-' + f);
+    if (el && _importData) _importData[f] = el.value;
+  });
+  var m = document.getElementById('ie-moneda');
+  if (m && _importData) _importData.moneda = m.value;
+
+  // Read items from table
+  var items = [];
+  var rows = document.querySelectorAll('#ie-items-wrap tbody tr');
+  rows.forEach(function(row){
+    var ref   = row.cells[0] ? row.cells[0].textContent.trim() : '';
+    var qty   = parseInt(row.querySelector('.ie-qty')  ? row.querySelector('.ie-qty').value  : 0) || 0;
+    var price = parseFloat(row.querySelector('.ie-price') ? row.querySelector('.ie-price').value : 0) || 0;
+    if (ref && qty > 0) items.push({ r: ref, qty: qty, precio: price });
+  });
+  if (items.length === 0) { alert('El pedido no tiene productos.'); return; }
+  _importData.items = items;
+
+  // Build stock panel
+  var inv = getInventory();
+  var ok = [], partial = [], blocked = [];
+  items.forEach(function(it){
+    var prod = PRODUCTS.find(function(p){ return p.r === it.r; });
+    var stock = inv[it.r] !== undefined ? inv[it.r] : (prod ? prod.ex : 0);
+    if (stock === 0) {
+      blocked.push({ r: it.r, d: prod ? prod.d : it.r, sol: it.qty, stock: stock });
+    } else if (stock < it.qty) {
+      partial.push({ r: it.r, d: prod ? prod.d : it.r, sol: it.qty, stock: stock });
+    } else {
+      ok.push(it.r);
+    }
+  });
+
+  var panelHtml = '';
+
+  if (blocked.length > 0) {
+    panelHtml += '<div style="background:#fef2f2;border:2px solid #fca5a5;border-radius:10px;padding:12px 16px;margin-bottom:10px;">' +
+      '<div style="font-weight:900;color:#dc2626;margin-bottom:8px;font-size:.9rem;">⛔ SIN STOCK — NO SE PUEDEN FACTURAR (' + blocked.length + ')</div>';
+    blocked.forEach(function(p){
+      panelHtml += '<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid #fecaca;font-size:.82rem;">' +
+        '<span style="font-weight:700;color:#dc2626;">' + p.r + '</span>' +
+        '<span style="color:#5a6080;">' + p.d + '</span>' +
+        '<span style="font-weight:700;color:#dc2626;">Solicitado: ' + p.sol + ' | Stock: 0</span>' +
+      '</div>';
+    });
+    panelHtml += '<div style="margin-top:8px;font-size:.78rem;color:#dc2626;font-weight:700;">⚠ Debes eliminar estos productos antes de confirmar.</div></div>';
+  }
+
+  if (partial.length > 0) {
+    panelHtml += '<div style="background:#fffbeb;border:2px solid #fcd34d;border-radius:10px;padding:12px 16px;margin-bottom:10px;">' +
+      '<div style="font-weight:900;color:#d97706;margin-bottom:8px;font-size:.9rem;">⚠ STOCK PARCIAL — SE DESPACHARÁ LO DISPONIBLE (' + partial.length + ')</div>';
+    partial.forEach(function(p){
+      panelHtml += '<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid #fde68a;font-size:.82rem;">' +
+        '<span style="font-weight:700;color:#b45309;">' + p.r + '</span>' +
+        '<span style="color:#5a6080;">' + p.d + '</span>' +
+        '<span style="font-weight:700;color:#d97706;">Sol: ' + p.sol + ' | Disp: ' + p.stock + '</span>' +
+      '</div>';
+    });
+    panelHtml += '</div>';
+  }
+
+  if (ok.length > 0 && blocked.length === 0 && partial.length === 0) {
+    panelHtml += '<div style="background:#f0fdf4;border:2px solid #86efac;border-radius:10px;padding:12px 16px;margin-bottom:10px;">' +
+      '<div style="font-weight:900;color:#16a34a;font-size:.9rem;">✓ TODOS LOS PRODUCTOS DISPONIBLES (' + ok.length + ' referencias)</div></div>';
+  }
+
+  document.getElementById('ie-stock-panel').innerHTML = panelHtml;
+
+  // Block/unblock confirm button
+  var confirmBtn = document.getElementById('ie-confirm-btn');
+  if (confirmBtn) {
+    if (blocked.length > 0) {
+      confirmBtn.disabled = true;
+      confirmBtn.style.opacity = '0.4';
+      confirmBtn.style.cursor = 'not-allowed';
+      confirmBtn.title = 'Elimina los productos sin stock antes de confirmar';
+    } else {
+      confirmBtn.disabled = false;
+      confirmBtn.style.opacity = '1';
+      confirmBtn.style.cursor = 'pointer';
+      confirmBtn.title = '';
+    }
+  }
+
+  // Preview table
+  var total = 0;
+  var previewRows = items.map(function(it, i){
+    var prod = PRODUCTS.find(function(p){ return p.r === it.r; });
+    var sub = it.qty * it.precio;
+    total += sub;
+    return '<tr style="background:' + (i%2===0?'#fff':'#f8f9ff') + ';">' +
+      '<td style="padding:7px 10px;font-weight:700;color:#1a2050;font-size:.8rem;">' + it.r + '</td>' +
+      '<td style="padding:7px 10px;font-size:.78rem;">' + (prod ? prod.d : it.r) + '</td>' +
+      '<td style="padding:7px 10px;text-align:center;font-weight:700;">' + it.qty + '</td>' +
+      '<td style="padding:7px 10px;text-align:center;">$ ' + fmt(it.precio) + '</td>' +
+      '<td style="padding:7px 10px;text-align:right;font-weight:700;color:#e8692a;">$ ' + fmt(sub) + '</td>' +
+      '</tr>';
+  }).join('');
+  _importData.total = total;
+
+  document.getElementById('ie-preview-table').innerHTML =
+    '<table style="width:100%;border-collapse:collapse;font-size:.82rem;">' +
+    '<thead><tr style="background:#1a2050;color:white;">' +
+    '<th style="padding:7px 10px;text-align:left;">Ref</th>' +
+    '<th style="padding:7px 10px;text-align:left;">Descripción</th>' +
+    '<th style="padding:7px 10px;text-align:center;">Cant</th>' +
+    '<th style="padding:7px 10px;text-align:center;">Precio</th>' +
+    '<th style="padding:7px 10px;text-align:right;">Subtotal</th>' +
+    '</tr></thead><tbody>' + previewRows + '</tbody>' +
+    '<tfoot><tr style="background:#f0f4ff;">' +
+    '<td colspan="4" style="padding:8px 10px;font-weight:900;color:#1a2050;text-align:right;">TOTAL:</td>' +
+    '<td style="padding:8px 10px;font-weight:900;color:#e8692a;font-size:1rem;text-align:right;">$ ' + fmt(total) + '</td>' +
+    '</tr></tfoot>' +
+    '</table>';
+
+  showImportStep(4);
+}
+
+function importPreviewPDF() {
+  if (!_importData) return;
+  var d = _importData;
+  var inv = getInventory();
+  var rows = (d.items||[]).map(function(it, i){
+    var prod = PRODUCTS.find(function(p){ return p.r === it.r; });
+    var sub = it.qty * it.precio;
+    var bg = i % 2 === 0 ? '#ffffff' : '#f8f9ff';
+    return '<tr style="background:' + bg + ';border-bottom:1px solid #eee;">' +
+      '<td style="padding:7px 10px;">' + (i+1) + '</td>' +
+      '<td style="padding:7px 10px;font-weight:700;">' + it.r + '</td>' +
+      '<td style="padding:7px 10px;">' + (prod ? prod.d : it.r) + '</td>' +
+      '<td style="padding:7px 10px;text-align:center;">' + it.qty + '</td>' +
+      '<td style="padding:7px 10px;text-align:right;">$ ' + fmt(it.precio) + '</td>' +
+      '<td style="padding:7px 10px;text-align:right;font-weight:700;">$ ' + fmt(sub) + '</td>' +
+      '</tr>';
+  }).join('');
+  var total = (d.items||[]).reduce(function(s,it){ return s + it.qty * it.precio; }, 0);
+
+  var parts = [];
+  parts.push('<!DOCTYPE html><html><head><meta charset="UTF-8">');
+  parts.push('<title>PEDIDO ' + (d.numpedido||'') + ' - FARMERS C.A.</title>');
+  parts.push('<style>body{font-family:Arial,sans-serif;margin:0;padding:20px;color:#1a2050;}');
+  parts.push('.header{background:linear-gradient(135deg,#1a2050,#e8692a);color:white;padding:20px 24px;border-radius:10px;margin-bottom:20px;}');
+  parts.push('.header h1{margin:0;font-size:1.6rem;}');
+  parts.push('.info-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px;}');
+  parts.push('.info-box{background:#f8f9ff;border-radius:8px;padding:10px 14px;border-left:3px solid #1a2050;}');
+  parts.push('.label{font-size:.65rem;color:#8892b0;font-weight:700;text-transform:uppercase;letter-spacing:.8px;margin-bottom:2px;}');
+  parts.push('.value{font-weight:700;font-size:.9rem;}');
+  parts.push('table{width:100%;border-collapse:collapse;}');
+  parts.push('th{background:#1a2050;color:white;padding:8px 10px;text-align:left;font-size:.8rem;}');
+  parts.push('.total-row{background:#fff7ed;font-weight:900;font-size:1.1rem;}');
+  parts.push('@media print{body{padding:10px;}}</style></head><body>');
+  parts.push('<div class="header">');
+  parts.push('<h1>FARMERS C.A. &mdash; PEDIDO #' + (d.numpedido||'S/N') + '</h1>');
+  parts.push('<div style="font-size:.85rem;opacity:.85;margin-top:4px;">Vista Previa &mdash; ' + (d.fecha||'') + '</div>');
+  parts.push('</div>');
+  parts.push('<div class="info-grid">');
+  parts.push('<div class="info-box"><div class="label">Cliente</div><div class="value">' + (d.cliente||'') + '</div></div>');
+  parts.push('<div class="info-box"><div class="label">RIF</div><div class="value">' + (d.rif||'') + '</div></div>');
+  parts.push('<div class="info-box"><div class="label">Teléfono</div><div class="value">' + (d.telefono||'') + '</div></div>');
+  parts.push('<div class="info-box"><div class="label">Vendedor</div><div class="value">' + (d.vendedor||'') + '</div></div>');
+  parts.push('<div class="info-box" style="grid-column:span 2;"><div class="label">Dirección</div><div class="value">' + (d.direccion||'') + '</div></div>');
+  parts.push('</div>');
+  parts.push('<table><thead><tr><th>#</th><th>Ref</th><th>Descripción</th><th style="text-align:center;">Cant</th><th style="text-align:right;">Precio</th><th style="text-align:right;">Subtotal</th></tr></thead>');
+  parts.push('<tbody>' + rows + '</tbody>');
+  parts.push('<tfoot><tr class="total-row"><td colspan="5" style="padding:10px;text-align:right;">TOTAL ' + (d.moneda||'USD') + ':</td>');
+  parts.push('<td style="padding:10px;text-align:right;color:#e8692a;">$ ' + fmt(total) + '</td></tr></tfoot></table>');
+  parts.push('<div style="margin-top:40px;display:flex;justify-content:space-around;">');
+  parts.push('<div style="text-align:center;"><div style="border-top:1.5px solid #1a2050;padding-top:6px;width:180px;font-size:.8rem;">Firma del Vendedor</div></div>');
+  parts.push('<div style="text-align:center;"><div style="border-top:1.5px solid #1a2050;padding-top:6px;width:180px;font-size:.8rem;">Firma del Cliente</div></div>');
+  parts.push('</div>');
+  parts.push('<script>window.onload=function(){window.print();}<\/script>');
+  parts.push('</body></html>');
+  var w = window.open('', '_blank', 'width=900,height=700');
+  if (w) w.document.write(parts.join(''));
+}
+
+function importPreviewExcel() {
+  if (!_importData || typeof XLSX === 'undefined') { alert('XLSX no disponible.'); return; }
+  var d = _importData;
+  var wb = XLSX.utils.book_new();
+  var aoa = [
+    ['FARMERS C.A. - PEDIDO #' + (d.numpedido||'')],
+    ['Cliente:', d.cliente||'', 'RIF:', d.rif||''],
+    ['Fecha:', d.fecha||'', 'Vendedor:', d.vendedor||''],
+    ['Teléfono:', d.telefono||'', 'Moneda:', d.moneda||'USD'],
+    [],
+    ['#', 'Referencia', 'Descripción', 'Cantidad', 'Precio Unit.', 'Subtotal']
+  ];
+  var total = 0;
+  (d.items||[]).forEach(function(it, i){
+    var prod = PRODUCTS.find(function(p){ return p.r === it.r; });
+    var sub = it.qty * it.precio;
+    total += sub;
+    aoa.push([i+1, it.r, prod ? prod.d : it.r, it.qty, it.precio, sub]);
+  });
+  aoa.push([]);
+  aoa.push(['', '', '', '', 'TOTAL:', total]);
+  var ws = XLSX.utils.aoa_to_sheet(aoa);
+  XLSX.utils.book_append_sheet(wb, ws, 'Pedido');
+  XLSX.writeFile(wb, 'PEDIDO_' + (d.numpedido||Date.now()) + '_' + (d.cliente||'').replace(/\s+/g,'_') + '.xlsx');
 }
 
 </script>
