@@ -1261,10 +1261,11 @@ function goToHistorial(){
   document.getElementById('panel4').classList.add('active');
   document.getElementById('step4-tab').classList.add('active');
   renderHistorial();
-  // Also sync from Firebase if available
+  // Sync Firebase + re-render after
   setTimeout(function(){
     if (typeof loadFromFirebase === 'function') loadFromFirebase();
-  }, 300);
+    setTimeout(function(){ renderHistorial(); }, 1200);
+  }, 200);
 }
 
 function renderHistorial(){
@@ -1678,11 +1679,19 @@ function lShowApp(username) {
   var nm = document.getElementById('usr-name');
   if (av) av.textContent = username.slice(0,2);
   if (nm) nm.textContent = username;
-  // Render on login — immediate + Firebase fallback
+  // Render inmediato + diferido para garantizar que el DOM esté listo
   if (typeof renderHistorial === 'function') renderHistorial();
   if (typeof renderTable    === 'function') renderTable();
   setTimeout(function(){
+    // Segunda pasada por si el primer render fue antes de que los datos estuvieran listos
+    if (typeof renderHistorial === 'function') renderHistorial();
+  }, 200);
+  setTimeout(function(){
     if (typeof loadFromFirebase === 'function') loadFromFirebase();
+    // Tercera pasada tras sincronización Firebase
+    setTimeout(function(){
+      if (typeof renderHistorial === 'function') renderHistorial();
+    }, 1500);
   }, 600);
 }
 
@@ -3120,116 +3129,188 @@ function goToImportPreview() {
   if (removeBtn) removeBtn.style.display = blocked.length > 0 ? 'inline-block' : 'none';
 
   // Preview table
-  var total = 0;
+  var total = 0; var previewUnits = 0;
   var previewRows = items.map(function(it, i){
-    var prod = PRODUCTS.find(function(p){ return p.r === it.r; });
-    var sub = it.qty * it.precio;
-    total += sub;
-    return '<tr style="background:' + (i%2===0?'#fff':'#f8f9ff') + ';">' +
-      '<td style="padding:7px 10px;font-weight:700;color:#1a2050;font-size:.8rem;">' + it.r + '</td>' +
-      '<td style="padding:7px 10px;font-size:.78rem;">' + (prod ? prod.d : it.r) + '</td>' +
-      '<td style="padding:7px 10px;text-align:center;font-weight:700;">' + it.qty + '</td>' +
-      '<td style="padding:7px 10px;text-align:center;">$ ' + fmt(it.precio) + '</td>' +
-      '<td style="padding:7px 10px;text-align:right;font-weight:700;color:#e8692a;">$ ' + fmt(sub) + '</td>' +
+    var prod  = PRODUCTS.find(function(p){ return p.r === it.r; });
+    var qty   = it.qty || 0;
+    var sub   = qty * (it.precio || 0);
+    var invN  = getInventory();
+    var stock = invN[it.r] !== undefined ? invN[it.r] : (prod ? prod.ex : 0);
+    var et    = stock - qty;
+    total += sub; previewUnits += qty;
+    var stC = stock > 0 ? '#16a34a' : '#dc2626';
+    var etC = et >= 0  ? '#5a6080'  : '#dc2626';
+    return '<tr style="background:' + (i%2===0?'#fff':'#f8f9ff') + ';border-bottom:1px solid #f0f2f8;">' +
+      '<td style="padding:5px 7px;font-weight:700;color:#1a2050;font-size:.75rem;">' + (it.r||'') + '</td>' +
+      '<td style="padding:5px 7px;font-size:.68rem;color:#5a6080;">' + (prod ? prod.b||'' : '') + '</td>' +
+      '<td style="padding:5px 7px;font-size:.68rem;color:#5a6080;">' + (prod ? prod.c||'' : '') + '</td>' +
+      '<td style="padding:5px 7px;font-size:.72rem;">' + (prod ? prod.d : (it.r||'')) + '</td>' +
+      '<td style="padding:5px 7px;text-align:center;font-size:.68rem;">' + (prod ? prod.e||'' : '') + '</td>' +
+      '<td style="padding:5px 7px;text-align:center;font-size:.68rem;">' + (prod ? prod.m||'' : '') + '</td>' +
+      '<td style="padding:5px 7px;text-align:right;font-size:.72rem;">$ ' + fmt(it.precio||0) + '</td>' +
+      '<td style="padding:5px 7px;text-align:center;font-weight:700;">' + qty + '</td>' +
+      '<td style="padding:5px 7px;text-align:right;font-weight:700;color:#e8692a;">$ ' + fmt(sub) + '</td>' +
+      '<td style="padding:5px 7px;text-align:center;font-weight:700;color:' + stC + ';">' + stock + '</td>' +
+      '<td style="padding:5px 7px;text-align:center;font-weight:700;color:' + etC + ';">' + et + '</td>' +
       '</tr>';
   }).join('');
   _importData.total = total;
 
   document.getElementById('ie-preview-table').innerHTML =
-    '<table style="width:100%;border-collapse:collapse;font-size:.82rem;">' +
+    '<table style="width:100%;border-collapse:collapse;font-size:.75rem;">' +
     '<thead><tr style="background:#1a2050;color:white;">' +
-    '<th style="padding:7px 10px;text-align:left;">Ref</th>' +
-    '<th style="padding:7px 10px;text-align:left;">Descripción</th>' +
-    '<th style="padding:7px 10px;text-align:center;">Cant</th>' +
-    '<th style="padding:7px 10px;text-align:center;">Precio</th>' +
-    '<th style="padding:7px 10px;text-align:right;">Subtotal</th>' +
+    '<th style="padding:6px 7px;white-space:nowrap;">Referencia</th>' +
+    '<th style="padding:6px 7px;white-space:nowrap;">Cód.Barra</th>' +
+    '<th style="padding:6px 7px;white-space:nowrap;">Código</th>' +
+    '<th style="padding:6px 7px;">Descripción</th>' +
+    '<th style="padding:6px 7px;text-align:center;white-space:nowrap;">Empaque</th>' +
+    '<th style="padding:6px 7px;text-align:center;white-space:nowrap;">Medida</th>' +
+    '<th style="padding:6px 7px;text-align:right;white-space:nowrap;">Precio</th>' +
+    '<th style="padding:6px 7px;text-align:center;white-space:nowrap;">Orden</th>' +
+    '<th style="padding:6px 7px;text-align:right;white-space:nowrap;">Total</th>' +
+    '<th style="padding:6px 7px;text-align:center;white-space:nowrap;">Exist.</th>' +
+    '<th style="padding:6px 7px;text-align:center;white-space:nowrap;">Exist.Total</th>' +
     '</tr></thead><tbody>' + previewRows + '</tbody>' +
-    '<tfoot><tr style="background:#f0f4ff;">' +
-    '<td colspan="4" style="padding:8px 10px;font-weight:900;color:#1a2050;text-align:right;">TOTAL:</td>' +
-    '<td style="padding:8px 10px;font-weight:900;color:#e8692a;font-size:1rem;text-align:right;">$ ' + fmt(total) + '</td>' +
-    '</tr></tfoot>' +
-    '</table>';
+    '<tfoot>' +
+    '<tr style="background:#f0f4ff;font-weight:700;border-top:2px solid #1a2050;">' +
+    '<td colspan="7" style="padding:8px 10px;text-align:right;color:#1a2050;">UNIDADES TOTALES</td>' +
+    '<td style="padding:8px 10px;text-align:center;color:#1a2050;font-weight:900;">' + previewUnits + ' uds</td>' +
+    '<td colspan="3"></td>' +
+    '</tr>' +
+    '<tr style="background:#1a2050;color:white;font-weight:900;">' +
+    '<td colspan="8" style="padding:9px 12px;text-align:right;font-size:.82rem;letter-spacing:1px;">TOTAL USD:</td>' +
+    '<td style="padding:9px 12px;text-align:right;font-size:.92rem;color:#f5a623;">$ ' + fmt(total) + '</td>' +
+    '<td colspan="2"></td>' +
+    '</tr>' +
+    '</tfoot></table>';
 
   showImportStep(4);
 }
 
 function importPreviewPDF() {
   if (!_importData) return;
-  var d = _importData;
+  var d   = _importData;
   var inv = getInventory();
-  var invP = getInventory();
+  var grandTotal = 0;
+  var grandUnits = 0;
+
   var rows = (d.items||[]).map(function(it, i){
-    var prod = PRODUCTS.find(function(p){ return p.r === it.r; });
-    var sub = it.qty * it.precio;
-    var stock = invP[it.r] !== undefined ? invP[it.r] : (prod ? prod.ex : 0);
-    var bg = i % 2 === 0 ? '#ffffff' : '#f8f9ff';
+    var prod  = PRODUCTS.find(function(p){ return p.r === it.r; });
+    var qty   = it.qty || 0;
+    var sub   = qty * (it.precio || 0);
+    var stock = inv[it.r] !== undefined ? inv[it.r] : (prod ? prod.ex : 0);
+    var et    = stock - qty;
+    grandTotal += sub;
+    grandUnits += qty;
+    var bg  = i % 2 === 0 ? '#ffffff' : '#f8f9ff';
+    var stC = stock > 0 ? '#16a34a' : '#dc2626';
+    var etC = et >= 0   ? '#5a6080' : '#dc2626';
     return '<tr style="background:' + bg + ';border-bottom:1px solid #eee;">' +
-      '<td style="padding:6px 8px;color:#8892b0;">' + (i+1) + '</td>' +
-      '<td style="padding:6px 8px;font-weight:700;color:#1a2050;">' + it.r + '</td>' +
-      '<td style="padding:6px 8px;color:#5a6080;">' + (prod ? prod.b||'' : '') + '</td>' +
-      '<td style="padding:6px 8px;color:#5a6080;">' + (prod ? prod.c||'' : '') + '</td>' +
-      '<td style="padding:6px 8px;">' + (prod ? prod.d : it.r) + '</td>' +
-      '<td style="padding:6px 8px;text-align:center;">' + (prod ? prod.e||'' : '') + '</td>' +
-      '<td style="padding:6px 8px;text-align:center;">' + (prod ? prod.m||'' : '') + '</td>' +
-      '<td style="padding:6px 8px;text-align:center;">$ ' + fmt(it.precio) + '</td>' +
-      '<td style="padding:6px 8px;text-align:center;font-weight:700;">' + it.qty + '</td>' +
-      '<td style="padding:6px 8px;text-align:right;font-weight:700;color:#e8692a;">$ ' + fmt(sub) + '</td>' +
-      '<td style="padding:6px 8px;text-align:center;font-weight:700;color:' + (stock>0 ? '#16a34a' : '#dc2626') + ';">' + stock + '</td>' +
-      '<td style="padding:6px 8px;text-align:center;font-weight:700;color:' + (Math.max(0,stock-it.qty)>0?'#16a34a':(stock-it.qty===0?'#e8692a':'#dc2626')) + ';">' + Math.max(0,stock-it.qty) + '</td>' +
+      '<td style="padding:5px 6px;text-align:center;color:#8892b0;">' + (i+1) + '</td>' +
+      '<td style="padding:5px 6px;font-weight:700;color:#1a2050;">' + (it.r||'') + '</td>' +
+      '<td style="padding:5px 6px;color:#5a6080;">' + (prod ? prod.b||'' : '') + '</td>' +
+      '<td style="padding:5px 6px;color:#5a6080;">' + (prod ? prod.c||'' : '') + '</td>' +
+      '<td style="padding:5px 6px;">' + (prod ? prod.d||'' : (it.r||'')) + '</td>' +
+      '<td style="padding:5px 6px;text-align:center;">' + (prod ? prod.e||'' : '') + '</td>' +
+      '<td style="padding:5px 6px;text-align:center;">' + (prod ? prod.m||'' : '') + '</td>' +
+      '<td style="padding:5px 6px;text-align:right;">$ ' + fmt(it.precio||0) + '</td>' +
+      '<td style="padding:5px 6px;text-align:center;font-weight:700;">' + qty + '</td>' +
+      '<td style="padding:5px 6px;text-align:right;font-weight:700;color:#e8692a;">$ ' + fmt(sub) + '</td>' +
+      '<td style="padding:5px 6px;text-align:center;font-weight:700;color:' + stC + ';">' + stock + '</td>' +
+      '<td style="padding:5px 6px;text-align:center;font-weight:700;color:' + etC + ';">' + et + '</td>' +
       '</tr>';
   }).join('');
-  var total = (d.items||[]).reduce(function(s,it){ return s + it.qty * it.precio; }, 0);
 
-  var parts = [];
-  parts.push('<!DOCTYPE html><html><head><meta charset="UTF-8">');
-  parts.push('<title>PEDIDO ' + (d.numpedido||'') + ' - FARMERS C.A.</title>');
-  parts.push('<style>body{font-family:Arial,sans-serif;margin:0;padding:20px;color:#1a2050;}');
-  parts.push('.header{background:linear-gradient(135deg,#1a2050,#e8692a);color:white;padding:20px 24px;border-radius:10px;margin-bottom:20px;}');
-  parts.push('.header h1{margin:0;font-size:1.6rem;}');
-  parts.push('.info-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px;}');
-  parts.push('.info-box{background:#f8f9ff;border-radius:8px;padding:10px 14px;border-left:3px solid #1a2050;}');
-  parts.push('.label{font-size:.65rem;color:#8892b0;font-weight:700;text-transform:uppercase;letter-spacing:.8px;margin-bottom:2px;}');
-  parts.push('.value{font-weight:700;font-size:.9rem;}');
-  parts.push('table{width:100%;border-collapse:collapse;}');
-  parts.push('th{background:#1a2050;color:white;padding:8px 10px;text-align:left;font-size:.8rem;}');
-  parts.push('.total-row{background:#fff7ed;font-weight:900;font-size:1.1rem;}');
-  parts.push('@media print{body{padding:10px;}}</style></head><body>');
-  parts.push('<div class="header">');
-  parts.push('<h1>FARMERS C.A. &mdash; PEDIDO #' + (d.numpedido||'S/N') + '</h1>');
-  parts.push('<div style="font-size:.85rem;opacity:.85;margin-top:4px;">Vista Previa &mdash; ' + (d.fecha||'') + '</div>');
-  parts.push('</div>');
-  parts.push('<div class="info-grid">');
-  parts.push('<div class="info-box"><div class="label">Cliente</div><div class="value">' + (d.cliente||'') + '</div></div>');
-  parts.push('<div class="info-box"><div class="label">RIF</div><div class="value">' + (d.rif||'') + '</div></div>');
-  parts.push('<div class="info-box"><div class="label">Teléfono</div><div class="value">' + (d.telefono||'') + '</div></div>');
-  parts.push('<div class="info-box"><div class="label">Vendedor</div><div class="value">' + (d.vendedor||'') + '</div></div>');
-  parts.push('<div class="info-box" style="grid-column:span 2;"><div class="label">Dirección</div><div class="value">' + (d.direccion||'') + '</div></div>');
-  parts.push('</div>');
-  parts.push('<table><thead><tr>');
-  parts.push('<th>#</th><th>Referencia</th><th>Cód.Barra</th><th>Código</th><th>Descripción</th>');
-  parts.push('<th style="text-align:center;">Empaque</th><th style="text-align:center;">Medida</th>');
-  parts.push('<th style="text-align:center;">Precio</th><th style="text-align:center;">Orden</th>');
-  parts.push('<th style="text-align:right;">Total</th><th style="text-align:center;">Exist.</th><th style="text-align:right;">Exist.Total</th>');
-  parts.push('</tr></thead>');
-  parts.push('<tbody>' + rows + '</tbody>');
-    parts.push('<tfoot>');
-  parts.push('<tr style="background:#f8f9ff;border-top:2px solid #1a2050;">');
-  parts.push('<td colspan="8" style="padding:9px 10px;text-align:right;font-weight:700;color:#1a2050;font-size:.8rem;letter-spacing:.5px;">TOTAL USD:</td>');
-  parts.push('<td style="padding:9px 10px;text-align:center;font-weight:700;color:#1a2050;">' + grandUnits + ' uds</td>');
-  parts.push('<td style="padding:9px 10px;text-align:right;font-weight:900;color:#e8692a;font-size:.95rem;">$ ' + fmt(total) + '</td>');
-  parts.push('<td colspan="2" style="padding:9px 10px;"></td>');
-  parts.push('</tr>');
-  parts.push('</tfoot></table>');;
-  parts.push('<div style="margin-top:40px;display:flex;justify-content:space-around;">');
-  parts.push('<div style="text-align:center;"><div style="border-top:1.5px solid #1a2050;padding-top:6px;width:180px;font-size:.8rem;">Firma del Vendedor</div></div>');
-  parts.push('<div style="text-align:center;"><div style="border-top:1.5px solid #1a2050;padding-top:6px;width:180px;font-size:.8rem;">Firma del Cliente</div></div>');
-  parts.push('</div>');
-  parts.push('<script>window.onload=function(){window.print();}<\/script>');
-  parts.push('</body></html>');
-  var w = window.open('', '_blank', 'width=900,height=700');
-  if (w) w.document.write(parts.join(''));
+  var p = [];
+  p.push('<!DOCTYPE html><html><head><meta charset="UTF-8">');
+  p.push('<title>Pedido #' + (d.numpedido||'') + ' | FARMERS C.A.</title>');
+  p.push('<style>');
+  p.push('*{box-sizing:border-box;margin:0;padding:0}');
+  p.push('body{font-family:Arial,sans-serif;font-size:.75rem;padding:14px;color:#1a2050}');
+  p.push('.hdr{background:linear-gradient(135deg,#1a2050 0%,#e8692a 100%);color:#fff;padding:14px 20px;border-radius:9px;margin-bottom:12px;display:flex;justify-content:space-between;align-items:center}');
+  p.push('.hdr h1{font-size:1.25rem;letter-spacing:2px;margin:0}');
+  p.push('.hdr .sub{font-size:.7rem;opacity:.75;margin-top:3px}');
+  p.push('.hdr .num{font-size:1.5rem;font-weight:900;color:#f5a623;text-align:right}');
+  p.push('.ig{display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:7px;margin-bottom:12px}');
+  p.push('.ib{background:#f8f9ff;border-radius:6px;padding:6px 10px;border-left:3px solid #1a2050}');
+  p.push('.ib.w2{grid-column:span 2}.ib.w4{grid-column:span 4}');
+  p.push('.lbl{font-size:.58rem;font-weight:700;text-transform:uppercase;color:#8892b0;letter-spacing:.7px}');
+  p.push('.val{font-weight:700;font-size:.8rem;margin-top:1px}');
+  p.push('table{width:100%;border-collapse:collapse}');
+  p.push('thead tr{background:#1a2050;color:#fff}');
+  p.push('th{padding:6px 6px;font-size:.62rem;letter-spacing:.3px;white-space:nowrap}');
+  p.push('th.c{text-align:center}th.r{text-align:right}');
+  p.push('td{font-size:.7rem}');
+  p.push('.fu1{background:#f0f4ff;border-top:2px solid #1a2050}');
+  p.push('.fu2{background:#1a2050;color:#fff;font-weight:900}');
+  p.push('.sigs{display:grid;grid-template-columns:1fr 1fr;gap:50px;margin-top:30px;padding-top:4px}');
+  p.push('.sig{border-top:1.5px solid #1a2050;padding-top:5px;text-align:center;font-size:.68rem;color:#8892b0}');
+  p.push('.noprint{text-align:center;margin-top:12px}');
+  p.push('@media print{.noprint{display:none}body{padding:6px}}');
+  p.push('</style></head><body>');
+
+  // Header
+  p.push('<div class="hdr">');
+  p.push('<div><h1>FARMERS C.A.</h1><div class="sub">NOTA DE PEDIDO</div></div>');
+  p.push('<div><div class="num">Pedido #' + (d.numpedido||'S/N') + '</div><div style="font-size:.7rem;opacity:.75;text-align:right;">' + (d.fecha||'') + '</div></div>');
+  p.push('</div>');
+
+  // Info grid
+  p.push('<div class="ig">');
+  p.push('<div class="ib w2"><div class="lbl">Cliente</div><div class="val">' + (d.cliente||'-') + '</div></div>');
+  p.push('<div class="ib"><div class="lbl">RIF</div><div class="val">' + (d.rif||'-') + '</div></div>');
+  p.push('<div class="ib"><div class="lbl">Fecha</div><div class="val">' + (d.fecha||'-') + '</div></div>');
+  p.push('<div class="ib"><div class="lbl">Teléfono</div><div class="val">' + (d.telefono||'-') + '</div></div>');
+  p.push('<div class="ib"><div class="lbl">Vendedor</div><div class="val">' + (d.vendedor||'-') + '</div></div>');
+  p.push('<div class="ib w2"><div class="lbl">Dirección</div><div class="val">' + (d.direccion||'-') + '</div></div>');
+  p.push('</div>');
+
+  // Table
+  p.push('<table><thead><tr>');
+  p.push('<th class="c">#</th>');
+  p.push('<th>Referencia</th>');
+  p.push('<th>Cód.Barra</th>');
+  p.push('<th>Código</th>');
+  p.push('<th>Descripción</th>');
+  p.push('<th class="c">Empaque</th>');
+  p.push('<th class="c">Medida</th>');
+  p.push('<th class="r">Precio</th>');
+  p.push('<th class="c">Orden</th>');
+  p.push('<th class="r">Total</th>');
+  p.push('<th class="c">Exist.</th>');
+  p.push('<th class="c">Exist.Total</th>');
+  p.push('</tr></thead>');
+  p.push('<tbody>' + rows + '</tbody>');
+  p.push('<tfoot>');
+  p.push('<tr class="fu1">');
+  p.push('<td colspan="8" style="padding:7px 10px;text-align:right;color:#1a2050;">UNIDADES TOTALES</td>');
+  p.push('<td style="padding:7px 10px;text-align:center;font-weight:900;color:#1a2050;">' + grandUnits + ' uds</td>');
+  p.push('<td colspan="3"></td>');
+  p.push('</tr>');
+  p.push('<tr class="fu2">');
+  p.push('<td colspan="9" style="padding:9px 12px;text-align:right;font-size:.82rem;letter-spacing:1px;">TOTAL USD:</td>');
+  p.push('<td style="padding:9px 12px;text-align:right;font-size:.95rem;color:#f5a623;">$ ' + fmt(grandTotal) + '</td>');
+  p.push('<td colspan="2" style="padding:9px;"></td>');
+  p.push('</tr>');
+  p.push('</tfoot></table>');
+
+  // Signatures
+  p.push('<div class="sigs">');
+  p.push('<div class="sig">Firma y Sello del Cliente</div>');
+  p.push('<div class="sig">Firma del Vendedor</div>');
+  p.push('</div>');
+
+  // Print button (hidden on print)
+  p.push('<div class="noprint"><button onclick="window.print()" style="background:#1a2050;color:#fff;border:none;border-radius:8px;padding:9px 26px;cursor:pointer;font-weight:700;font-size:.85rem;">🖨 Imprimir / Guardar PDF</button></div>');
+  p.push('</body></html>');
+
+  var w = window.open('', '_blank', 'width=1150,height=760');
+  if (!w) { alert('⚠️ Activa las ventanas emergentes en tu navegador para ver el PDF.'); return; }
+  w.document.open();
+  w.document.write(p.join(''));
+  w.document.close();
+  w.focus();
 }
-
 function importPreviewExcel() {
   if (!_importData || typeof XLSX === 'undefined') { alert('XLSX no disponible.'); return; }
   var d = _importData;
@@ -3460,10 +3541,13 @@ window.addEventListener('load', function(){
   </div>
 </div>
 <script>
-// ── Render historial garantizado al cargar todo ──
+// ── Render garantizado al finalizar carga completa ──
 window.addEventListener('load', function(){
-  if (typeof renderHistorial === 'function') renderHistorial();
-  if (typeof renderTable    === 'function') renderTable();
+  // Small delay to let all inline scripts finish
+  setTimeout(function(){
+    if (typeof renderHistorial === 'function') renderHistorial();
+    if (typeof renderTable    === 'function') renderTable();
+  }, 100);
 });
 
 
