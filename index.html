@@ -1868,30 +1868,53 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
   window.fbGetInventory  = async () => { try{ const d=await getDoc(doc(db,'data','inventory')); return d.exists()?JSON.parse(d.data().v):null; }catch(e){return null;} };
   window.fbGetSales      = async () => { try{ const d=await getDoc(doc(db,'data','sales'));     return d.exists()?JSON.parse(d.data().v):[]; }catch(e){return[];} };
   onSnapshot(doc(db,'data','sales'), s=>{
-    if(s.exists()){
-      try {
-        // MERGE: combine Firebase sales with local sales — never overwrite, always union
-        var fbSales    = JSON.parse(s.data().v) || [];
-        var rawLocal   = localStorage.getItem('farmers_sales');
-        var localSales = rawLocal ? JSON.parse(rawLocal) : [];
-        // Build union: start with local, add any FB sales not already present
-        var merged = localSales.slice();
-        fbSales.forEach(function(fs){
-          if(!merged.some(function(ls){ return String(ls.id)===String(fs.id); })){
-            merged.push(fs);
-          }
-        });
-        // Sort by date descending
+    try {
+      var fbSales = (s.exists() && s.data().v) ? (JSON.parse(s.data().v)||[]) : [];
+      var rawLocal   = localStorage.getItem('farmers_sales');
+      var localSales = rawLocal ? (JSON.parse(rawLocal)||[]) : [];
+      // MERGE: union de ambas fuentes, local tiene prioridad
+      var merged = localSales.slice();
+      fbSales.forEach(function(fs){
+        if(!merged.some(function(ls){ return String(ls.id)===String(fs.id); })){
+          merged.push(fs);
+        }
+      });
+      if(merged.length > 0){
         merged.sort(function(a,b){ return String(b.id).localeCompare(String(a.id)); });
         localStorage.setItem('farmers_sales', JSON.stringify(merged));
-        // Push merged back to Firebase to keep them in sync
-        if(window.fbSaveSales) window.fbSaveSales(merged);
-        if(typeof renderHistorial==='function') renderHistorial();
-      } catch(e){ console.warn('onSnapshot sales merge error:', e); }
-    }
+        // Si el merge agregó algo que no estaba en Firebase, subir
+        if(merged.length > fbSales.length){
+          setDoc(doc(db,'data','sales'), {v: JSON.stringify(merged)}).catch(function(){});
+        }
+      }
+      if(typeof renderHistorial==='function') renderHistorial();
+    } catch(e){ console.warn('onSnapshot sales:', e); }
   });
   onSnapshot(doc(db,'data','inventory'), s=>{ if(s.exists()){ localStorage.setItem('farmers_inv',s.data().v); if(typeof syncInventoryToProducts==='function'){ syncInventoryToProducts(); if(typeof renderTable==='function') renderTable(); }}});
   console.log('Firebase OK'); window._fbConnected=true;
+  // Push any local sales that Firebase doesn't have yet
+  setTimeout(async function(){
+    try {
+      var localRaw = localStorage.getItem('farmers_sales');
+      if(!localRaw) return;
+      var localSales = JSON.parse(localRaw)||[];
+      if(localSales.length === 0) return;
+      var snap = await getDoc(doc(db,'data','sales'));
+      var fbSales = (snap.exists() && snap.data().v) ? (JSON.parse(snap.data().v)||[]) : [];
+      var merged = fbSales.slice();
+      var added = 0;
+      localSales.forEach(function(ls){
+        if(!merged.some(function(fs){ return String(fs.id)===String(ls.id); })){
+          merged.push(ls); added++;
+        }
+      });
+      if(added > 0){
+        merged.sort(function(a,b){ return String(b.id).localeCompare(String(a.id)); });
+        await setDoc(doc(db,'data','sales'), {v: JSON.stringify(merged)});
+        console.log('Firebase: subidas ' + added + ' ventas locales a la nube');
+      }
+    } catch(e){ console.warn('fb push local:', e); }
+  }, 2000);
 </script>
 <script>
 
