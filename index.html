@@ -721,6 +721,8 @@ tbody td { padding: 8px 10px; vertical-align: middle; }
       <h3>📊 Historial de Ventas</h3>
       <div style="display:flex;gap:8px;align-items:center;">
         <span id="hist-count" style="font-size:0.8rem;color:var(--text2);font-weight:500;"></span>
+        <label for="import-hist-file-main" class="btn btn-sm" style="cursor:pointer;background:linear-gradient(135deg,#16a34a,#15803d);color:white;border:none;border-radius:8px;padding:8px 14px;font-weight:700;font-size:.78rem;letter-spacing:.5px;">📥 IMPORTAR</label>
+        <input type="file" id="import-hist-file-main" accept=".xlsx,.xls" style="display:none" onchange="importHistorialFromExcel(this)">
         <button class="btn btn-sm" onclick="exportHistorial()"
           style="background:linear-gradient(135deg,#1a2050,#252b6b);color:white;">
           📥 Exportar Historial
@@ -743,7 +745,8 @@ tbody td { padding: 8px 10px; vertical-align: middle; }
     <div style="padding:16px 20px;" id="hist-list">
       <div style="text-align:center;padding:48px;color:var(--text2);">
         <div style="font-size:3rem;margin-bottom:12px;">📭</div>
-        <p>No hay ventas registradas aún</p>
+        <p style="font-weight:700;font-size:1rem;color:#1a2050;margin-bottom:6px;">No hay ventas en este archivo</p>
+       <p style="font-size:.8rem;max-width:420px;margin:0 auto 14px;line-height:1.5;">⚠️ Cada versión descargada tiene su propio historial. Si tienes ventas en una versión anterior, expórtalas con <b>Exportar Historial</b> y luego usa el botón <b>📥 Importar</b> aquí.</p>
       </div>
     </div>
   </div>
@@ -1258,6 +1261,10 @@ function goToHistorial(){
   document.getElementById('panel4').classList.add('active');
   document.getElementById('step4-tab').classList.add('active');
   renderHistorial();
+  // Also sync from Firebase if available
+  setTimeout(function(){
+    if (typeof loadFromFirebase === 'function') loadFromFirebase();
+  }, 300);
 }
 
 function renderHistorial(){
@@ -1323,7 +1330,10 @@ function renderHistorial(){
         </table>
       </div>
       <div style="padding:8px 14px;border-top:1px solid #f0f2f8;display:flex;justify-content:flex-end;">
-        <button onclick="deleteSale(${sale.id})" style="background:none;border:1px solid #fca5a5;color:#dc2626;border-radius:6px;padding:4px 12px;cursor:pointer;font-size:0.75rem;font-weight:600;">🗑 Eliminar registro</button>
+        <button onclick="printSale(${sale.id})" style="background:#f0f4ff;color:#1a2050;border:1px solid #c5cae9;border-radius:6px;padding:4px 12px;cursor:pointer;font-size:0.75rem;font-weight:600;margin-right:6px;">🖨 PDF</button>
+        <button onclick="exportSale(${sale.id})" style="background:#f0fdf4;color:#16a34a;border:1px solid #bbf7d0;border-radius:6px;padding:4px 12px;cursor:pointer;font-size:0.75rem;font-weight:600;margin-right:6px;">📊 Excel</button>
+        <button onclick="editSale(${sale.id})" style="background:#fff7ed;color:#e8692a;border:1px solid #fed7aa;border-radius:6px;padding:4px 12px;cursor:pointer;font-size:0.75rem;font-weight:600;margin-right:6px;">✏️ Editar</button>
+        <button onclick="deleteSale(${sale.id})" style="background:none;border:1px solid #fca5a5;color:#dc2626;border-radius:6px;padding:4px 12px;cursor:pointer;font-size:0.75rem;font-weight:600;">🗑 Eliminar</button>
       </div>
     </div>`).join('');
 }
@@ -1668,6 +1678,12 @@ function lShowApp(username) {
   var nm = document.getElementById('usr-name');
   if (av) av.textContent = username.slice(0,2);
   if (nm) nm.textContent = username;
+  // Render on login — immediate + Firebase fallback
+  if (typeof renderHistorial === 'function') renderHistorial();
+  if (typeof renderTable    === 'function') renderTable();
+  setTimeout(function(){
+    if (typeof loadFromFirebase === 'function') loadFromFirebase();
+  }, 600);
 }
 
 function doLogout() {
@@ -2063,12 +2079,13 @@ function removeEditRow(btn) {
 
 function recalcEditTotal() {
   var rows = document.querySelectorAll('#edit-items-body tr');
-  var total = 0;
+  var total = 0; var grandUnits = 0;
   rows.forEach(function(row){
     var qty   = parseFloat(row.querySelector('.ei-qty')  ? row.querySelector('.ei-qty').value  : 0) || 0;
     var price = parseFloat(row.querySelector('.ei-price') ? row.querySelector('.ei-price').value : 0) || 0;
     var sub = qty * price;
     total += sub;
+    grandUnits += it.qty || 0;
     var subEl = row.querySelector('.ei-sub');
     if (subEl) subEl.textContent = '$ ' + fmt(sub);
   });
@@ -2181,80 +2198,146 @@ function saveEditSale() {
 function printSale(saleId) {
   var sale = getSales().find(function(s){ return String(s.id) === String(saleId); });
   if (!sale) return;
-  var w = window.open('', '_blank', 'width=900,height=700');
+  var inv = getInventory();
+  var w = window.open('', '_blank', 'width=1100,height=750');
   var doc = w.document;
   doc.open();
 
-  /* Build HTML parts as arrays to avoid any close-tag issues */
   var parts = [];
-  parts.push('<!DOCTYPE html>');
-  parts.push('<html><head><meta charset="UTF-8">');
-  parts.push('<title>Pedido #' + (sale.numpedido||'SN') + '</title>');
+  parts.push('<!DOCTYPE html><html><head><meta charset="UTF-8">');
+  parts.push('<title>Pedido #' + (sale.numpedido||'SN') + ' - FARMERS C.A.</title>');
   parts.push('<style>');
-  parts.push('body{font-family:Arial,sans-serif;margin:20px;color:#1a2050;}');
-  parts.push('table{width:100%;border-collapse:collapse;font-size:.82rem;}');
-  parts.push('th{background:#1a2050;color:white;padding:8px 10px;text-align:left;}');
-  parts.push('@media print{body{margin:10px;}}');
-  parts.push('</style>');
-  parts.push('</head>');
-  parts.push('<body>');
+  parts.push('*{box-sizing:border-box;}');
+  parts.push('body{font-family:Arial,sans-serif;margin:0;padding:16px;color:#1a2050;font-size:.82rem;}');
+  parts.push('.header{background:linear-gradient(135deg,#1a2050,#2d3a8c);color:white;padding:18px 24px;border-radius:10px;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center;}');
+  parts.push('.header h1{margin:0;font-size:1.5rem;letter-spacing:2px;}');
+  parts.push('.header .num{font-size:1.8rem;font-weight:900;color:#f5a623;}');
+  parts.push('.info-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:14px;}');
+  parts.push('.info-box{background:#f8f9ff;border-radius:7px;padding:8px 11px;border-left:3px solid #1a2050;}');
+  parts.push('.info-box .lbl{font-size:.62rem;font-weight:700;text-transform:uppercase;color:#8892b0;letter-spacing:.8px;margin-bottom:2px;}');
+  parts.push('.info-box .val{font-weight:700;font-size:.85rem;}');
+  parts.push('.info-wide{grid-column:span 2;}');
+  parts.push('table{width:100%;border-collapse:collapse;font-size:.75rem;}');
+  parts.push('thead tr{background:#1a2050;color:white;}');
+  parts.push('th{padding:7px 8px;text-align:left;white-space:nowrap;font-size:.68rem;letter-spacing:.5px;}');
+  parts.push('th.num{text-align:center;} th.right{text-align:right;}');
+  parts.push('td{padding:6px 8px;border-bottom:1px solid #eef0f8;}');
+  parts.push('td.center{text-align:center;} td.right{text-align:right;}');
+  parts.push('tr.even{background:#f8f9ff;}');
+  parts.push('tfoot td{background:#1a2050;color:white;font-weight:700;padding:8px 10px;}');
+  parts.push('.brand{display:inline-block;border-radius:4px;padding:1px 6px;font-size:.62rem;font-weight:700;color:white;}');
+  parts.push('.sigs{display:grid;grid-template-columns:1fr 1fr;gap:40px;margin-top:36px;}');
+  parts.push('.sig{border-top:1.5px solid #1a2050;padding-top:7px;text-align:center;font-size:.72rem;color:#8892b0;}');
+  parts.push('@media print{body{padding:8px;} .no-print{display:none;}}');
+  parts.push('</style></head><body>');
 
-  /* Header */
-  parts.push('<div style="background:#1a2050;color:white;padding:20px;border-radius:8px;margin-bottom:16px;display:flex;justify-content:space-between;align-items:center;">');
-  parts.push('<div><div style="font-size:1.5rem;font-weight:900;letter-spacing:2px;">FARMERS C.A.</div><div style="opacity:.7;font-size:.8rem;">NOTA DE ENTREGA</div></div>');
-  parts.push('<div style="text-align:right;"><div style="font-size:1.6rem;font-weight:900;color:#f5a623;">Pedido #' + (sale.numpedido||'SN') + '</div>');
-  parts.push('<div style="opacity:.7;font-size:.8rem;">' + (sale.fecha||'') + '</div></div>');
+  // Header
+  parts.push('<div class="header">');
+  parts.push('<div><h1>FARMERS C.A.</h1><div style="opacity:.7;font-size:.78rem;margin-top:2px;">NOTA DE PEDIDO</div></div>');
+  parts.push('<div style="text-align:right;"><div class="num">Pedido #' + (sale.numpedido||'S/N') + '</div>');
+  parts.push('<div style="opacity:.7;font-size:.78rem;">' + (sale.fecha||'') + '</div></div>');
   parts.push('</div>');
 
-  /* Client grid */
-  parts.push('<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:16px;">');
-  [['Cliente', sale.cliente], ['RIF', sale.rif], ['Telefono', sale.telefono],
-   ['Vendedor', sale.vendedor], ['Fecha', sale.fecha], ['Moneda', sale.moneda]].forEach(function(p) {
-    parts.push('<div style="background:#f8f9ff;border-radius:6px;padding:8px 12px;">');
-    parts.push('<div style="font-size:.65rem;font-weight:700;text-transform:uppercase;color:#8892b0;">' + p[0] + '</div>');
-    parts.push('<div style="font-weight:700;">' + (p[1]||'-') + '</div>');
+  // Client info grid
+  parts.push('<div class="info-grid">');
+  var fields = [
+    ['Cliente', sale.cliente, true],
+    ['RIF', sale.rif, false],
+    ['Teléfono', sale.telefono, false],
+    ['Vendedor', sale.vendedor, false],
+    ['Moneda', sale.moneda, false],
+    ['Fecha', sale.fecha, false],
+  ];
+  fields.forEach(function(f){
+    parts.push('<div class="info-box' + (f[2]?' info-wide':'') + '">');
+    parts.push('<div class="lbl">' + f[0] + '</div>');
+    parts.push('<div class="val">' + (f[1]||'-') + '</div>');
     parts.push('</div>');
   });
-  parts.push('<div style="background:#f8f9ff;border-radius:6px;padding:8px 12px;grid-column:1/-1;">');
-  parts.push('<div style="font-size:.65rem;font-weight:700;text-transform:uppercase;color:#8892b0;">Direccion</div>');
-  parts.push('<div style="font-weight:700;">' + (sale.direccion||'-') + '</div>');
-  parts.push('</div></div>');
+  parts.push('<div class="info-box info-wide"><div class="lbl">Dirección</div><div class="val">' + (sale.direccion||'-') + '</div></div>');
+  parts.push('</div>');
 
-  /* Products table */
+  // Brand color map
+  var bColors = {EXCALIBUR:'#1a2050',GENIAL:'#2e7d32',MATRIX:'#b45309',LUMEN:'#6a1b9a',MAXKILLER:'#c62828',VARIOS:'#37474f'};
+
+  // Products table — ALL columns
   parts.push('<table>');
-  parts.push('<thead><tr><th>Ref</th><th>Descripcion</th><th>Marca</th><th style="text-align:center">Precio</th><th style="text-align:center">Cant</th><th style="text-align:right">Total</th></tr></thead>');
-  parts.push('<tbody>');
-  (sale.items||[]).forEach(function(it, i) {
-    var bg = i % 2 === 0 ? '#fff' : '#f8f9ff';
-    parts.push('<tr style="background:' + bg + ';border-bottom:1px solid #eee;">');
-    parts.push('<td style="padding:6px 10px;font-weight:700;">' + (it.r||'') + '</td>');
-    parts.push('<td style="padding:6px 10px;">' + (it.d||'') + '</td>');
-    parts.push('<td style="padding:6px 10px;text-align:center;">' + (it.br||'-') + '</td>');
-    parts.push('<td style="padding:6px 10px;text-align:center;">$ ' + fmt(it.precio||0) + '</td>');
-    parts.push('<td style="padding:6px 10px;text-align:center;font-weight:700;">' + (it.orden||0) + '</td>');
-    parts.push('<td style="padding:6px 10px;text-align:right;font-weight:700;color:#e8692a;">$ ' + fmt(it.total||0) + '</td>');
+  parts.push('<thead><tr>');
+  parts.push('<th>#</th>');
+  parts.push('<th>Referencia</th>');
+  parts.push('<th>Cód. Barra</th>');
+  parts.push('<th>Código</th>');
+  parts.push('<th>Descripción</th>');
+  parts.push('<th class="num">Empaque</th>');
+  parts.push('<th class="num">Medida</th>');
+  parts.push('<th class="num">Precio</th>');
+  parts.push('<th class="num">Orden</th>');
+  parts.push('<th class="right">Total</th>');
+  parts.push('<th class="num">Existencia</th>');
+  parts.push('<th class="num">Exist. Total</th>');
+  parts.push('</tr></thead><tbody>');
+
+  var grandTotal = 0;
+  var grandUnits = 0;
+  (sale.items||[]).forEach(function(it, i){
+    var prod = PRODUCTS.find(function(p){ return p.r === it.r; });
+    var stock = inv[it.r] !== undefined ? inv[it.r] : (prod ? prod.ex : 0);
+    var medida = prod ? (prod.m || '') : '';
+    var empaque = prod ? (prod.e || '') : '';
+    var cb    = prod ? (prod.b || '') : (it.b || '');
+    var cod   = prod ? (prod.c || '') : (it.c || '');
+    var orden = it.orden || it.qty || 0;
+    var precio = it.precio || 0;
+    var subtotal = it.total || (orden * precio);
+    var existTotal = stock - orden;
+    grandTotal += subtotal;
+    grandUnits += orden;
+    var bg = i % 2 === 0 ? '' : ' class="even"';
+    var bc = bColors[it.br] || '#37474f';
+    parts.push('<tr' + bg + '>');
+    parts.push('<td class="center" style="color:#8892b0;">' + (i+1) + '</td>');
+    parts.push('<td style="font-weight:700;color:#1a2050;">' + (it.r||'') + '</td>');
+    parts.push('<td style="color:#5a6080;">' + cb + '</td>');
+    parts.push('<td style="color:#5a6080;">' + cod + '</td>');
+    parts.push('<td>' + (it.d||prod&&prod.d||'') + '</td>');
+    parts.push('<td class="center">' + empaque + '</td>');
+    parts.push('<td class="center">' + medida + '</td>');
+    parts.push('<td class="center" style="font-weight:600;">$ ' + fmt(precio) + '</td>');
+    parts.push('<td class="center"><span style="background:#1a2050;color:white;border-radius:4px;padding:2px 8px;font-weight:700;">' + orden + '</span></td>');
+    parts.push('<td class="right" style="font-weight:700;color:#e8692a;">$ ' + fmt(subtotal) + '</td>');
+    parts.push('<td class="center" style="font-weight:700;color:' + (stock>0?'#16a34a':'#dc2626') + ';">' + stock + '</td>');
+    parts.push('<td class="center" style="font-weight:700;color:' + (existTotal > 0 ? '#16a34a' : (existTotal === 0 ? '#e8692a' : '#dc2626')) + ';">' + Math.max(0, existTotal) + '</td>');
     parts.push('</tr>');
   });
   parts.push('</tbody>');
-  parts.push('<tfoot><tr style="background:#1a2050;color:white;font-weight:700;">');
-  parts.push('<td colspan="4" style="padding:10px;">TOTAL GENERAL</td>');
-  parts.push('<td style="padding:10px;text-align:center;">' + (sale.units||0) + ' uds</td>');
-  parts.push('<td style="padding:10px;text-align:right;">$ ' + fmt(sale.total||0) + '</td>');
-  parts.push('</tr></tfoot>');
-  parts.push('</table>');
+  parts.push('<tfoot>');
+  parts.push('<tr style="background:#f0f4ff;font-weight:700;border-top:2px solid #1a2050;">');
+  parts.push('<td colspan="8" style="padding:8px 10px;text-align:right;color:#1a2050;">UNIDADES TOTALES</td>');
+  parts.push('<td class="center" style="color:#1a2050;">' + grandUnits + ' uds</td>');
+  parts.push('<td colspan="3"></td>');
+  parts.push('</tr>');
+  parts.push('<tr style="background:#1a2050;color:white;font-weight:900;">');
+  parts.push('<td colspan="9" style="padding:10px 12px;text-align:right;font-size:.95rem;letter-spacing:1px;">TOTAL USD:</td>');
+  parts.push('<td style="padding:10px 12px;text-align:right;font-size:1.1rem;color:#f5a623;">$ ' + fmt(grandTotal) + '</td>');
+  parts.push('<td colspan="2" style="padding:10px;"></td>');
+  parts.push('</tr>');
+  parts.push('</tfoot></table>');
 
-  /* Signatures */
-  parts.push('<div style="margin-top:40px;display:grid;grid-template-columns:1fr 1fr;gap:40px;">');
-  parts.push('<div style="border-top:1.5px solid #1a2050;padding-top:8px;text-align:center;font-size:.75rem;color:#8892b0;">Firma y Sello del Cliente</div>');
-  parts.push('<div style="border-top:1.5px solid #1a2050;padding-top:8px;text-align:center;font-size:.75rem;color:#8892b0;">Firma del Vendedor</div>');
+  // Signatures
+  parts.push('<div class="sigs">');
+  parts.push('<div class="sig">Firma y Sello del Cliente</div>');
+  parts.push('<div class="sig">Firma del Vendedor</div>');
+  parts.push('</div>');
+
+  parts.push('<div class="no-print" style="margin-top:16px;text-align:center;">');
+  parts.push('<button onclick="window.print()" style="background:#1a2050;color:white;border:none;border-radius:8px;padding:10px 28px;cursor:pointer;font-size:.9rem;font-weight:700;">🖨 Imprimir</button>');
   parts.push('</div>');
 
   parts.push('</body></html>');
-
   doc.write(parts.join(''));
   doc.close();
   w.focus();
-  setTimeout(function(){ w.print(); }, 500);
+  setTimeout(function(){ w.print(); }, 600);
 }
 
 /* Import Factura */
@@ -2386,8 +2469,9 @@ function confirmImport() {
   var d = _importData;
   var inv = getInventory();
   var items = (d.items||[]).map(function(it){
-    var prod = PRODUCTS.find(function(p){ return p.r === it.r; });
-    return { r:it.r, d:prod?prod.d:it.r, br:prod?prod.br:'', orden:it.qty||0, precio:it.precio||0, total:(it.qty||0)*(it.precio||0) };
+    var cleanRef = sanitizeRef((it.r||'').trim().toUpperCase());
+    var prod = PRODUCTS.find(function(p){ return p.r === cleanRef; });
+    return { r:cleanRef, d:prod?prod.d:it.r, br:prod?prod.br:'', orden:it.qty||0, precio:it.precio||0, total:(it.qty||0)*(it.precio||0) };
   });
   var sale = {
     id: 'sale_' + Date.now(),
@@ -2521,8 +2605,14 @@ function confirmImport() {
     </div>
 
     <!-- STEP 4: STOCK REPORT + PREVIEW + CONFIRM -->
-    <div id="import-step5" style="display:none;padding:20px 24px 16px;">
-      <div style="font-family:'Barlow Condensed',sans-serif;font-weight:900;font-size:1.1rem;color:#1a2050;letter-spacing:1px;margin-bottom:14px;">📊 DISPONIBILIDAD Y VISTA PREVIA</div>
+    <div id="import-step4" style="display:none;padding:20px 24px 16px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:8px;">
+        <div style="font-family:'Barlow Condensed',sans-serif;font-weight:900;font-size:1.1rem;color:#1a2050;letter-spacing:1px;">📊 DISPONIBILIDAD Y VISTA PREVIA</div>
+        <button onclick="removeNoStockItems()" id="remove-nostock-btn"
+          style="background:linear-gradient(135deg,#dc2626,#b91c1c);color:white;border:none;border-radius:8px;padding:7px 16px;cursor:pointer;font-weight:700;font-size:.82rem;display:none;">
+          🗑 Eliminar productos sin stock
+        </button>
+      </div>
       
       <!-- Stock availability panel -->
       <div id="ie-stock-panel" style="margin-bottom:14px;"></div>
@@ -2536,11 +2626,11 @@ function confirmImport() {
       <div id="ie-preview-table" style="max-height:280px;overflow-y:auto;border:1.5px solid #e0e4f0;border-radius:10px;margin-bottom:14px;"></div>
 
       <div style="display:flex;gap:10px;flex-wrap:wrap;">
-        <button id="ie-confirm-btn" onclick="finalizeImport()" style="background:linear-gradient(135deg,#16a34a,#15803d);color:white;border:none;border-radius:10px;padding:12px 28px;cursor:pointer;font-weight:900;font-size:1rem;">✓ CONFIRMAR Y PROCESAR</button>
+        <button id="ie-confirm-btn" onclick="confirmImport()" style="background:linear-gradient(135deg,#16a34a,#15803d);color:white;border:none;border-radius:10px;padding:12px 28px;cursor:pointer;font-weight:900;font-size:1rem;">✓ CONFIRMAR Y PROCESAR</button>
         <button onclick="showImportStep(3)" style="background:#f1f5f9;color:#1a2050;border:1.5px solid #e0e4f0;border-radius:10px;padding:12px 18px;cursor:pointer;font-weight:700;">← Editar</button>
       </div>
     </div>
-    <div id="import-step4" style="display:none;padding:40px;text-align:center;">
+    <div id="import-step5" style="display:none;padding:40px;text-align:center;">
       <div style="font-size:3rem;margin-bottom:16px;">&#10003;</div>
       <div style="font-weight:900;font-size:1.5rem;color:#16a34a;">Venta procesada!</div>
       <div id="import-success-info" style="color:#5a6080;margin-top:8px;font-size:.9rem;"></div>
@@ -2560,6 +2650,10 @@ function confirmImport() {
     }
   }catch(e){console.warn(e);}
 })();
+// Re-render historial after KEI injection
+document.addEventListener('DOMContentLoaded', function(){
+  if (typeof renderHistorial === 'function') renderHistorial();
+});
 
 
 
@@ -2815,8 +2909,10 @@ function showImportEditStep() {
 
 function ieEnrichItems(items, moneda) {
   return items.map(function(it) {
+    var cleanR = sanitizeRef((it.r||'').trim().toUpperCase());
+    it.r = cleanR;
     var prod = PRODUCTS.find(function(p){
-      return p.r === it.r || p.b === it.r || p.c === it.r;
+      return p.r === cleanR || p.b === cleanR || p.c === cleanR;
     });
     if (!prod) return it;
     var precio = it.precio || 0;
@@ -2946,8 +3042,8 @@ function goToImportPreview() {
   var items = [];
   var rows = document.querySelectorAll('#ie-items-wrap tbody tr');
   rows.forEach(function(row){
-    var ref   = row.cells[0] ? row.cells[0].textContent.trim() : '';
-    var qty   = parseInt(row.querySelector('.ie-qty')  ? row.querySelector('.ie-qty').value  : 0) || 0;
+    var ref   = sanitizeRef((row.getAttribute('data-ref') || '').trim().toUpperCase());
+    var qty   = parseInt(row.querySelector('.ie-qty')   ? row.querySelector('.ie-qty').value   : 0) || 0;
     var price = parseFloat(row.querySelector('.ie-price') ? row.querySelector('.ie-price').value : 0) || 0;
     if (ref && qty > 0) items.push({ r: ref, qty: qty, precio: price });
   });
@@ -3019,6 +3115,9 @@ function goToImportPreview() {
       confirmBtn.title = '';
     }
   }
+  // Show/hide remove-nostock button
+  var removeBtn = document.getElementById('remove-nostock-btn');
+  if (removeBtn) removeBtn.style.display = blocked.length > 0 ? 'inline-block' : 'none';
 
   // Preview table
   var total = 0;
@@ -3058,17 +3157,25 @@ function importPreviewPDF() {
   if (!_importData) return;
   var d = _importData;
   var inv = getInventory();
+  var invP = getInventory();
   var rows = (d.items||[]).map(function(it, i){
     var prod = PRODUCTS.find(function(p){ return p.r === it.r; });
     var sub = it.qty * it.precio;
+    var stock = invP[it.r] !== undefined ? invP[it.r] : (prod ? prod.ex : 0);
     var bg = i % 2 === 0 ? '#ffffff' : '#f8f9ff';
     return '<tr style="background:' + bg + ';border-bottom:1px solid #eee;">' +
-      '<td style="padding:7px 10px;">' + (i+1) + '</td>' +
-      '<td style="padding:7px 10px;font-weight:700;">' + it.r + '</td>' +
-      '<td style="padding:7px 10px;">' + (prod ? prod.d : it.r) + '</td>' +
-      '<td style="padding:7px 10px;text-align:center;">' + it.qty + '</td>' +
-      '<td style="padding:7px 10px;text-align:right;">$ ' + fmt(it.precio) + '</td>' +
-      '<td style="padding:7px 10px;text-align:right;font-weight:700;">$ ' + fmt(sub) + '</td>' +
+      '<td style="padding:6px 8px;color:#8892b0;">' + (i+1) + '</td>' +
+      '<td style="padding:6px 8px;font-weight:700;color:#1a2050;">' + it.r + '</td>' +
+      '<td style="padding:6px 8px;color:#5a6080;">' + (prod ? prod.b||'' : '') + '</td>' +
+      '<td style="padding:6px 8px;color:#5a6080;">' + (prod ? prod.c||'' : '') + '</td>' +
+      '<td style="padding:6px 8px;">' + (prod ? prod.d : it.r) + '</td>' +
+      '<td style="padding:6px 8px;text-align:center;">' + (prod ? prod.e||'' : '') + '</td>' +
+      '<td style="padding:6px 8px;text-align:center;">' + (prod ? prod.m||'' : '') + '</td>' +
+      '<td style="padding:6px 8px;text-align:center;">$ ' + fmt(it.precio) + '</td>' +
+      '<td style="padding:6px 8px;text-align:center;font-weight:700;">' + it.qty + '</td>' +
+      '<td style="padding:6px 8px;text-align:right;font-weight:700;color:#e8692a;">$ ' + fmt(sub) + '</td>' +
+      '<td style="padding:6px 8px;text-align:center;font-weight:700;color:' + (stock>0 ? '#16a34a' : '#dc2626') + ';">' + stock + '</td>' +
+      '<td style="padding:6px 8px;text-align:center;font-weight:700;color:' + (Math.max(0,stock-it.qty)>0?'#16a34a':(stock-it.qty===0?'#e8692a':'#dc2626')) + ';">' + Math.max(0,stock-it.qty) + '</td>' +
       '</tr>';
   }).join('');
   var total = (d.items||[]).reduce(function(s,it){ return s + it.qty * it.precio; }, 0);
@@ -3098,10 +3205,21 @@ function importPreviewPDF() {
   parts.push('<div class="info-box"><div class="label">Vendedor</div><div class="value">' + (d.vendedor||'') + '</div></div>');
   parts.push('<div class="info-box" style="grid-column:span 2;"><div class="label">Dirección</div><div class="value">' + (d.direccion||'') + '</div></div>');
   parts.push('</div>');
-  parts.push('<table><thead><tr><th>#</th><th>Ref</th><th>Descripción</th><th style="text-align:center;">Cant</th><th style="text-align:right;">Precio</th><th style="text-align:right;">Subtotal</th></tr></thead>');
+  parts.push('<table><thead><tr>');
+  parts.push('<th>#</th><th>Referencia</th><th>Cód.Barra</th><th>Código</th><th>Descripción</th>');
+  parts.push('<th style="text-align:center;">Empaque</th><th style="text-align:center;">Medida</th>');
+  parts.push('<th style="text-align:center;">Precio</th><th style="text-align:center;">Orden</th>');
+  parts.push('<th style="text-align:right;">Total</th><th style="text-align:center;">Exist.</th><th style="text-align:right;">Exist.Total</th>');
+  parts.push('</tr></thead>');
   parts.push('<tbody>' + rows + '</tbody>');
-  parts.push('<tfoot><tr class="total-row"><td colspan="5" style="padding:10px;text-align:right;">TOTAL ' + (d.moneda||'USD') + ':</td>');
-  parts.push('<td style="padding:10px;text-align:right;color:#e8692a;">$ ' + fmt(total) + '</td></tr></tfoot></table>');
+    parts.push('<tfoot>');
+  parts.push('<tr style="background:#f8f9ff;border-top:2px solid #1a2050;">');
+  parts.push('<td colspan="8" style="padding:9px 10px;text-align:right;font-weight:700;color:#1a2050;font-size:.8rem;letter-spacing:.5px;">TOTAL USD:</td>');
+  parts.push('<td style="padding:9px 10px;text-align:center;font-weight:700;color:#1a2050;">' + grandUnits + ' uds</td>');
+  parts.push('<td style="padding:9px 10px;text-align:right;font-weight:900;color:#e8692a;font-size:.95rem;">$ ' + fmt(total) + '</td>');
+  parts.push('<td colspan="2" style="padding:9px 10px;"></td>');
+  parts.push('</tr>');
+  parts.push('</tfoot></table>');;
   parts.push('<div style="margin-top:40px;display:flex;justify-content:space-around;">');
   parts.push('<div style="text-align:center;"><div style="border-top:1.5px solid #1a2050;padding-top:6px;width:180px;font-size:.8rem;">Firma del Vendedor</div></div>');
   parts.push('<div style="text-align:center;"><div style="border-top:1.5px solid #1a2050;padding-top:6px;width:180px;font-size:.8rem;">Firma del Cliente</div></div>');
@@ -3115,6 +3233,7 @@ function importPreviewPDF() {
 function importPreviewExcel() {
   if (!_importData || typeof XLSX === 'undefined') { alert('XLSX no disponible.'); return; }
   var d = _importData;
+  var inv = getInventory();
   var wb = XLSX.utils.book_new();
   var aoa = [
     ['FARMERS C.A. - PEDIDO #' + (d.numpedido||'')],
@@ -3122,21 +3241,137 @@ function importPreviewExcel() {
     ['Fecha:', d.fecha||'', 'Vendedor:', d.vendedor||''],
     ['Teléfono:', d.telefono||'', 'Moneda:', d.moneda||'USD'],
     [],
-    ['#', 'Referencia', 'Descripción', 'Cantidad', 'Precio Unit.', 'Subtotal']
+    ['REFERENCIA','CODIGO BARRA','CODIGO','DESCRIPCION','EMPAQUE','MEDIDA','PRECIO','ORDEN','TOTAL','EXISTENCIA','EXISTENCIA TOTAL']
   ];
-  var total = 0;
-  (d.items||[]).forEach(function(it, i){
+  var grandTotal = 0; var grandUnits = 0;
+  (d.items||[]).forEach(function(it){
     var prod = PRODUCTS.find(function(p){ return p.r === it.r; });
-    var sub = it.qty * it.precio;
-    total += sub;
-    aoa.push([i+1, it.r, prod ? prod.d : it.r, it.qty, it.precio, sub]);
+    var stock = inv[it.r] !== undefined ? inv[it.r] : (prod ? prod.ex : 0);
+    var qty = it.qty || 0;
+    var sub = qty * it.precio;
+    grandTotal += sub; grandUnits += qty;
+    aoa.push([
+      it.r,
+      prod ? (prod.b||'') : '',
+      prod ? (prod.c||'') : '',
+      prod ? prod.d : it.r,
+      prod ? (prod.e||'') : '',
+      prod ? (prod.m||'') : '',
+      it.precio,
+      qty,
+      sub,
+      stock,
+      stock - qty
+    ]);
   });
   aoa.push([]);
-  aoa.push(['', '', '', '', 'TOTAL:', total]);
+  aoa.push(['','','','','','','','TOTAL UNIDADES:', grandUnits, '', '']);
+  aoa.push(['','','','','','','','','TOTAL USD:', grandTotal, '']);
   var ws = XLSX.utils.aoa_to_sheet(aoa);
+  ws['!cols'] = [{wch:12},{wch:16},{wch:12},{wch:36},{wch:14},{wch:10},{wch:10},{wch:8},{wch:12},{wch:12},{wch:14}];
   XLSX.utils.book_append_sheet(wb, ws, 'Pedido');
   XLSX.writeFile(wb, 'PEDIDO_' + (d.numpedido||Date.now()) + '_' + (d.cliente||'').replace(/\s+/g,'_') + '.xlsx');
 }
+
+
+
+function removeNoStockItems() {
+  if (!_importData || !_importData.items) return;
+  var inv = getInventory();
+  var before = _importData.items.length;
+  // Remove items with zero stock
+  _importData.items = _importData.items.filter(function(it){
+    var prod = PRODUCTS.find(function(p){ return p.r === it.r; });
+    var stock = inv[it.r] !== undefined ? inv[it.r] : (prod ? prod.ex : 0);
+    return stock > 0;
+  });
+  var removed = before - _importData.items.length;
+  // Go back to edit step so user sees the cleaned list
+  showImportEditStep();
+  // Then go directly to preview
+  setTimeout(function(){ goToImportPreview(); }, 100);
+  alert('✓ Se eliminaron ' + removed + ' producto(s) sin stock del pedido.');
+}
+
+
+
+function sanitizeRef(ref) {
+  // Strip brand names accidentally concatenated: EXC001EXCALIBUR -> EXC001
+  var brands = ['EXCALIBUR','GENIAL','MATRIX','LUMEN','MAXKILLER','VARIOS'];
+  for (var i = 0; i < brands.length; i++) {
+    if (ref.indexOf(brands[i]) > 0) {  // > 0 means it's a suffix, not the whole word
+      ref = ref.replace(brands[i], '').trim();
+    }
+  }
+  return ref;
+}
+
+
+
+function exportSale(saleId) {
+  var sale = getSales().find(function(s){ return String(s.id) === String(saleId); });
+  if (!sale || typeof XLSX === 'undefined') { alert('No se puede exportar.'); return; }
+  var inv = getInventory();
+
+  var aoa = [];
+  // Title rows
+  aoa.push(['FARMERS C.A. — PEDIDO #' + (sale.numpedido||'')]);
+  aoa.push(['Cliente:', sale.cliente||'', 'RIF:', sale.rif||'']);
+  aoa.push(['Fecha:', sale.fecha||'', 'Vendedor:', sale.vendedor||'']);
+  aoa.push(['Teléfono:', sale.telefono||'', 'Moneda:', sale.moneda||'USD']);
+  aoa.push(['Dirección:', sale.direccion||'']);
+  aoa.push([]);
+  // Header row — exact column names as requested
+  aoa.push(['REFERENCIA','CODIGO BARRA','CODIGO','DESCRIPCION','EMPAQUE','MEDIDA','PRECIO','ORDEN','TOTAL','EXISTENCIA','EXISTENCIA TOTAL']);
+
+  var grandTotal = 0;
+  var grandUnits = 0;
+  (sale.items||[]).forEach(function(it){
+    var prod = PRODUCTS.find(function(p){ return p.r === it.r; });
+    var stock = inv[it.r] !== undefined ? inv[it.r] : (prod ? prod.ex : 0);
+    var orden = it.orden || it.qty || 0;
+    var precio = it.precio || 0;
+    var subtotal = it.total || (orden * precio);
+    var existTotal = stock - orden;
+    grandTotal += subtotal;
+    grandUnits += orden;
+    aoa.push([
+      it.r || '',
+      prod ? (prod.b||'') : (it.b||''),
+      prod ? (prod.c||'') : (it.c||''),
+      it.d || (prod ? prod.d : ''),
+      prod ? (prod.e||'') : '',
+      prod ? (prod.m||'') : '',
+      precio,
+      orden,
+      subtotal,
+      stock,
+      stock - orden
+    ]);
+  });
+  aoa.push([]);
+  aoa.push(['','','','','','','','TOTAL UNIDADES:', grandUnits, '', '']);
+  aoa.push(['','','','','','','','','TOTAL USD:', grandTotal, '']);
+
+  var ws = XLSX.utils.aoa_to_sheet(aoa);
+
+  // Column widths
+  ws['!cols'] = [
+    {wch:12},{wch:16},{wch:12},{wch:36},{wch:14},{wch:10},
+    {wch:10},{wch:8},{wch:12},{wch:12},{wch:14}
+  ];
+
+  var wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Pedido');
+  XLSX.writeFile(wb, 'PEDIDO_' + (sale.numpedido||Date.now()) + '_' + (sale.cliente||'').replace(/\s+/g,'_').slice(0,20) + '.xlsx');
+}
+
+
+// ── Garantizar render del historial tras carga completa ──────────
+window.addEventListener('load', function(){
+  if (typeof renderHistorial === 'function') renderHistorial();
+  if (typeof renderTable    === 'function') renderTable();
+});
 
 </script>
 
@@ -3224,5 +3459,89 @@ function importPreviewExcel() {
     </div>
   </div>
 </div>
+<script>
+// ── Render historial garantizado al cargar todo ──
+window.addEventListener('load', function(){
+  if (typeof renderHistorial === 'function') renderHistorial();
+  if (typeof renderTable    === 'function') renderTable();
+});
+
+
+function importHistorialFromExcel(input) {
+  var file = input.files[0];
+  if (!file) return;
+  if (typeof XLSX === 'undefined') { alert('Error: librería XLSX no disponible.'); return; }
+  
+  var reader = new FileReader();
+  reader.onload = function(e) {
+    try {
+      var wb = XLSX.read(new Uint8Array(e.target.result), {type:'array'});
+      var ws = wb.Sheets[wb.SheetNames[0]];
+      var data = XLSX.utils.sheet_to_json(ws, {header:1, defval:''});
+      
+      // Try to parse as farmers historial export format
+      // Format: row 0 = headers, rows 1+ = data with N°Pedido, Fecha, Hora, Cliente, RIF, Vendedor, Moneda, Units, Total$
+      var headers = data[0] ? data[0].map(function(h){ return String(h).trim().toLowerCase(); }) : [];
+      var idxNum = headers.findIndex(function(h){ return h.includes('pedido') || h.includes('n°'); });
+      var idxFecha = headers.findIndex(function(h){ return h === 'fecha'; });
+      var idxCliente = headers.findIndex(function(h){ return h === 'cliente'; });
+      var idxRif = headers.findIndex(function(h){ return h === 'rif'; });
+      var idxVendedor = headers.findIndex(function(h){ return h === 'vendedor'; });
+      var idxMoneda = headers.findIndex(function(h){ return h === 'moneda'; });
+      var idxUnits = headers.findIndex(function(h){ return h.includes('unidad'); });
+      var idxTotal = headers.findIndex(function(h){ return h.includes('total') && h.includes('$'); });
+      
+      if (idxCliente < 0 || idxNum < 0) {
+        alert('⚠️ Formato no reconocido. Exporta el historial desde el archivo anterior usando "EXPORTAR HISTORIAL".');
+        return;
+      }
+      
+      var existing = getSales();
+      var existingIds = new Set(existing.map(function(s){ return String(s.numpedido); }));
+      var imported = 0;
+      
+      for (var i = 1; i < data.length; i++) {
+        var row = data[i];
+        if (!row[idxCliente]) continue;
+        var numped = String(row[idxNum] || '').trim();
+        if (!numped || existingIds.has(numped)) continue;
+        
+        var sale = {
+          id: 'sale_imp_' + Date.now() + '_' + i,
+          numpedido: numped,
+          fecha: String(row[idxFecha] || '').trim(),
+          hora: '',
+          cliente: String(row[idxCliente] || '').trim(),
+          rif: idxRif >= 0 ? String(row[idxRif] || '').trim() : '',
+          vendedor: idxVendedor >= 0 ? String(row[idxVendedor] || '').trim() : '',
+          moneda: idxMoneda >= 0 ? String(row[idxMoneda] || 'USD').trim() : 'USD',
+          units: idxUnits >= 0 ? (parseInt(row[idxUnits]) || 0) : 0,
+          total: idxTotal >= 0 ? (parseFloat(String(row[idxTotal]).replace(/[^0-9.]/g,'')) || 0) : 0,
+          items: [],
+          sucursal: '', telefono: '', direccion: '',
+          importado: true
+        };
+        existing.push(sale);
+        existingIds.add(numped);
+        imported++;
+      }
+      
+      if (imported > 0) {
+        saveSales(existing);
+        renderHistorial();
+        alert('✅ Se importaron ' + imported + ' pedido(s) del historial anterior.');
+      } else {
+        alert('ℹ️ No se encontraron pedidos nuevos para importar (todos ya existen o el archivo está vacío).');
+      }
+    } catch(err) {
+      console.error(err);
+      alert('❌ Error al leer el archivo: ' + err.message);
+    }
+  };
+  reader.readAsArrayBuffer(file);
+  input.value = '';
+}
+
+</script>
 </body>
 </html>
