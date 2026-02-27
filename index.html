@@ -2170,13 +2170,6 @@ function saveEditSale() {
   if (i < 0) return;
   var old = sales[i];
 
-  // Restore old inventory before recalculating
-  var inv = getInventory();
-  (old.items||[]).forEach(function(it){
-    if (inv[it.r] !== undefined) inv[it.r] += it.orden;
-    else inv[it.r] = it.orden;
-  });
-
   // Read edited items from edit-items table
   var newItems = [];
   var rows = document.querySelectorAll('#edit-items-body tr');
@@ -2189,25 +2182,36 @@ function saveEditSale() {
     newItems.push({ r:ref, d:prod?prod.d:(row.querySelector('.ei-desc')?row.querySelector('.ei-desc').textContent:ref), br:prod?prod.br:'', orden:qty, precio:price, total:qty*price });
   });
 
-  // Check stock for new items
-  var blocked = newItems.filter(function(it){
-    var avail = inv[it.r] !== undefined ? inv[it.r] : 0;
-    return avail < it.orden;
-  });
-  if (blocked.length > 0) {
-    alert('⛔ Stock insuficiente para: ' + blocked.map(function(b){
-      var avail = inv[b.r] !== undefined ? inv[b.r] : 0;
-      return b.r + ' (disp: ' + avail + ', sol: ' + b.orden + ')';
-    }).join(', '));
-    return;
+  // CRÍTICO: si la tabla estaba vacía, preservar los items originales (edición de header solamente)
+  if (newItems.length === 0 && (old.items||[]).length > 0) {
+    newItems = JSON.parse(JSON.stringify(old.items)); // deep copy
   }
 
-  // Apply new inventory
-  newItems.forEach(function(it){
-    if (inv[it.r] !== undefined) inv[it.r] = Math.max(0, inv[it.r] - it.orden);
+  // Ajuste inteligente de inventario: solo calcular DIFERENCIAS, no restaurar todo
+  var inv = getInventory();
+  var oldItemMap = {};
+  (old.items||[]).forEach(function(it){ oldItemMap[it.r] = it.orden || 0; });
+
+  // Devolver items eliminados
+  (old.items||[]).forEach(function(oldIt){
+    if (!newItems.some(function(ni){ return ni.r === oldIt.r; })) {
+      inv[oldIt.r] = (inv[oldIt.r] || 0) + (oldIt.orden || 0);
+    }
   });
 
-  var newTotal = newItems.reduce(function(s,it){ return s + it.total; }, 0);
+  // Ajustar diferencias en items modificados o nuevos
+  newItems.forEach(function(it){
+    var oldQty = oldItemMap[it.r] || 0;
+    var diff   = it.orden - oldQty;
+    if (diff > 0) {
+      inv[it.r] = Math.max(0, (inv[it.r] || 0) - diff);
+    } else if (diff < 0) {
+      inv[it.r] = (inv[it.r] || 0) + Math.abs(diff);
+    }
+    // diff === 0: sin cambio en inventario
+  });
+
+  var newTotal = newItems.reduce(function(s,it){ return s + (it.total || it.orden * it.precio); }, 0);
 
   ['cliente','rif','telefono','vendedor','numpedido','fecha','direccion','sucursal','credito'].forEach(function(f){
     var el = document.getElementById('edit-' + f);
@@ -2225,7 +2229,6 @@ function saveEditSale() {
   closeEditSale();
   alert('✓ Pedido actualizado correctamente.');
 }
-
 function printSale(saleId) {
   var sale = getSales().find(function(s){ return String(s.id) === String(saleId); });
   if (!sale) return;
