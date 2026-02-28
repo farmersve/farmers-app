@@ -2696,6 +2696,8 @@ function doRefSearch() {
     var stockLabel = stock > 10 ? '✓ En stock' : stock > 0 ? '⚠ Bajo stock' : '✗ Agotado';
     var bColor     = brandColors[p.br] || '#37474f';
     var pUSD = p.u  ? '$ ' + p.u.toFixed(2)  : '—';
+    var capital    = (p.u && stock) ? stock * p.u : 0;
+    var capitalStr = capital > 0 ? '$ ' + capital.toFixed(2) : '—';
     var pBCV = p.bv ? '$ ' + p.bv.toFixed(2) : '—';
     var pTF  = p.t  ? '$ ' + p.t.toFixed(2)  : '—';
 
@@ -2735,7 +2737,7 @@ function doRefSearch() {
             '<div style="font-weight:700;color:' + bColor + ';font-size:.75rem;">' + p.br + '</div>' +
           '</div>' +
         '</div>' +
-        '<div style="background:linear-gradient(135deg,#f0f4ff,#e8f0fe);border-radius:8px;padding:7px 10px;">' +
+        '<div style="background:linear-gradient(135deg,#f0f4ff,#e8f0fe);border-radius:8px;padding:7px 10px;margin-bottom:7px;">' +
           '<div style="font-size:.58rem;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:#5c6bc0;margin-bottom:5px;">PRECIOS</div>' +
           '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:5px;">' +
             '<div style="text-align:center;background:white;border-radius:6px;padding:4px 6px;border:1px solid #c5cae9;">' +
@@ -2752,13 +2754,63 @@ function doRefSearch() {
             '</div>' +
           '</div>' +
         '</div>' +
+        (capital > 0 ? '<div style="background:linear-gradient(135deg,#065f46,#047857);border-radius:8px;padding:8px 12px;display:flex;align-items:center;justify-content:space-between;">' +
+          '<div>' +
+            '<div style="font-size:.58rem;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:rgba(255,255,255,.7);margin-bottom:2px;">&#128178; Capital en Inventario</div>' +
+            '<div style="font-weight:900;color:white;font-size:1.05rem;">' + capitalStr + '</div>' +
+          '</div>' +
+          '<div style="text-align:right;">' +
+            '<div style="font-size:.6rem;color:rgba(255,255,255,.6);">' + stock + ' uds &times; ' + pUSD + '</div>' +
+            '<div style="font-size:.65rem;color:#6ee7b7;font-weight:700;margin-top:2px;">' + p.br + '</div>' +
+          '</div>' +
+        '</div>' : '') +
       '</div>';
 
     cards.push(card);
   });
 
+  // Capital summary bar
+  var totalCapital = results.reduce(function(sum, p) {
+    var st = (inv[p.r] !== undefined) ? inv[p.r] : (p.ex || 0);
+    return sum + (p.u && st ? st * p.u : 0);
+  }, 0);
+  var totalUnits = results.reduce(function(sum, p) {
+    return sum + ((inv[p.r] !== undefined) ? inv[p.r] : (p.ex || 0));
+  }, 0);
+  var totalProds = results.filter(function(p) {
+    return ((inv[p.r] !== undefined) ? inv[p.r] : (p.ex || 0)) > 0;
+  }).length;
+
   // Build grid with DOM API
   resultsEl.innerHTML = '';
+
+  // Summary bar
+  var summaryBar = document.createElement('div');
+  summaryBar.style.cssText = 'background:linear-gradient(135deg,#065f46,#047857);border-radius:10px;padding:12px 18px;margin-bottom:14px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;';
+  summaryBar.innerHTML =
+    '<div style="display:flex;gap:24px;flex-wrap:wrap;">' +
+      '<div>' +
+        '<div style="font-size:.58rem;color:rgba(255,255,255,.7);font-weight:700;text-transform:uppercase;letter-spacing:.8px;">Capital USD (vista)</div>' +
+        '<div style="font-size:1.3rem;font-weight:900;color:white;">$ ' + totalCapital.toFixed(2) + '</div>' +
+      '</div>' +
+      '<div style="border-left:1px solid rgba(255,255,255,.2);padding-left:20px;">' +
+        '<div style="font-size:.58rem;color:rgba(255,255,255,.7);font-weight:700;text-transform:uppercase;letter-spacing:.8px;">Unidades en stock</div>' +
+        '<div style="font-size:1.3rem;font-weight:900;color:white;">' + totalUnits.toLocaleString() + '</div>' +
+      '</div>' +
+      '<div style="border-left:1px solid rgba(255,255,255,.2);padding-left:20px;">' +
+        '<div style="font-size:.58rem;color:rgba(255,255,255,.7);font-weight:700;text-transform:uppercase;letter-spacing:.8px;">Prods. con stock</div>' +
+        '<div style="font-size:1.3rem;font-weight:900;color:white;">' + totalProds + ' / ' + results.length + '</div>' +
+      '</div>' +
+    '</div>' +
+    (_refBrandFilter !== 'ALL' ? '<div style="background:rgba(255,255,255,.15);border-radius:8px;padding:6px 14px;text-align:center;">' +
+      '<div style="font-size:.6rem;color:rgba(255,255,255,.7);font-weight:700;">DEPARTAMENTO</div>' +
+      '<div style="font-size:.95rem;font-weight:900;color:white;letter-spacing:1px;">' + _refBrandFilter + '</div>' +
+    '</div>' : '<div style="background:rgba(255,255,255,.15);border-radius:8px;padding:6px 14px;text-align:center;">' +
+      '<div style="font-size:.6rem;color:rgba(255,255,255,.7);font-weight:700;">DEPARTAMENTO</div>' +
+      '<div style="font-size:.95rem;font-weight:900;color:white;letter-spacing:1px;">TODOS</div>' +
+    '</div>');
+  resultsEl.appendChild(summaryBar);
+
   var grid = document.createElement('div');
   grid.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:12px;';
   cards.forEach(function(c){ grid.appendChild(c); });
