@@ -1332,23 +1332,24 @@ function renderHistorial(){
 
 function deleteSale(id){
   if(!confirm('¿Eliminar este registro del historial? Esta acción no puede deshacerse.')) return;
-  // Guardar ID en lista negra para que no vuelva desde Firebase
-  var deleted = getDeletedIds();
-  if (!deleted.includes(String(id))) deleted.push(String(id));
-  saveDeletedIds(deleted);
-  // Eliminar del array de ventas
-  saveSales(getSales().filter(function(s){ return String(s.id) !== String(id); }));
+  // 1. Pausar el onSnapshot para que no interfiera durante la escritura
+  if (typeof _fbSnapPaused !== 'undefined') _fbSnapPaused = true;
+  // 2. Eliminar del array local
+  var newSales = getSales().filter(function(s){ return String(s.id) !== String(id); });
+  localStorage.setItem('farmers_sales', JSON.stringify(newSales));
+  // 3. Sobreescribir Firebase con la lista ya sin ese registro
+  if (window.fbSaveSales) {
+    window.fbSaveSales(newSales).then(function(){
+      // 4. Reactivar snapshot después de que Firebase confirmó la escritura
+      if (typeof _fbSnapPaused !== 'undefined') _fbSnapPaused = false;
+    }).catch(function(){
+      if (typeof _fbSnapPaused !== 'undefined') _fbSnapPaused = false;
+    });
+  } else {
+    setTimeout(function(){ if (typeof _fbSnapPaused !== 'undefined') _fbSnapPaused = false; }, 2000);
+  }
   renderHistorial();
-  showToast('Registro eliminado permanentemente.', 'success');
-}
-
-function getDeletedIds() {
-  try { return JSON.parse(localStorage.getItem('farmers_deleted_ids') || '[]'); } catch(e){ return []; }
-}
-function saveDeletedIds(ids) {
-  localStorage.setItem('farmers_deleted_ids', JSON.stringify(ids));
-  // Sync deleted IDs to Firebase so all sessions respect the deletion
-  if (window.fbSaveDeletedIds) window.fbSaveDeletedIds(ids);
+  showToast('✅ Registro eliminado permanentemente.', 'success');
 }
 
 function confirmClearHistorial(){
@@ -1872,19 +1873,28 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
   (async function(){ try{ const d=await getDoc(doc(db,'data','deleted_ids')); if(d.exists()&&d.data().v){ var fbDel=JSON.parse(d.data().v)||[]; var localDel=JSON.parse(localStorage.getItem('farmers_deleted_ids')||'[]'); var merged=[...new Set([...fbDel.map(String),...localDel.map(String)])]; localStorage.setItem('farmers_deleted_ids',JSON.stringify(merged)); } }catch(e){} })();
   window.fbGetInventory  = async () => { try{ const d=await getDoc(doc(db,'data','inventory')); return d.exists()?JSON.parse(d.data().v):null; }catch(e){return null;} };
   window.fbGetSales      = async () => { try{ const d=await getDoc(doc(db,'data','sales'));     return d.exists()?JSON.parse(d.data().v):[]; }catch(e){return[];} };
-  onSnapshot(doc(db,'data','sales'), s=>{
+  onSnapshot(doc(db,'data','sales'), function(s){
+    // Si estamos en medio de una escritura, ignorar este snapshot
+    if (window._fbSnapPaused) return;
     try {
-      var fbSales = (s.exists()&&s.data().v)?(JSON.parse(s.data().v)||[]):[];
+      var fbSales = (s.exists()&&s.data().v) ? (JSON.parse(s.data().v)||[]) : [];
       var localSales = JSON.parse(localStorage.getItem('farmers_sales')||'[]');
-      // Get deleted IDs blacklist — never re-import these
-      var deletedIds = JSON.parse(localStorage.getItem('farmers_deleted_ids')||'[]').map(String);
-      // Filter out deleted from Firebase set BEFORE merging
-      fbSales = fbSales.filter(function(fs){ return !deletedIds.includes(String(fs.id)); });
-      var merged = localSales.slice();
-      fbSales.forEach(function(fs){ if(!merged.some(function(ls){return String(ls.id)===String(fs.id);})) merged.push(fs); });
-      if(merged.length){ merged.sort(function(a,b){return String(b.id).localeCompare(String(a.id));}); localStorage.setItem('farmers_sales',JSON.stringify(merged)); if(merged.length>fbSales.length) setDoc(doc(db,'data','sales'),{v:JSON.stringify(merged)}).catch(function(){}); }
-      if(typeof renderHistorial==='function') renderHistorial();
-    } catch(e){ console.warn('onSnapshot:',e); }
+      var localIds   = localSales.map(function(ls){ return String(ls.id); });
+      // Solo incorporar de Firebase IDs que genuinamente NO existen en local
+      // Si no está en local es porque fue eliminado intencionalmente — no se re-agrega
+      var added = false;
+      fbSales.forEach(function(fs){
+        if (!localIds.includes(String(fs.id))) {
+          localSales.push(fs);
+          added = true;
+        }
+      });
+      if (added) {
+        localSales.sort(function(a,b){ return String(b.id).localeCompare(String(a.id)); });
+        localStorage.setItem('farmers_sales', JSON.stringify(localSales));
+      }
+      if (typeof renderHistorial === 'function') renderHistorial();
+    } catch(e){ console.warn('onSnapshot sales:', e); }
   });
   onSnapshot(doc(db,'data','inventory'), s=>{ if(s.exists()){ localStorage.setItem('farmers_inv',s.data().v); if(typeof syncInventoryToProducts==='function'){ syncInventoryToProducts(); if(typeof renderTable==='function') renderTable(); }}});
   console.log('Firebase OK'); window._fbConnected=true;
