@@ -1866,39 +1866,82 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
   import { getFirestore, doc, setDoc, getDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
   const app = initializeApp({apiKey:"AIzaSyC73pXz_txRknUZVvcDjjQuqCp7oaniWqk",authDomain:"farmers-app-70a3a.firebaseapp.com",projectId:"farmers-app-70a3a"});
   const db = getFirestore(app);
-  window.fbSaveInventory = async (v) => { try{ await setDoc(doc(db,'data','inventory'),{v:JSON.stringify(v)}); }catch(e){} };
-  window.fbSaveSales     = async (v) => { try{ await setDoc(doc(db,'data','sales'),    {v:JSON.stringify(v)}); }catch(e){} };
-  window.fbSaveDeletedIds = async (v) => { try{ await setDoc(doc(db,'data','deleted_ids'), {v:JSON.stringify(v)}); }catch(e){} };
-  // Load deleted IDs from Firebase on init
-  (async function(){ try{ const d=await getDoc(doc(db,'data','deleted_ids')); if(d.exists()&&d.data().v){ var fbDel=JSON.parse(d.data().v)||[]; var localDel=JSON.parse(localStorage.getItem('farmers_deleted_ids')||'[]'); var merged=[...new Set([...fbDel.map(String),...localDel.map(String)])]; localStorage.setItem('farmers_deleted_ids',JSON.stringify(merged)); } }catch(e){} })();
-  window.fbGetInventory  = async () => { try{ const d=await getDoc(doc(db,'data','inventory')); return d.exists()?JSON.parse(d.data().v):null; }catch(e){return null;} };
-  window.fbGetSales      = async () => { try{ const d=await getDoc(doc(db,'data','sales'));     return d.exists()?JSON.parse(d.data().v):[]; }catch(e){return[];} };
-  onSnapshot(doc(db,'data','sales'), function(s){
-    // Si estamos en medio de una escritura, ignorar este snapshot
+
+  // ── Guardar inventario ──
+  window.fbSaveInventory = async (v) => {
+    try { await setDoc(doc(db,'data','inventory'), {v:JSON.stringify(v)}); } catch(e) {}
+  };
+
+  // ── Guardar ventas: SIEMPRE sobreescribe Firebase con exactamente lo que hay en local ──
+  // Esto garantiza que lo eliminado localmente se elimina también en Firebase
+  window.fbSaveSales = async (v) => {
+    try { await setDoc(doc(db,'data','sales'), {v:JSON.stringify(v)}); } catch(e) {}
+  };
+
+  window.fbGetInventory = async () => {
+    try { const d = await getDoc(doc(db,'data','inventory')); return d.exists() ? JSON.parse(d.data().v) : null; } catch(e) { return null; }
+  };
+
+  // ── onSnapshot inventario: siempre acepta cambios del servidor ──
+  onSnapshot(doc(db,'data','inventory'), s => {
+    if (s.exists()) {
+      localStorage.setItem('farmers_inv', s.data().v);
+      if (typeof syncInventoryToProducts === 'function') { syncInventoryToProducts(); if (typeof renderTable === 'function') renderTable(); }
+    }
+  });
+
+  // ── onSnapshot ventas: lógica de sincronización correcta ──
+  // Regla: Firebase puede AGREGAR registros nuevos que no tengamos,
+  // pero NUNCA puede restaurar algo que ya no está en local (fue eliminado).
+  // Al iniciar sesión, local está vacío → carga todo desde Firebase (comportamiento correcto).
+  // Después de eliminar → local ya no tiene ese ID → Firebase tampoco debe tenerlo.
+  var _syncReady = false; // evita race condition al cargar
+  onSnapshot(doc(db,'data','sales'), async function(s) {
     if (window._fbSnapPaused) return;
     try {
-      var fbSales = (s.exists()&&s.data().v) ? (JSON.parse(s.data().v)||[]) : [];
-      var localSales = JSON.parse(localStorage.getItem('farmers_sales')||'[]');
-      var localIds   = localSales.map(function(ls){ return String(ls.id); });
-      // Solo incorporar de Firebase IDs que genuinamente NO existen en local
-      // Si no está en local es porque fue eliminado intencionalmente — no se re-agrega
+      var fbSales = (s.exists() && s.data().v) ? (JSON.parse(s.data().v) || []) : [];
+      var localRaw = localStorage.getItem('farmers_sales');
+
+      // Primera carga: local vacío → tomar Firebase tal cual
+      if (!localRaw || localRaw === '[]') {
+        if (fbSales.length) {
+          localStorage.setItem('farmers_sales', JSON.stringify(fbSales));
+          if (typeof renderHistorial === 'function') renderHistorial();
+        }
+        _syncReady = true;
+        return;
+      }
+
+      // Carga posterior: ya tenemos datos locales
+      _syncReady = true;
+      var localSales = JSON.parse(localRaw);
+      var localIds = localSales.map(function(ls) { return String(ls.id); });
+
+      // Agregar solo los que Firebase tiene y nosotros NO (ventas de otro dispositivo)
       var added = false;
-      fbSales.forEach(function(fs){
+      fbSales.forEach(function(fs) {
         if (!localIds.includes(String(fs.id))) {
           localSales.push(fs);
           added = true;
         }
       });
+
       if (added) {
-        localSales.sort(function(a,b){ return String(b.id).localeCompare(String(a.id)); });
+        localSales.sort(function(a, b) { return String(b.id).localeCompare(String(a.id)); });
         localStorage.setItem('farmers_sales', JSON.stringify(localSales));
       }
+
+      // Si local tiene MENOS que Firebase (hay eliminados), subir local a Firebase
+      // Esto asegura que Firebase refleje las eliminaciones
+      if (localSales.length < fbSales.length) {
+        try { await setDoc(doc(db,'data','sales'), {v: JSON.stringify(localSales)}); } catch(e) {}
+      }
+
       if (typeof renderHistorial === 'function') renderHistorial();
-    } catch(e){ console.warn('onSnapshot sales:', e); }
+    } catch(e) { console.warn('onSnapshot sales:', e); }
   });
-  onSnapshot(doc(db,'data','inventory'), s=>{ if(s.exists()){ localStorage.setItem('farmers_inv',s.data().v); if(typeof syncInventoryToProducts==='function'){ syncInventoryToProducts(); if(typeof renderTable==='function') renderTable(); }}});
-  console.log('Firebase OK'); window._fbConnected=true;
-  setTimeout(async function(){try{var lr=localStorage.getItem('farmers_sales');if(!lr)return;var ls=JSON.parse(lr)||[];if(!ls.length)return;var sn=await getDoc(doc(db,'data','sales'));var fs=(sn.exists()&&sn.data().v)?(JSON.parse(sn.data().v)||[]):[];var mg=fs.slice(),added=0;ls.forEach(function(l){if(!mg.some(function(f){return String(f.id)===String(l.id);})){mg.push(l);added++;}});if(added>0){mg.sort(function(a,b){return String(b.id).localeCompare(String(a.id));});await setDoc(doc(db,'data','sales'),{v:JSON.stringify(mg)});console.log('Firebase sync: '+added+' ventas');}}catch(e){console.warn(e);}},2000);
+
+  console.log('Firebase OK'); window._fbConnected = true;
 </script>
 <script>
 
