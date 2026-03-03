@@ -1980,7 +1980,6 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
     } catch(e) { console.warn('onSnapshot sales:', e); }
   });
 
-
   // onSnapshot imagenes: sync automatica entre dispositivos
   onSnapshot(doc(db,'data','images_meta'), async function(ms) {
     if (!ms.exists()) return;
@@ -1999,6 +1998,7 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
       }
     } catch(e) {}
   });
+
   console.log('Firebase OK'); window._fbConnected = true;
 </script>
 <script>
@@ -3150,7 +3150,7 @@ function confirmImport() {
         <div style="font-family:'Barlow Condensed',sans-serif;font-weight:900;font-size:1.4rem;color:white;letter-spacing:2px;">🖼 SUBIR IMÁGENES DE PRODUCTOS</div>
         <button onclick="closeUploadImagesModal()" style="background:rgba(255,255,255,.15);border:none;color:white;font-size:1.1rem;cursor:pointer;border-radius:50%;width:32px;height:32px;line-height:32px;text-align:center;">✕</button>
       </div>
-      <div style="font-size:.78rem;color:rgba(255,255,255,.65);">Abre tu carpeta de imágenes, selecciona todas con <strong>Ctrl+A</strong> (o Cmd+A en Mac) y haz clic en <strong>Abrir</strong>. Nómbralas por código de referencia (ej: EXC001.jpg) para que se asocien automáticamente.</div>
+      <div style="font-size:.78rem;color:rgba(255,255,255,.65);">Abre tu carpeta de imágenes, selecciona todas con <strong>Ctrl+A</strong> (o Cmd+A en Mac) y haz clic en <strong>Abrir</strong>. Nómbralas por código (ej: EXC001.jpg) para que se asocien automáticamente.</div>
     </div>
     <div style="padding:20px 24px;">
       <div style="display:flex;gap:12px;margin-bottom:18px;flex-wrap:wrap;align-items:center;">
@@ -6265,7 +6265,31 @@ window.openUploadImagesModal=function(){
   document.getElementById('ui-folder-input').value='';
   document.getElementById('ui-files-input').value='';
 };
-window.closeUploadImagesModal=function(){document.getElementById('upload-images-modal').style.display='none';};
+window.closeUploadImagesModal=function(){
+  // Resetear completamente para que la próxima apertura esté limpia
+  var btn=document.getElementById('ui-confirm-btn');
+  if(btn){ btn.disabled=false; btn.textContent='💾 Guardar Imágenes'; }
+  var msg=document.getElementById('ui-action-msg');
+  if(msg) msg.textContent='';
+  var stats=document.getElementById('ui-stats');
+  if(stats){ stats.style.display='none'; stats.textContent=''; }
+  var matched=document.getElementById('ui-matched-section');
+  if(matched) matched.style.display='none';
+  var unmatched=document.getElementById('ui-unmatched-section');
+  if(unmatched) unmatched.style.display='none';
+  var actions=document.getElementById('ui-actions');
+  if(actions) actions.style.display='none';
+  var progressWrap=document.getElementById('ui-progress-bar-wrap');
+  if(progressWrap) progressWrap.style.display='none';
+  var bar=document.getElementById('ui-progress-bar');
+  if(bar) bar.style.width='0%';
+  var fInput=document.getElementById('ui-folder-input');
+  if(fInput) fInput.value='';
+  var fsInput=document.getElementById('ui-files-input');
+  if(fsInput) fsInput.value='';
+  _uiMatched=[]; _uiUnmatched=[];
+  document.getElementById('upload-images-modal').style.display='none';
+};
 
 // ── Fuzzy match helper (returns {prod, score}) ──────────────────────────────
 function fuzzyMatchProduct(text){
@@ -6619,18 +6643,17 @@ window.confirmUploadImages=async function(){
 
   msgEl.textContent='⏳ Guardando '+cnt+' imágenes en Firebase ('+kb+'KB)...';
 
-  // Guardar en Firebase (sin límite de tamaño - usa chunks automáticos)
+  // Guardar en Firebase
   if(window.fbSaveImages){
     try{
       await window.fbSaveImages(imgMap);
-      // Actualizar memoria
       window._prodImgs=imgMap;
-      // Guardar en localStorage como caché (puede fallar si es muy grande, no importa)
       try{localStorage.setItem('farmers_product_images',JSON.stringify(imgMap));}catch(e){}
+      if(typeof doRefSearch==='function') setTimeout(doRefSearch, 200);
       msgEl.textContent='✅ '+cnt+' imágenes guardadas en Firebase ('+kb+'KB).';
       btn.textContent='✅ Guardado ('+cnt+')';
-      if(typeof doRefSearch==='function') setTimeout(doRefSearch, 200);
-      setTimeout(closeUploadImagesModal, 2500);
+      // Re-habilitar botón después de 2s para poder seguir cargando más
+      setTimeout(function(){ btn.disabled=false; btn.textContent='💾 Guardar Imágenes'; msgEl.textContent=''; }, 2000);
     }catch(e){
       msgEl.textContent='❌ Error guardando en Firebase: '+e.message;
       btn.disabled=false; btn.textContent='💾 Reintentar';
@@ -6641,12 +6664,12 @@ window.confirmUploadImages=async function(){
       localStorage.removeItem('farmers_product_images');
       localStorage.setItem('farmers_product_images',JSON.stringify(imgMap));
       window._prodImgs=imgMap;
-      msgEl.textContent='✅ '+cnt+' imágenes guardadas localmente ('+kb+'KB).';
-      btn.textContent='✅ Guardado ('+cnt+')';
       if(typeof doRefSearch==='function') setTimeout(doRefSearch, 200);
-      setTimeout(closeUploadImagesModal, 2500);
+      msgEl.textContent='✅ '+cnt+' imágenes guardadas ('+kb+'KB).';
+      btn.textContent='✅ Guardado ('+cnt+')';
+      setTimeout(function(){ btn.disabled=false; btn.textContent='💾 Guardar Imágenes'; msgEl.textContent=''; }, 2000);
     }catch(e2){
-      msgEl.textContent='❌ Error: demasiadas imágenes. Firebase no disponible.';
+      msgEl.textContent='❌ Error: Firebase no disponible.';
       btn.disabled=false; btn.textContent='💾 Reintentar';
     }
   }
