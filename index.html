@@ -1882,6 +1882,45 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
     try { const d = await getDoc(doc(db,'data','inventory')); return d.exists() ? JSON.parse(d.data().v) : null; } catch(e) { return null; }
   };
 
+  // ── Guardar imágenes en Firebase (chunks de 50 por documento) ──
+  window.fbSaveImages = async (imgMap) => {
+    try {
+      const keys = Object.keys(imgMap);
+      const CHUNK = 50;
+      const numChunks = Math.ceil(keys.length / CHUNK);
+      // Guardar número de chunks para saber cuántos leer
+      await setDoc(doc(db,'data','images_meta'), {chunks: numChunks, total: keys.length});
+      for (let i = 0; i < numChunks; i++) {
+        const chunkKeys = keys.slice(i * CHUNK, (i + 1) * CHUNK);
+        const chunkMap = {};
+        chunkKeys.forEach(k => { chunkMap[k] = imgMap[k]; });
+        await setDoc(doc(db,'data','images_'+i), {v: JSON.stringify(chunkMap)});
+      }
+      // Borrar chunks sobrantes de versiones anteriores
+      for (let i = numChunks; i < numChunks + 5; i++) {
+        try { await setDoc(doc(db,'data','images_'+i), {v:'{}'}); } catch(e) {}
+      }
+    } catch(e) { console.warn('fbSaveImages:', e); }
+  };
+
+  // ── Leer imágenes desde Firebase (une todos los chunks) ──
+  window.fbGetImages = async () => {
+    try {
+      const meta = await getDoc(doc(db,'data','images_meta'));
+      if (!meta.exists()) return null;
+      const numChunks = meta.data().chunks || 0;
+      if (numChunks === 0) return {};
+      const combined = {};
+      for (let i = 0; i < numChunks; i++) {
+        const d = await getDoc(doc(db,'data','images_'+i));
+        if (d.exists() && d.data().v) {
+          Object.assign(combined, JSON.parse(d.data().v));
+        }
+      }
+      return combined;
+    } catch(e) { return null; }
+  };
+
   // ── onSnapshot inventario: siempre acepta cambios del servidor ──
   onSnapshot(doc(db,'data','inventory'), s => {
     if (s.exists()) {
@@ -1965,6 +2004,16 @@ async function loadFromFirebase() {
       if (s && s.length) {
         localStorage.setItem('farmers_sales', JSON.stringify(s));
         if (typeof renderHistorial === 'function') renderHistorial();
+      }
+    }
+    // Cargar imágenes desde Firebase
+    if (window.fbGetImages) {
+      var imgs = await window.fbGetImages();
+      if (imgs && Object.keys(imgs).length > 0) {
+        try { localStorage.setItem('farmers_product_images', JSON.stringify(imgs)); } catch(e2) {}
+        window._prodImgs = imgs;
+        if (typeof doRefSearch === 'function') doRefSearch();
+        console.log('Imágenes cargadas desde Firebase:', Object.keys(imgs).length);
       }
     }
   } catch(e) { console.warn('loadFromFirebase:', e); }
@@ -2763,6 +2812,10 @@ function doRefSearch() {
   var inv = {};
   try { inv = getInventory(); } catch(e) {}
 
+  // Load product images from localStorage
+  var _prodImgs = {};
+  try { _prodImgs = JSON.parse(localStorage.getItem('farmers_product_images') || '{}'); } catch(e) {}
+
   var cards = [];
 
   results.slice(0, 80).forEach(function(p) {
@@ -2777,13 +2830,42 @@ function doRefSearch() {
     var pBCV = p.bv ? '$ ' + p.bv.toFixed(2) : '—';
     var pTF  = p.t  ? '$ ' + p.t.toFixed(2)  : '—';
 
+    // Find image: match by reference, internal code, or barcode
+    var imgSrc = _prodImgs[p.r] || _prodImgs[p.c] || _prodImgs[p.b] || null;
+    // Use DOM to build image element safely (avoids base64 breaking inline onclick)
+    var imgHtml;
+    if(imgSrc){
+      var _thumbDiv = document.createElement('div');
+      _thumbDiv.style.cssText = 'width:64px;height:64px;border-radius:8px;overflow:hidden;border:2px solid rgba(255,255,255,.4);flex-shrink:0;background:#fff;cursor:zoom-in;';
+      _thumbDiv.title = 'Ver imagen completa';
+      _thumbDiv.setAttribute('data-imgsrc', imgSrc);
+      _thumbDiv.onclick = function(){ openImgLightbox(this.getAttribute('data-imgsrc')); };
+      var _thumbImg = document.createElement('img');
+      _thumbImg.src = imgSrc;
+      _thumbImg.style.cssText = 'width:100%;height:100%;object-fit:cover;';
+      _thumbImg.onerror = function(){ this.parentElement.innerHTML='📦'; this.parentElement.style.cssText+='display:flex;align-items:center;justify-content:center;font-size:1.8rem;cursor:default;'; };
+      _thumbDiv.appendChild(_thumbImg);
+      imgHtml = _thumbDiv.outerHTML; // will be used as placeholder; real DOM built below
+      // Store for DOM injection after card created
+      p._imgNode = _thumbDiv;
+    } else {
+      imgHtml = '<div style="width:64px;height:64px;border-radius:8px;background:rgba(255,255,255,.12);border:2px dashed rgba(255,255,255,.3);flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:1.6rem;color:rgba(255,255,255,.4);" title="Sin imagen">📦</div>';
+      p._imgNode = null;
+    }
+
     var card = document.createElement('div');
     card.style.cssText = 'border:1.5px solid #e0e4f0;border-radius:12px;overflow:hidden;background:white;box-shadow:0 2px 8px rgba(0,0,0,.06);';
 
     card.innerHTML =
-      '<div style="background:' + bColor + ';padding:9px 13px;display:flex;align-items:center;justify-content:space-between;">' +
-        '<div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;font-size:1.1rem;color:white;letter-spacing:1px;">' + hl(p.r) + '</div>' +
-        '<div style="background:' + stockBg + ';color:' + stockColor + ';border-radius:20px;padding:3px 10px;font-size:.68rem;font-weight:700;white-space:nowrap;">' + stockLabel + '</div>' +
+      '<div style="background:' + bColor + ';padding:9px 13px;display:flex;align-items:center;justify-content:space-between;gap:10px;">' +
+        '<div style="display:flex;align-items:center;gap:10px;min-width:0;">' +
+          imgHtml +
+          '<div style="min-width:0;">' +
+            '<div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;font-size:1.1rem;color:white;letter-spacing:1px;">' + hl(p.r) + '</div>' +
+            (imgSrc ? '<div style="font-size:.6rem;color:rgba(255,255,255,.7);margin-top:2px;">📸 Imagen disponible</div>' : '') +
+          '</div>' +
+        '</div>' +
+        '<div style="background:' + stockBg + ';color:' + stockColor + ';border-radius:20px;padding:3px 10px;font-size:.68rem;font-weight:700;white-space:nowrap;flex-shrink:0;">' + stockLabel + '</div>' +
       '</div>' +
       '<div style="padding:10px 13px 10px;">' +
         '<div style="font-weight:700;color:#1a2050;font-size:.88rem;margin-bottom:9px;line-height:1.3;">' + hl(p.d) + '</div>' +
@@ -2841,6 +2923,15 @@ function doRefSearch() {
           '</div>' +
         '</div>' : '') +
       '</div>';
+
+    // Inject real image DOM node (safe - no base64 in innerHTML)
+    if(p._imgNode){
+      var _placeholder = card.querySelector('[data-imgsrc]');
+      if(_placeholder && _placeholder.parentElement){
+        _placeholder.parentElement.replaceChild(p._imgNode, _placeholder);
+      }
+    }
+    p._imgNode = null; // cleanup
 
     cards.push(card);
   });
@@ -5562,7 +5653,11 @@ function confirmDevolucion() {
     <div style="background:linear-gradient(135deg,#0e1240,#1a2050,#252b6b);padding:20px 24px 16px;">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
         <div style="font-family:'Barlow Condensed',sans-serif;font-weight:900;font-size:1.4rem;color:white;letter-spacing:2px;">🔍 BUSCADOR DE REFERENCIAS</div>
-        <button onclick="closeRefSearch()" style="background:rgba(255,255,255,.15);border:none;color:white;font-size:1.1rem;cursor:pointer;border-radius:50%;width:32px;height:32px;line-height:32px;text-align:center;">✕</button>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <button onclick="openImportPricesModal()" title="Importar lista de precios desde Excel" style="background:rgba(34,197,94,.25);border:1.5px solid rgba(34,197,94,.5);color:white;font-size:.72rem;font-weight:700;cursor:pointer;border-radius:8px;padding:5px 12px;letter-spacing:.5px;white-space:nowrap;">📊 Importar Precios</button>
+          <button onclick="openUploadImagesModal()" title="Subir imágenes de productos" style="background:rgba(168,85,247,.25);border:1.5px solid rgba(168,85,247,.5);color:white;font-size:.72rem;font-weight:700;cursor:pointer;border-radius:8px;padding:5px 12px;letter-spacing:.5px;white-space:nowrap;">🖼 Subir Imágenes</button>
+          <button onclick="closeRefSearch()" style="background:rgba(255,255,255,.15);border:none;color:white;font-size:1.1rem;cursor:pointer;border-radius:50%;width:32px;height:32px;line-height:32px;text-align:center;">✕</button>
+        </div>
       </div>
 
       <!-- SEARCH INPUT -->
@@ -5934,5 +6029,649 @@ function confirmDevolucion() {
 
   </div>
 </div>
+
+<!-- ═══════════ MODAL: IMPORTAR PRECIOS ═══════════ -->
+<div id="import-prices-modal" style="display:none;position:fixed;inset:0;z-index:999999;background:rgba(10,15,40,.9);backdrop-filter:blur(8px);align-items:flex-start;justify-content:center;padding:20px;overflow-y:auto;">
+  <div style="background:white;border-radius:18px;width:100%;max-width:900px;box-shadow:0 30px 70px rgba(0,0,0,.55);overflow:hidden;margin:auto;">
+    <div style="background:linear-gradient(135deg,#0e1240,#1a2050,#16a34a);padding:20px 24px 16px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+        <div style="font-family:'Barlow Condensed',sans-serif;font-weight:900;font-size:1.4rem;color:white;letter-spacing:2px;">📊 IMPORTAR LISTA DE PRECIOS</div>
+        <button onclick="closeImportPricesModal()" style="background:rgba(255,255,255,.15);border:none;color:white;font-size:1.1rem;cursor:pointer;border-radius:50%;width:32px;height:32px;line-height:32px;text-align:center;">✕</button>
+      </div>
+      <div style="font-size:.78rem;color:rgba(255,255,255,.65);">Sube un archivo .xlsx o .xls con columnas: Código/SKU · Descripción · Precio USD · Stock · Marca</div>
+    </div>
+    <div style="padding:20px 24px;">
+      <div id="ip-dropzone" onclick="document.getElementById('ip-file-input').click()" style="border:2.5px dashed #c7d2fe;border-radius:14px;padding:32px;text-align:center;cursor:pointer;background:#f5f7ff;transition:all .2s;" onmouseover="this.style.background='#eef0ff'" onmouseout="this.style.background='#f5f7ff'">
+        <div style="font-size:2.5rem;margin-bottom:10px;">📂</div>
+        <div style="font-size:.95rem;font-weight:700;color:#1a2050;">Haz clic o arrastra tu archivo Excel aquí</div>
+        <div style="font-size:.77rem;color:#8892b0;margin-top:4px;">Formatos: .xlsx · .xls — máx 10 MB</div>
+        <input type="file" id="ip-file-input" accept=".xlsx,.xls" style="display:none" onchange="handleIPFile(this.files[0])">
+      </div>
+      <div id="ip-mapping-section" style="display:none;margin-top:18px;">
+        <div style="font-size:.82rem;font-weight:800;color:#1a2050;margin-bottom:10px;letter-spacing:.5px;">MAPEO DE COLUMNAS DETECTADAS</div>
+        <div id="ip-mapping-grid" style="display:grid;grid-template-columns:1fr 1fr;gap:10px;"></div>
+      </div>
+      <div id="ip-stats-bar" style="display:none;margin-top:14px;background:#f0fdf4;border:1.5px solid #bbf7d0;border-radius:10px;padding:10px 16px;font-size:.8rem;color:#166534;"></div>
+      <div id="ip-preview-wrap" style="display:none;margin-top:16px;">
+        <div style="font-size:.82rem;font-weight:800;color:#1a2050;margin-bottom:8px;letter-spacing:.5px;">PREVISUALIZACIÓN DE CAMBIOS</div>
+        <div style="max-height:340px;overflow-y:auto;border:1.5px solid #e8eaf6;border-radius:10px;">
+          <table style="width:100%;border-collapse:collapse;font-size:.77rem;">
+            <thead>
+              <tr style="background:#1a2050;color:white;position:sticky;top:0;z-index:1;">
+                <th style="padding:8px 10px;text-align:left;">Estado</th>
+                <th style="padding:8px 10px;text-align:left;">Código</th>
+                <th style="padding:8px 10px;text-align:left;">Descripción</th>
+                <th style="padding:8px 10px;text-align:right;">Precio USD</th>
+                <th style="padding:8px 10px;text-align:center;">Stock</th>
+                <th style="padding:8px 10px;text-align:center;">Marca</th>
+              </tr>
+            </thead>
+            <tbody id="ip-preview-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+      <div id="ip-actions" style="display:none;margin-top:18px;justify-content:flex-end;gap:10px;align-items:center;">
+        <div id="ip-action-msg" style="font-size:.77rem;color:#8892b0;margin-right:auto;"></div>
+        <button onclick="closeImportPricesModal()" style="background:#f3f4f6;color:#374151;border:1.5px solid #d1d5db;border-radius:8px;padding:9px 18px;cursor:pointer;font-weight:700;font-size:.8rem;">Cancelar</button>
+        <button id="ip-confirm-btn" onclick="confirmImportPrices()" style="background:linear-gradient(135deg,#1a2050,#16a34a);color:white;border:none;border-radius:8px;padding:9px 24px;cursor:pointer;font-weight:700;font-size:.8rem;">✅ Aplicar Cambios</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════ MODAL: SUBIR IMÁGENES ═══════════ -->
+<div id="upload-images-modal" style="display:none;position:fixed;inset:0;z-index:999999;background:rgba(10,15,40,.9);backdrop-filter:blur(8px);align-items:flex-start;justify-content:center;padding:20px;overflow-y:auto;">
+  <div style="background:white;border-radius:18px;width:100%;max-width:960px;box-shadow:0 30px 70px rgba(0,0,0,.55);overflow:hidden;margin:auto;">
+    <div style="background:linear-gradient(135deg,#0e1240,#4c1d95,#7c3aed);padding:20px 24px 16px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+        <div style="font-family:'Barlow Condensed',sans-serif;font-weight:900;font-size:1.4rem;color:white;letter-spacing:2px;">🖼 SUBIR IMÁGENES DE PRODUCTOS</div>
+        <button onclick="closeUploadImagesModal()" style="background:rgba(255,255,255,.15);border:none;color:white;font-size:1.1rem;cursor:pointer;border-radius:50%;width:32px;height:32px;line-height:32px;text-align:center;">✕</button>
+      </div>
+      <div style="font-size:.78rem;color:rgba(255,255,255,.65);">Selecciona una carpeta con imágenes nombradas por código (ej: EXC001.jpg). Se asocian automáticamente.</div>
+    </div>
+    <div style="padding:20px 24px;">
+      <div style="display:flex;gap:12px;margin-bottom:18px;flex-wrap:wrap;align-items:center;">
+        <button onclick="document.getElementById('ui-folder-input').click()" style="background:linear-gradient(135deg,#7c3aed,#5b21b6);color:white;border:none;border-radius:10px;padding:12px 22px;cursor:pointer;font-weight:700;font-size:.85rem;">📁 Seleccionar Carpeta</button>
+        <button onclick="document.getElementById('ui-files-input').click()" style="background:rgba(124,58,237,.1);color:#5b21b6;border:2px solid #7c3aed;border-radius:10px;padding:12px 22px;cursor:pointer;font-weight:700;font-size:.85rem;">🗂 Archivos Sueltos</button>
+        <input type="file" id="ui-folder-input" webkitdirectory multiple accept="image/*" style="display:none" onchange="handleUIFiles(this.files)">
+        <input type="file" id="ui-files-input" multiple accept="image/*" style="display:none" onchange="handleUIFiles(this.files)">
+        <div id="ui-progress-bar-wrap" style="display:none;flex:1;min-width:200px;align-items:center;gap:10px;">
+          <div style="flex:1;background:#e9d5ff;border-radius:99px;height:8px;overflow:hidden;">
+            <div id="ui-progress-bar" style="background:linear-gradient(90deg,#7c3aed,#a855f7);height:100%;width:0%;transition:width .2s;"></div>
+          </div>
+          <div id="ui-progress-label" style="font-size:.75rem;color:#7c3aed;font-weight:700;white-space:nowrap;">0%</div>
+        </div>
+      </div>
+      <div id="ui-stats" style="display:none;background:#faf5ff;border:1.5px solid #e9d5ff;border-radius:10px;padding:10px 16px;font-size:.8rem;color:#6b21a8;margin-bottom:16px;"></div>
+      <div id="ui-matched-section" style="display:none;">
+        <div style="font-size:.82rem;font-weight:800;color:#1a2050;margin-bottom:8px;letter-spacing:.5px;">✅ CON COINCIDENCIA AUTOMÁTICA</div>
+        <div id="ui-matched-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px;max-height:260px;overflow-y:auto;padding:4px;"></div>
+      </div>
+      <div id="ui-unmatched-section" style="display:none;margin-top:16px;">
+        <div style="font-size:.82rem;font-weight:800;color:#dc2626;margin-bottom:8px;letter-spacing:.5px;">⚠️ SIN COINCIDENCIA — Asignación Manual</div>
+        <div id="ui-unmatched-list" style="display:flex;flex-direction:column;gap:8px;max-height:200px;overflow-y:auto;"></div>
+      </div>
+      <div id="ui-actions" style="display:none;margin-top:18px;justify-content:flex-end;gap:10px;align-items:center;">
+        <div id="ui-action-msg" style="font-size:.77rem;color:#8892b0;margin-right:auto;"></div>
+        <button onclick="closeUploadImagesModal()" style="background:#f3f4f6;color:#374151;border:1.5px solid #d1d5db;border-radius:8px;padding:9px 18px;cursor:pointer;font-weight:700;font-size:.8rem;">Cancelar</button>
+        <button id="ui-confirm-btn" onclick="confirmUploadImages()" style="background:linear-gradient(135deg,#4c1d95,#7c3aed);color:white;border:none;border-radius:8px;padding:9px 24px;cursor:pointer;font-weight:700;font-size:.8rem;">💾 Guardar Imágenes</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ═══════════════════════════════════════════
+// FEATURE 1: IMPORTAR PRECIOS DESDE EXCEL
+// ═══════════════════════════════════════════
+var _ipParsedRows = [];
+var _ipMappedCols = {};
+var _ipResults = [];
+
+window.openImportPricesModal = function() {
+  _ipParsedRows=[]; _ipMappedCols={}; _ipResults=[];
+  var m=document.getElementById('import-prices-modal');
+  m.style.display='flex';
+  ['ip-mapping-section','ip-preview-wrap'].forEach(function(id){document.getElementById(id).style.display='none';});
+  document.getElementById('ip-stats-bar').style.display='none';
+  document.getElementById('ip-actions').style.display='none';
+  document.getElementById('ip-preview-tbody').innerHTML='';
+  document.getElementById('ip-file-input').value='';
+};
+window.closeImportPricesModal=function(){document.getElementById('import-prices-modal').style.display='none';};
+
+window.handleIPFile=function(file){
+  if(!file)return;
+  // XLSX is already loaded globally via CDN in the page head
+  doIPParse(file);
+};
+
+function doIPParse(file){
+  var reader=new FileReader();
+  reader.onload=function(e){
+    try{
+      var wb=XLSX.read(new Uint8Array(e.target.result),{type:'array'});
+      var ws=wb.Sheets[wb.SheetNames[0]];
+      var rows=XLSX.utils.sheet_to_json(ws,{header:1,defval:''});
+      if(rows.length<2){alert('Archivo vacío.');return;}
+      _ipParsedRows=rows;
+      buildIPMapping(rows[0]);
+    }catch(err){alert('Error: '+err.message);}
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+function buildIPMapping(headers){
+  var defs=[
+    {key:'code',label:'Código / SKU',hints:['cod','sku','ref','codigo','referencia']},
+    {key:'desc',label:'Descripción / Nombre',hints:['desc','nombre','name','product','articulo']},
+    {key:'price',label:'Precio USD',hints:['usd','precio','price','dolar','unit']},
+    {key:'stock',label:'Stock / Cantidad',hints:['stock','qty','cantidad','existencia','ex']},
+    {key:'brand',label:'Marca / Brand',hints:['marca','brand','br','fabricante']},
+  ];
+  var auto={};
+  headers.forEach(function(h,i){
+    var hl=String(h).toLowerCase().trim();
+    defs.forEach(function(fd){if(auto[fd.key]===undefined&&fd.hints.some(function(x){return hl.includes(x);}))auto[fd.key]=i;});
+  });
+  _ipMappedCols=auto;
+  var g=document.getElementById('ip-mapping-grid');
+  g.innerHTML='';
+  defs.forEach(function(fd){
+    var sel='<select id="ipmap-'+fd.key+'" onchange="_ipMappedCols[\''+fd.key+'\']=parseInt(this.value);previewIPChanges()" style="width:100%;padding:7px;border:1.5px solid #e0e4f0;border-radius:7px;font-size:.8rem;"><option value="-1">— No usar —</option>';
+    headers.forEach(function(h,i){sel+='<option value="'+i+'"'+(auto[fd.key]===i?' selected':'')+'>'+i+': '+h+'</option>';});
+    sel+='</select>';
+    g.innerHTML+='<div><div style="font-size:.72rem;color:#6b7280;font-weight:700;margin-bottom:4px;">'+fd.label+'</div>'+sel+'</div>';
+  });
+  document.getElementById('ip-mapping-section').style.display='block';
+  previewIPChanges();
+}
+
+window.previewIPChanges=function(){
+  ['code','desc','price','stock','brand'].forEach(function(k){var e=document.getElementById('ipmap-'+k);if(e)_ipMappedCols[k]=parseInt(e.value);});
+  var rows=_ipParsedRows.slice(1);
+  var res=[],nw=0,up=0,sk=0;
+  rows.forEach(function(row){
+    var code=_ipMappedCols.code>=0?String(row[_ipMappedCols.code]||'').trim():'';
+    var desc=_ipMappedCols.desc>=0?String(row[_ipMappedCols.desc]||'').trim():'';
+    var price=parseFloat(String(_ipMappedCols.price>=0?row[_ipMappedCols.price]:'').replace(/[^0-9.]/g,''));
+    var stock=parseInt(String(_ipMappedCols.stock>=0?row[_ipMappedCols.stock]:'').replace(/[^0-9-]/g,''));
+    var brand=_ipMappedCols.brand>=0?String(row[_ipMappedCols.brand]||'').trim():'';
+    if(!code){sk++;return;}
+    var ex=null;
+    if(typeof PRODUCTS!=='undefined')ex=PRODUCTS.find(function(p){return p.r.toLowerCase()===code.toLowerCase()||p.c.toLowerCase()===code.toLowerCase()||p.b===code;});
+    if(ex){res.push({status:'update',code:code,desc:desc||ex.d,price:isNaN(price)?null:price,stock:isNaN(stock)?null:stock,brand:brand||ex.br,original:ex});up++;}
+    else{res.push({status:'new',code:code,desc:desc,price:isNaN(price)?null:price,stock:isNaN(stock)?null:stock,brand:brand});nw++;}
+  });
+  _ipResults=res;
+  var sb=document.getElementById('ip-stats-bar');
+  sb.style.display='block';
+  sb.innerHTML='<span style="margin-right:16px;">📦 <strong>'+up+'</strong> actualizaciones</span><span style="margin-right:16px;">✨ <strong>'+nw+'</strong> productos nuevos</span><span>⏭ <strong>'+sk+'</strong> sin código</span>';
+  var tb=document.getElementById('ip-preview-tbody');
+  tb.innerHTML='';
+  res.slice(0,200).forEach(function(r){
+    var bg=r.status==='new'?'#f0fdf4':'#fff7ed';
+    var badge=r.status==='new'?'<span style="background:#dcfce7;color:#166534;border-radius:4px;padding:2px 6px;font-size:.68rem;font-weight:700;">NUEVO</span>':'<span style="background:#fff7ed;color:#92400e;border-radius:4px;padding:2px 6px;font-size:.68rem;font-weight:700;">UPDATE</span>';
+    tb.innerHTML+='<tr style="background:'+bg+';border-bottom:1px solid #f0f0f8;"><td style="padding:5px 8px;">'+badge+'</td><td style="padding:5px 8px;font-weight:700;color:#1a2050;">'+r.code+'</td><td style="padding:5px 8px;">'+r.desc+'</td><td style="padding:5px 8px;text-align:right;color:#16a34a;font-weight:700;">'+(r.price!=null?'$'+r.price.toFixed(2):'—')+'</td><td style="padding:5px 8px;text-align:center;">'+(r.stock!=null?r.stock:'—')+'</td><td style="padding:5px 8px;text-align:center;font-size:.7rem;color:#6b7280;">'+r.brand+'</td></tr>';
+  });
+  if(res.length>200)tb.innerHTML+='<tr><td colspan="6" style="padding:8px;text-align:center;color:#8892b0;font-size:.73rem;">...y '+(res.length-200)+' más</td></tr>';
+  document.getElementById('ip-preview-wrap').style.display=res.length?'block':'none';
+  document.getElementById('ip-actions').style.display=res.length?'flex':'none';
+};
+
+window.confirmImportPrices=function(){
+  var btn=document.getElementById('ip-confirm-btn');
+  btn.disabled=true;btn.textContent='⏳ Aplicando...';
+  var inv={};try{inv=JSON.parse(localStorage.getItem('farmers_inv')||'{}');}catch(e){}
+  var applied=0;
+  _ipResults.forEach(function(r){
+    if(r.status==='update'&&r.original){
+      if(r.price!=null)r.original.u=r.price;
+      if(r.desc)r.original.d=r.desc;
+      if(r.stock!=null){r.original.ex=r.stock;r.original.et=r.stock;inv[r.original.r]=r.stock;}
+      if(r.brand)r.original.br=r.brand;
+      applied++;
+    }else if(r.status==='new'&&r.price!=null&&r.code){
+      var np={r:r.code,b:'',c:r.code,d:r.desc||r.code,e:'UNIDAD',m:0,br:r.brand||'VARIOS',ex:r.stock||0,et:r.stock||0,u:r.price,bv:parseFloat((r.price*1.6).toFixed(6)),t:parseFloat((r.price*1.92).toFixed(6))};
+      if(typeof PRODUCTS!=='undefined')PRODUCTS.push(np);
+      if(r.stock)inv[r.code]=r.stock;
+      applied++;
+    }
+  });
+  if(typeof saveInventory==='function')saveInventory(inv);
+  if(typeof syncInventoryToProducts==='function')syncInventoryToProducts();
+  if(typeof renderTable==='function')renderTable();
+  document.getElementById('ip-action-msg').textContent='✅ '+applied+' cambios aplicados.';
+  btn.textContent='✅ Aplicado';
+  setTimeout(closeImportPricesModal,1600);
+};
+
+// ═══════════════════════════════════════════
+// FEATURE 2: SUBIR IMÁGENES DE PRODUCTOS
+// ═══════════════════════════════════════════
+var _uiMatched=[];
+var _uiUnmatched=[];
+
+window.openUploadImagesModal=function(){
+  _uiMatched=[];_uiUnmatched=[];
+  var m=document.getElementById('upload-images-modal');
+  m.style.display='flex';
+  ['ui-stats','ui-matched-section','ui-unmatched-section','ui-actions','ui-progress-bar-wrap'].forEach(function(id){document.getElementById(id).style.display='none';});
+  document.getElementById('ui-matched-grid').innerHTML='';
+  document.getElementById('ui-unmatched-list').innerHTML='';
+  document.getElementById('ui-progress-bar').style.width='0%';
+  document.getElementById('ui-folder-input').value='';
+  document.getElementById('ui-files-input').value='';
+};
+window.closeUploadImagesModal=function(){document.getElementById('upload-images-modal').style.display='none';};
+
+// ── Fuzzy match helper (returns {prod, score}) ──────────────────────────────
+function fuzzyMatchProduct(text){
+  function norm(s){return (s||'').toUpperCase().replace(/[\s\-_\.]/g,'');}
+  var fnorm=norm(text);
+  var best=null,bestScore=0;
+  if(typeof PRODUCTS==='undefined')return {prod:null,score:0};
+  PRODUCTS.forEach(function(p){
+    [{v:p.r},{v:p.c||''},{v:p.b||''}].forEach(function(obj){
+      var cand=norm(obj.v); if(!cand)return;
+      var score=0;
+      if(cand===fnorm){score=100;}
+      else if(cand.indexOf(fnorm)>=0||fnorm.indexOf(cand)>=0){
+        score=85-Math.abs(cand.length-fnorm.length)*2;
+      } else {
+        var minLen=Math.min(cand.length,fnorm.length);
+        var common=0;
+        for(var i=0;i<minLen;i++){if(cand[i]===fnorm[i])common++;else break;}
+        if(common>=3)score=60+Math.round((common/Math.max(cand.length,fnorm.length))*35);
+        var maxL=Math.max(cand.length,fnorm.length);
+        if(maxL>0){
+          var a=cand,b2=fnorm,m=a.length,n=b2.length;
+          var dp=[];for(var ii=0;ii<=m;ii++){dp[ii]=[];for(var jj=0;jj<=n;jj++){dp[ii][jj]=0;}}
+          for(var ii=0;ii<=m;ii++)dp[ii][0]=ii;
+          for(var jj=0;jj<=n;jj++)dp[0][jj]=jj;
+          for(var ii=1;ii<=m;ii++){for(var jj=1;jj<=n;jj++){
+            dp[ii][jj]=a[ii-1]===b2[jj-1]?dp[ii-1][jj-1]:1+Math.min(dp[ii-1][jj],dp[ii][jj-1],dp[ii-1][jj-1]);
+          }}
+          var sim=Math.round((1-dp[m][n]/maxL)*100);
+          if(sim>score)score=sim;
+        }
+      }
+      if(score>bestScore){bestScore=score;best=p;}
+    });
+  });
+  return {prod:best,score:bestScore};
+}
+
+// ── OCR via Claude API to read reference text from image ─────────────────────
+// Compress at higher res for AI analysis (800px)
+function compressImageForAI(file, cb){
+  var reader=new FileReader();
+  reader.onload=function(e){
+    var img=new Image();
+    img.onload=function(){
+      var MAX=800, w=img.width, h=img.height;
+      if(w>h){if(w>MAX){h=Math.round(h*MAX/w);w=MAX;}}
+      else{if(h>MAX){w=Math.round(w*MAX/h);h=MAX;}}
+      var c=document.createElement('canvas');
+      c.width=w; c.height=h;
+      c.getContext('2d').drawImage(img,0,0,w,h);
+      cb(c.toDataURL('image/jpeg',0.88));
+    };
+    img.src=e.target.result;
+  };
+  reader.readAsDataURL(file);
+}
+
+function ocrImageForRef(b64hq, fname, cb){
+  var base64data = b64hq.split(',')[1];
+
+  // Build full product catalog for AI context
+  var productCatalog = 'NONE';
+  if(typeof PRODUCTS!=='undefined'&&PRODUCTS.length){
+    productCatalog = PRODUCTS.map(function(p){
+      return p.r + (p.d?' — '+p.d:'')+ (p.br?' ['+p.br+']':'')+ (p.c?' (cod:'+p.c+')':'')+ (p.b?' (barcode:'+p.b+')':'');
+    }).join('\n');
+  }
+
+  var prompt =
+    'Eres un experto en identificación de productos de inventario. Analiza esta imagen de producto con máxima precisión.\n\n'+
+    'CATÁLOGO COMPLETO DE PRODUCTOS DEL SISTEMA:\n'+productCatalog+'\n\n'+
+    'NOMBRE DEL ARCHIVO DE LA IMAGEN: '+fname+'\n\n'+
+    'INSTRUCCIONES:\n'+
+    '1. Lee TODOS los textos visibles en la imagen: etiquetas, cajas, stickers, serigrafía, packaging.\n'+
+    '2. Identifica códigos de referencia, modelos, SKUs, números de parte.\n'+
+    '3. Compara lo que ves con el CATÁLOGO y determina cuál producto es.\n'+
+    '4. Considera también el nombre del archivo como pista adicional.\n'+
+    '5. Si el texto de la imagen coincide exactamente o casi exactamente con una referencia del catálogo, úsala.\n\n'+
+    'Responde ÚNICAMENTE en este formato JSON (sin markdown, sin explicación extra):\n'+
+    '{"ref":"REFERENCIA_EXACTA_DEL_CATALOGO","confidence":95,"reason":"texto visible en imagen: XYZ"}\n\n'+
+    'Si no puedes identificar el producto con ninguna confianza, responde:\n'+
+    '{"ref":"NONE","confidence":0,"reason":"no se pudo identificar"}';
+
+  fetch('https://api.anthropic.com/v1/messages',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({
+      model:'claude-sonnet-4-20250514',
+      max_tokens:200,
+      messages:[{
+        role:'user',
+        content:[
+          {type:'image',source:{type:'base64',media_type:'image/jpeg',data:base64data}},
+          {type:'text',text:prompt}
+        ]
+      }]
+    })
+  })
+  .then(function(r){return r.json();})
+  .then(function(data){
+    var raw=(data.content&&data.content[0]&&data.content[0].text)||'{"ref":"NONE","confidence":0,"reason":""}';
+    try{
+      var clean=raw.replace(/```json|```/g,'').trim();
+      var parsed=JSON.parse(clean);
+      cb({
+        ref:(parsed.ref||'NONE').toUpperCase().trim(),
+        confidence:parseInt(parsed.confidence)||0,
+        reason:parsed.reason||''
+      });
+    }catch(e){
+      // fallback: try to extract ref from raw text
+      var m=raw.match(/"ref"\s*:\s*"([^"]+)"/);
+      cb({ref:m?m[1].toUpperCase().trim():'NONE', confidence:50, reason:raw.slice(0,80)});
+    }
+  })
+  .catch(function(err){cb({ref:'NONE',confidence:0,reason:'error de red'});});
+}
+
+window.handleUIFiles=function(files){
+  if(!files||!files.length)return;
+  _uiMatched=[];_uiUnmatched=[];
+  var total=files.length,done=0;
+  var pw=document.getElementById('ui-progress-bar-wrap');
+  pw.style.display='flex';
+  var pb=document.getElementById('ui-progress-bar');
+  var pl=document.getElementById('ui-progress-label');
+  pl.textContent='Procesando imágenes...';
+
+  // Exact match helper — checks p.r and p.c case-insensitively
+  function exactMatch(token){
+    if(!token||!token.trim())return null;
+    var t=token.trim().toUpperCase();
+    if(typeof PRODUCTS==='undefined')return null;
+    return PRODUCTS.find(function(p){
+      return (p.r||'').toUpperCase()===t || (p.c||'').toUpperCase()===t || (p.b||'').toUpperCase()===t;
+    })||null;
+  }
+
+  function processNext(idx){
+    if(idx>=total){
+      pb.style.width='100%';
+      pl.textContent='✅ Listo — '+_uiMatched.length+' asignadas, '+_uiUnmatched.length+' sin asignar';
+      renderUIResults();
+      return;
+    }
+    var file=files[idx];
+    // Strip extension, trim
+    var fname=file.name.replace(/\.[^.]+$/,'').trim();
+    var fnameUP=fname.toUpperCase();
+    pl.textContent='('+(idx+1)+'/'+total+') '+fname;
+
+    compressImage(file,function(b64display){
+
+      // ── PASO 1: Parseo directo del nombre ─────────────────────────────────
+      // Formato esperado: "REFERENCIA - CODIGO" (separador " - ")
+      // Intentamos con variantes del separador: " - ", " – ", "_-_", " -", "- "
+      var parts=fname.split(/\s*[\-–]\s*/);  // split on any dash with optional spaces
+      var foundProd=null, foundSource='', foundToken='';
+
+      // Try each part as exact match
+      for(var i=0;i<parts.length;i++){
+        var p=exactMatch(parts[i]);
+        if(p){foundProd=p; foundSource='nombre'; foundToken=parts[i].trim(); break;}
+      }
+
+      // Also try full filename without separators just in case
+      if(!foundProd){
+        var p2=exactMatch(fnameUP);
+        if(p2){foundProd=p2; foundSource='nombre exacto'; foundToken=fnameUP;}
+      }
+
+      if(foundProd){
+        // ✅ Match exacto por nombre de archivo — no necesita IA
+        _uiMatched.push({prod:foundProd,b64:b64display,score:100,fname:file.name,source:'📁 '+foundToken,ocrText:'',aiReason:''});
+        done++;
+        pb.style.width=Math.round((done/total)*100)+'%';
+        setTimeout(function(){processNext(idx+1);},10);
+      } else {
+        // ── PASO 2: Nombre no fue suficiente → IA analiza la imagen ─────────
+        pl.textContent='🤖 IA analizando '+fname+'... ('+(idx+1)+'/'+total+')';
+        compressImageForAI(file,function(b64hq){
+          ocrImageForRef(b64hq, file.name, function(aiResult){
+            var finalProd=null, finalScore=0, finalSource='';
+
+            if(aiResult.ref&&aiResult.ref!=='NONE'&&aiResult.confidence>=50){
+              // Try exact match on what IA returned
+              var aiExact=exactMatch(aiResult.ref);
+              if(aiExact){
+                finalProd=aiExact; finalScore=aiResult.confidence; finalSource='🤖 IA';
+              } else {
+                // IA returned something close — try each token
+                aiResult.ref.split(/[\s\-]+/).forEach(function(tok){
+                  if(tok.length<2)return;
+                  var m=exactMatch(tok);
+                  if(m&&!finalProd){finalProd=m; finalScore=aiResult.confidence; finalSource='🤖 IA token';}
+                });
+              }
+            }
+
+            if(finalProd&&finalScore>=50){
+              _uiMatched.push({prod:finalProd,b64:b64display,score:finalScore,fname:file.name,source:finalSource,ocrText:aiResult.ref,aiReason:aiResult.reason});
+            } else {
+              // No match found anywhere — goes to manual section
+              // Still pre-select best AI suggestion if any
+              var suggestion=null, suggScore=0;
+              if(aiResult.ref&&aiResult.ref!=='NONE'){
+                // fuzzy only as last resort for the SUGGESTION (not auto-assign)
+                var fm=fuzzyMatchProduct(aiResult.ref);
+                if(fm.score>=40){suggestion=fm.prod.r; suggScore=fm.score;}
+              }
+              _uiUnmatched.push({fname:file.name,b64:b64display,assignedRef:null,suggestion:suggestion,suggestionScore:suggScore,ocrText:aiResult.ref,aiReason:aiResult.reason});
+            }
+
+            done++;
+            pb.style.width=Math.round((done/total)*100)+'%';
+            setTimeout(function(){processNext(idx+1);},50);
+          });
+        });
+      }
+    });
+  }
+  processNext(0);
+};
+
+function compressImage(file,cb){
+  var reader=new FileReader();
+  reader.onload=function(e){
+    var img=new Image();
+    img.onload=function(){
+      var MAX=220,w=img.width,h=img.height;
+      if(w>h){if(w>MAX){h=Math.round(h*MAX/w);w=MAX;}}else{if(h>MAX){w=Math.round(w*MAX/h);h=MAX;}}
+      var c=document.createElement('canvas');
+      c.width=w;c.height=h;
+      c.getContext('2d').drawImage(img,0,0,w,h);
+      cb(c.toDataURL('image/jpeg',0.65));
+    };
+    img.src=e.target.result;
+  };
+  reader.readAsDataURL(file);
+}
+
+function renderUIResults(){
+  var st=document.getElementById('ui-stats');
+  st.style.display='block';
+  var withSuggestion=_uiUnmatched.filter(function(x){return x.suggestion;}).length;
+  var noMatch=_uiUnmatched.filter(function(x){return !x.suggestion;}).length;
+  st.innerHTML=
+    '<span style="margin-right:16px;">✅ <strong>'+_uiMatched.length+'</strong> coincidencia exacta</span>'+
+    (withSuggestion?'<span style="margin-right:16px;color:#92400e;">💡 <strong>'+withSuggestion+'</strong> con sugerencia fuzzy</span>':'')+
+    (noMatch?'<span style="color:#dc2626;">❓ <strong>'+noMatch+'</strong> sin coincidencia</span>':'');
+
+  var mg=document.getElementById('ui-matched-grid');
+  mg.innerHTML='';
+  _uiMatched.forEach(function(item){
+    var scoreColor=item.score===100?'#16a34a':item.score>=80?'#2563eb':'#d97706';
+    var scoreLabel=item.score===100?'✓ Exacto':(item.source==='OCR'?'📷 OCR ':(item.source==='nombre'?'📁 ':(item.source||'')))+item.score+'%';
+    var card=document.createElement('div');
+    card.style.cssText='background:#f5f7ff;border:1.5px solid '+(item.source==='OCR'?'#bfdbfe':'#c7d2fe')+';border-radius:10px;overflow:hidden;text-align:center;position:relative;';
+    card.innerHTML=
+      '<div style="position:absolute;top:5px;right:5px;background:'+scoreColor+';color:white;border-radius:20px;padding:2px 7px;font-size:.58rem;font-weight:800;z-index:2;white-space:nowrap;">'+scoreLabel+'</div>'+
+      '<img src="'+item.b64+'" style="width:100%;height:90px;object-fit:contain;padding:4px;cursor:zoom-in;" onclick="openImgLightbox(this.src)">'+
+      '<div style="padding:3px 6px;font-size:.68rem;font-weight:700;color:#1a2050;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+item.prod.r+'</div>'+
+      '<div style="padding:0 6px 2px;font-size:.58rem;color:#6b7280;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+item.prod.d.slice(0,26)+'</div>'+
+      (item.source==='IA'||item.source==='IA+fuzzy'
+        ? '<div style="padding:0 6px 3px;font-size:.55rem;color:#2563eb;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="'+( item.aiReason||'')+'">🤖 '+(item.aiReason?item.aiReason.slice(0,40):'IA confirmó ref')+'</div>'
+        : '<div style="padding:0 6px 3px;font-size:.55rem;color:#9ca3af;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">📁 '+item.fname+'</div>'
+      );
+    mg.appendChild(card);
+  });
+  document.getElementById('ui-matched-section').style.display=_uiMatched.length?'block':'none';
+
+  var ul=document.getElementById('ui-unmatched-list');
+  ul.innerHTML='';
+  _uiUnmatched.forEach(function(item,idx){
+    var hasSuggestion=item.suggestion&&!item.assignedRef;
+    var rowBg=hasSuggestion?'#fffbeb':'#fef2f2';
+    var rowBorder=hasSuggestion?'#fcd34d':'#fecaca';
+    var row=document.createElement('div');
+    row.style.cssText='display:flex;align-items:center;gap:10px;background:'+rowBg+';border:1.5px solid '+rowBorder+';border-radius:8px;padding:8px 12px;margin-bottom:6px;';
+    var thumb=document.createElement('img');
+    thumb.src=item.b64;
+    thumb.style.cssText='width:56px;height:56px;object-fit:contain;border-radius:6px;background:white;flex-shrink:0;border:1px solid '+rowBorder+';cursor:zoom-in;';
+    thumb.onclick=function(){openImgLightbox(item.b64);};
+    var info=document.createElement('div');
+    info.style.cssText='flex:1;min-width:0;';
+    var fnameEl=document.createElement('div');
+    fnameEl.style.cssText='font-size:.77rem;font-weight:700;color:#991b1b;word-break:break-all;';
+    fnameEl.textContent=item.fname;
+    info.appendChild(fnameEl);
+    if(item.aiReason){
+      var ocrEl=document.createElement('div');
+      ocrEl.style.cssText='font-size:.65rem;color:#2563eb;margin-top:2px;';
+      ocrEl.textContent='🤖 '+item.aiReason.slice(0,60);
+      info.appendChild(ocrEl);
+    } else if(item.ocrText&&item.ocrText!=='NONE'){
+      var ocrEl=document.createElement('div');
+      ocrEl.style.cssText='font-size:.65rem;color:#3b82f6;margin-top:2px;';
+      ocrEl.textContent='📷 IA leyó: '+item.ocrText;
+      info.appendChild(ocrEl);
+    }
+    if(hasSuggestion){
+      var suggEl=document.createElement('div');
+      suggEl.style.cssText='font-size:.65rem;color:#92400e;margin-top:2px;';
+      suggEl.textContent='💡 Sugerido: '+item.suggestion+' ('+item.suggestionScore+'% similar)';
+      info.appendChild(suggEl);
+    }
+    var sel=document.createElement('select');
+    sel.style.cssText='padding:5px 8px;border:1.5px solid '+rowBorder+';border-radius:7px;font-size:.73rem;min-width:220px;background:white;';
+    var defOpt=document.createElement('option');
+    defOpt.value='';defOpt.textContent='— No asignar —';
+    sel.appendChild(defOpt);
+    if(typeof PRODUCTS!=='undefined'){
+      PRODUCTS.forEach(function(p){
+        var o=document.createElement('option');
+        o.value=p.r;o.textContent=p.r+' — '+p.d.slice(0,38);
+        // Pre-select suggestion or previously chosen
+        if((item.assignedRef&&item.assignedRef===p.r)||(hasSuggestion&&!item.assignedRef&&item.suggestion===p.r))o.selected=true;
+        sel.appendChild(o);
+      });
+    }
+    // If suggestion exists, auto-assign it (user can override)
+    if(hasSuggestion)_uiUnmatched[idx].assignedRef=item.suggestion;
+    sel.onchange=function(){_uiUnmatched[idx].assignedRef=this.value||null;};
+    row.appendChild(thumb);row.appendChild(info);row.appendChild(sel);
+    ul.appendChild(row);
+  });
+  document.getElementById('ui-unmatched-section').style.display=_uiUnmatched.length?'block':'none';
+  document.getElementById('ui-actions').style.display=(_uiMatched.length+_uiUnmatched.length)?'flex':'none';
+}
+
+window.confirmUploadImages=async function(){
+  var btn=document.getElementById('ui-confirm-btn');
+  var msgEl=document.getElementById('ui-action-msg');
+  btn.disabled=true; btn.textContent='⏳ Guardando...';
+
+  // Cargar imágenes existentes (primero de memoria, luego localStorage)
+  var imgMap={};
+  if(window._prodImgs && Object.keys(window._prodImgs).length>0){
+    imgMap=Object.assign({},window._prodImgs);
+  } else {
+    try{imgMap=JSON.parse(localStorage.getItem('farmers_product_images')||'{}');}catch(e){imgMap={};}
+  }
+
+  // Agregar nuevas imágenes
+  _uiMatched.forEach(function(item){ if(item.prod&&item.b64) imgMap[item.prod.r]=item.b64; });
+  _uiUnmatched.forEach(function(item){ if(item.assignedRef&&item.b64) imgMap[item.assignedRef]=item.b64; });
+
+  var cnt=Object.keys(imgMap).length;
+  var kb=Math.round(JSON.stringify(imgMap).length/1024);
+
+  msgEl.textContent='⏳ Guardando '+cnt+' imágenes en Firebase ('+kb+'KB)...';
+
+  // Guardar en Firebase (sin límite de tamaño - usa chunks automáticos)
+  if(window.fbSaveImages){
+    try{
+      await window.fbSaveImages(imgMap);
+      // Actualizar memoria
+      window._prodImgs=imgMap;
+      // Guardar en localStorage como caché (puede fallar si es muy grande, no importa)
+      try{localStorage.setItem('farmers_product_images',JSON.stringify(imgMap));}catch(e){}
+      msgEl.textContent='✅ '+cnt+' imágenes guardadas en Firebase ('+kb+'KB).';
+      btn.textContent='✅ Guardado ('+cnt+')';
+      if(typeof doRefSearch==='function') setTimeout(doRefSearch, 200);
+      setTimeout(closeUploadImagesModal, 2500);
+    }catch(e){
+      msgEl.textContent='❌ Error guardando en Firebase: '+e.message;
+      btn.disabled=false; btn.textContent='💾 Reintentar';
+    }
+  } else {
+    // Fallback: solo localStorage
+    try{
+      localStorage.removeItem('farmers_product_images');
+      localStorage.setItem('farmers_product_images',JSON.stringify(imgMap));
+      window._prodImgs=imgMap;
+      msgEl.textContent='✅ '+cnt+' imágenes guardadas localmente ('+kb+'KB).';
+      btn.textContent='✅ Guardado ('+cnt+')';
+      if(typeof doRefSearch==='function') setTimeout(doRefSearch, 200);
+      setTimeout(closeUploadImagesModal, 2500);
+    }catch(e2){
+      msgEl.textContent='❌ Error: demasiadas imágenes. Firebase no disponible.';
+      btn.disabled=false; btn.textContent='💾 Reintentar';
+    }
+  }
+};
+</script>
+
+<!-- IMAGE LIGHTBOX -->
+<div id="img-lightbox" onclick="closeImgLightbox()" style="display:none;position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,.92);backdrop-filter:blur(6px);align-items:center;justify-content:center;cursor:zoom-out;">
+  <div onclick="event.stopPropagation()" style="position:relative;max-width:92vw;max-height:92vh;display:flex;align-items:center;justify-content:center;">
+    <img id="img-lightbox-img" src="" style="max-width:90vw;max-height:88vh;border-radius:12px;box-shadow:0 24px 80px rgba(0,0,0,.7);object-fit:contain;display:block;">
+    <button onclick="closeImgLightbox()" style="position:absolute;top:-14px;right:-14px;background:#ef4444;color:white;border:none;border-radius:50%;width:34px;height:34px;font-size:1.1rem;cursor:pointer;display:flex;align-items:center;justify-content:center;box-shadow:0 4px 12px rgba(0,0,0,.4);font-weight:900;line-height:1;">✕</button>
+  </div>
+</div>
+<script>
+function openImgLightbox(src){
+  var lb=document.getElementById('img-lightbox');
+  var img=document.getElementById('img-lightbox-img');
+  img.src=src;
+  lb.style.display='flex';
+  document.body.style.overflow='hidden';
+}
+function closeImgLightbox(){
+  document.getElementById('img-lightbox').style.display='none';
+  document.getElementById('img-lightbox-img').src='';
+  document.body.style.overflow='';
+}
+document.addEventListener('keydown',function(e){if(e.key==='Escape')closeImgLightbox();});
+</script>
 </body>
 </html>
