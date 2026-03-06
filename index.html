@@ -5171,7 +5171,9 @@ function handleImportFile(input) { if(input.files && input.files[0]) loadImportF
 
 async function loadImportFile(file) {
   var fn = document.getElementById('import-file-name');
-  if(fn) fn.textContent = 'Archivo: ' + file.name;
+  var fnText = document.getElementById('import-file-name-text');
+  if(fn) fn.style.display = 'inline-flex';
+  if(fnText) fnText.textContent = file.name;
   try {
     if (file.name.toLowerCase().endsWith('.pdf')) {
       if (typeof pdfjsLib === 'undefined') { toastErr('PDF.js no disponible. Pega el texto manualmente.', 'Error de librería'); return; }
@@ -5241,79 +5243,548 @@ async function processImport() {
   }
 }
 
-function renderImportReview(data) {
+// ── Moneda activa del modal import ──
+var _impMoneda = 'USD';
+
+function impActualizarPreview() {
+  if (!_importData) return;
   var inv = getInventory();
-  var warns = [];
-  var rows = (data.items||[]).map(function(it, i) {
-    var prod = PRODUCTS.find(function(p){ return p.r === it.r; });
-    var stock = inv[it.r] !== undefined ? inv[it.r] : (prod ? prod.ex : 0);
-    var ok = stock >= it.qty;
-    if (!ok) warns.push(it.r + ': stock insuficiente (' + stock + ' disp, ' + it.qty + ' sol)');
-    if (!prod) warns.push(it.r + ': no encontrado en sistema');
-    return '<tr style="background:' + (i%2===0?'#fff':'#f8f9ff') + ';">' +
-      '<td style="padding:8px 12px;font-weight:700;color:' + (prod?'#1a2050':'#dc2626') + ';">' + it.r + '</td>' +
-      '<td style="padding:8px 12px;font-size:.82rem;">' + (prod?prod.d:'No encontrado') + '</td>' +
-      '<td style="padding:8px 12px;text-align:center;font-weight:700;">' + (it.qty||0) + '</td>' +
-      '<td style="padding:8px 12px;text-align:center;">$ ' + fmt(it.precio||0) + '</td>' +
-      '<td style="padding:8px 12px;text-align:right;font-weight:700;color:#e8692a;">$ ' + fmt((it.qty||0)*(it.precio||0)) + '</td>' +
-      '<td style="padding:8px 12px;text-align:center;font-weight:700;color:' + (ok?'#16a34a':'#dc2626') + ';">' + stock + '</td>' +
-      '</tr>';
-  }).join('');
-  var ci = document.getElementById('import-client-info');
-  if(ci) ci.innerHTML =
-    '<div style="font-weight:900;color:#1a2050;font-size:1.1rem;margin-bottom:6px;">' + (data.cliente||'Sin nombre') + '</div>' +
-    '<div style="display:flex;flex-wrap:wrap;gap:10px;font-size:.8rem;color:#5a6080;">' +
-    (data.rif ? '<span>RIF: ' + data.rif + '</span>' : '') +
-    (data.numpedido ? '<span>Pedido #' + data.numpedido + '</span>' : '') +
-    (data.fecha ? '<span>Fecha: ' + data.fecha + '</span>' : '') +
-    '<span style="color:#e8692a;font-weight:700;">Total: $ ' + fmt(data.total||0) + '</span>' +
-    '</div>';
-  var pl = document.getElementById('import-products-list');
-  if(pl) pl.innerHTML =
-    '<table style="width:100%;border-collapse:collapse;font-size:.82rem;">' +
-    '<thead><tr style="background:#1a2050;color:white;">' +
-    '<th style="padding:8px 12px;text-align:left;">Ref</th>' +
-    '<th style="padding:8px 12px;">Descripcion</th>' +
-    '<th style="padding:8px 12px;text-align:center;">Cant</th>' +
-    '<th style="padding:8px 12px;text-align:center;">Precio</th>' +
-    '<th style="padding:8px 12px;text-align:right;">Subtotal</th>' +
-    '<th style="padding:8px 12px;text-align:center;">Stock</th>' +
-    '</tr></thead><tbody>' + rows + '</tbody></table>';
-  var wn = document.getElementById('import-warnings');
-  if(wn) wn.innerHTML = warns.length
-    ? '<div style="background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:10px;margin-top:8px;font-size:.8rem;">' + warns.map(function(w){ return '<div style="color:#dc2626;">' + w + '</div>'; }).join('') + '</div>'
-    : '<div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:10px;margin-top:8px;color:#16a34a;font-weight:700;font-size:.85rem;">&#10003; Todos los productos encontrados</div>';
+  var tasa = getTasaHoy() || 0;
+  var panel = document.getElementById('import-preview-panel');
+  if (!panel) return;
+
+  var totalUSD=0, totalBCV=0, totalTF=0;
+  var totalUnids=0, ajustados=0, omitidos=0, okCount=0;
+
+  (_importData.items||[]).forEach(function(it){
+    var prod = PRODUCTS.find(function(p){ return p.r===it.r; });
+    if (!prod) { omitidos++; return; }
+    var stock = parseInt(inv[it.r]!==undefined ? inv[it.r] : (prod.ex||0)) || 0;
+    if (stock <= 0) { omitidos++; return; }
+    var pedido = parseInt(it.qty)||0;
+    var qty = Math.min(stock, pedido);  // toma todo lo disponible, incluso parcial
+    if (qty < pedido) ajustados++;
+    else okCount++;
+    var usd = it.precio || (prod.u||0);
+    var bcv = prod.bv||0; var tf = prod.t||0;
+    if (!bcv && tasa) bcv = usd * tasa;
+    if (!tf  && tasa) tf  = usd * tasa * 1.08;
+    totalUSD += qty * usd;
+    totalBCV += qty * bcv;
+    totalTF  += qty * tf;
+    totalUnids += qty;
+  });
+
+  panel.style.display = 'block';
+
+  // Stats
+  var ps = document.getElementById('import-preview-stats');
+  if(ps) ps.innerHTML = [
+    okCount   ? '<span style="background:rgba(74,222,128,.2);border:1px solid rgba(74,222,128,.4);color:#4ade80;border-radius:4px;padding:2px 8px;font-size:.63rem;font-weight:800;">✓ '+okCount+' completo</span>' : '',
+    ajustados ? '<span style="background:rgba(251,191,36,.2);border:1px solid rgba(251,191,36,.4);color:#fbbf24;border-radius:4px;padding:2px 8px;font-size:.63rem;font-weight:800;">⚠ '+ajustados+' ajustado</span>' : '',
+    omitidos  ? '<span style="background:rgba(248,113,113,.2);border:1px solid rgba(248,113,113,.4);color:#f87171;border-radius:4px;padding:2px 8px;font-size:.63rem;font-weight:800;">✕ '+omitidos+' omitido</span>' : ''
+  ].filter(Boolean).join('');
+
+  // Totales
+  var pt = document.getElementById('import-preview-totales');
+  if(pt) pt.innerHTML =
+    '<div style="background:white;border:2px solid #fed7aa;border-radius:7px;padding:6px 14px;text-align:center;">' +
+      '<div style="font-size:.58rem;color:#92400e;font-weight:800;text-transform:uppercase;letter-spacing:.5px;">USD</div>' +
+      '<div style="font-size:1.1rem;font-weight:900;color:#c2410c;">$ '+fmt(totalUSD)+'</div>' +
+      '<div style="font-size:.6rem;color:#94a3b8;">'+totalUnids+' uds</div>' +
+    '</div>' +
+    (tasa>0?'<div style="background:white;border:2px solid #bfdbfe;border-radius:7px;padding:6px 14px;text-align:center;">' +
+      '<div style="font-size:.58rem;color:#1d4ed8;font-weight:800;text-transform:uppercase;letter-spacing:.5px;">BCV Bs</div>' +
+      '<div style="font-size:1.1rem;font-weight:900;color:#1d4ed8;">'+fmt(totalBCV)+'</div>' +
+      '<div style="font-size:.6rem;color:#94a3b8;">= $ '+fmt(totalUSD)+' USD</div>' +
+    '</div>':'')+
+    (tasa>0?'<div style="background:white;border:2px solid #ddd6fe;border-radius:7px;padding:6px 14px;text-align:center;">' +
+      '<div style="font-size:.58rem;color:#6d28d9;font-weight:800;text-transform:uppercase;letter-spacing:.5px;">TF Bs</div>' +
+      '<div style="font-size:1.1rem;font-weight:900;color:#6d28d9;">'+fmt(totalTF)+'</div>' +
+      '<div style="font-size:.6rem;color:#94a3b8;">= $ '+fmt(totalUSD)+' USD</div>' +
+    '</div>':'');
+
+  // Nota
+  var pn = document.getElementById('import-preview-nota');
+  if(pn) pn.textContent = omitidos
+    ? omitidos+' ref. sin stock serán omitidas al confirmar'
+    : 'Todo el stock disponible puede ser procesado';
 }
 
-function confirmImport() {
+function impSelectMoneda(m) {
+  _impMoneda = m;
+  ['USD','BCV','TF'].forEach(function(x){
+    var btn = document.getElementById('imp-mon-' + x);
+    if(!btn) return;
+    if(x === m) { btn.style.border='2px solid #e8692a'; btn.style.background='#e8692a'; btn.style.color='white'; }
+    else { btn.style.border='2px solid rgba(255,255,255,.2)'; btn.style.background='transparent'; btn.style.color='rgba(255,255,255,.4)'; }
+  });
+  if(_importData) { renderImportReview(_importData); impActualizarPreview(); }
+}
+
+function importLimpiarArchivo() {
+  var inp = document.getElementById('import-file');
+  if(inp) { inp.value = ''; }
+  var fn = document.getElementById('import-file-name');
+  if(fn) fn.style.display = 'none';
+}
+
+function importLimpiar() {
+  _importData = null;
+  var txt = document.getElementById('import-text');
+  if(txt) txt.value = '';
+  importLimpiarArchivo();
+  var clrBtn = document.getElementById('import-clear-btn');
+  if(clrBtn) clrBtn.style.display = 'none';
+  var sb = document.getElementById('import-stats-bar');
+  if(sb) sb.style.display = 'none';
+  showImportStep(1);
+}
+
+function impFiltrarTabla() {
+  var q = (document.getElementById('import-filter-ref')||{}).value || '';
+  var st = (document.getElementById('import-filter-estado')||{}).value || '';
+  q = q.toLowerCase();
+  var rows = document.querySelectorAll('#import-products-list tr[data-estado]');
+  var vis = 0;
+  rows.forEach(function(tr){
+    var ref = (tr.getAttribute('data-ref')||'').toLowerCase();
+    var desc = (tr.getAttribute('data-desc')||'').toLowerCase();
+    var estado = tr.getAttribute('data-estado')||'';
+    var matchQ = !q || ref.includes(q) || desc.includes(q);
+    var matchS = !st || estado === st;
+    tr.style.display = (matchQ && matchS) ? '' : 'none';
+    if(matchQ && matchS) vis++;
+  });
+  var fc = document.getElementById('import-filter-count');
+  if(fc) fc.textContent = vis + ' producto' + (vis===1?'':'s') + ' mostrado' + (vis===1?'':'s');
+}
+
+function impExportarExcel() {
   if (!_importData) return;
   var d = _importData;
   var inv = getInventory();
-  var items = (d.items||[]).map(function(it){
+  var tasa = getTasaHoy() || 0;
+  var rows = [['#','Referencia','Descripción','Pedido','Stock Disp.','USD Unit.','USD Subtotal','Estado']];
+  var totalUSD = 0;
+  (d.items||[]).forEach(function(it, i){
     var prod = PRODUCTS.find(function(p){ return p.r === it.r; });
-    return { r:it.r, d:prod?prod.d:it.r, br:prod?prod.br:'', orden:it.qty||0, precio:it.precio||0, total:(it.qty||0)*(it.precio||0) };
+    var stock = parseInt(inv[it.r] !== undefined ? inv[it.r] : (prod ? (prod.ex||0) : 0)) || 0;
+    var qty = parseInt(it.qty)||0;
+    var usd = it.precio || (prod ? (prod.u||0) : 0);
+    var sub = qty * usd;
+    totalUSD += sub;
+    var estado = !prod ? 'No encontrado' : stock<=0 ? 'Sin stock' : stock<qty ? 'Parcial ('+stock+' disp.)' : 'OK';
+    rows.push([i+1, it.r, prod?prod.d:'—', qty, stock, usd, sub, estado]);
   });
+  rows.push(['','','','','','TOTAL USD:', totalUSD,'']);
+  var ws = XLSX.utils.aoa_to_sheet(rows);
+  var wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Pedido');
+  XLSX.writeFile(wb, 'pedido_' + (d.numpedido||Date.now()) + '.xlsx');
+  showToast('Excel descargado', 'success');
+}
+
+function impExportarPDF() {
+  if (!_importData) return;
+  var d = _importData;
+  var inv = getInventory();
+  var tasa = getTasaHoy() || 0;
+  var totalUSD = 0, totalBCV = 0, totalTF = 0;
+
+  var filas = (d.items||[]).map(function(it, i){
+    var prod = PRODUCTS.find(function(p){ return p.r === it.r; });
+    var stock = parseInt(inv[it.r] !== undefined ? inv[it.r] : (prod ? (prod.ex||0) : 0)) || 0;
+    var qty = parseInt(it.qty)||0;
+    var usd = it.precio || (prod ? (prod.u||0) : 0);
+    var bcv = prod ? (prod.bv||0) : (usd * tasa);
+    var tf  = prod ? (prod.t||0)  : (usd * tasa * 1.08);
+    var subUSD = qty * usd;
+    var subBCV = qty * bcv;
+    var subTF  = qty * tf;
+    totalUSD += subUSD; totalBCV += subBCV; totalTF += subTF;
+    var estado = !prod ? 'noref' : stock<=0 ? 'nostock' : stock<qty ? 'parcial' : 'ok';
+    var badgeColor = {ok:'#15803d', parcial:'#92400e', nostock:'#dc2626', noref:'#7f1d1d'}[estado];
+    var badgeBg = {ok:'#f0fdf4', parcial:'#fffbeb', nostock:'#fef2f2', noref:'#fef2f2'}[estado];
+    var badgeTxt = {ok:'✓ OK', parcial:'⚠ Parcial ('+stock+' disp.)', nostock:'✗ Sin stock', noref:'? No encontrado'}[estado];
+    var rowBg = i%2===0 ? '#ffffff' : '#f8f9ff';
+    return '<tr style="background:'+rowBg+';">' +
+      '<td style="padding:6px 8px;font-size:9px;color:#94a3b8;text-align:center;">'+(i+1)+'</td>' +
+      '<td style="padding:6px 8px;"><div style="font-weight:800;font-size:9px;color:#1a2050;">'+it.r+'</div>' +
+        '<div style="font-size:8px;color:#64748b;">'+(prod?prod.d:'— no encontrado')+'</div></td>' +
+      '<td style="padding:6px 8px;text-align:center;font-weight:800;font-size:10px;">'+qty+'</td>' +
+      '<td style="padding:6px 8px;text-align:center;font-size:9px;color:'+(stock>0?'#15803d':'#dc2626')+';font-weight:700;">'+stock+'</td>' +
+      '<td style="padding:6px 8px;text-align:right;font-size:9px;">$ '+fmt(usd)+'</td>' +
+      '<td style="padding:6px 8px;text-align:right;font-size:9px;">Bs '+fmt(bcv)+'</td>' +
+      '<td style="padding:6px 8px;text-align:right;font-size:9px;">Bs '+fmt(tf)+'</td>' +
+      '<td style="padding:6px 8px;text-align:right;font-weight:800;font-size:9px;color:#1a2050;">$ '+fmt(subUSD)+'</td>' +
+      '<td style="padding:6px 8px;text-align:center;"><span style="background:'+badgeBg+';color:'+badgeColor+';border-radius:3px;padding:2px 5px;font-size:7.5px;font-weight:800;">'+badgeTxt+'</span></td>' +
+    '</tr>';
+  }).join('');
+
+  var html = '<!DOCTYPE html><html><head><meta charset="utf-8">' +
+  '<title>Pedido '+(d.numpedido||'')+'</title>' +
+  '<style>@page{margin:14mm 12mm}body{font-family:Arial,sans-serif;margin:0;color:#1e293b}' +
+  'table{width:100%;border-collapse:collapse}th{background:#1a2050;color:white;padding:7px 8px;font-size:8.5px;text-align:left;font-weight:700;letter-spacing:.4px;text-transform:uppercase}' +
+  'td{border-bottom:1px solid #f0f4f8}tfoot td{background:#f8fafc;font-weight:800;font-size:9px;border-top:2px solid #e2e8f0}' +
+  '.pill{display:inline-block;border-radius:4px;padding:2px 8px;font-size:8px;font-weight:800}' +
+  '@media print{.no-print{display:none}}</style></head><body>' +
+  // Header
+  '<div style="background:linear-gradient(135deg,#7c2d12,#e8692a);padding:16px 20px;border-radius:8px;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center;">' +
+    '<div><div style="font-size:16px;font-weight:900;color:white;letter-spacing:1px;">FARMERS C.A.</div>' +
+    '<div style="font-size:9px;color:rgba(255,255,255,.75);margin-top:2px;">Pedido importado</div></div>' +
+    '<div style="text-align:right;font-size:9px;color:rgba(255,255,255,.85);">' +
+    (d.numpedido ? '<div style="font-size:12px;font-weight:900;color:white;">Pedido #'+d.numpedido+'</div>' : '') +
+    (d.fecha ? '<div>'+d.fecha+'</div>' : '') +
+    (tasa ? '<div>Tasa BCV: '+fmt(tasa)+' Bs/USD</div>' : '') +
+    '</div>' +
+  '</div>' +
+  // Cliente
+  '<div style="background:#f0f4ff;border-left:4px solid #1a2050;border-radius:6px;padding:10px 14px;margin-bottom:12px;display:flex;flex-wrap:wrap;gap:12px;">' +
+    '<div><div style="font-size:7px;color:#94a3b8;font-weight:700;text-transform:uppercase;letter-spacing:.5px;">Cliente</div>' +
+    '<div style="font-weight:900;font-size:12px;color:#1a2050;">'+(d.cliente||'Sin nombre')+'</div></div>' +
+    (d.rif ? '<div><div style="font-size:7px;color:#94a3b8;font-weight:700;text-transform:uppercase;">RIF</div><div style="font-weight:700;font-size:10px;">'+d.rif+'</div></div>' : '') +
+    (d.vendedor ? '<div><div style="font-size:7px;color:#94a3b8;font-weight:700;text-transform:uppercase;">Vendedor</div><div style="font-weight:700;font-size:10px;">'+d.vendedor+'</div></div>' : '') +
+    (d.telefono ? '<div><div style="font-size:7px;color:#94a3b8;font-weight:700;text-transform:uppercase;">Teléfono</div><div style="font-weight:700;font-size:10px;">'+d.telefono+'</div></div>' : '') +
+  '</div>' +
+  // Tabla
+  '<table><thead><tr>' +
+    '<th style="width:24px">#</th><th>Ref · Descripción</th>' +
+    '<th style="text-align:center;width:44px">Pedido</th><th style="text-align:center;width:44px">Stock</th>' +
+    '<th style="text-align:right;width:56px">USD Unit.</th><th style="text-align:right;width:56px">BCV Unit.</th><th style="text-align:right;width:56px">TF Unit.</th>' +
+    '<th style="text-align:right;width:64px">Subtotal $</th><th style="text-align:center;width:80px">Estado</th>' +
+  '</tr></thead><tbody>'+filas+'</tbody>' +
+  '<tfoot><tr>' +
+    '<td colspan="7" style="padding:8px;font-size:8px;color:#94a3b8;">'+( d.items||[]).length+' línea(s) · Tasa: '+fmt(tasa)+' Bs/$</td>' +
+    '<td style="padding:8px;text-align:right;color:#e8692a;font-size:11px;">$ '+fmt(totalUSD)+'</td>' +
+    '<td></td>' +
+  '</tr></tfoot></table>' +
+  // Totales
+  '<div style="margin-top:12px;display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;">' +
+    '<div style="background:#fff7ed;border:1.5px solid #fed7aa;border-radius:6px;padding:8px 14px;text-align:right;">' +
+      '<div style="font-size:7px;color:#92400e;font-weight:700;text-transform:uppercase;">USD</div>' +
+      '<div style="font-size:14px;font-weight:900;color:#c2410c;">$ '+fmt(totalUSD)+'</div>' +
+    '</div>' +
+    '<div style="background:#eff6ff;border:1.5px solid #bfdbfe;border-radius:6px;padding:8px 14px;text-align:right;">' +
+      '<div style="font-size:7px;color:#1d4ed8;font-weight:700;text-transform:uppercase;">BCV</div>' +
+      '<div style="font-size:14px;font-weight:900;color:#1d4ed8;">Bs '+fmt(totalBCV)+'</div>' +
+    '</div>' +
+    '<div style="background:#f5f3ff;border:1.5px solid #ddd6fe;border-radius:6px;padding:8px 14px;text-align:right;">' +
+      '<div style="font-size:7px;color:#6d28d9;font-weight:700;text-transform:uppercase;">TF</div>' +
+      '<div style="font-size:14px;font-weight:900;color:#6d28d9;">Bs '+fmt(totalTF)+'</div>' +
+    '</div>' +
+  '</div>' +
+  '<div class="no-print" style="margin-top:18px;text-align:center;">' +
+    '<button onclick="window.print()" style="background:#1a2050;color:white;border:none;border-radius:8px;padding:10px 28px;font-size:13px;font-weight:700;cursor:pointer;">🖨 Imprimir / Guardar PDF</button>' +
+  '</div></body></html>';
+
+  var blob = new Blob([html], {type:'text/html;charset=utf-8'});
+  var url = URL.createObjectURL(blob);
+  var win = window.open(url, '_blank');
+  if(win) { setTimeout(function(){ win.print(); }, 800); }
+  showToast('PDF listo para imprimir', 'success');
+}
+
+function renderImportReview(data) {
+  var inv = getInventory();
+  var tasa = getTasaHoy() || 0;
+  var warns = [];
+  var okCount = 0, parcialCount = 0, noStockCount = 0, noRefCount = 0;
+  var totalUSD = 0, totalBCV = 0, totalTF = 0;
+
+  function getPrecios(it, prod) {
+    var usd = it.precio || (prod ? (prod.u||0) : 0);
+    var bcv = prod ? (prod.bv||0) : (usd * tasa);
+    var tf  = prod ? (prod.t||0)  : (usd * tasa * 1.08);
+    return { usd: usd, bcv: bcv, tf: tf };
+  }
+  function precioDisplay(pr) {
+    if (_impMoneda === 'USD') return '<strong>$ '+fmt(pr.usd)+'</strong>';
+    if (_impMoneda === 'BCV') return '<strong>Bs '+fmt(pr.bcv)+'</strong><br><span style="font-size:.63rem;color:#94a3b8;">= $ '+fmt(pr.usd)+' USD</span>';
+    if (_impMoneda === 'TF')  return '<strong>Bs '+fmt(pr.tf)+'</strong><br><span style="font-size:.63rem;color:#94a3b8;">= $ '+fmt(pr.usd)+' USD</span>';
+    return '<strong>$ '+fmt(pr.usd)+'</strong>';
+  }
+  function subtotalDisplay(pr, qty) {
+    if (_impMoneda === 'USD') return '$ ' + fmt(pr.usd * qty);
+    if (_impMoneda === 'BCV') return 'Bs ' + fmt(pr.bcv * qty);
+    if (_impMoneda === 'TF')  return 'Bs ' + fmt(pr.tf  * qty);
+    return '$ ' + fmt(pr.usd * qty);
+  }
+
+  // Ordenar: ok primero, luego parcial, luego sinstock, luego noref
+  var itemsSorted = (data.items||[]).slice().sort(function(a,b){
+    var order = {ok:0,parcial:1,nostock:2,noref:3};
+    function est(it){
+      var prod=PRODUCTS.find(function(p){return p.r===it.r;});
+      var stock=parseInt(inv[it.r]!==undefined?inv[it.r]:(prod?(prod.ex||0):0))||0;
+      var qty=parseInt(it.qty)||0;
+      if(!prod) return 'noref'; if(stock<=0) return 'nostock'; if(stock<qty) return 'parcial'; return 'ok';
+    }
+    return (order[est(a)]||0)-(order[est(b)]||0);
+  });
+
+  var rows = itemsSorted.map(function(it, i) {
+    var prod = PRODUCTS.find(function(p){ return p.r === it.r; });
+    var stock = parseInt(inv[it.r] !== undefined ? inv[it.r] : (prod ? (prod.ex||0) : 0)) || 0;
+    var qty   = parseInt(it.qty)||0;
+    var pr    = getPrecios(it, prod);
+    totalUSD += qty * pr.usd; totalBCV += qty * pr.bcv; totalTF += qty * pr.tf;
+
+    var estado, estadoBadge, rowBg, leftBorder;
+    if (!prod) {
+      estado='noref'; noRefCount++;
+      estadoBadge='<span style="background:#fef2f2;color:#991b1b;border:1px solid #fecaca;border-radius:4px;padding:2px 8px;font-size:.65rem;font-weight:800;">? No encontrado</span>';
+      rowBg='#fff9f9'; leftBorder='3px solid #fca5a5';
+      warns.push({tipo:'noref', txt:it.r});
+    } else if (stock <= 0) {
+      estado='nostock'; noStockCount++;
+      estadoBadge='<span style="background:#fef2f2;color:#991b1b;border:1px solid #fecaca;border-radius:4px;padding:2px 8px;font-size:.65rem;font-weight:800;">✕ Sin stock</span>';
+      rowBg='#fff9f9'; leftBorder='3px solid #f87171';
+      warns.push({tipo:'nostock', txt:it.r+' — '+prod.d});
+    } else if (stock < qty) {
+      estado='parcial'; parcialCount++;
+      estadoBadge='<span style="background:#fffbeb;color:#92400e;border:1px solid #fde68a;border-radius:4px;padding:2px 8px;font-size:.65rem;font-weight:800;">⚠ Parcial</span>';
+      rowBg='#fffef5'; leftBorder='3px solid #fbbf24';
+      warns.push({tipo:'parcial', txt:it.r+' — '+prod.d+': '+stock+' disp. / '+qty+' sol.'});
+    } else {
+      estado='ok'; okCount++;
+      estadoBadge='<span style="background:#f0fdf4;color:#15803d;border:1px solid #bbf7d0;border-radius:4px;padding:2px 8px;font-size:.65rem;font-weight:800;">✓ OK</span>';
+      rowBg=i%2===0?'#fff':'#f8f9ff'; leftBorder='3px solid transparent';
+    }
+
+    var stockPct = qty>0?Math.min(100,Math.round(stock/qty*100)):100;
+    var barColor = stock<=0?'#f87171':stock<qty?'#fbbf24':'#4ade80';
+    var stockBar = '<div style="height:3px;background:#e5e7eb;border-radius:2px;margin-top:3px;"><div style="height:100%;width:'+stockPct+'%;background:'+barColor+';border-radius:2px;"></div></div>';
+
+    return '<tr data-estado="'+estado+'" data-ref="'+(it.r||'')+'" data-desc="'+(prod?prod.d:'')+'" style="background:'+rowBg+';border-bottom:1px solid #f0f0f0;border-left:'+leftBorder+';">'+
+      '<td style="padding:7px 10px;font-size:.68rem;color:#94a3b8;font-weight:600;text-align:center;">'+(i+1)+'</td>'+
+      '<td style="padding:7px 10px;">'+
+        '<div style="font-weight:800;color:'+(prod?'#1a2050':'#dc2626')+';font-size:.78rem;">'+it.r+'</div>'+
+        '<div style="font-size:.7rem;color:#64748b;margin-top:1px;">'+(prod?prod.d:'— referencia no encontrada')+'</div>'+
+      '</td>'+
+      '<td style="padding:7px 10px;text-align:center;font-weight:900;color:#1a2050;font-size:.88rem;">'+qty+'</td>'+
+      '<td style="padding:7px 10px;text-align:center;">'+
+        '<div style="font-size:.78rem;font-weight:700;color:'+(stock>0?'#15803d':'#dc2626')+';">'+stock+'</div>'+stockBar+
+      '</td>'+
+      '<td style="padding:7px 10px;text-align:right;font-size:.75rem;color:#374151;">'+precioDisplay(pr)+'</td>'+
+      '<td style="padding:7px 10px;text-align:right;font-weight:800;font-size:.78rem;color:#1a2050;">'+subtotalDisplay(pr,qty)+
+        ((_impMoneda!=='USD'&&tasa>0)?'<div style="font-size:.63rem;color:#94a3b8;font-weight:500;">= $ '+fmt(pr.usd*qty)+'</div>':'')+
+      '</td>'+
+      '<td style="padding:7px 10px;text-align:center;">'+estadoBadge+'</td>'+
+    '</tr>';
+  }).join('');
+
+  // Stats bar
+  var sb=document.getElementById('import-stats-bar'); if(sb) sb.style.display='flex';
+  var sc=document.getElementById('import-stats-content');
+  if(sc) sc.innerHTML=[
+    okCount?'<span style="background:rgba(34,197,94,.18);border:1px solid rgba(34,197,94,.35);color:#4ade80;border-radius:5px;padding:3px 11px;font-size:.65rem;font-weight:800;">✓ '+okCount+' OK</span>':'',
+    parcialCount?'<span style="background:rgba(251,191,36,.18);border:1px solid rgba(251,191,36,.35);color:#fbbf24;border-radius:5px;padding:3px 11px;font-size:.65rem;font-weight:800;">⚠ '+parcialCount+' parcial</span>':'',
+    noStockCount?'<span style="background:rgba(239,68,68,.18);border:1px solid rgba(239,68,68,.35);color:#f87171;border-radius:5px;padding:3px 11px;font-size:.65rem;font-weight:800;">✕ '+noStockCount+' sin stock</span>':'',
+    noRefCount?'<span style="background:rgba(148,163,184,.18);border:1px solid rgba(148,163,184,.35);color:#94a3b8;border-radius:5px;padding:3px 11px;font-size:.65rem;font-weight:800;">? '+noRefCount+' no encontrado</span>':'',
+    '<span style="background:rgba(232,105,42,.18);border:1px solid rgba(232,105,42,.35);color:#fb923c;border-radius:5px;padding:3px 11px;font-size:.65rem;font-weight:800;">$ '+fmt(totalUSD)+' USD</span>'
+  ].filter(Boolean).join('');
+
+  var clrBtn=document.getElementById('import-clear-btn'); if(clrBtn) clrBtn.style.display='flex';
+
+  // Info cliente con totales 3 monedas
+  var ci=document.getElementById('import-client-info');
+  if(ci) ci.innerHTML=
+    '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:space-between;">'+
+    '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">'+
+    '<div style="font-weight:900;color:#1a2050;font-size:1.05rem;">'+(data.cliente||'Cliente sin nombre')+'</div>'+
+    (data.rif?'<span style="background:#e0e7ff;color:#4338ca;border-radius:4px;padding:2px 8px;font-size:.72rem;font-weight:700;">RIF: '+data.rif+'</span>':'')+
+    (data.numpedido?'<span style="background:#fff7ed;color:#c2410c;border-radius:4px;padding:2px 8px;font-size:.72rem;font-weight:700;">#'+data.numpedido+'</span>':'')+
+    (data.fecha?'<span style="background:#f0f9ff;color:#0369a1;border-radius:4px;padding:2px 8px;font-size:.72rem;font-weight:700;">📅 '+data.fecha+'</span>':'')+
+    (data.vendedor?'<span style="background:#f5f3ff;color:#6d28d9;border-radius:4px;padding:2px 8px;font-size:.72rem;font-weight:700;">👤 '+data.vendedor+'</span>':'')+
+    '</div>'+
+    '<div style="display:flex;gap:5px;flex-shrink:0;">'+
+      '<div style="background:#fff7ed;border:1.5px solid #fed7aa;border-radius:6px;padding:4px 10px;text-align:center;">'+
+        '<div style="font-size:.6rem;color:#92400e;font-weight:700;text-transform:uppercase;">USD</div>'+
+        '<div style="font-size:.88rem;font-weight:900;color:#c2410c;">$ '+fmt(totalUSD)+'</div>'+
+      '</div>'+
+      (tasa>0?'<div style="background:#eff6ff;border:1.5px solid #bfdbfe;border-radius:6px;padding:4px 10px;text-align:center;">'+
+        '<div style="font-size:.6rem;color:#1d4ed8;font-weight:700;text-transform:uppercase;">BCV</div>'+
+        '<div style="font-size:.88rem;font-weight:900;color:#1d4ed8;">Bs '+fmt(totalBCV)+'</div>'+
+      '</div>':'')+
+      (tasa>0?'<div style="background:#f5f3ff;border:1.5px solid #ddd6fe;border-radius:6px;padding:4px 10px;text-align:center;">'+
+        '<div style="font-size:.6rem;color:#6d28d9;font-weight:700;text-transform:uppercase;">TF</div>'+
+        '<div style="font-size:.88rem;font-weight:900;color:#6d28d9;">Bs '+fmt(totalTF)+'</div>'+
+      '</div>':'')+
+    '</div></div>';
+
+  var pl=document.getElementById('import-products-list');
+  if(pl) pl.innerHTML=rows||'<tr><td colspan="7" style="padding:24px;text-align:center;color:#94a3b8;">No se detectaron productos</td></tr>';
+
+  var tf2=document.getElementById('import-tfoot');
+  if(tf2){
+    var subLabel=_impMoneda==='USD'?'$ '+fmt(totalUSD):_impMoneda==='BCV'?'Bs '+fmt(totalBCV):'Bs '+fmt(totalTF);
+    tf2.innerHTML='<tr>'+
+      '<td colspan="4" style="padding:8px 10px;font-size:.7rem;color:#94a3b8;">'+itemsSorted.length+' línea(s) · Precios base USD</td>'+
+      '<td style="padding:8px 10px;text-align:right;font-weight:700;font-size:.72rem;color:#475569;text-transform:uppercase;">Total:</td>'+
+      '<td style="padding:8px 10px;text-align:right;font-weight:900;font-size:.88rem;color:#1a2050;">'+subLabel+
+        (tasa>0&&_impMoneda!=='USD'?'<div style="font-size:.65rem;color:#94a3b8;font-weight:500;">= $ '+fmt(totalUSD)+'</div>':'')+
+      '</td><td></td></tr>';
+  }
+
+  var fc=document.getElementById('import-filter-count');
+  if(fc) fc.textContent=itemsSorted.length+' producto(s)';
+
+  // Warnings agrupados
+  var wn=document.getElementById('import-warnings');
+  if(wn){
+    if(!warns.length){
+      wn.innerHTML='<div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:9px 14px;margin:8px 22px 4px;color:#15803d;font-weight:700;font-size:.78rem;">✓ Todos los productos encontrados con stock suficiente</div>';
+    } else {
+      var wNostock=warns.filter(function(w){return w.tipo==='nostock';});
+      var wParcial=warns.filter(function(w){return w.tipo==='parcial';});
+      var wNoref=warns.filter(function(w){return w.tipo==='noref';});
+      var secs=[];
+      if(wNostock.length) secs.push('<div style="margin-bottom:8px;"><div style="font-size:.68rem;font-weight:800;color:#dc2626;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px;">✕ Sin stock disponible ('+wNostock.length+')</div>'+
+        '<div style="display:flex;flex-wrap:wrap;gap:4px;">'+wNostock.map(function(w){return '<span style="background:#fef2f2;border:1px solid #fecaca;color:#991b1b;border-radius:4px;padding:2px 7px;font-size:.7rem;font-weight:700;">'+w.txt+'</span>';}).join('')+'</div></div>');
+      if(wParcial.length) secs.push('<div style="margin-bottom:8px;"><div style="font-size:.68rem;font-weight:800;color:#92400e;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px;">⚠ Stock insuficiente ('+wParcial.length+')</div>'+
+        '<div style="display:flex;flex-wrap:wrap;gap:4px;">'+wParcial.map(function(w){return '<span style="background:#fffbeb;border:1px solid #fde68a;color:#78350f;border-radius:4px;padding:2px 7px;font-size:.7rem;font-weight:700;">'+w.txt+'</span>';}).join('')+'</div></div>');
+      if(wNoref.length) secs.push('<div><div style="font-size:.68rem;font-weight:800;color:#475569;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px;">? Referencias no encontradas ('+wNoref.length+')</div>'+
+        '<div style="display:flex;flex-wrap:wrap;gap:4px;">'+wNoref.map(function(w){return '<span style="background:#f1f5f9;border:1px solid #cbd5e1;color:#475569;border-radius:4px;padding:2px 7px;font-size:.7rem;font-weight:700;">'+w.txt+'</span>';}).join('')+'</div></div>');
+      wn.innerHTML='<div style="background:#fafafa;border:1.5px solid #e2e8f0;border-radius:8px;padding:12px 16px;margin:8px 22px 4px;">'+secs.join('')+'</div>';
+    }
+  }
+  // Actualizar panel de preview con totales ajustados al stock
+  impActualizarPreview();
+}
+
+// ── Helpers de precio para confirm ──
+function _impGetPrecios(it, prod) {
+  var tasa = getTasaHoy() || 0;
+  var usd = it.precio || (prod ? (prod.u||0) : 0);
+  var bcv = prod ? (prod.bv||0) : (usd * tasa);
+  var tf  = prod ? (prod.t||0)  : (usd * tasa * 1.08);
+  return { usd: usd, bcv: bcv, tf: tf };
+}
+
+// ── Confirmar procesando TODO lo pedido (sin ajustar) ──
+function confirmImport() {
+  if (!_importData) return;
+  _doConfirmImport(false);
+}
+
+// ── Confirmar procesando SOLO con stock disponible ──
+function confirmImportAjustado() {
+  if (!_importData) return;
+  _doConfirmImport(true);
+}
+
+function _doConfirmImport(ajustarStock) {
+  var d = _importData;
+  var inv = getInventory();
+  var tasa = getTasaHoy() || 0;
+
+  var itemsProcesados = [];
+  var itemsAjustados  = [];   // {r, d, pedido, disponible, diferencia}
+  var itemsOmitidos   = [];   // sin stock o no encontrado
+  var totalUSD = 0, totalBCV = 0, totalTF = 0;
+
+  (d.items||[]).forEach(function(it) {
+    var prod = PRODUCTS.find(function(p){ return p.r === it.r; });
+    if (!prod) { itemsOmitidos.push({r: it.r, d:'No encontrado', razon:'noref'}); return; }
+    var stock = parseInt(inv[it.r] !== undefined ? inv[it.r] : (prod.ex||0)) || 0;
+    var pedido = parseInt(it.qty) || 0;
+    var pr = _impGetPrecios(it, prod);
+
+    var qty;
+    if (ajustarStock) {
+      if (stock <= 0) { itemsOmitidos.push({r:it.r, d:prod.d, razon:'nostock', pedido:pedido}); return; }
+      qty = Math.min(stock, pedido);
+      if (qty < pedido) itemsAjustados.push({r:it.r, d:prod.d, pedido:pedido, disponible:stock, diferencia:pedido-qty});
+    } else {
+      qty = pedido;
+    }
+
+    totalUSD += qty * pr.usd;
+    totalBCV += qty * pr.bcv;
+    totalTF  += qty * pr.tf;
+    itemsProcesados.push({ r:it.r, d:prod.d, br:prod.br||'', orden:qty, precio:pr.usd, total:qty*pr.usd });
+  });
+
+  if (!itemsProcesados.length) {
+    showToast('No hay productos con stock para procesar', 'warning'); return;
+  }
+
   var sale = {
     id: 'sale_' + Date.now(),
     numpedido: d.numpedido || ('IMP-' + Date.now()),
     fecha: d.fecha || new Date().toLocaleDateString('es-VE'),
-    hora: '', cliente: d.cliente||'', rif: d.rif||'',
+    hora: new Date().toLocaleTimeString('es-VE',{hour:'2-digit',minute:'2-digit'}),
+    cliente: d.cliente||'', rif: d.rif||'',
     telefono: d.telefono||'', direccion: d.direccion||'',
     vendedor: d.vendedor||'', sucursal: '',
-    moneda: d.moneda||'USD', total: d.total||0,
-    units: items.reduce(function(s,it){ return s + it.orden; }, 0),
-    items: items, importado: true
+    moneda: 'USD', total: totalUSD,
+    totalBCV: totalBCV, totalTF: totalTF,
+    units: itemsProcesados.reduce(function(s,it){ return s+it.orden; }, 0),
+    items: itemsProcesados, importado: true,
+    ajustado: ajustarStock && (itemsAjustados.length > 0 || itemsOmitidos.length > 0)
   };
-  items.forEach(function(it){
+
+  // Descontar inventario
+  itemsProcesados.forEach(function(it){
     if (inv[it.r] !== undefined) inv[it.r] = Math.max(0, inv[it.r] - it.orden);
+    else inv[it.r] = 0;
   });
   saveInventory(inv);
   syncInventoryToProducts();
   var sales = getSales();
   sales.unshift(sale);
   saveSales(sales);
+
+  // ── Pantalla de éxito mejorada ──
   var si = document.getElementById('import-success-info');
-  if(si) si.innerHTML = 'Pedido #' + sale.numpedido + ' de <strong>' + sale.cliente + '</strong><br>' + items.length + ' productos &middot; Total: $ ' + fmt(sale.total);
+  if(si) si.innerHTML = 'Pedido <strong>#'+sale.numpedido+'</strong> · Cliente: <strong>'+(sale.cliente||'—')+'</strong>';
+
+  var st = document.getElementById('import-success-totales');
+  if(st) {
+    var resumen = '';
+    // Bloque totales 3 monedas
+    resumen += '<div style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin-bottom:12px;">' +
+      '<div style="background:#fff7ed;border:1.5px solid #fed7aa;border-radius:8px;padding:8px 18px;text-align:center;">' +
+        '<div style="font-size:.65rem;color:#92400e;font-weight:700;text-transform:uppercase;letter-spacing:.5px;">USD</div>' +
+        '<div style="font-size:1.3rem;font-weight:900;color:#c2410c;">$ '+fmt(totalUSD)+'</div>' +
+      '</div>' +
+      (tasa>0?'<div style="background:#eff6ff;border:1.5px solid #bfdbfe;border-radius:8px;padding:8px 18px;text-align:center;">' +
+        '<div style="font-size:.65rem;color:#1d4ed8;font-weight:700;text-transform:uppercase;letter-spacing:.5px;">BCV Bs</div>' +
+        '<div style="font-size:1.3rem;font-weight:900;color:#1d4ed8;">'+fmt(totalBCV)+'</div>' +
+        '<div style="font-size:.6rem;color:#93c5fd;">= $ '+fmt(totalUSD)+' USD</div>' +
+      '</div>':'') +
+      (tasa>0?'<div style="background:#f5f3ff;border:1.5px solid #ddd6fe;border-radius:8px;padding:8px 18px;text-align:center;">' +
+        '<div style="font-size:.65rem;color:#6d28d9;font-weight:700;text-transform:uppercase;letter-spacing:.5px;">TF Bs</div>' +
+        '<div style="font-size:1.3rem;font-weight:900;color:#6d28d9;">'+fmt(totalTF)+'</div>' +
+        '<div style="font-size:.6rem;color:#c4b5fd;">= $ '+fmt(totalUSD)+' USD</div>' +
+      '</div>':'') +
+    '</div>';
+    // Resumen líneas
+    resumen += '<div style="font-size:.78rem;color:#475569;margin-bottom:8px;">'+
+      '<strong>'+itemsProcesados.length+'</strong> producto(s) · '+
+      '<strong>'+sale.units+'</strong> unidades procesadas</div>';
+    // Ajustes si los hubo
+    if (itemsAjustados.length) {
+      resumen += '<div style="background:#fffbeb;border:1.5px solid #fde68a;border-radius:8px;padding:10px 14px;margin-bottom:8px;text-align:left;">' +
+        '<div style="font-size:.7rem;font-weight:800;color:#92400e;margin-bottom:6px;text-transform:uppercase;letter-spacing:.4px;">⚠ Cantidades ajustadas al stock disponible ('+itemsAjustados.length+')</div>' +
+        '<div style="display:flex;flex-wrap:wrap;gap:4px;">' +
+        itemsAjustados.map(function(x){ return '<span style="background:white;border:1px solid #fde68a;border-radius:4px;padding:2px 8px;font-size:.7rem;color:#78350f;font-weight:700;">'+x.r+': '+x.disponible+'/'+x.pedido+'</span>'; }).join('') +
+        '</div></div>';
+    }
+    // Omitidos si los hubo
+    if (itemsOmitidos.length) {
+      resumen += '<div style="background:#fef2f2;border:1.5px solid #fecaca;border-radius:8px;padding:10px 14px;text-align:left;">' +
+        '<div style="font-size:.7rem;font-weight:800;color:#dc2626;margin-bottom:6px;text-transform:uppercase;letter-spacing:.4px;">✕ Omitidos por sin stock / no encontrados ('+itemsOmitidos.length+')</div>' +
+        '<div style="display:flex;flex-wrap:wrap;gap:4px;">' +
+        itemsOmitidos.map(function(x){ return '<span style="background:white;border:1px solid #fecaca;border-radius:4px;padding:2px 8px;font-size:.7rem;color:#991b1b;font-weight:700;">'+x.r+(x.pedido?' ('+x.pedido+' sol.)':'')+'</span>'; }).join('') +
+        '</div></div>';
+    }
+    st.innerHTML = resumen;
+  }
+
+  var sb = document.getElementById('import-stats-bar'); if(sb) sb.style.display='none';
+  var clrBtn = document.getElementById('import-clear-btn'); if(clrBtn) clrBtn.style.display='none';
   showImportStep(4);
   _importData = null;
 }
@@ -5347,44 +5818,207 @@ function confirmImport() {
     </div>
   </div>
 </div>
-<div id="import-modal" style="display:none;position:fixed;inset:0;z-index:99998;background:rgba(10,15,40,.85);backdrop-filter:blur(5px);align-items:flex-start;justify-content:center;padding:20px;overflow-y:auto;">
-  <div style="background:white;border-radius:16px;width:100%;max-width:860px;box-shadow:0 24px 60px rgba(0,0,0,.4);overflow:hidden;margin:auto;">
-    <div style="background:linear-gradient(135deg,#7c2d12,#e8692a);padding:20px 28px;display:flex;justify-content:space-between;align-items:center;">
-      <div><div style="font-weight:900;font-size:1.4rem;color:white;letter-spacing:2px;">IMPORTAR FACTURA</div><div style="font-size:.78rem;color:rgba(255,255,255,.75);">La IA detectara automaticamente productos y cantidades</div></div>
-      <button onclick="closeImport()" style="background:rgba(255,255,255,.15);border:none;color:white;font-size:1.2rem;cursor:pointer;border-radius:50%;width:32px;height:32px;">X</button>
+<!-- ══ MODAL: IMPORTAR FACTURA (rediseñado) ══ -->
+<div id="import-modal" style="display:none;position:fixed;inset:0;z-index:99998;background:rgba(5,10,35,.88);backdrop-filter:blur(6px);align-items:flex-start;justify-content:center;padding:16px;overflow-y:auto;">
+ <div style="background:white;border-radius:18px;width:100%;max-width:960px;box-shadow:0 28px 80px rgba(0,0,0,.5);overflow:hidden;margin:auto;">
+
+  <!-- ── HEADER ── -->
+  <div style="background:linear-gradient(135deg,#7c2d12,#c2410c,#e8692a);padding:16px 22px;display:flex;justify-content:space-between;align-items:center;">
+   <div style="display:flex;align-items:center;gap:14px;">
+    <div style="background:rgba(255,255,255,.15);border-radius:10px;padding:8px 12px;font-size:1.5rem;line-height:1;">🧾</div>
+    <div>
+     <div style="font-size:1.2rem;font-weight:900;color:white;letter-spacing:.5px;">IMPORTAR FACTURA</div>
+     <div style="font-size:.7rem;color:rgba(255,255,255,.65);margin-top:2px;">La IA detectará automáticamente productos, cantidades y datos del cliente</div>
     </div>
-    <div id="import-step1" style="padding:24px;">
-      <div onclick="document.getElementById('import-file').click()" style="border:2.5px dashed #c5cae9;border-radius:12px;padding:28px;text-align:center;cursor:pointer;margin-bottom:16px;background:#f8f9ff;" ondragover="event.preventDefault()" ondrop="handleImportDrop(event)">
-        <div style="font-size:2rem;margin-bottom:8px;">&#128206;</div>
-        <div style="font-weight:700;color:#1a2050;">Arrastra PDF o Excel aqui</div>
-        <div style="color:#8892b0;font-size:.8rem;margin-top:4px;">Formatos: PDF, XLS, XLSX</div>
-        <input type="file" id="import-file" accept=".pdf,.xls,.xlsx" style="display:none" onchange="handleImportFile(this)">
-        <div id="import-file-name" style="margin-top:10px;font-size:.82rem;color:#e8692a;font-weight:700;"></div>
-      </div>
-      <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;"><div style="flex:1;height:1px;background:#e0e4f0;"></div><span style="color:#8892b0;font-size:.78rem;font-weight:700;">O PEGA EL TEXTO</span><div style="flex:1;height:1px;background:#e0e4f0;"></div></div>
-      <textarea id="import-text" rows="6" placeholder="Pega aqui el contenido de la factura..." style="width:100%;padding:12px;border:2px solid #e0e4f0;border-radius:10px;font-size:.85rem;resize:vertical;outline:none;box-sizing:border-box;"></textarea>
-      <div style="margin-top:14px;"><button onclick="processImport()" style="background:linear-gradient(135deg,#e8692a,#c2410c);color:white;border:none;border-radius:10px;padding:12px 28px;cursor:pointer;font-weight:900;font-size:1rem;letter-spacing:1px;">ANALIZAR CON IA</button></div>
-    </div>
-    <div id="import-step2" style="display:none;padding:40px;text-align:center;">
-      <div style="font-size:2.5rem;margin-bottom:16px;">&#129302;</div>
-      <div style="font-weight:700;color:#1a2050;font-size:1.2rem;">Analizando con IA...</div>
-    </div>
-    <div id="import-step3" style="display:none;padding:20px 24px;">
-      <div id="import-client-info" style="background:#f0f4ff;border-radius:10px;padding:14px 18px;margin-bottom:16px;border-left:4px solid #1a2050;"></div>
-      <div id="import-products-list" style="max-height:320px;overflow-y:auto;border:1.5px solid #e0e4f0;border-radius:10px;"></div>
-      <div id="import-warnings"></div>
-      <div style="display:flex;gap:10px;margin-top:16px;flex-wrap:wrap;">
-        <button onclick="confirmImport()" style="background:linear-gradient(135deg,#16a34a,#15803d);color:white;border:none;border-radius:10px;padding:12px 28px;cursor:pointer;font-weight:900;font-size:1rem;">CONFIRMAR Y PROCESAR</button>
-        <button onclick="backImport()" style="background:#f1f5f9;color:#1a2050;border:1.5px solid #e0e4f0;border-radius:10px;padding:12px 20px;cursor:pointer;font-weight:700;">Volver</button>
-      </div>
-    </div>
-    <div id="import-step4" style="display:none;padding:40px;text-align:center;">
-      <div style="font-size:3rem;margin-bottom:16px;">&#10003;</div>
-      <div style="font-weight:900;font-size:1.5rem;color:#16a34a;">Venta procesada!</div>
-      <div id="import-success-info" style="color:#5a6080;margin-top:8px;font-size:.9rem;"></div>
-      <button onclick="closeImport();goToHistorial();" style="margin-top:24px;background:linear-gradient(135deg,#1a2050,#252b6b);color:white;border:none;border-radius:10px;padding:12px 28px;cursor:pointer;font-weight:900;font-size:1rem;">VER HISTORIAL</button>
-    </div>
+   </div>
+   <div style="display:flex;align-items:center;gap:8px;">
+    <button id="import-clear-btn" onclick="importLimpiar()" title="Limpiar y comenzar de nuevo"
+     style="display:none;background:rgba(255,255,255,.12);border:1.5px solid rgba(255,255,255,.3);color:white;border-radius:8px;padding:7px 14px;cursor:pointer;font-weight:700;font-size:.78rem;gap:5px;align-items:center;">
+     ↺ Limpiar
+    </button>
+    <button onclick="closeImport()" style="background:rgba(255,255,255,.12);border:1.5px solid rgba(255,255,255,.3);color:white;border-radius:8px;padding:7px 16px;cursor:pointer;font-weight:700;font-size:.82rem;">✕ Cerrar</button>
+   </div>
   </div>
+
+  <!-- ── BARRA DE ESTADO (visible en step3) ── -->
+  <div id="import-stats-bar" style="display:none;background:#1a2050;padding:9px 18px;display:none;align-items:center;gap:8px;flex-wrap:wrap;border-bottom:3px solid #e8692a;">
+   <div id="import-stats-content" style="display:flex;gap:6px;flex-wrap:wrap;flex:1;"></div>
+   <div style="display:flex;align-items:center;gap:6px;flex-shrink:0;border-left:1px solid rgba(255,255,255,.15);padding-left:12px;">
+    <span style="font-size:.65rem;color:rgba(255,255,255,.5);font-weight:700;letter-spacing:1.2px;">MONEDA</span>
+    <button id="imp-mon-USD" onclick="impSelectMoneda('USD')" style="padding:4px 13px;border-radius:4px;border:2px solid #e8692a;background:#e8692a;color:white;font-size:.72rem;font-weight:900;cursor:pointer;">USD $</button>
+    <button id="imp-mon-BCV" onclick="impSelectMoneda('BCV')" style="padding:4px 13px;border-radius:4px;border:2px solid rgba(255,255,255,.2);background:transparent;color:rgba(255,255,255,.4);font-size:.72rem;font-weight:900;cursor:pointer;">BCV Bs</button>
+    <button id="imp-mon-TF"  onclick="impSelectMoneda('TF')"  style="padding:4px 13px;border-radius:4px;border:2px solid rgba(255,255,255,.2);background:transparent;color:rgba(255,255,255,.4);font-size:.72rem;font-weight:900;cursor:pointer;">TF Bs</button>
+   </div>
+  </div>
+
+  <!-- ── STEP 1: UPLOAD ── -->
+  <div id="import-step1" style="padding:28px 28px 24px;">
+
+   <!-- Zona drop -->
+   <div id="import-drop-zone" onclick="document.getElementById('import-file').click()"
+    ondragover="event.preventDefault();this.style.borderColor='#e8692a';this.style.background='#fff5f0';"
+    ondragleave="this.style.borderColor='#c5cae9';this.style.background='#f8f9ff';"
+    ondrop="handleImportDrop(event);this.style.borderColor='#c5cae9';this.style.background='#f8f9ff';"
+    style="border:2.5px dashed #c5cae9;border-radius:14px;padding:36px 20px;text-align:center;cursor:pointer;background:#f8f9ff;transition:all .2s;margin-bottom:18px;position:relative;">
+    <div style="font-size:2.8rem;margin-bottom:10px;">📎</div>
+    <div style="font-weight:800;color:#1a2050;font-size:1rem;">Arrastra tu factura aquí</div>
+    <div style="color:#8892b0;font-size:.78rem;margin-top:5px;">Formatos soportados: <strong>PDF · XLS · XLSX</strong></div>
+    <input type="file" id="import-file" accept=".pdf,.xls,.xlsx" style="display:none" onchange="handleImportFile(this)">
+    <!-- Nombre archivo seleccionado -->
+    <div id="import-file-name" style="display:none;margin-top:14px;background:rgba(232,105,42,.1);border:1.5px solid rgba(232,105,42,.3);border-radius:8px;padding:8px 14px;display:inline-flex;align-items:center;gap:8px;">
+     <span style="font-size:1rem;">📄</span>
+     <span id="import-file-name-text" style="font-size:.82rem;color:#c2410c;font-weight:700;"></span>
+     <button onclick="event.stopPropagation();importLimpiarArchivo()" title="Quitar archivo"
+      style="background:rgba(194,65,12,.15);border:none;color:#c2410c;border-radius:4px;width:20px;height:20px;cursor:pointer;font-size:.75rem;font-weight:900;line-height:1;padding:0;">✕</button>
+    </div>
+   </div>
+
+   <!-- Separador -->
+   <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;">
+    <div style="flex:1;height:1px;background:#e0e4f0;"></div>
+    <span style="color:#8892b0;font-size:.75rem;font-weight:700;letter-spacing:1px;">O PEGA EL TEXTO</span>
+    <div style="flex:1;height:1px;background:#e0e4f0;"></div>
+   </div>
+
+   <!-- Textarea -->
+   <textarea id="import-text" rows="6"
+    placeholder="Pega aquí el contenido de la factura (texto copiado de PDF, WhatsApp, correo, etc.)..."
+    style="width:100%;padding:12px 14px;border:2px solid #e0e4f0;border-radius:10px;font-size:.83rem;resize:vertical;outline:none;box-sizing:border-box;font-family:inherit;transition:border-color .2s;color:#1e293b;"
+    onfocus="this.style.borderColor='#e8692a'" onblur="this.style.borderColor='#e0e4f0'"></textarea>
+
+   <!-- Footer step1 -->
+   <div style="display:flex;align-items:center;justify-content:space-between;margin-top:16px;flex-wrap:wrap;gap:10px;">
+    <span style="font-size:.72rem;color:#94a3b8;">💡 Funciona con facturas de compra, órdenes de pedido, listas de productos</span>
+    <button onclick="processImport()"
+     style="background:linear-gradient(135deg,#e8692a,#c2410c);color:white;border:none;border-radius:10px;padding:11px 32px;cursor:pointer;font-weight:900;font-size:.95rem;letter-spacing:.5px;box-shadow:0 4px 15px rgba(232,105,42,.35);transition:transform .1s;"
+     onmousedown="this.style.transform='scale(.97)'" onmouseup="this.style.transform='scale(1)'">
+     🤖 ANALIZAR CON IA
+    </button>
+   </div>
+  </div>
+
+  <!-- ── STEP 2: ANALIZANDO ── -->
+  <div id="import-step2" style="display:none;padding:48px 28px;text-align:center;">
+   <div style="font-size:3rem;margin-bottom:16px;animation:spin 1.5s linear infinite;display:inline-block;">⚙️</div>
+   <div style="font-weight:800;color:#1a2050;font-size:1.2rem;margin-bottom:8px;">Analizando con IA...</div>
+   <div style="font-size:.82rem;color:#6b7280;margin-bottom:24px;">Detectando productos, cantidades y datos del cliente</div>
+   <div style="width:240px;height:6px;background:#e5e7eb;border-radius:3px;margin:0 auto;overflow:hidden;">
+    <div id="import-prog-bar" style="height:100%;width:30%;background:linear-gradient(90deg,#e8692a,#7c2d12);border-radius:3px;animation:progSlide 1.8s ease-in-out infinite;"></div>
+   </div>
+   <style>
+    @keyframes progSlide{0%{width:15%;margin-left:0}50%{width:40%;margin-left:30%}100%{width:15%;margin-left:85%}}
+    @keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
+   </style>
+  </div>
+
+  <!-- ── STEP 3: RESULTADOS ── -->
+  <div id="import-step3" style="display:none;">
+
+   <!-- Info del cliente -->
+   <div id="import-client-info" style="margin:16px 22px 0;background:#f0f4ff;border-radius:10px;padding:13px 18px;border-left:4px solid #1a2050;font-size:.83rem;"></div>
+
+   <!-- ── PANEL PREVIEW: Total ajustado al stock disponible ── -->
+   <div id="import-preview-panel" style="display:none;margin:10px 22px 0;border-radius:10px;overflow:hidden;border:2px solid #bfdbfe;">
+    <div style="background:linear-gradient(135deg,#1e3a8a,#1d4ed8);padding:9px 16px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:6px;">
+     <div style="display:flex;align-items:center;gap:8px;">
+      <span style="font-size:1rem;">📊</span>
+      <div>
+       <div style="font-size:.72rem;font-weight:900;color:white;letter-spacing:.5px;text-transform:uppercase;">Resumen según stock disponible</div>
+       <div style="font-size:.62rem;color:rgba(255,255,255,.6);margin-top:1px;">Pedido ajustado al inventario actual antes de confirmar</div>
+      </div>
+     </div>
+     <div id="import-preview-stats" style="display:flex;gap:5px;flex-wrap:wrap;"></div>
+    </div>
+    <div style="background:#eff6ff;padding:10px 16px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;justify-content:space-between;">
+     <div id="import-preview-totales" style="display:flex;gap:8px;flex-wrap:wrap;"></div>
+     <div id="import-preview-nota" style="font-size:.65rem;color:#1d4ed8;font-weight:600;"></div>
+    </div>
+   </div>
+
+   <!-- Filtros + búsqueda -->
+   <div style="background:#f1f5f9;padding:8px 18px;margin-top:12px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;border-top:1px solid #e2e8f0;border-bottom:1px solid #e2e8f0;">
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#1a2050" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+    <input id="import-filter-ref" type="text" placeholder="Buscar referencia o descripción..."
+     oninput="impFiltrarTabla()"
+     style="padding:5px 10px;border:1.5px solid #cbd5e1;border-radius:5px;font-size:.74rem;outline:none;width:200px;color:#1e293b;background:white;">
+    <select id="import-filter-estado" onchange="impFiltrarTabla()"
+     style="padding:5px 10px;border:1.5px solid #cbd5e1;border-radius:5px;font-size:.74rem;background:white;cursor:pointer;color:#374151;">
+     <option value="">Todos los estados</option>
+     <option value="ok">✅ Encontrado</option>
+     <option value="parcial">⚠️ Stock parcial</option>
+     <option value="nostock">❌ Sin stock</option>
+     <option value="noref">🔍 No encontrado</option>
+    </select>
+    <span id="import-filter-count" style="margin-left:auto;font-size:.68rem;color:#94a3b8;font-weight:600;"></span>
+   </div>
+
+   <!-- Tabla productos -->
+   <div style="overflow-x:auto;overflow-y:auto;max-height:42vh;">
+    <table style="width:100%;border-collapse:collapse;font-size:.75rem;table-layout:auto;">
+     <thead id="import-thead" style="position:sticky;top:0;z-index:3;background:#1a2050;">
+      <tr>
+       <th style="padding:9px 12px;color:rgba(255,255,255,.6);font-weight:700;text-align:left;font-size:.65rem;letter-spacing:.8px;text-transform:uppercase;white-space:nowrap;">#</th>
+       <th style="padding:9px 12px;color:rgba(255,255,255,.6);font-weight:700;text-align:left;font-size:.65rem;letter-spacing:.8px;text-transform:uppercase;white-space:nowrap;">Ref · Descripción</th>
+       <th style="padding:9px 12px;color:rgba(255,255,255,.6);font-weight:700;text-align:center;font-size:.65rem;letter-spacing:.8px;text-transform:uppercase;white-space:nowrap;">Pedido</th>
+       <th style="padding:9px 12px;color:rgba(255,255,255,.6);font-weight:700;text-align:center;font-size:.65rem;letter-spacing:.8px;text-transform:uppercase;white-space:nowrap;">Stock</th>
+       <th style="padding:9px 12px;color:rgba(255,255,255,.6);font-weight:700;text-align:right;font-size:.65rem;letter-spacing:.8px;text-transform:uppercase;white-space:nowrap;">Precio Unit.</th>
+       <th style="padding:9px 12px;color:rgba(255,255,255,.6);font-weight:700;text-align:right;font-size:.65rem;letter-spacing:.8px;text-transform:uppercase;white-space:nowrap;">Subtotal</th>
+       <th style="padding:9px 12px;color:rgba(255,255,255,.6);font-weight:700;text-align:center;font-size:.65rem;letter-spacing:.8px;text-transform:uppercase;white-space:nowrap;">Estado</th>
+      </tr>
+     </thead>
+     <tbody id="import-products-list"></tbody>
+     <tfoot id="import-tfoot" style="position:sticky;bottom:0;z-index:2;background:#f8fafc;border-top:2px solid #e2e8f0;"></tfoot>
+    </table>
+   </div>
+
+   <!-- Warnings -->
+   <div id="import-warnings" style="margin:10px 22px 0;"></div>
+
+   <!-- Footer step3 -->
+   <div style="background:#f8fafc;border-top:2px solid #e2e8f0;padding:10px 18px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+    <span style="font-size:.65rem;color:#94a3b8;">ℹ️ Los precios están en USD · BCV y TF son equivalencias · Los no encontrados serán omitidos</span>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;">
+     <button onclick="importLimpiar()"
+      style="background:white;border:2px solid #cbd5e1;color:#475569;border-radius:7px;padding:7px 14px;cursor:pointer;font-weight:700;font-size:.75rem;">↺ Nueva</button>
+     <button onclick="backImport()"
+      style="background:white;border:2px solid #1a2050;color:#1a2050;border-radius:7px;padding:7px 14px;cursor:pointer;font-weight:700;font-size:.75rem;">← Volver</button>
+     <button onclick="impExportarExcel()"
+      style="background:linear-gradient(135deg,#166534,#16a34a);color:white;border:none;border-radius:7px;padding:7px 16px;cursor:pointer;font-weight:700;font-size:.75rem;">💾 Excel</button>
+     <button onclick="impExportarPDF()"
+      style="background:linear-gradient(135deg,#7c2d12,#e8692a);color:white;border:none;border-radius:7px;padding:7px 16px;cursor:pointer;font-weight:700;font-size:.75rem;">🖨 PDF</button>
+     <!-- Separador -->
+     <div style="width:1px;background:#e2e8f0;margin:0 2px;"></div>
+     <!-- Confirmar ajustado al stock -->
+     <button onclick="confirmImportAjustado()"
+      style="background:linear-gradient(135deg,#1d4ed8,#3b82f6);color:white;border:none;border-radius:7px;padding:7px 18px;cursor:pointer;font-weight:900;font-size:.78rem;box-shadow:0 3px 10px rgba(59,130,246,.35);"
+      title="Procesa solo lo que hay en stock. Ajusta cantidades parciales y omite los sin stock.">
+      📦 Confirmar con stock disponible
+     </button>
+     <!-- Confirmar todo tal cual -->
+     <button onclick="confirmImport()"
+      style="background:linear-gradient(135deg,#16a34a,#15803d);color:white;border:none;border-radius:7px;padding:7px 18px;cursor:pointer;font-weight:900;font-size:.78rem;box-shadow:0 3px 10px rgba(22,163,74,.35);"
+      title="Procesa el pedido completo tal como viene en la factura, sin ajustar cantidades.">
+      ✔ Confirmar pedido completo
+     </button>
+    </div>
+   </div>
+  </div>
+
+  <!-- ── STEP 4: ÉXITO ── -->
+  <div id="import-step4" style="display:none;padding:32px 28px;text-align:center;">
+   <div style="width:64px;height:64px;background:linear-gradient(135deg,#16a34a,#15803d);border-radius:50%;display:flex;align-items:center;justify-content:center;margin:0 auto 14px;font-size:1.8rem;box-shadow:0 8px 24px rgba(22,163,74,.35);">✓</div>
+   <div style="font-weight:900;font-size:1.4rem;color:#16a34a;margin-bottom:4px;">¡Venta procesada!</div>
+   <div id="import-success-info" style="color:#5a6080;font-size:.85rem;margin:0 auto 16px;"></div>
+   <div id="import-success-totales" style="max-width:560px;margin:0 auto 20px;text-align:left;"></div>
+   <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap;">
+    <button onclick="importLimpiar()"
+     style="background:white;border:2px solid #e8692a;color:#e8692a;border-radius:9px;padding:10px 22px;cursor:pointer;font-weight:800;font-size:.88rem;">↺ Importar otra factura</button>
+    <button onclick="closeImport();goToHistorial();"
+     style="background:linear-gradient(135deg,#1a2050,#252b6b);color:white;border:none;border-radius:9px;padding:10px 22px;cursor:pointer;font-weight:900;font-size:.88rem;">📋 Ver Historial</button>
+   </div>
+  </div>
+
+ </div>
 </div>
 
         <button onclick="closeSearch()" style="background:rgba(255,255,255,.15);border:none;color:white;font-size:1.2rem;cursor:pointer;border-radius:50%;width:32px;height:32px;">X</button>
