@@ -5233,8 +5233,8 @@ async function processImport() {
     if (!m) throw new Error('Respuesta invalida de la IA');
     var parsed = JSON.parse(m[0]);
     if (!parsed.items || !parsed.items.length) throw new Error('No se detectaron productos');
-    _importData = parsed;
-    renderImportReview(parsed);
+    _importData = _impEnriquecerConDirectorio(parsed);
+    renderImportReview(_importData);
     showImportStep(3);
   } catch(e) {
     console.error(e);
@@ -5593,10 +5593,13 @@ function renderImportReview(data) {
     '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:space-between;">'+
     '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">'+
     '<div style="font-weight:900;color:#1a2050;font-size:1.05rem;">'+(data.cliente||'Cliente sin nombre')+'</div>'+
+    (data._clienteFound?'<span style="background:#dcfce7;color:#15803d;border:1px solid #bbf7d0;border-radius:4px;padding:2px 8px;font-size:.68rem;font-weight:800;">✓ En directorio</span>':'<span style="background:#fef9c3;color:#92400e;border:1px solid #fde68a;border-radius:4px;padding:2px 8px;font-size:.68rem;font-weight:800;">⚠ No en directorio</span>')+
     (data.rif?'<span style="background:#e0e7ff;color:#4338ca;border-radius:4px;padding:2px 8px;font-size:.72rem;font-weight:700;">RIF: '+data.rif+'</span>':'')+
     (data.numpedido?'<span style="background:#fff7ed;color:#c2410c;border-radius:4px;padding:2px 8px;font-size:.72rem;font-weight:700;">#'+data.numpedido+'</span>':'')+
     (data.fecha?'<span style="background:#f0f9ff;color:#0369a1;border-radius:4px;padding:2px 8px;font-size:.72rem;font-weight:700;">📅 '+data.fecha+'</span>':'')+
     (data.vendedor?'<span style="background:#f5f3ff;color:#6d28d9;border-radius:4px;padding:2px 8px;font-size:.72rem;font-weight:700;">👤 '+data.vendedor+'</span>':'')+
+    (data.telefono?'<span style="background:#f0fdf4;color:#15803d;border-radius:4px;padding:2px 8px;font-size:.72rem;font-weight:700;">📞 '+data.telefono+'</span>':'')+
+    (data.credito?'<span style="background:#faf5ff;color:#7e22ce;border-radius:4px;padding:2px 8px;font-size:.72rem;font-weight:700;">💳 '+data.credito+' días</span>':'')+
     '</div>'+
     '<div style="display:flex;gap:5px;flex-shrink:0;">'+
       '<div style="background:#fff7ed;border:1.5px solid #fed7aa;border-radius:6px;padding:4px 10px;text-align:center;">'+
@@ -5651,6 +5654,51 @@ function renderImportReview(data) {
   }
   // Actualizar panel de preview con totales ajustados al stock
   impActualizarPreview();
+}
+
+// ── Buscar cliente en directorio por RIF o nombre ──
+function _impBuscarCliente(rif, nombre) {
+  var db = getClientsDB();
+  var found = null;
+
+  // 1) Buscar por RIF exacto (normalizando guiones y espacios)
+  if (rif) {
+    var rifNorm = rif.replace(/[-\s]/g,'').toUpperCase();
+    found = db.find(function(c){
+      return c.rif.replace(/[-\s]/g,'').toUpperCase() === rifNorm;
+    });
+  }
+
+  // 2) Si no encontró por RIF, buscar por nombre (coincidencia parcial)
+  if (!found && nombre) {
+    var nomNorm = nombre.trim().toUpperCase();
+    found = db.find(function(c){
+      var cn = c.nombre.trim().toUpperCase();
+      return cn === nomNorm || cn.includes(nomNorm) || nomNorm.includes(cn.substring(0,12));
+    });
+  }
+
+  return found || null;
+}
+
+// ── Enriquecer _importData con datos del directorio ──
+function _impEnriquecerConDirectorio(data) {
+  if (!data) return data;
+  var cl = _impBuscarCliente(data.rif, data.cliente);
+  if (!cl) return data;
+
+  // Completar campos vacíos con los del directorio (no sobreescribir lo que ya vino de la factura)
+  if (!data.cliente   || data.cliente.length < 3)   data.cliente   = cl.nombre;
+  if (!data.rif       || data.rif.length < 4)        data.rif       = cl.rif;
+  if (!data.telefono  || data.telefono.length < 4)   data.telefono  = cl.telefono;
+  if (!data.vendedor  || data.vendedor.length < 2)   data.vendedor  = cl.vendedor;
+  if (!data.direccion || data.direccion.length < 4)  data.direccion = cl.sucursales && cl.sucursales[0] ? cl.sucursales[0].direccion : '';
+  if (!data.credito)  data.credito  = cl.diasCredito || '';
+  if (!data.correo)   data.correo   = cl.correo || '';
+  // Guardar referencia interna para el sale
+  data._clienteId = cl.id;
+  data._clienteFound = true;
+  return data;
 }
 
 // ── Helpers de precio para confirm ──
@@ -5717,11 +5765,13 @@ function _doConfirmImport(ajustarStock) {
     hora: new Date().toLocaleTimeString('es-VE',{hour:'2-digit',minute:'2-digit'}),
     cliente: d.cliente||'', rif: d.rif||'',
     telefono: d.telefono||'', direccion: d.direccion||'',
+    correo: d.correo||'', credito: d.credito||'',
     vendedor: d.vendedor||'', sucursal: '',
     moneda: 'USD', total: totalUSD,
     totalBCV: totalBCV, totalTF: totalTF,
     units: itemsProcesados.reduce(function(s,it){ return s+it.orden; }, 0),
     items: itemsProcesados, importado: true,
+    clienteId: d._clienteId || '',
     ajustado: ajustarStock && (itemsAjustados.length > 0 || itemsOmitidos.length > 0)
   };
 
@@ -5738,7 +5788,13 @@ function _doConfirmImport(ajustarStock) {
 
   // ── Pantalla de éxito mejorada ──
   var si = document.getElementById('import-success-info');
-  if(si) si.innerHTML = 'Pedido <strong>#'+sale.numpedido+'</strong> · Cliente: <strong>'+(sale.cliente||'—')+'</strong>';
+  if(si) si.innerHTML = 'Pedido <strong>#'+sale.numpedido+'</strong> · '+
+    (d._clienteFound
+      ? '<span style="background:#dcfce7;color:#15803d;border-radius:4px;padding:1px 7px;font-size:.8rem;font-weight:700;">✓ En directorio</span> '
+      : '<span style="background:#fef9c3;color:#92400e;border-radius:4px;padding:1px 7px;font-size:.8rem;font-weight:700;">⚠ No en directorio</span> ') +
+    '<strong>'+(sale.cliente||'—')+'</strong>'+
+    (sale.rif ? ' · RIF: '+sale.rif : '')+
+    (sale.vendedor ? ' · 👤 '+sale.vendedor : '');
 
   var st = document.getElementById('import-success-totales');
   if(st) {
