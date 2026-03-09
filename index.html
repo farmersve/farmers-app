@@ -2135,6 +2135,10 @@ tbody td { padding: 8px 10px; vertical-align: middle; }
             <span class="fb-row-label">Ventas guardadas</span>
             <span class="fb-row-value" id="fbr-salescount">—</span>
           </div>
+          <div class="fb-row">
+            <span class="fb-row-label">CXC Facturas</span>
+            <span class="fb-row-value" id="fbr-cxc">—</span>
+          </div>
         </div>
         <div class="fb-log">
           <div class="fb-log-title">Actividad reciente</div>
@@ -3953,7 +3957,66 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
     } catch(e) { console.warn('onSnapshot sales:', e); }
   });
 
-  console.log('Firebase OK'); window._fbConnected = true;
+  // ══════════════════════════════════════════════
+  // CXC — Cuentas por Cobrar en Firebase
+  // ══════════════════════════════════════════════
+  window.fbSaveCXC = async (v) => {
+    try { await setDoc(doc(db,'data','cxc'), {v: JSON.stringify(v)}); } catch(e) { console.warn('fbSaveCXC:', e); }
+  };
+
+  window.fbGetCXC = async () => {
+    try {
+      const d = await getDoc(doc(db,'data','cxc'));
+      return d.exists() ? JSON.parse(d.data().v) : null;
+    } catch(e) { return null; }
+  };
+
+  // onSnapshot CXC: sincronización en tiempo real entre dispositivos
+  onSnapshot(doc(db,'data','cxc'), function(s) {
+    if (!s.exists()) return;
+    try {
+      var fbData = JSON.parse(s.data().v || '{"facturas":[]}');
+      var localRaw = localStorage.getItem('farmers_cxc');
+      var localData = localRaw ? JSON.parse(localRaw) : {facturas:[]};
+      var localFacs = localData.facturas || [];
+      var fbFacs = fbData.facturas || [];
+
+      // Merge: Firebase es la fuente de verdad pero respetamos cambios locales recientes
+      // Si Firebase tiene más facturas → agregar las nuevas al local
+      var localIds = localFacs.map(function(f){ return f.id; });
+      var added = false;
+      fbFacs.forEach(function(ff){
+        if(!localIds.includes(ff.id)){
+          localFacs.push(ff);
+          added = true;
+        } else {
+          // Actualizar la factura local con datos de Firebase (pagos nuevos de otro dispositivo)
+          var idx = localFacs.findIndex(function(lf){ return lf.id === ff.id; });
+          if(idx >= 0){
+            var localPagos = (localFacs[idx].pagos||[]).length;
+            var fbPagos = (ff.pagos||[]).length;
+            if(fbPagos > localPagos){
+              localFacs[idx] = ff; // Firebase tiene más pagos → actualizar
+              added = true;
+            }
+          }
+        }
+      });
+
+      if(added || fbFacs.length !== localFacs.length){
+        localStorage.setItem('farmers_cxc', JSON.stringify({facturas: localFacs}));
+        // Refrescar tab activo si CXC está abierto
+        if(typeof cxcGoTab === 'function' && document.getElementById('cxc-modal') && document.getElementById('cxc-modal').classList.contains('open')){
+          if(typeof _cxcTab !== 'undefined') cxcGoTab(_cxcTab);
+        }
+        if(typeof cxcUpdateBadge === 'function') cxcUpdateBadge();
+        if(window.fbSetStatus) window.fbSetStatus('connected');
+        if(typeof fbLog === 'function') fbLog('↓ CXC sincronizado ('+localFacs.length+' facturas)', 'ok');
+      }
+    } catch(e){ console.warn('onSnapshot CXC:', e); }
+  });
+
+    console.log('Firebase OK'); window._fbConnected = true;
 
   // ══════════════════════════════════════════════
   // FIREBASE STATUS ENGINE
@@ -4029,6 +4092,11 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
     set('fbr-prods',      typeof PRODUCTS !== 'undefined' ? PRODUCTS.length + ' productos' : '—', 'ok');
     var lsSales = (function(){ try { return JSON.parse(localStorage.getItem('farmers_sales')||'[]').length; } catch(e){ return 0; } })();
     set('fbr-salescount', lsSales + ' en local', lsSales ? 'ok' : '');
+    // CXC count
+    try {
+      var cxcFacsCount = (JSON.parse(localStorage.getItem('farmers_cxc')||'{"facturas":[]}').facturas||[]).length;
+      set('fbr-cxc', cxcFacsCount + ' facturas', cxcFacsCount ? 'ok' : '');
+    } catch(e){ set('fbr-cxc','—',''); }
   }
 
   // ── Render log ───────────────────────────────────
@@ -12960,10 +13028,41 @@ var _cxcFiltroE= 'PEND';
 var _cxcFiltroQ= '';
 
 // ── Persistencia ──────────────────────────────────────────
-function cxcGet()  { try{var r=localStorage.getItem('farmers_cxc');if(r)return JSON.parse(r);}catch(e){} return{facturas:[]}; }
-function cxcSave(d){ localStorage.setItem('farmers_cxc',JSON.stringify(d)); }
+function cxcGet()  {
+  try{var r=localStorage.getItem('farmers_cxc');if(r)return JSON.parse(r);}catch(e){}
+  return{facturas:[]};
+}
+function cxcSave(d){
+  // Guardar en localStorage
+  localStorage.setItem('farmers_cxc',JSON.stringify(d));
+  // Sincronizar a Firebase en segundo plano
+  if(window.fbSaveCXC){
+    window.fbSaveCXC(d).then(function(){
+      if(window.fbSetStatus) window.fbSetStatus('connected');
+    }).catch(function(){});
+  }
+}
 function cxcFacs() { return cxcGet().facturas||[]; }
 function cxcSaveFacs(f){ var d=cxcGet(); d.facturas=f; cxcSave(d); }
+
+// Cargar CXC desde Firebase al iniciar
+function cxcLoadFromFirebase(){
+  if(!window.fbGetCXC) return;
+  window.fbGetCXC().then(function(data){
+    if(!data||!data.facturas||!data.facturas.length) return;
+    var local = cxcGet();
+    var localIds = (local.facturas||[]).map(function(f){return f.id;});
+    var added=false;
+    data.facturas.forEach(function(ff){
+      if(!localIds.includes(ff.id)){ local.facturas.push(ff); added=true; }
+    });
+    if(added){
+      localStorage.setItem('farmers_cxc',JSON.stringify(local));
+      if(typeof cxcUpdateBadge==='function') cxcUpdateBadge();
+      showToast('CXC sincronizado desde Firebase ('+data.facturas.length+' facturas)','success');
+    }
+  }).catch(function(){});
+}
 
 // ── Estado de factura ─────────────────────────────────────
 function cxcEstado(f) {
@@ -13023,7 +13122,59 @@ function openCXC(){
   document.getElementById('cxc-modal').classList.add('open');
   document.body.style.overflow='hidden';
   _cxcTab='resumen'; _cxcSelCl=null;
+  cxcSyncBidireccional();
   cxcGoTab('resumen');
+}
+
+function cxcSyncBidireccional(){
+  if(!window.fbGetCXC || !window.fbSaveCXC) return;
+  var local = cxcGet();
+  var localFacs = local.facturas || [];
+
+  window.fbGetCXC().then(function(fbData){
+    var fbFacs = (fbData && fbData.facturas) ? fbData.facturas : [];
+
+    if(fbFacs.length === 0 && localFacs.length > 0){
+      // Firebase vacío pero local tiene datos → SUBIR todo a Firebase
+      window.fbSaveCXC(local).then(function(){
+        showToast('CXC subido a Firebase ('+localFacs.length+' facturas) ✅','success');
+        if(window.fbSetStatus) window.fbSetStatus('connected');
+      });
+      return;
+    }
+
+    // Merge bidireccional: unir lo de Firebase con lo local
+    var localIds = localFacs.map(function(f){return f.id;});
+    var merged = localFacs.slice();
+    var added = false;
+
+    fbFacs.forEach(function(ff){
+      if(!localIds.includes(ff.id)){
+        merged.push(ff); added=true;
+      } else {
+        // Si Firebase tiene más pagos → usar versión de Firebase
+        var idx = merged.findIndex(function(lf){return lf.id===ff.id;});
+        if(idx>=0 && (ff.pagos||[]).length > (merged[idx].pagos||[]).length){
+          merged[idx]=ff; added=true;
+        }
+      }
+    });
+
+    if(added){
+      var newData = {facturas: merged};
+      localStorage.setItem('farmers_cxc', JSON.stringify(newData));
+      // También subir el merge a Firebase para que todos tengan lo mismo
+      window.fbSaveCXC(newData);
+      if(typeof cxcUpdateBadge==='function') cxcUpdateBadge();
+      showToast('CXC sincronizado ('+merged.length+' facturas) ✅','success');
+    } else if(localFacs.length > 0){
+      // Local tiene datos — asegurarse de que Firebase esté al día
+      window.fbSaveCXC(local);
+    }
+  }).catch(function(e){
+    // Sin conexión — usar local
+    console.warn('CXC sync error:', e);
+  });
 }
 window.openCXC=openCXC;
 
