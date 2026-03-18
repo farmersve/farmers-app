@@ -3467,6 +3467,7 @@ function renderHistorial(){
         </div>
         <div style="text-align:right;">
           <div style="font-family:'Barlow Condensed',sans-serif;font-weight:900;font-size:1.4rem;color:#e8692a;">$ ${fmt(sale.total)}</div>
+          <div style="font-size:0.72rem;color:#64748b;font-weight:600;">${sale.moneda&&sale.moneda!=='USD'?sale.moneda+' · ':''}</div>
           ${sale.totalBs?`<div style="font-size:0.75rem;color:#16a34a;font-weight:600;">Bs. ${fmt(sale.totalBs)}</div>`:''}
           <div style="font-size:0.72rem;color:#8892b0;">${sale.units} uds · ${sale.items.length} refs</div>
         </div>
@@ -3488,28 +3489,156 @@ function renderHistorial(){
               <td style="padding:7px 12px;text-align:center;">${BRAND_META[it.br]?.logo?`<img src="${BRAND_META[it.br].logo}" style="height:16px;object-fit:contain;">`:it.br}</td>
               <td style="padding:7px 12px;text-align:center;font-weight:600;color:#1a2050;">$ ${fmt(it.precio)}</td>
               <td style="padding:7px 12px;text-align:center;"><span style="background:#1a2050;color:white;border-radius:5px;padding:2px 8px;font-weight:700;">${it.orden}</span></td>
-              <td style="padding:7px 12px;text-align:right;font-weight:700;color:#e8692a;">$ ${fmt(it.total)}</td>
+              <td style="padding:7px 12px;text-align:right;font-weight:700;color:#e8692a;">$ ${fmt(it.total)}${sale.moneda&&sale.moneda!=='USD'?`<div style="font-size:.65rem;color:#64748b;">${sale.moneda}</div>`:''}</td>
             </tr>`).join('')}
           </tbody>
         </table>
       </div>
       <div style="padding:8px 14px;border-top:1px solid #f0f2f8;display:flex;justify-content:flex-end;">
-        <button onclick="deleteSale(${sale.id})" style="background:none;border:1px solid #fca5a5;color:#dc2626;border-radius:6px;padding:4px 12px;cursor:pointer;font-size:0.75rem;font-weight:600;">🗑 Eliminar registro</button>
+        <button onclick="vtMostrarDevolucion(${sale.id})" style="background:#fff7ed;border:1px solid #fed7aa;color:#c2410c;border-radius:6px;padding:4px 12px;cursor:pointer;font-size:0.75rem;font-weight:700;margin-right:6px;">↩ Devolución</button>
+        <button onclick="deleteSale(${sale.id})" style="background:none;border:1px solid #fca5a5;color:#dc2626;border-radius:6px;padding:4px 12px;cursor:pointer;font-size:0.75rem;font-weight:600;">🗑 Eliminar pedido</button>
       </div>
     </div>`).join('');
 }
 
-function deleteSale(id){
-  if(!confirm('¿Eliminar este registro del historial? Esta acción no puede deshacerse.')) return;
-  // 1. Pausar el onSnapshot para que no interfiera durante la escritura
+// ── Devolución parcial: helper ─────────────────────────────────────────────
+function vtCerrarDevolucion() {
+  var m = document.getElementById('modal-devolucion');
+  if (m) m.remove();
+}
+window.vtCerrarDevolucion = vtCerrarDevolucion;
+
+// ── Devolución parcial: modal ─────────────────────────────────────────────
+function vtMostrarDevolucion(saleId) {
+  var sales = getSales();
+  var sale  = sales.find(function(s){ return String(s.id) === String(saleId); });
+  if (!sale) return;
+
+  var itemsHtml = (sale.items || []).map(function(it, i) {
+    return '<tr>' +
+      '<td style="padding:6px 10px;font-weight:700;color:#1B1F6B;">' + it.r + '</td>' +
+      '<td style="padding:6px 10px;font-size:.85rem;color:#475569;">' + (it.d||'') + '</td>' +
+      '<td style="padding:6px 10px;text-align:center;font-weight:800;">' + it.orden + '</td>' +
+      '<td style="padding:6px 10px;text-align:center;">' +
+        '<input type="number" id="dev-qty-' + i + '" min="0" max="' + it.orden + '" value="0" ' +
+        'style="width:60px;border:1.5px solid #e2e8f0;border-radius:5px;padding:3px 6px;text-align:center;font-weight:800;">' +
+      '</td>' +
+    '</tr>';
+  }).join('');
+
+  var modal = document.createElement('div');
+  modal.id = 'modal-devolucion';
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:99999;display:flex;align-items:center;justify-content:center;';
+  modal.innerHTML =
+    '<div style="background:white;border-radius:14px;width:min(680px,95vw);max-height:85vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,.3);">' +
+      '<div style="background:linear-gradient(135deg,#1B1F6B,#2d3580);padding:16px 22px;border-radius:14px 14px 0 0;display:flex;justify-content:space-between;align-items:center;">' +
+        '<div>' +
+          '<div style="font-size:1.1rem;font-weight:900;color:white;">Devolución de Pedido</div>' +
+          '<div style="font-size:.8rem;color:rgba(255,255,255,.7);">Pedido #' + (sale.numpedido||sale.id) + ' · ' + (sale.cliente||'—') + '</div>' +
+        '</div>' +
+        '<button onclick="vtCerrarDevolucion()" style="background:rgba(255,255,255,.15);border:none;color:white;border-radius:8px;padding:6px 14px;cursor:pointer;font-weight:700;">✕ Cerrar</button>' +
+      '</div>' +
+      '<div style="padding:20px 22px;">' +
+        '<p style="font-size:.85rem;color:#475569;margin-bottom:14px;">Ingresa la cantidad a devolver por cada producto (0 = sin devolución). El inventario se repondrá automáticamente y se ajustará la factura en CXC.</p>' +
+        '<table style="width:100%;border-collapse:collapse;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;">' +
+          '<thead><tr style="background:#f8faff;">' +
+            '<th style="padding:7px 10px;text-align:left;font-size:.75rem;color:#94a3b8;font-weight:700;text-transform:uppercase;">Ref</th>' +
+            '<th style="padding:7px 10px;text-align:left;font-size:.75rem;color:#94a3b8;font-weight:700;text-transform:uppercase;">Descripción</th>' +
+            '<th style="padding:7px 10px;text-align:center;font-size:.75rem;color:#94a3b8;font-weight:700;text-transform:uppercase;">Vendido</th>' +
+            '<th style="padding:7px 10px;text-align:center;font-size:.75rem;color:#94a3b8;font-weight:700;text-transform:uppercase;">Devolver</th>' +
+          '</tr></thead>' +
+          '<tbody>' + itemsHtml + '</tbody>' +
+        '</table>' +
+        '<div style="display:flex;gap:10px;justify-content:flex-end;margin-top:16px;">' +
+          '<button onclick="vtCerrarDevolucion()" style="padding:10px 22px;border-radius:8px;border:1.5px solid #e2e8f0;background:white;color:#475569;font-weight:700;cursor:pointer;">Cancelar</button>' +
+          '<button onclick="vtConfirmarDevolucion(\'' + saleId + '\')" style="padding:10px 22px;border-radius:8px;border:none;background:#F47B3E;color:white;font-weight:900;cursor:pointer;">✓ Confirmar Devolución</button>' +
+        '</div>' +
+      '</div>' +
+    '</div>';
+  document.body.appendChild(modal);
+}
+window.vtMostrarDevolucion = vtMostrarDevolucion;
+
+function vtConfirmarDevolucion(saleId) {
+  var sales = getSales();
+  var saleIdx = sales.findIndex(function(s){ return String(s.id) === String(saleId); });
+  if (saleIdx < 0) return;
+  var sale = sales[saleIdx];
+
+  var inv = getInventory();
+  var devTotal = 0;
+  var devItems = [];
+  var itemsRestantes = [];
+
+  (sale.items || []).forEach(function(it, i) {
+    var inputEl = document.getElementById('dev-qty-' + i);
+    var devQty  = Math.min(parseInt(inputEl ? inputEl.value : 0) || 0, it.orden);
+
+    // Reponer inventario
+    if (devQty > 0) {
+      inv[it.r] = (parseInt(inv[it.r]) || 0) + devQty;
+      devTotal += devQty * (it.precio || 0);
+      devItems.push({ r: it.r, d: it.d, qty: devQty, precio: it.precio });
+    }
+
+    // Si quedan unidades, mantener el item
+    var restante = it.orden - devQty;
+    if (restante > 0) {
+      itemsRestantes.push(Object.assign({}, it, { orden: restante, total: restante * (it.precio || 0) }));
+    }
+  });
+
+  if (devTotal === 0) {
+    showToast('No ingresaste cantidades a devolver.', 'warning');
+    return;
+  }
+
+  // Guardar inventario actualizado
+  saveInventory(inv);
+  syncInventoryToProducts();
+
+  // Actualizar o eliminar la venta
+  if (itemsRestantes.length === 0) {
+    // Devolución total → eliminar la venta
+    sales.splice(saleIdx, 1);
+  } else {
+    // Devolución parcial → actualizar cantidades y total
+    sales[saleIdx].items = itemsRestantes;
+    sales[saleIdx].total = itemsRestantes.reduce(function(s, it){ return s + it.total; }, 0);
+    sales[saleIdx].units = itemsRestantes.reduce(function(s, it){ return s + it.orden; }, 0);
+    var tasa   = getTasaHoy() || 0;
+    var tfSpr  = (typeof TF_SPREAD !== 'undefined') ? TF_SPREAD : 0;
+    var tasaTF = tasa > 0 ? tasa * (1 + tfSpr / 100) : 0;
+    var moneda = sales[saleIdx].moneda || 'USD';
+    var tasaActiva = moneda === 'TF' ? tasaTF : tasa;
+    sales[saleIdx].totalBs = tasaActiva > 0 ? sales[saleIdx].total * tasaActiva : 0;
+  }
+  saveSales(sales);
+
+  // Actualizar CXC — buscar la factura vinculada y ajustar el saldo
+  var facs = cxcFacs();
+  var facIdx = facs.findIndex(function(f){
+    return f.saleId === String(saleId) || f.numpedido === sale.numpedido;
+  });
+  if (facIdx >= 0) {
+    if (itemsRestantes.length === 0) {
+      // Devolución total → eliminar la factura CXC
+      facs.splice(facIdx, 1);
+    } else {
+      // Devolución parcial → reducir el monto
+      facs[facIdx].monto = sales[saleIdx].total;
+      facs[facIdx].saldo = Math.max(0, facs[facIdx].saldo - devTotal);
+      facs[facIdx].totalBs = sales[saleIdx].totalBs;
+      facs[facIdx].notas  = (facs[facIdx].notas || '') + ' | Devolución parcial: ' + new Date().toLocaleDateString('es-VE');
+    }
+    cxcSaveFacs(facs);
+    if (typeof cxcUpdateBadge === 'function') cxcUpdateBadge();
+  }
+
+  // Sincronizar con Firebase
   if (typeof _fbSnapPaused !== 'undefined') _fbSnapPaused = true;
-  // 2. Eliminar del array local
-  var newSales = getSales().filter(function(s){ return String(s.id) !== String(id); });
-  localStorage.setItem('farmers_sales', JSON.stringify(newSales));
-  // 3. Sobreescribir Firebase con la lista ya sin ese registro
   if (window.fbSaveSales) {
-    window.fbSaveSales(newSales).then(function(){
-      // 4. Reactivar snapshot después de que Firebase confirmó la escritura
+    window.fbSaveSales(getSales()).then(function(){
       if (typeof _fbSnapPaused !== 'undefined') _fbSnapPaused = false;
     }).catch(function(){
       if (typeof _fbSnapPaused !== 'undefined') _fbSnapPaused = false;
@@ -3517,8 +3646,60 @@ function deleteSale(id){
   } else {
     setTimeout(function(){ if (typeof _fbSnapPaused !== 'undefined') _fbSnapPaused = false; }, 2000);
   }
+
+  vtCerrarDevolucion();
   renderHistorial();
-  showToast('✅ Registro eliminado permanentemente.', 'success');
+
+  var msg = itemsRestantes.length === 0
+    ? '✅ Devolución total procesada. Inventario repuesto y CXC eliminada.'
+    : '✅ Devolución parcial procesada. Inventario repuesto y CXC ajustada.';
+  showToast(msg, 'success');
+}
+window.vtConfirmarDevolucion = vtConfirmarDevolucion;
+
+// ── Eliminación total con sincronización completa ──────────────────────────
+function deleteSale(id){
+  if(!confirm('¿Eliminar este pedido del historial?\n\nEsta acción:\n• Repone el inventario\n• Elimina la factura en CXC\n\n¿Continuar?')) return;
+
+  var sales = getSales();
+  var sale  = sales.find(function(s){ return String(s.id) === String(id); });
+  if (!sale) return;
+
+  // 1. Reponer inventario
+  var inv = getInventory();
+  (sale.items || []).forEach(function(it){
+    inv[it.r] = (parseInt(inv[it.r]) || 0) + (parseInt(it.orden) || 0);
+  });
+  saveInventory(inv);
+  syncInventoryToProducts();
+
+  // 2. Eliminar factura CXC vinculada
+  var facs = cxcFacs();
+  var newFacs = facs.filter(function(f){
+    return f.saleId !== String(id) && f.numpedido !== sale.numpedido;
+  });
+  if (newFacs.length !== facs.length) {
+    cxcSaveFacs(newFacs);
+    if (typeof cxcUpdateBadge === 'function') cxcUpdateBadge();
+  }
+
+  // 3. Eliminar la venta
+  if (typeof _fbSnapPaused !== 'undefined') _fbSnapPaused = true;
+  var newSales = sales.filter(function(s){ return String(s.id) !== String(id); });
+  saveSales(newSales);
+
+  if (window.fbSaveSales) {
+    window.fbSaveSales(newSales).then(function(){
+      if (typeof _fbSnapPaused !== 'undefined') _fbSnapPaused = false;
+    }).catch(function(){
+      if (typeof _fbSnapPaused !== 'undefined') _fbSnapPaused = false;
+    });
+  } else {
+    setTimeout(function(){ if (typeof _fbSnapPaused !== 'undefined') _fbSnapPaused = false; }, 2000);
+  }
+
+  renderHistorial();
+  showToast('✅ Pedido eliminado. Inventario repuesto y CXC actualizada.', 'success');
 }
 
 function confirmClearHistorial(){
@@ -5108,7 +5289,10 @@ function clRenderFicha(c) {
           '<td style="padding:7px 10px;font-size:.75rem;color:#e2e8f0;font-weight:600;">'+iBadge+(s.numpedido||'\u2014')+'</td>' +
           '<td style="padding:7px 10px;font-size:.72rem;color:#94a3b8;">'+(s.sucursal||s.vendedor||'\u2014')+'</td>' +
           '<td style="padding:7px 10px;text-align:center;font-size:.7rem;color:#94a3b8;">'+(s.units||0)+' uds</td>' +
-          '<td style="padding:7px 10px;text-align:right;font-size:.75rem;font-weight:700;color:#f9a87a;white-space:nowrap;">$ '+(s.total||0).toFixed(2)+' '+mBadge+'</td>';
+          '<td style="padding:7px 10px;text-align:right;font-size:.75rem;font-weight:700;color:#f9a87a;white-space:nowrap;">'
+            +'$ '+(s.total||0).toFixed(2)+' '+mBadge
+            +(s.totalBs?'<div style="font-size:.65rem;color:#16a34a;font-weight:600;">Bs. '+fmt(s.totalBs)+'</div>':'')
+          +'</td>';
         filasTbl.appendChild(tr);
       });
       if (clientSales.length > 20) {
@@ -6502,7 +6686,14 @@ function closeImport() { document.getElementById('import-modal').style.display =
 }
 function showImportStep(n) { [1,2,3,4].forEach(function(i){ var el = document.getElementById('import-step'+i); if(el) el.style.display = (i===n ? 'block' : 'none'); }); }
 function backImport() { showImportStep(1); }
-function handleImportDrop(e) { e.preventDefault(); var f = e.dataTransfer.files[0]; if(f) loadImportFile(f); }
+var _importImageB64 = null;   // base64 sin prefijo data:
+var _importImageType = null;  // 'image/jpeg' etc.
+
+function handleImportDrop(e) {
+  e.preventDefault();
+  var f = e.dataTransfer.files[0];
+  if(f) loadImportFile(f);
+}
 function handleImportFile(input) { if(input.files && input.files[0]) loadImportFile(input.files[0]); }
 
 async function loadImportFile(file) {
@@ -6510,8 +6701,38 @@ async function loadImportFile(file) {
   var fnText = document.getElementById('import-file-name-text');
   if(fn) fn.style.display = 'inline-flex';
   if(fnText) fnText.textContent = file.name;
+
+  var isImage = file.type.startsWith('image/') || file.name.toLowerCase().match(/\.(jpg|jpeg|png|webp|heic|heif)$/i);
+
   try {
-    if (file.name.toLowerCase().endsWith('.pdf')) {
+    if (isImage) {
+      // ── Imagen: convertir a base64, mostrar preview ──────────
+      var b64full = await new Promise(function(res, rej) {
+        var fr = new FileReader();
+        fr.onload  = function(){ res(fr.result); };
+        fr.onerror = rej;
+        fr.readAsDataURL(file);
+      });
+      var mediaType = file.type || 'image/jpeg';
+      _importImageB64  = b64full.split(',')[1];
+      _importImageType = mediaType;
+      // Mostrar preview
+      var prevDiv = document.getElementById('import-img-preview');
+      var prevImg = document.getElementById('import-img-el');
+      if(prevDiv && prevImg) {
+        prevImg.src = b64full;
+        prevDiv.style.display = 'block';
+      }
+      // Limpiar textarea — la IA leerá la imagen directo
+      var txtEl = document.getElementById('import-text');
+      if(txtEl) txtEl.value = '';
+      // Ocultar nombre de archivo (ya se ve en el preview)
+      if(fn) fn.style.display = 'none';
+
+    } else if (file.name.toLowerCase().endsWith('.pdf')) {
+      _importImageB64 = null; _importImageType = null;
+      var prevDiv = document.getElementById('import-img-preview');
+      if(prevDiv) prevDiv.style.display='none';
       if (typeof pdfjsLib === 'undefined') { toastErr('PDF.js no disponible. Pega el texto manualmente.', 'Error de librería'); return; }
       pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
       var ab = await file.arrayBuffer();
@@ -6524,7 +6745,11 @@ async function loadImportFile(file) {
       }
       var el = document.getElementById('import-text');
       if(el) el.value = lines.join('\n');
+
     } else if (file.name.toLowerCase().match(/\.xlsx?$/)) {
+      _importImageB64 = null; _importImageType = null;
+      var prevDiv = document.getElementById('import-img-preview');
+      if(prevDiv) prevDiv.style.display='none';
       var ab = await file.arrayBuffer();
       var wb = XLSX.read(ab, {type: 'array'});
       var lines = [];
@@ -6537,49 +6762,180 @@ async function loadImportFile(file) {
 
 async function processImport() {
   var txtEl = document.getElementById('import-text');
-  var text = (txtEl ? txtEl.value : '').trim();
-  if (!text || text.length < 10) { toastWarn('Sube un archivo o pega el texto de la factura.', 'Sin contenido'); return; }
+  var text  = (txtEl ? txtEl.value : '').trim();
+  var tieneImagen = !!_importImageB64;
+
+  if (!tieneImagen && (!text || text.length < 10)) {
+    toastWarn('Sube una imagen/archivo o pega el texto de la factura.', 'Sin contenido');
+    return;
+  }
+
   showImportStep(2);
+
   var refLines = PRODUCTS.map(function(p){ return p.r + '|' + (p.b||'') + '|' + (p.c||'') + '|' + p.d; });
-  var prompt = [
-    'Eres el sistema de gestión de pedidos de FARMERS C.A.',
-    'FARMERS C.A. es NUESTRA EMPRESA — somos el VENDEDOR/EMISOR, NUNCA el cliente.',
+
+  // ── Índice de referencias válidas para post-procesamiento JS ──────────
+  var refSet = {};
+  PRODUCTS.forEach(function(p){ refSet[p.r] = true; });
+
+  // ── Regex para detectar código Farmers al final de una descripción ──────
+  var refPattern = /\b((?:EXC|GEN|LUM|MAT|MAXK|VAR)\d{1,4}[A-Z]?)\b/gi;
+
+  function _impExtraerRefDeDesc(desc) {
+    if (!desc) return null;
+    // Buscar todos los códigos Farmers en la descripción
+    var matches = [];
+    var m2;
+    var re2 = /\b((?:EXC|GEN|LUM|MAT|MAXK|VAR)\d{1,4}[A-Z]?)\b/gi;
+    while ((m2 = re2.exec(desc)) !== null) { matches.push(m2[1].toUpperCase()); }
+    // Devolver el último que exista en el catálogo
+    for (var i = matches.length - 1; i >= 0; i--) {
+      if (refSet[matches[i]]) return matches[i];
+    }
+    // Si hay algún código Farmers aunque no esté en catálogo, devolver el último
+    return matches.length > 0 ? matches[matches.length - 1] : null;
+  }
+
+  // Construir lista de referencias válidas para el prompt
+  var validRefs = PRODUCTS.map(function(p){ return p.r; }).join(', ');
+
+  var promptTexto = [
+    'Eres un extractor de datos de pedidos. Tu tarea es leer cada fila del documento y extraer exactamente 3 datos:',
+    '1. El CODIGO DE REFERENCIA (siempre al final del texto, ej: GEN173, GEN114, EXC043, MAT030)',
+    '2. El PRECIO unitario en USD',
+    '3. La CANTIDAD pedida',
     '',
-    'REGLA CRÍTICA SOBRE EL CLIENTE:',
-    '- Si el documento muestra "FARMERS C.A." o "FARMERS" como emisor, remitente, vendedor o proveedor → IGNORAR ese nombre, no es el cliente.',
-    '- El cliente es la empresa o persona que COMPRA o RECIBE: busca campos como "Cliente", "Facturar a", "Señor(es)", "Destinatario", "Comprador", "Razón Social del Cliente", "Deudor", o cualquier entidad distinta a Farmers.',
-    '- Si el documento es una ORDEN DE COMPRA o PEDIDO recibido, el cliente es quien ENVÍA esa orden.',
-    '- Si ves dos empresas, la que NO sea Farmers es el cliente.',
-    '- Si el documento menciona "COLINA", "SIGO", "MAKRO", "TRAKI" u otra cadena/empresa venezolana distinta a Farmers → ese es el cliente.',
+    'INSTRUCCION CRITICA — LEE CON CUIDADO CADA CODIGO:',
+    'Los codigos son alfanumericos. Lee CADA digito con precision. No confundas:',
+    '  GEN114 ≠ GEN147  (son distintos)',
+    '  GEN183 ≠ GEN138  (son distintos)',
+    '  GEN201 ≠ GEN021  (son distintos)',
+    'Lee el codigo completo de izquierda a derecha, digito por digito.',
     '',
-    'REFERENCIAS DISPONIBLES EN NUESTRO SISTEMA:',
-    refLines.join('\n'),
+    'FORMATO DEL DOCUMENTO:',
+    'Columna CONCEPTO: descripcion del producto + CODIGO al final',
+    'Columna PRECIO: precio unitario en USD',
+    'Columna CANTIDAD: unidades pedidas',
+    'Columna TOTAL: precio x cantidad (ignorar, calcularlo nosotros)',
     '',
-    'Devuelve SOLO JSON valido sin texto adicional:',
-    '{"cliente":"","rif":"","telefono":"","direccion":"","vendedor":"","numpedido":"","fecha":"DD/MM/YYYY","moneda":"USD","items":[{"r":"REF","qty":0,"precio":0,"desc":""}],"total":0}',
+    'REFERENCIAS VALIDAS EN EL SISTEMA (usa exactamente como aparecen):',
+    validRefs,
     '',
-    'Reglas adicionales:',
-    '- Usa referencias exactas del sistema (columna izquierda de REFERENCIAS DISPONIBLES).',
-    '- Suma lineas duplicadas de la misma referencia.',
-    '- El campo "vendedor" es el vendedor de Farmers que atendió al cliente (si aparece).',
+    'RESPONDE SOLO CON JSON VALIDO — sin texto, sin markdown, sin backticks:',
+    '{"cliente":"","rif":"","telefono":"","direccion":"","vendedor":"","numpedido":"","fecha":"DD/MM/YYYY","moneda":"USD","items":[{"r":"GEN173","qty":3,"precio":2.06,"desc":"VASO DE ENTRENAMIENTO GEN173"}],"total":0}',
     '',
-    'DOCUMENTO A ANALIZAR:',
-    text
+    tieneImagen
+      ? 'Lee la imagen con maxima atencion. Extrae TODAS las filas. No omitas ninguna. Verifica cada codigo digito por digito antes de escribirlo.'
+      : ('DOCUMENTO:\n' + text)
   ].join('\n');
+
+  var messageContent;
+  if (tieneImagen) {
+    messageContent = [
+      {
+        type: 'image',
+        source: {
+          type: 'base64',
+          media_type: _importImageType || 'image/jpeg',
+          data: _importImageB64
+        }
+      },
+      { type: 'text', text: promptTexto }
+    ];
+  } else {
+    messageContent = promptTexto;
+  }
+
   try {
     var resp = await fetch('https://farmers-proxy.farmersve.workers.dev/', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({model:'claude-sonnet-4-20250514', max_tokens:3000, messages:[{role:'user', content:prompt}]})
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 3000,
+        messages: [{ role: 'user', content: messageContent }]
+      })
     });
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
     var data = await resp.json();
     if (data.error) throw new Error(data.error.message || 'Error API');
-    var raw = (data.content && data.content[0] && data.content[0].text) || '';
+    var raw = '';
+    if (Array.isArray(data.content)) {
+      data.content.forEach(function(blk){ if(blk.type==='text') raw += blk.text; });
+    } else {
+      raw = (data.content && data.content[0] && data.content[0].text) || '';
+    }
     var m = raw.match(/\{[\s\S]*\}/);
     if (!m) throw new Error('Respuesta invalida de la IA');
     var parsed = JSON.parse(m[0]);
     if (!parsed.items || !parsed.items.length) throw new Error('No se detectaron productos');
+
+    // ── POST-PROCESAMIENTO: validar y corregir referencias ──────────────────
+    var refSetLocal = {};
+    PRODUCTS.forEach(function(p){ refSetLocal[p.r] = true; });
+
+    parsed.items = parsed.items.map(function(it) {
+      var ref = (it.r || '').trim().toUpperCase();
+
+      // Si la referencia YA es válida en el catálogo → no tocar nada
+      if (refSetLocal[ref]) {
+        it.r = ref;
+        return it;
+      }
+
+      // La referencia no es válida — buscar en la descripción (desc)
+      // La descripción siempre tiene el código al final: "CEPIL ESPON GIRAT GEN114"
+      var desc = (it.desc || '').toUpperCase();
+      var reFind = /\b((?:EXC|GEN|LUM|MAT|MAXK|VAR)\d{1,4}[A-Z]?)\b/g;
+      var allCodes = [], mFind;
+      while ((mFind = reFind.exec(desc)) !== null) {
+        allCodes.push(mFind[1]);
+      }
+
+      // Usar el ÚLTIMO código de la descripción que exista en el catálogo
+      // (el último suele ser el código de referencia, al final del texto)
+      for (var j = allCodes.length - 1; j >= 0; j--) {
+        if (refSetLocal[allCodes[j]]) {
+          it.r = allCodes[j];
+          return it;
+        }
+      }
+
+      // Si la IA devolvió un código con el patrón correcto pero no está en catálogo,
+      // puede ser un error de transcripción — buscar el más parecido por prefijo + dígitos
+      var prefixMatch = ref.match(/^(EXC|GEN|LUM|MAT|MAXK|VAR)(\d+)/);
+      if (prefixMatch) {
+        var prefix = prefixMatch[1];
+        var digits = prefixMatch[2];
+        // Buscar en el catálogo refs del mismo prefijo
+        var candidates = PRODUCTS.filter(function(p){ return p.r.indexOf(prefix) === 0; });
+        // Preferir el que tenga los mismos dígitos exactos
+        var exact = candidates.find(function(p){ return p.r === prefix + digits; });
+        if (exact) { it.r = exact.r; return it; }
+        // Si no, buscar en desc con el mismo prefijo
+        for (var k = allCodes.length - 1; k >= 0; k--) {
+          if (allCodes[k].indexOf(prefix) === 0 && refSetLocal[allCodes[k]]) {
+            it.r = allCodes[k];
+            return it;
+          }
+        }
+      }
+
+      // Último recurso: usar lo que haya en desc aunque no esté en catálogo
+      if (allCodes.length > 0) it.r = allCodes[allCodes.length - 1];
+      return it;
+    });
+
+    // Limpiar precio importado del documento — siempre usar el del catálogo
+    // Solo se respeta it.precio si el usuario lo edita manualmente después
+    parsed.items = parsed.items.map(function(it) {
+      var prod = PRODUCTS.find(function(p){ return p.r === it.r; });
+      if (prod && prod.u > 0) {
+        it.precio = null; // forzar uso de prod.u
+      }
+      return it;
+    });
+
     _importData = _impEnriquecerConDirectorio(parsed);
     renderImportReview(_importData);
     showImportStep(3);
@@ -6589,6 +6945,7 @@ async function processImport() {
     toastErr('Error al analizar: ' + e.message);
   }
 }
+
 
 // ── Moneda activa del modal import ──
 var _impMoneda = 'USD';
@@ -6648,20 +7005,14 @@ function _detectarAnomalias(items) {
           tipo: 'precio',
           ref: refPedido,
           desc: prod.d || '',
+          qty: parseInt(it.qty) || 1,         // cantidad pedida (para calcular impacto)
           moneda: moneda,
-          valorPedido: precioPedido,          // lo que viene en el pedido (USD)
-          precioSistema: precioSistema,        // lo que tiene el sistema (USD)
-          pUSD: pUSD, pBCV: pBCV, pTF: pTF,   // los 3 precios del sistema (USD)
-          // Equivalentes en bolívares (solo referencia informativa)
-          sistBs:   moneda === 'TF'  ? (_tasaTF  > 0 ? precioSistema * _tasaTF  : null)
-                  : moneda === 'BCV' ? (_tasaHoy > 0 ? precioSistema * _tasaHoy : null)
-                  : null,
-          pedBs:    moneda === 'TF'  ? (_tasaTF  > 0 ? precioPedido  * _tasaTF  : null)
-                  : moneda === 'BCV' ? (_tasaHoy > 0 ? precioPedido  * _tasaHoy : null)
-                  : null,
+          valorPedido: precioPedido,           // precio del cliente (USD)
+          precioSistema: precioSistema,        // precio del sistema (USD)
+          pUSD: pUSD, pBCV: pBCV, pTF: pTF,   // los 3 precios del sistema
           tasaHoy: _tasaHoy,
           pct: pct,
-          diff: pct > 20 ? 'alta' : 'media'
+          diff: pct > 20 ? 'alta' : pct > 5 ? 'media' : 'baja'
         });
       }
     }
@@ -6721,67 +7072,101 @@ function _renderPanelAnomalias(anomalias, containerId) {
 
   // Bloque diferencias de precio — muestra los 3 tipos con selector
   if (porTipo.precio.length) {
+    var tasa = (typeof getTasaHoy === 'function') ? (getTasaHoy() || 0) : 0;
+    var tfSprD = (typeof TF_SPREAD !== 'undefined') ? TF_SPREAD : 0;
+    var tasaTFD = tasa > 0 ? tasa * (1 + tfSprD/100) : 0;
+
     var rows = porTipo.precio.map(function(a){
-      var color = a.diff === 'alta' ? '#dc2626' : '#d97706';
-      var bg    = a.diff === 'alta' ? '#fef2f2' : '#fffbeb';
-      var brd   = a.diff === 'alta' ? '#fecaca' : '#fde68a';
+      var esMasCaro  = a.valorPedido > a.pUSD;
+      var esMasBarato = a.valorPedido < a.pUSD;
+      var diffAbs = Math.abs(a.pUSD - a.valorPedido);
+      var diffQty = parseInt(a.qty) || 1;
+      var impactoUSD = diffAbs * diffQty;
+      var nivel = a.pct > 20 ? 'alta' : a.pct > 5 ? 'media' : 'baja';
+      var colorNivel = nivel==='alta'?'#dc2626':nivel==='media'?'#d97706':'#16a34a';
+      var bgNivel    = nivel==='alta'?'#fef2f2':nivel==='media'?'#fffbeb':'#f0fdf4';
+      var brdNivel   = nivel==='alta'?'#fecaca':nivel==='media'?'#fde68a':'#bbf7d0';
+      var iconDir = esMasCaro ? '▲' : '▼';
+      var txtDir  = esMasCaro ? 'Cliente cobra MÁS caro' : 'Cliente cobra más barato';
 
-      // Mostrar los 3 precios del sistema con etiquetas claras
-      function pillPrecio(label, val, esActivo) {
-        if (!val || val <= 0) return '';
-        var pillBg  = esActivo ? '#eff6ff' : '#f8fafc';
-        var pillBrd = esActivo ? '#93c5fd' : '#e2e8f0';
-        var pillFg  = esActivo ? '#1d4ed8' : '#64748b';
-        var actBadge = esActivo ? ' ← activo' : '';
-        return '<span style="display:inline-flex;align-items:center;gap:3px;background:'+pillBg+';border:1.5px solid '+pillBrd+';border-radius:5px;padding:2px 8px;font-size:.68rem;font-weight:800;color:'+pillFg+';white-space:nowrap;">' +
-          '<span style="font-size:.6rem;opacity:.8;">'+label+'</span> '+fmt(val)+actBadge+'</span>';
-      }
+      // Equivalente en bolívares del precio del sistema
+      var sistBCV = tasa     > 0 ? a.pUSD * tasa     : 0;
+      var sistTF  = tasaTFD  > 0 ? a.pUSD * tasaTFD  : 0;
+      var pedBCV  = tasa     > 0 ? a.valorPedido * tasa    : 0;
+      var pedTF   = tasaTFD  > 0 ? a.valorPedido * tasaTFD : 0;
 
-      var ml = a.moneda || 'USD';
-      // Referencia en bolívares (informativa) según tasa del día
-      var bsLinea = '';
-      if (a.sistBs && a.pedBs) {
-        var bsColor = ml === 'TF' ? '#7c3aed' : '#b45309';
-        var bsLabel = ml === 'TF' ? 'TF' : 'BCV';
-        bsLinea = '<div style="font-size:.58rem;color:'+bsColor+';margin-top:2px;">' +
-          'Pedido ≈ Bs. ' + fmt(a.pedBs) + ' · Sistema ≈ Bs. ' + fmt(a.sistBs) + ' (' + bsLabel + ' @ ' + fmt(a.tasaHoy) + ')' +
-          '</div>';
-      }
-      return '<tr style="border-bottom:1px solid #f0f0f0;">' +
-        '<td style="padding:6px 10px;font-weight:900;font-size:.74rem;color:#1a2050;white-space:nowrap;">' + a.ref +
-          '<div style="font-size:.6rem;color:#94a3b8;font-weight:400;">' + (a.desc||'').substring(0,30) + '</div>' +
+      return '<tr style="border-bottom:1.5px solid #f0f4f8;">' +
+        // COL 1: Ref + producto
+        '<td style="padding:8px 10px;min-width:120px;">' +
+          '<div style="font-weight:900;font-size:.82rem;color:#1B1F6B;">' + a.ref + '</div>' +
+          '<div style="font-size:.65rem;color:#64748b;margin-top:1px;">' + (a.desc||'').substring(0,35) + '</div>' +
         '</td>' +
-        '<td style="padding:6px 10px;">' +
-          '<div style="font-size:.8rem;font-weight:800;color:'+color+';">$ ' + fmt(a.valorPedido) + '</div>' +
-          '<div style="font-size:.6rem;color:#92400e;margin-top:1px;">precio pedido (USD)</div>' +
+        // COL 2: Precio del CLIENTE (lo que vino en el pedido)
+        '<td style="padding:8px 10px;text-align:center;">' +
+          '<div style="font-size:.6rem;color:#94a3b8;font-weight:700;text-transform:uppercase;margin-bottom:2px;">Precio cliente</div>' +
+          (_impMoneda==='BCV' && pedBCV>0
+            ? '<div style="font-size:1.05rem;font-weight:900;color:'+colorNivel+';">Bs. ' + fmt(pedBCV) + '</div>' +
+              '<div style="font-size:.58rem;color:#94a3b8;margin-top:1px;">= $ '+fmt(a.valorPedido)+' USD</div>'
+            : _impMoneda==='TF' && pedTF>0
+            ? '<div style="font-size:1.05rem;font-weight:900;color:'+colorNivel+';">Bs. ' + fmt(pedTF) + '</div>' +
+              '<div style="font-size:.58rem;color:#94a3b8;margin-top:1px;">= $ '+fmt(a.valorPedido)+' USD</div>'
+            : '<div style="font-size:1.05rem;font-weight:900;color:'+colorNivel+';">$ ' + fmt(a.valorPedido) + '</div>'
+          ) +
         '</td>' +
-        '<td style="padding:6px 10px;">' +
-          '<div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:4px;">' +
-          pillPrecio('USD', a.pUSD, ml==='USD') +
-          pillPrecio('BCV', a.pBCV, ml==='BCV') +
-          pillPrecio('TF',  a.pTF,  ml==='TF') +
-          '</div>' +
-          '<div style="font-size:.58rem;color:#dc2626;font-weight:700;">Diferencia vs sistema (' + ml + '): ' + a.pct.toFixed(1) + '% · Sistema: $' + fmt(a.precioSistema) + '</div>' +
-          bsLinea +
+        // COL 3: Flecha indicadora
+        '<td style="padding:8px 6px;text-align:center;">' +
+          '<div style="font-size:1.4rem;color:'+colorNivel+';font-weight:900;">' + iconDir + '</div>' +
+          '<div style="font-size:.55rem;color:'+colorNivel+';font-weight:700;white-space:nowrap;">'+a.pct.toFixed(1)+'%</div>' +
         '</td>' +
-        '<td style="padding:6px 10px;text-align:center;">' +
-          '<span style="background:'+bg+';border:1px solid '+brd+';color:'+color+';border-radius:4px;padding:2px 8px;font-size:.65rem;font-weight:800;">' +
-          (a.diff === 'alta' ? '⚠ Alta' : '↕ Diferencia') + '</span>' +
+        // COL 4: Precio del SISTEMA en la moneda activa (el que se usará)
+        '<td style="padding:8px 10px;text-align:center;background:#f0fdf4;border-left:2px solid #bbf7d0;">' +
+          '<div style="font-size:.6rem;color:#15803d;font-weight:700;text-transform:uppercase;margin-bottom:2px;">✓ Precio sistema</div>' +
+          (_impMoneda==='BCV' && sistBCV>0
+            ? '<div style="font-size:1.05rem;font-weight:900;color:#15803d;">Bs. ' + fmt(sistBCV) + '</div>' +
+              '<div style="font-size:.58rem;color:#94a3b8;margin-top:1px;">= $ '+fmt(a.pUSD)+' USD</div>'
+            : _impMoneda==='TF' && sistTF>0
+            ? '<div style="font-size:1.05rem;font-weight:900;color:#15803d;">Bs. ' + fmt(sistTF) + '</div>' +
+              '<div style="font-size:.58rem;color:#94a3b8;margin-top:1px;">= $ '+fmt(a.pUSD)+' USD</div>'
+            : '<div style="font-size:1.05rem;font-weight:900;color:#15803d;">$ ' + fmt(a.pUSD) + '</div>'
+          ) +
+        '</td>' +
+        // COL 5: Impacto en el total
+        '<td style="padding:8px 10px;text-align:center;">' +
+          '<div style="font-size:.6rem;color:#94a3b8;font-weight:700;text-transform:uppercase;margin-bottom:2px;">Diferencia total</div>' +
+          '<div style="font-size:.88rem;font-weight:900;color:'+colorNivel+';">$ ' + fmt(impactoUSD) + '</div>' +
+          '<div style="font-size:.58rem;color:#94a3b8;margin-top:1px;">' + txtDir + '</div>' +
+        '</td>' +
+        // COL 6: Badge nivel
+        '<td style="padding:8px 10px;text-align:center;">' +
+          '<span style="background:'+bgNivel+';border:1.5px solid '+brdNivel+';color:'+colorNivel+';border-radius:6px;padding:3px 10px;font-size:.65rem;font-weight:900;display:block;">' +
+            (nivel==='alta'?'⚠ Alta':nivel==='media'?'↕ Media':'✓ Baja') +
+          '</span>' +
         '</td>' +
       '</tr>';
     }).join('');
+
+    // Calcular impacto total
+    var impactoTotal = porTipo.precio.reduce(function(acc, a){
+      return acc + Math.abs(a.pUSD - a.valorPedido) * (parseInt(a.qty)||1);
+    }, 0);
+
     secs.push(
-      '<div style="margin-bottom:8px;">' +
-      '<div style="font-size:.68rem;font-weight:900;color:#92400e;text-transform:uppercase;letter-spacing:.6px;margin-bottom:5px;">💲 Diferencias de precio vs base de datos (' + porTipo.precio.length + ')</div>' +
-      '<table style="width:100%;border-collapse:collapse;background:white;border-radius:6px;overflow:hidden;border:1px solid #e2e8f0;">' +
-      '<thead><tr style="background:#f8fafc;">' +
-        '<th style="padding:5px 10px;font-size:.63rem;color:#94a3b8;font-weight:700;text-align:left;">REF / PRODUCTO</th>' +
-        '<th style="padding:5px 10px;font-size:.63rem;color:#94a3b8;font-weight:700;text-align:left;">PRECIO PEDIDO vs SISTEMA</th>' +
-        '<th style="padding:5px 10px;font-size:.63rem;color:#94a3b8;font-weight:700;text-align:left;">PRECIOS EN SISTEMA (USD · BCV · TF)</th>' +
-        '<th style="padding:5px 10px;font-size:.63rem;color:#94a3b8;font-weight:700;text-align:center;">NIVEL</th>' +
+      '<div style="margin-bottom:10px;">' +
+      '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">' +
+        '<div style="font-size:.68rem;font-weight:900;color:#92400e;text-transform:uppercase;letter-spacing:.6px;">💲 Diferencias de precio vs sistema (' + porTipo.precio.length + ' producto' + (porTipo.precio.length>1?'s':'') + ')</div>' +
+        '<div style="font-size:.72rem;font-weight:800;color:#dc2626;background:#fef2f2;border:1px solid #fecaca;border-radius:5px;padding:3px 10px;">Impacto total: $ ' + fmt(impactoTotal) + '</div>' +
+      '</div>' +
+      '<table style="width:100%;border-collapse:collapse;background:white;border-radius:8px;overflow:hidden;border:1.5px solid #e2e8f0;">' +
+      '<thead><tr style="background:#1B1F6B;">' +
+        '<th style="padding:6px 10px;font-size:.62rem;color:rgba(255,255,255,.7);font-weight:700;text-align:left;">REF / PRODUCTO</th>' +
+        '<th style="padding:6px 10px;font-size:.62rem;color:rgba(255,255,255,.7);font-weight:700;text-align:center;">Precio cliente</th>' +
+        '<th style="padding:6px 10px;font-size:.62rem;color:rgba(255,255,255,.7);font-weight:700;text-align:center;">Var.</th>' +
+        '<th style="padding:6px 10px;font-size:.62rem;color:rgba(255,255,255,.7);font-weight:700;text-align:center;background:rgba(34,197,94,.2);">✓ Precio sistema</th>' +
+        '<th style="padding:6px 10px;font-size:.62rem;color:rgba(255,255,255,.7);font-weight:700;text-align:center;">Diferencia total</th>' +
+        '<th style="padding:6px 10px;font-size:.62rem;color:rgba(255,255,255,.7);font-weight:700;text-align:center;">Nivel</th>' +
       '</tr></thead><tbody>' + rows + '</tbody></table>' +
-      '<div style="font-size:.63rem;color:#92400e;margin-top:5px;padding:5px 8px;background:#fffbeb;border-radius:5px;border:1px solid #fde68a;">' +
-        '💡 USD / BCV / TF son todos precios en dólares (ancla USD). BCV y TF indican la modalidad de pago en bolívares. Al confirmar se usarán siempre los precios del sistema.' +
+      '<div style="font-size:.63rem;color:#15803d;margin-top:5px;padding:5px 10px;background:#f0fdf4;border-radius:5px;border:1px solid #bbf7d0;font-weight:700;">' +
+        '✓ Al confirmar el pedido se usarán SIEMPRE los precios del sistema — nunca los del cliente.' +
       '</div>' +
       '</div>'
     );
@@ -6824,6 +7209,218 @@ function _renderPanelAnomalias(anomalias, containerId) {
 
 
 
+// ══════════════════════════════════════════════════════════════
+// EDICION INLINE DE ITEMS EN IMPORTAR FACTURA
+// ══════════════════════════════════════════════════════════════
+
+function impEditQty(idx, val) {
+  if (!_importData || !_importData.items) return;
+  var q = parseInt(val) || 0;
+  _importData.items[idx].qty = q;
+  impRefrescarFila(idx);
+  impRecalcTotales();
+}
+
+function impEditPrecio(idx, val) {
+  if (!_importData || !_importData.items) return;
+  var p = parseFloat(val) || 0;
+  _importData.items[idx].precio  = p;
+  _importData.items[idx]._editado = true; // marca edición manual
+  impRefrescarFila(idx);
+  impRecalcTotales();
+}
+
+function impEditRef(idx, val) {
+  if (!_importData || !_importData.items) return;
+  _importData.items[idx].r = val.trim().toUpperCase();
+  // Actualizar descripción automáticamente si la ref existe
+  var prod = PRODUCTS.find(function(p){ return p.r === _importData.items[idx].r; });
+  var tr = document.querySelector('tr[data-idx="'+idx+'"]');
+  if (tr && prod) {
+    var descEl = tr.querySelector('.imp-desc-sub');
+    if (descEl) descEl.textContent = prod.d;
+  }
+  impRecalcTotales();
+}
+
+function impQtyStep(idx, delta) {
+  if (!_importData || !_importData.items) return;
+  var current = parseInt(_importData.items[idx].qty) || 0;
+  var next = Math.max(0, current + delta);
+  _importData.items[idx].qty = next;
+  var inp = document.querySelector('.imp-edit-qty[data-idx="'+idx+'"]');
+  if (inp) inp.value = next;
+  impRefrescarFila(idx);
+  impRecalcTotales();
+}
+
+function impEliminarFila(idx) {
+  if (!_importData || !_importData.items) return;
+  _importData.items.splice(idx, 1);
+  renderImportReview(_importData);
+}
+
+function impAgregarFila() {
+  if (!_importData) _importData = { items: [], cliente: '', moneda: 'USD' };
+  if (!_importData.items) _importData.items = [];
+  _importData.items.push({ r: '', qty: 1, precio: 0, desc: 'Nuevo producto' });
+  renderImportReview(_importData);
+  // Enfocar el último input de referencia
+  setTimeout(function() {
+    var inputs = document.querySelectorAll('.imp-edit-ref');
+    if (inputs.length) inputs[inputs.length - 1].focus();
+  }, 100);
+}
+window.impAgregarFila = impAgregarFila;
+
+// ── Corrección manual de NOREF en tiempo real ─────────────────────────────
+function impCorregirNoref() {
+  if (!_importData || !_importData.items) return;
+  var refSetC = {};
+  PRODUCTS.forEach(function(p){ refSetC[p.r] = true; });
+  var corregidos = 0;
+
+  _importData.items = _importData.items.map(function(it) {
+    var ref = (it.r || '').trim().toUpperCase();
+    if (!refSetC[ref]) {
+      var texto = [
+        it.r || '', it.desc || '', it.d || '', it.descripcion || ''
+      ].join(' ').toUpperCase();
+      var reC = /\b((?:EXC|GEN|LUM|MAT|MAXK|VAR)\d{1,4}[A-Z]?)\b/g;
+      var mC, matches = [];
+      while ((mC = reC.exec(texto)) !== null) {
+        if (matches.indexOf(mC[1]) === -1) matches.push(mC[1]);
+      }
+      for (var j = matches.length - 1; j >= 0; j--) {
+        if (refSetC[matches[j]]) { it.r = matches[j]; corregidos++; break; }
+      }
+      if (!refSetC[it.r] && matches.length > 0) {
+        it.r = matches[matches.length - 1]; corregidos++;
+      }
+    }
+    return it;
+  });
+
+  if (corregidos > 0) {
+    renderImportReview(_importData);
+    showToast('✅ ' + corregidos + ' referencia(s) corregida(s) automáticamente', 'success');
+  } else {
+    showToast('No se encontraron referencias adicionales para corregir', 'info');
+  }
+}
+window.impCorregirNoref = impCorregirNoref;
+
+
+function impRefrescarFila(idx) {
+  var subEl = document.getElementById('imp-sub-' + idx);
+  if (!subEl || !_importData || !_importData.items) return;
+  var it   = _importData.items[idx];
+  var prod = PRODUCTS.find(function(p){ return p.r === it.r; });
+  var tasa = getTasaHoy() || 0;
+  var qty  = parseInt(it.qty) || 0;
+  var tfSpr2  = (typeof TF_SPREAD !== 'undefined') ? TF_SPREAD : 0;
+  var tTF2    = tasa > 0 ? tasa * (1 + tfSpr2 / 100) : 0;
+  var usdM, bcvM, tfM;
+  if (it._editado && it.precio > 0) {
+    usdM = bcvM = tfM = it.precio;
+  } else if (prod) {
+    usdM = prod.u  || 0;
+    bcvM = prod.bv || prod.u || 0;
+    tfM  = prod.t  || prod.u || 0;
+  } else {
+    usdM = bcvM = tfM = 0;
+  }
+  var usd = _impMoneda==='BCV' ? bcvM : _impMoneda==='TF' ? tfM : usdM;
+  var bcv = tasa  > 0 ? bcvM * tasa  : 0;
+  var tf  = tTF2  > 0 ? tfM  * tTF2  : 0;
+  var precioActivo = _impMoneda==='BCV' ? bcvM : _impMoneda==='TF' ? tfM : usdM;
+  var bsActivo     = _impMoneda==='BCV' ? bcv  : _impMoneda==='TF' ? tf  : 0;
+  var bsColor2     = _impMoneda==='BCV' ? '#1d4ed8' : '#6d28d9';
+  var subHtml = '<strong style="color:#1B1F6B;">$ ' + fmt(precioActivo * qty) + '</strong>';
+  if (bsActivo > 0)
+    subHtml += '<div style="font-size:.68rem;color:'+bsColor2+';font-weight:700;margin-top:1px;">Bs. ' + fmt(bsActivo * qty) + '</div>';
+  subEl.innerHTML = subHtml;
+}
+
+function impRecalcTotales() {
+  if (!_importData || !_importData.items) return;
+  var tasa  = getTasaHoy() || 0;
+  var tfSpr = (typeof TF_SPREAD !== 'undefined') ? TF_SPREAD : 0;
+  var tTF   = tasa > 0 ? tasa * (1 + tfSpr / 100) : 0;
+  var totalUSD = 0, totalBCV = 0, totalTF = 0;
+
+  _importData.items.forEach(function(it) {
+    var prod = PRODUCTS.find(function(p){ return p.r === it.r; });
+    var qty  = parseInt(it.qty) || 0;
+    var usdM2, bcvM2, tfM2;
+    if (it._editado && it.precio > 0) {
+      usdM2 = bcvM2 = tfM2 = it.precio;
+    } else if (prod) {
+      usdM2 = prod.u  || 0;
+      bcvM2 = prod.bv || prod.u || 0;
+      tfM2  = prod.t  || prod.u || 0;
+    } else {
+      usdM2 = bcvM2 = tfM2 = 0;
+    }
+    totalUSD += qty * usdM2;
+    totalBCV += qty * bcvM2;
+    totalTF  += qty * tfM2;
+  });
+
+  // Precio activo según moneda (en USD del catálogo)
+  var activoUSD = _impMoneda==='BCV' ? totalBCV : _impMoneda==='TF' ? totalTF : totalUSD;
+  // Equivalente en Bs del total activo
+  // activoUSD ya es el total en USD de la modalidad activa (prod.bv o prod.t sumados)
+  // Para Bs: activoUSD × tasa (una sola vez)
+  var activoBs  = _impMoneda==='BCV' && tasa>0 ? activoUSD * tasa : _impMoneda==='TF' && tTF>0 ? activoUSD * tTF : 0;
+
+  var fUSD = '$ ' + fmt(totalUSD);
+  var fBCV = '$ ' + fmt(totalBCV);
+  var fTF  = '$ ' + fmt(totalTF);
+  var fActivo = '$ ' + fmt(activoUSD);
+  var bsColor = _impMoneda==='TF' ? '#6d28d9' : '#1d4ed8';
+  var bsRef = activoBs > 0
+    ? ' <span style="font-size:.7rem;color:'+bsColor+';font-weight:700;">Bs. ' + fmt(activoBs) + '</span>'
+    : '';
+
+  // 1. Badge stats bar
+  var sc = document.getElementById('import-stats-content');
+  if (sc) {
+    sc.querySelectorAll('span').forEach(function(s) {
+      if (s.textContent.indexOf('USD') !== -1) s.innerHTML = fUSD + ' USD';
+    });
+  }
+
+  // 2. Tfoot tabla
+  var tfEl = document.getElementById('import-tfoot');
+  if (tfEl) {
+    tfEl.innerHTML = '<tr>'
+      + '<td colspan="4" style="padding:8px 10px;font-size:.7rem;color:#94a3b8;">'
+      + _importData.items.length + ' línea(s) · Precios base USD</td>'
+      + '<td style="padding:8px 10px;text-align:right;font-weight:700;font-size:.72rem;color:#475569;text-transform:uppercase;">Total:</td>'
+      + '<td style="padding:8px 10px;text-align:right;font-weight:900;font-size:.88rem;color:#1a2050;">' + fActivo + bsRef + '</td>'
+      + '<td></td></tr>';
+  }
+
+  // 3. Header cliente — cada cuadro muestra su propio total en USD + Bs debajo
+  var elHdrUSD   = document.getElementById('imp-hdr-usd');
+  var elHdrBCV   = document.getElementById('imp-hdr-bcv');
+  var elHdrBCVbs = document.getElementById('imp-hdr-bcv-bs');
+  var elHdrTF    = document.getElementById('imp-hdr-tf');
+  var elHdrTFbs  = document.getElementById('imp-hdr-tf-bs');
+  // totalUSD, totalBCV, totalTF son todos en USD (sum de prod.u/bv/t × qty)
+  // Para Bs: total_en_USD × tasa (una sola multiplicación)
+  if (elHdrUSD)   elHdrUSD.textContent   = '$ ' + fmt(totalUSD);
+  if (elHdrBCV)   elHdrBCV.textContent   = '$ ' + fmt(totalBCV);
+  if (elHdrBCVbs) elHdrBCVbs.textContent = tasa > 0 ? 'Bs. ' + fmt(totalBCV * tasa) : '';
+  if (elHdrTF)    elHdrTF.textContent    = '$ ' + fmt(totalTF);
+  if (elHdrTFbs)  elHdrTFbs.textContent  = tTF  > 0 ? 'Bs. ' + fmt(totalTF  * tTF)  : '';
+
+  // 4. Panel resumen stock
+  impActualizarPreview();
+}
+
+
 function impActualizarPreview() {
   if (!_importData) return;
   var inv = getInventory();
@@ -6843,13 +7440,19 @@ function impActualizarPreview() {
     var qty = Math.min(stock, pedido);  // toma todo lo disponible, incluso parcial
     if (qty < pedido) ajustados++;
     else okCount++;
-    var usd = it.precio || (prod.u||0);
-    var bcv = prod.bv||0; var tf = prod.t||0;
-    if (!bcv && tasa) bcv = usd * tasa;
-    if (!tf  && tasa) tf  = usd * tasa * 1.08;
-    totalUSD += qty * usd;
-    totalBCV += qty * bcv;
-    totalTF  += qty * tf;
+    var tfSpr = (typeof TF_SPREAD !== 'undefined') ? TF_SPREAD : 0;
+    var tTF   = tasa > 0 ? tasa * (1 + tfSpr / 100) : 0;
+    var usdM3, bcvM3, tfM3;
+    if (it._editado && it.precio > 0) {
+      usdM3 = bcvM3 = tfM3 = it.precio;
+    } else {
+      usdM3 = prod.u  || 0;
+      bcvM3 = prod.bv || prod.u || 0;
+      tfM3  = prod.t  || prod.u || 0;
+    }
+    totalUSD += qty * usdM3;
+    totalBCV += qty * bcvM3;
+    totalTF  += qty * tfM3;
     totalUnids += qty;
   });
 
@@ -6865,6 +7468,8 @@ function impActualizarPreview() {
 
   // Totales
   var pt = document.getElementById('import-preview-totales');
+  var tfSprPrev = (typeof TF_SPREAD !== 'undefined') ? TF_SPREAD : 0;
+  var tTFPrev   = tasa > 0 ? tasa * (1 + tfSprPrev / 100) : 0;
   if(pt) pt.innerHTML =
     '<div style="background:white;border:2px solid #fed7aa;border-radius:7px;padding:6px 14px;text-align:center;">' +
       '<div style="font-size:.58rem;color:#92400e;font-weight:800;text-transform:uppercase;letter-spacing:.5px;">USD</div>' +
@@ -6872,14 +7477,14 @@ function impActualizarPreview() {
       '<div style="font-size:.6rem;color:#94a3b8;">'+totalUnids+' uds</div>' +
     '</div>' +
     (tasa>0?'<div style="background:white;border:2px solid #bfdbfe;border-radius:7px;padding:6px 14px;text-align:center;">' +
-      '<div style="font-size:.58rem;color:#1d4ed8;font-weight:800;text-transform:uppercase;letter-spacing:.5px;">BCV $</div>' +
-      '<div style="font-size:1.1rem;font-weight:900;color:#1d4ed8;">'+fmt(totalBCV)+'</div>' +
-      '<div style="font-size:.6rem;color:#94a3b8;">= $ '+fmt(totalUSD)+' USD</div>' +
+      '<div style="font-size:.58rem;color:#1d4ed8;font-weight:800;text-transform:uppercase;letter-spacing:.5px;">BCV</div>' +
+      '<div style="font-size:1.1rem;font-weight:900;color:#1d4ed8;">$ '+fmt(totalBCV)+'</div>' +
+      '<div style="font-size:.6rem;color:#1d4ed8;font-weight:700;">Bs. '+fmt(totalBCV*tasa)+'</div>' +
     '</div>':'')+
-    (tasa>0?'<div style="background:white;border:2px solid #ddd6fe;border-radius:7px;padding:6px 14px;text-align:center;">' +
-      '<div style="font-size:.58rem;color:#6d28d9;font-weight:800;text-transform:uppercase;letter-spacing:.5px;">TF $</div>' +
-      '<div style="font-size:1.1rem;font-weight:900;color:#6d28d9;">'+fmt(totalTF)+'</div>' +
-      '<div style="font-size:.6rem;color:#94a3b8;">= $ '+fmt(totalUSD)+' USD</div>' +
+    (tTFPrev>0?'<div style="background:white;border:2px solid #ddd6fe;border-radius:7px;padding:6px 14px;text-align:center;">' +
+      '<div style="font-size:.58rem;color:#6d28d9;font-weight:800;text-transform:uppercase;letter-spacing:.5px;">TF</div>' +
+      '<div style="font-size:1.1rem;font-weight:900;color:#6d28d9;">$ '+fmt(totalTF)+'</div>' +
+      '<div style="font-size:.6rem;color:#6d28d9;font-weight:700;">Bs. '+fmt(totalTF*tTFPrev)+'</div>' +
     '</div>':'');
 
   // Nota
@@ -6905,6 +7510,13 @@ function importLimpiarArchivo() {
   if(inp) { inp.value = ''; }
   var fn = document.getElementById('import-file-name');
   if(fn) fn.style.display = 'none';
+  // Limpiar imagen
+  _importImageB64  = null;
+  _importImageType = null;
+  var prevDiv = document.getElementById('import-img-preview');
+  var prevImg = document.getElementById('import-img-el');
+  if(prevDiv) prevDiv.style.display = 'none';
+  if(prevImg) prevImg.src = '';
 }
 
 function importLimpiar() {
@@ -6940,128 +7552,269 @@ function impFiltrarTabla() {
 
 function impExportarExcel() {
   if (!_importData) return;
-  var d = _importData;
-  var inv = getInventory();
-  var tasa = getTasaHoy() || 0;
-  var rows = [['#','Referencia','Descripción','Pedido','Stock Disp.','USD Unit.','USD Subtotal','Estado']];
-  var totalUSD = 0;
-  (d.items||[]).forEach(function(it, i){
-    var prod = PRODUCTS.find(function(p){ return p.r === it.r; });
-    var stock = parseInt(inv[it.r] !== undefined ? inv[it.r] : (prod ? (prod.ex||0) : 0)) || 0;
-    var qty = parseInt(it.qty)||0;
-    var usd = it.precio || (prod ? (prod.u||0) : 0);
-    var sub = qty * usd;
-    totalUSD += sub;
-    var estado = !prod ? 'No encontrado' : stock<=0 ? 'Sin stock' : stock<qty ? 'Parcial ('+stock+' disp.)' : 'OK';
-    rows.push([i+1, it.r, prod?prod.d:'—', qty, stock, usd, sub, estado]);
+  var d      = _importData;
+  var inv    = getInventory();
+  var tasa   = getTasaHoy() || 0;
+  var tfSpr  = (typeof TF_SPREAD !== 'undefined') ? TF_SPREAD : 0;
+  var tasaTF = tasa > 0 ? tasa * (1 + tfSpr / 100) : 0;
+  var moneda = _impMoneda || 'USD';
+
+  var items = (d.items || []).slice().sort(function(a,b){
+    return (a.r||'').localeCompare(b.r||'','es',{numeric:true});
   });
-  rows.push(['','','','','','TOTAL USD:', totalUSD,'']);
-  var ws = XLSX.utils.aoa_to_sheet(rows);
+
+  // Cabeceras según moneda activa
+  var monedaLabel = moneda==='BCV' ? 'BCV' : moneda==='TF' ? 'TF' : 'USD';
+  var heads = ['#','REFERENCIA','CÓD. BARRAS','DESCRIPCIÓN','PEDIDO','STOCK DISP.',
+               monedaLabel+' UNIT. ($)', monedaLabel+' UNIT. (Bs.)', 'SUBTOTAL $', 'SUBTOTAL Bs.', 'ESTADO'];
+
+  var totalUSD = 0, totalBs = 0;
+
+  var rows = items.map(function(it, i) {
+    var prod  = PRODUCTS.find(function(p){ return p.r === it.r; });
+    var stock = parseInt(inv[it.r]!==undefined ? inv[it.r] : (prod?(prod.ex||0):0)) || 0;
+    var qty   = parseInt(it.qty) || 0;
+
+    // Precio en USD según modalidad
+    var precioUSD;
+    if (it._editado && it.precio > 0) {
+      precioUSD = it.precio;
+    } else if (prod) {
+      precioUSD = moneda==='BCV' ? (prod.bv||prod.u||0) : moneda==='TF' ? (prod.t||prod.u||0) : (prod.u||0);
+    } else {
+      precioUSD = 0;
+    }
+
+    // Equivalente en Bs
+    var precioBs = moneda==='BCV' && tasa>0 ? precioUSD*tasa : moneda==='TF' && tasaTF>0 ? precioUSD*tasaTF : 0;
+    var subUSD   = qty * precioUSD;
+    var subBs    = qty * precioBs;
+
+    totalUSD += subUSD;
+    totalBs  += subBs;
+
+    var barcode = prod ? (prod.b||'—') : '—';
+    var desc    = prod ? prod.d : (it.desc||'—');
+    var estado  = !prod ? 'No encontrado' : stock<=0 ? 'Sin stock' : stock<qty ? 'Parcial ('+stock+' disp.)' : 'OK';
+
+    return [i+1, it.r, barcode, desc, qty, stock,
+            parseFloat(precioUSD.toFixed(4)),
+            parseFloat(precioBs.toFixed(2)),
+            parseFloat(subUSD.toFixed(2)),
+            parseFloat(subBs.toFixed(2)),
+            estado];
+  });
+
+  // Fecha: del documento o hoy
+  var fechaDoc = d.fecha || new Date().toLocaleDateString('es-VE',{day:'2-digit',month:'2-digit',year:'numeric'});
+  var tasaBCVstr = tasa>0 ? tasa.toFixed(2)+' Bs/$' : '—';
+  var tasaTFstr  = tasaTF>0 ? tasaTF.toFixed(2)+' Bs/$' : '—';
+  var tasaLinea  = 'BCV: '+tasaBCVstr+' | TF: '+tasaTFstr;
+
+  var logo = [[' FARMERS C.A. — PEDIDO DE DESPACHO']];
+  var meta = [
+    ['Cliente:', d.cliente||'—',      '', 'Fecha:',     fechaDoc],
+    ['RIF:',     d.rif||'—',          '', 'N° Pedido:', d.numpedido||'—'],
+    ['Tel:',     d.telefono||'—',     '', 'Vendedor:',  d.vendedor||'—'],
+    ['Moneda:',  monedaLabel,          '', 'Tasa BCV:',  tasaBCVstr],
+    ['',         '',                   '', 'Tasa TF:',   tasaTFstr]
+  ];
+  var sep = [[]];
+  var totRow = ['','','','','','TOTAL:',
+                parseFloat(totalUSD.toFixed(2)), '',
+                parseFloat(totalUSD.toFixed(2)),
+                parseFloat(totalBs.toFixed(2)), ''];
+
+  var data = logo.concat(meta).concat(sep).concat([heads]).concat(rows).concat([totRow]);
+  var ws = XLSX.utils.aoa_to_sheet(data);
+  ws['!cols'] = [{wch:4},{wch:12},{wch:16},{wch:42},{wch:8},{wch:10},{wch:13},{wch:15},{wch:13},{wch:15},{wch:18}];
+
   var wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Pedido');
-  XLSX.writeFile(wb, 'pedido_' + (d.numpedido||Date.now()) + '.xlsx');
-  showToast('Excel descargado', 'success');
+  var fname = 'PEDIDO_'+(monedaLabel)+'_'+(d.cliente||'cliente').replace(/\s+/g,'_').toUpperCase()+'_'+(d.numpedido||Date.now())+'.xlsx';
+  XLSX.writeFile(wb, fname);
+  showToast('✅ Excel descargado ('+monedaLabel+')', 'success');
 }
 
 function impExportarPDF() {
   if (!_importData) return;
-  var d = _importData;
-  var inv = getInventory();
-  var tasa = getTasaHoy() || 0;
-  var totalUSD = 0, totalBCV = 0, totalTF = 0;
+  var d      = _importData;
+  var inv    = getInventory();
+  var tasa   = getTasaHoy() || 0;
+  var tfSpr  = (typeof TF_SPREAD !== 'undefined') ? TF_SPREAD : 0;
+  var tasaTF = tasa > 0 ? tasa * (1 + tfSpr / 100) : 0;
+  var logoB64 = (typeof FARMERS_LOGO_B64 !== 'undefined') ? FARMERS_LOGO_B64 : '';
+  var moneda  = _impMoneda || 'USD';
+  var monedaLabel = moneda==='BCV' ? 'BCV' : moneda==='TF' ? 'TF' : 'USD';
 
-  var filas = (d.items||[]).map(function(it, i){
-    var prod = PRODUCTS.find(function(p){ return p.r === it.r; });
-    var stock = parseInt(inv[it.r] !== undefined ? inv[it.r] : (prod ? (prod.ex||0) : 0)) || 0;
-    var qty = parseInt(it.qty)||0;
-    var usd = it.precio || (prod ? (prod.u||0) : 0);
-    var bcv = prod ? (prod.bv||0) : (usd * tasa);
-    var tf  = prod ? (prod.t||0)  : (usd * tasa * 1.08);
-    var subUSD = qty * usd;
-    var subBCV = qty * bcv;
-    var subTF  = qty * tf;
-    totalUSD += subUSD; totalBCV += subBCV; totalTF += subTF;
-    var estado = !prod ? 'noref' : stock<=0 ? 'nostock' : stock<qty ? 'parcial' : 'ok';
-    var badgeColor = {ok:'#15803d', parcial:'#92400e', nostock:'#dc2626', noref:'#7f1d1d'}[estado];
-    var badgeBg = {ok:'#f0fdf4', parcial:'#fffbeb', nostock:'#fef2f2', noref:'#fef2f2'}[estado];
-    var badgeTxt = {ok:'✓ OK', parcial:'⚠ Parcial ('+stock+' disp.)', nostock:'✗ Sin stock', noref:'? No encontrado'}[estado];
-    var rowBg = i%2===0 ? '#ffffff' : '#f8f9ff';
+  var items = (d.items||[]).slice().sort(function(a,b){
+    return (a.r||'').localeCompare(b.r||'','es',{numeric:true});
+  });
+
+  var totalUSD = 0, totalBs = 0;
+
+  var filas = items.map(function(it,i){
+    var prod  = PRODUCTS.find(function(p){return p.r===it.r;});
+    var stock = parseInt(inv[it.r]!==undefined?inv[it.r]:(prod?(prod.ex||0):0))||0;
+    var qty   = parseInt(it.qty)||0;
+
+    // Precio en USD según moneda activa
+    var precioUSD;
+    if (it._editado && it.precio > 0) {
+      precioUSD = it.precio;
+    } else if (prod) {
+      precioUSD = moneda==='BCV' ? (prod.bv||prod.u||0) : moneda==='TF' ? (prod.t||prod.u||0) : (prod.u||0);
+    } else {
+      precioUSD = 0;
+    }
+
+    // Bs = precio USD de la modalidad × tasa
+    var precioBs = moneda==='BCV' && tasa>0 ? precioUSD*tasa : moneda==='TF' && tasaTF>0 ? precioUSD*tasaTF : 0;
+    var subUSD = qty * precioUSD;
+    var subBs  = qty * precioBs;
+    totalUSD  += subUSD;
+    totalBs   += subBs;
+
+    var barcode = prod?(prod.b||'—'):'—';
+    var desc    = prod?prod.d:(it.desc||'—');
+    var estado  = !prod?'noref':stock<=0?'nostock':stock<qty?'parcial':'ok';
+    var stColor = {ok:'#15803d',parcial:'#92400e',nostock:'#dc2626',noref:'#7f1d1d'}[estado];
+    var stBg    = {ok:'#dcfce7',parcial:'#fef9c3',nostock:'#fee2e2',noref:'#fee2e2'}[estado];
+    var stTxt   = {ok:'✓ OK',parcial:'⚠ Parcial',nostock:'✗ Sin stock',noref:'? No encontrado'}[estado];
+    var rowBg   = i%2===0?'#ffffff':'#f8f9ff';
+
+    // Celda precio: $ primero, Bs debajo si BCV/TF
+    var precioCell = '<strong style="color:#1B1F6B;">$ '+fmt(precioUSD)+'</strong>';
+    if (precioBs > 0) precioCell += '<div style="font-size:9px;color:'+(moneda==='TF'?'#6d28d9':'#1d4ed8')+';font-weight:700;margin-top:1px;">Bs. '+fmt(precioBs)+'</div>';
+
+    var subCell = '<strong style="color:#1B1F6B;">$ '+fmt(subUSD)+'</strong>';
+    if (subBs > 0) subCell += '<div style="font-size:9px;color:'+(moneda==='TF'?'#6d28d9':'#1d4ed8')+';font-weight:700;margin-top:1px;">Bs. '+fmt(subBs)+'</div>';
+
     return '<tr style="background:'+rowBg+';">' +
-      '<td style="padding:6px 8px;font-size:9px;color:#94a3b8;text-align:center;">'+(i+1)+'</td>' +
-      '<td style="padding:6px 8px;"><div style="font-weight:800;font-size:9px;color:#1a2050;">'+it.r+'</div>' +
-        '<div style="font-size:8px;color:#64748b;">'+(prod?prod.d:'— no encontrado')+'</div></td>' +
-      '<td style="padding:6px 8px;text-align:center;font-weight:800;font-size:10px;">'+qty+'</td>' +
-      '<td style="padding:6px 8px;text-align:center;font-size:9px;color:'+(stock>0?'#15803d':'#dc2626')+';font-weight:700;">'+stock+'</td>' +
-      '<td style="padding:6px 8px;text-align:right;font-size:9px;">$ '+fmt(usd)+'</td>' +
-      '<td style="padding:6px 8px;text-align:right;font-size:9px;">Bs '+fmt(bcv)+'</td>' +
-      '<td style="padding:6px 8px;text-align:right;font-size:9px;">Bs '+fmt(tf)+'</td>' +
-      '<td style="padding:6px 8px;text-align:right;font-weight:800;font-size:9px;color:#1a2050;">$ '+fmt(subUSD)+'</td>' +
-      '<td style="padding:6px 8px;text-align:center;"><span style="background:'+badgeBg+';color:'+badgeColor+';border-radius:3px;padding:2px 5px;font-size:7.5px;font-weight:800;">'+badgeTxt+'</span></td>' +
+      '<td style="padding:7px 8px;font-size:10px;color:#94a3b8;text-align:center;width:28px;">'+(i+1)+'</td>'+
+      '<td style="padding:7px 10px;font-weight:900;font-size:11px;color:#1B1F6B;white-space:nowrap;width:80px;">'+it.r+'</td>'+
+      '<td style="padding:7px 10px;font-size:10px;color:#334155;">'+desc+'</td>'+
+      '<td style="padding:7px 10px;font-size:9.5px;color:#64748b;font-family:monospace;width:120px;">'+barcode+'</td>'+
+      '<td style="padding:7px 10px;text-align:center;font-weight:900;font-size:13px;color:#1B1F6B;width:50px;">'+qty+'</td>'+
+      '<td style="padding:7px 10px;text-align:center;font-size:10px;font-weight:700;color:'+(stock>0?'#15803d':'#dc2626')+';width:50px;">'+stock+'</td>'+
+      '<td style="padding:7px 10px;text-align:right;width:90px;">'+precioCell+'</td>'+
+      '<td style="padding:7px 10px;text-align:right;width:100px;">'+subCell+'</td>'+
+      '<td style="padding:7px 10px;text-align:center;width:75px;"><span style="background:'+stBg+';color:'+stColor+';border-radius:5px;padding:3px 8px;font-size:9px;font-weight:800;white-space:nowrap;">'+stTxt+'</span></td>'+
     '</tr>';
   }).join('');
 
-  var html = '<!DOCTYPE html><html><head><meta charset="utf-8">' +
-  '<title>Pedido '+(d.numpedido||'')+'</title>' +
-  '<style>@page{margin:14mm 12mm}body{font-family:Arial,sans-serif;margin:0;color:#1e293b}' +
-  'table{width:100%;border-collapse:collapse}th{background:#1a2050;color:white;padding:7px 8px;font-size:8.5px;text-align:left;font-weight:700;letter-spacing:.4px;text-transform:uppercase}' +
-  'td{border-bottom:1px solid #f0f4f8}tfoot td{background:#f8fafc;font-weight:800;font-size:9px;border-top:2px solid #e2e8f0}' +
-  '.pill{display:inline-block;border-radius:4px;padding:2px 8px;font-size:8px;font-weight:800}' +
-  '@media print{.no-print{display:none}}</style></head><body>' +
-  // Header
-  '<div style="background:linear-gradient(135deg,#7c2d12,#e8692a);padding:16px 20px;border-radius:8px;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center;">' +
-    '<div><div style="font-size:16px;font-weight:900;color:white;letter-spacing:1px;">FARMERS C.A.</div>' +
-    '<div style="font-size:9px;color:rgba(255,255,255,.75);margin-top:2px;">Pedido importado</div></div>' +
-    '<div style="text-align:right;font-size:9px;color:rgba(255,255,255,.85);">' +
-    (d.numpedido ? '<div style="font-size:12px;font-weight:900;color:white;">Pedido #'+d.numpedido+'</div>' : '') +
-    (d.fecha ? '<div>'+d.fecha+'</div>' : '') +
-    (tasa ? '<div>Tasa BCV: '+fmt(tasa)+' Bs/USD</div>' : '') +
-    '</div>' +
-  '</div>' +
-  // Cliente
-  '<div style="background:#f0f4ff;border-left:4px solid #1a2050;border-radius:6px;padding:10px 14px;margin-bottom:12px;display:flex;flex-wrap:wrap;gap:12px;">' +
-    '<div><div style="font-size:7px;color:#94a3b8;font-weight:700;text-transform:uppercase;letter-spacing:.5px;">Cliente</div>' +
-    '<div style="font-weight:900;font-size:12px;color:#1a2050;">'+(d.cliente||'Sin nombre')+'</div></div>' +
-    (d.rif ? '<div><div style="font-size:7px;color:#94a3b8;font-weight:700;text-transform:uppercase;">RIF</div><div style="font-weight:700;font-size:10px;">'+d.rif+'</div></div>' : '') +
-    (d.vendedor ? '<div><div style="font-size:7px;color:#94a3b8;font-weight:700;text-transform:uppercase;">Vendedor</div><div style="font-weight:700;font-size:10px;">'+d.vendedor+'</div></div>' : '') +
-    (d.telefono ? '<div><div style="font-size:7px;color:#94a3b8;font-weight:700;text-transform:uppercase;">Teléfono</div><div style="font-weight:700;font-size:10px;">'+d.telefono+'</div></div>' : '') +
-  '</div>' +
-  // Tabla
-  '<table><thead><tr>' +
-    '<th style="width:24px">#</th><th>Ref · Descripción</th>' +
-    '<th style="text-align:center;width:44px">Pedido</th><th style="text-align:center;width:44px">Stock</th>' +
-    '<th style="text-align:right;width:56px">USD Unit.</th><th style="text-align:right;width:56px">BCV Unit.</th><th style="text-align:right;width:56px">TF Unit.</th>' +
-    '<th style="text-align:right;width:64px">Subtotal $</th><th style="text-align:center;width:80px">Estado</th>' +
-  '</tr></thead><tbody>'+filas+'</tbody>' +
-  '<tfoot><tr>' +
-    '<td colspan="7" style="padding:8px;font-size:8px;color:#94a3b8;">'+( d.items||[]).length+' línea(s) · Tasa: '+fmt(tasa)+' Bs/$</td>' +
-    '<td style="padding:8px;text-align:right;color:#e8692a;font-size:11px;">$ '+fmt(totalUSD)+'</td>' +
-    '<td></td>' +
-  '</tr></tfoot></table>' +
-  // Totales
-  '<div style="margin-top:12px;display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;">' +
-    '<div style="background:#fff7ed;border:1.5px solid #fed7aa;border-radius:6px;padding:8px 14px;text-align:right;">' +
-      '<div style="font-size:7px;color:#92400e;font-weight:700;text-transform:uppercase;">USD</div>' +
-      '<div style="font-size:14px;font-weight:900;color:#c2410c;">$ '+fmt(totalUSD)+'</div>' +
-    '</div>' +
-    '<div style="background:#eff6ff;border:1.5px solid #bfdbfe;border-radius:6px;padding:8px 14px;text-align:right;">' +
-      '<div style="font-size:7px;color:#1d4ed8;font-weight:700;text-transform:uppercase;">BCV</div>' +
-      '<div style="font-size:14px;font-weight:900;color:#1d4ed8;">Bs '+fmt(totalBCV)+'</div>' +
-    '</div>' +
-    '<div style="background:#f5f3ff;border:1.5px solid #ddd6fe;border-radius:6px;padding:8px 14px;text-align:right;">' +
-      '<div style="font-size:7px;color:#6d28d9;font-weight:700;text-transform:uppercase;">TF</div>' +
-      '<div style="font-size:14px;font-weight:900;color:#6d28d9;">Bs '+fmt(totalTF)+'</div>' +
-    '</div>' +
-  '</div>' +
-  '<div class="no-print" style="margin-top:18px;text-align:center;">' +
-    '<button onclick="window.print()" style="background:#1a2050;color:white;border:none;border-radius:8px;padding:10px 28px;font-size:13px;font-weight:700;cursor:pointer;">🖨 Imprimir / Guardar PDF</button>' +
-  '</div></body></html>';
+  var tasaLinea = tasa>0 ? 'Tasa BCV: '+fmt(tasa)+' Bs/$'+(tasaTF>0?' · TF: '+fmt(tasaTF)+' Bs/$':'') : 'Sin tasa';
 
-  var blob = new Blob([html], {type:'text/html;charset=utf-8'});
-  var url = URL.createObjectURL(blob);
-  var win = window.open(url, '_blank');
-  if(win) { setTimeout(function(){ win.print(); }, 800); }
-  showToast('PDF listo para imprimir', 'success');
+  // Totales al pie: $ + Bs si aplica
+  var totalBlock = '<div class="tot-box" style="background:#fff7ed;border-color:#fed7aa;">'
+    +'<div style="font-size:8px;color:#92400e;font-weight:700;text-transform:uppercase;margin-bottom:3px;">TOTAL '+monedaLabel+' (USD)</div>'
+    +'<div style="font-size:20px;font-weight:900;color:#c2410c;">$ '+fmt(totalUSD)+'</div>'
+    +(totalBs>0?'<div style="font-size:11px;font-weight:800;color:'+(moneda==='TF'?'#6d28d9':'#1d4ed8')+';">Bs. '+fmt(totalBs)+'</div>':'')
+  +'</div>';
+
+  var html = '<!DOCTYPE html><html><head><meta charset="utf-8">'
+  +'<title>Pedido '+(d.numpedido||'')+' — '+(d.cliente||'')+'</title>'
+  +'<style>'
+  +'@page{size:A4 landscape;margin:10mm 12mm;}'
+  +'*{box-sizing:border-box;}'
+  +'body{font-family:Arial,sans-serif;margin:0;color:#1e293b;background:#fff;}'
+  +'table{width:100%;border-collapse:collapse;}'
+  +'thead th{background:#1B1F6B;color:white;padding:9px 10px;font-size:9.5px;text-align:left;font-weight:700;letter-spacing:.6px;text-transform:uppercase;}'
+  +'td{border-bottom:1px solid #e8edf5;vertical-align:middle;}'
+  +'tfoot td{background:#f1f5f9;font-weight:800;border-top:2.5px solid #1B1F6B;}'
+  +'.header{background:linear-gradient(135deg,#1B1F6B 0%,#2d3580 100%);padding:16px 22px;border-radius:10px;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center;}'
+  +'.meta-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:14px;}'
+  +'.meta-box{background:#f8faff;border:1.5px solid #e0e7ff;border-radius:8px;padding:9px 12px;}'
+  +'.meta-label{font-size:8px;color:#94a3b8;font-weight:700;text-transform:uppercase;letter-spacing:.5px;margin-bottom:3px;}'
+  +'.meta-val{font-size:12px;font-weight:800;color:#1B1F6B;}'
+  +'.meta-sub{font-size:9px;color:#64748b;margin-top:2px;}'
+  +'.totales{display:flex;gap:10px;justify-content:flex-end;margin-top:14px;}'
+  +'.tot-box{border-radius:8px;padding:10px 20px;text-align:right;border:2px solid;}'
+  +'.moneda-badge{display:inline-block;background:#F47B3E;color:white;border-radius:5px;padding:3px 12px;font-size:10px;font-weight:900;letter-spacing:.5px;margin-left:10px;}'
+  +'@media print{.no-print{display:none!important;}*{-webkit-print-color-adjust:exact;print-color-adjust:exact;}}'
+  +'</style></head><body>'
+
+  +'<div class="header">'
+    +'<div style="display:flex;align-items:center;gap:16px;">'
+      +(logoB64?'<img src="'+logoB64+'" style="height:44px;border-radius:7px;background:white;padding:4px;">':'')
+      +'<div>'
+        +'<div style="font-size:22px;font-weight:900;color:white;letter-spacing:1px;">FARMERS C.A.</div>'
+        +'<div style="font-size:9px;color:rgba(255,255,255,.65);margin-top:3px;">farmersve@gmail.com · 0412-0445797</div>'
+      +'</div>'
+    +'</div>'
+    +'<div style="text-align:right;">'
+      +'<div style="font-size:9px;color:rgba(255,255,255,.5);text-transform:uppercase;letter-spacing:.5px;">Pedido de Despacho</div>'
+      +(d.numpedido?'<div style="font-size:20px;font-weight:900;color:white;">#'+d.numpedido+'</div>':'')
+      +'<div style="font-size:10px;color:rgba(255,255,255,.75);margin-top:2px;">'+fechaPDF+'</div>'
+      +'<span class="moneda-badge">'+monedaLabel+'</span>'
+    +'</div>'
+  +'</div>'
+
+  var fechaPDF = d.fecha || new Date().toLocaleDateString('es-VE',{day:'2-digit',month:'2-digit',year:'numeric'});
+  +'<div class="meta-grid">'
+    +'<div class="meta-box">'
+      +'<div class="meta-label">Cliente</div>'
+      +'<div class="meta-val">'+(d.cliente||'Sin nombre')+'</div>'
+      +(d.rif?'<div class="meta-sub">RIF: '+d.rif+'</div>':'')
+      +(d.telefono?'<div class="meta-sub">Tel: '+d.telefono+'</div>':'')
+    +'</div>'
+    +'<div class="meta-box">'
+      +'<div class="meta-label">Pedido</div>'
+      +'<div class="meta-val">'+(d.numpedido||'—')+'</div>'
+      +'<div class="meta-sub">Fecha: '+fechaPDF+'</div>'
+      +'<div class="meta-sub">'+items.length+' línea(s)</div>'
+    +'</div>'
+    +'<div class="meta-box">'
+      +'<div class="meta-label">Vendedor</div>'
+      +'<div class="meta-val">'+(d.vendedor||'—')+'</div>'
+      +(d.direccion?'<div class="meta-sub">'+d.direccion+'</div>':'')
+    +'</div>'
+    +'<div class="meta-box">'
+      +'<div class="meta-label">Tasas del día</div>'
+      +(tasa>0?'<div style="font-size:11px;font-weight:800;color:#1d4ed8;">BCV: '+fmt(tasa)+' Bs/$</div>':'<div class="meta-val">Sin tasa</div>')
+      +(tasaTF>0?'<div style="font-size:11px;font-weight:800;color:#6d28d9;">TF: '+fmt(tasaTF)+' Bs/$</div>':'')
+      +'<div style="font-size:9px;color:#64748b;margin-top:3px;">Moneda: <strong>'+monedaLabel+'</strong></div>'
+    +'</div>'
+  +'</div>'
+
+  +'<table>'
+  +'<thead><tr>'
+    +'<th style="width:28px;text-align:center;">#</th>'
+    +'<th style="width:80px;">Referencia</th>'
+    +'<th>Descripción</th>'
+    +'<th style="width:120px;">Cód. Barras</th>'
+    +'<th style="width:50px;text-align:center;">Pedido</th>'
+    +'<th style="width:50px;text-align:center;">Stock</th>'
+    +'<th style="width:90px;text-align:right;">Precio Unit.</th>'
+    +'<th style="width:100px;text-align:right;">Subtotal</th>'
+    +'<th style="width:75px;text-align:center;">Estado</th>'
+  +'</tr></thead>'
+  +'<tbody>'+filas+'</tbody>'
+  +'<tfoot><tr>'
+    +'<td colspan="6" style="padding:9px 10px;font-size:9px;color:#64748b;">'+items.length+' línea(s) · Moneda: '+monedaLabel+' · '+tasaLinea+'</td>'
+    +'<td style="padding:9px 10px;text-align:right;font-size:9px;color:#475569;font-weight:700;">TOTAL:</td>'
+    +'<td style="padding:9px 10px;text-align:right;font-size:14px;color:#F47B3E;font-weight:900;">$ '+fmt(totalUSD)+(totalBs>0?'<div style="font-size:10px;color:'+(moneda==='TF'?'#6d28d9':'#1d4ed8')+';">Bs. '+fmt(totalBs)+'</div>':'')+'</td>'
+    +'<td></td>'
+  +'</tr></tfoot>'
+  +'</table>'
+
+  +'<div class="totales">'+totalBlock+'</div>'
+
+  +'<div style="margin-top:24px;display:grid;grid-template-columns:1fr 1fr;gap:40px;">'
+    +'<div style="border-top:2px solid #cbd5e1;padding-top:8px;text-align:center;"><div style="font-size:9px;color:#94a3b8;font-weight:700;text-transform:uppercase;letter-spacing:.5px;">Preparado por</div></div>'
+    +'<div style="border-top:2px solid #cbd5e1;padding-top:8px;text-align:center;"><div style="font-size:9px;color:#94a3b8;font-weight:700;text-transform:uppercase;letter-spacing:.5px;">Recibido por</div></div>'
+  +'</div>'
+
+  +'<div class="no-print" style="margin-top:20px;text-align:center;padding-bottom:20px;">'
+    +'<button onclick="window.print()" style="background:#1B1F6B;color:white;border:none;border-radius:10px;padding:12px 36px;font-size:14px;font-weight:700;cursor:pointer;box-shadow:0 4px 14px rgba(27,31,107,.3);">🖨 Imprimir / Guardar PDF</button>'
+  +'</div>'
+  +'</body></html>';
+
+  var blob = new Blob([html],{type:'text/html;charset=utf-8'});
+  window.open(URL.createObjectURL(blob),'_blank');
+  showToast('✅ PDF listo ('+monedaLabel+') — usa Ctrl+P para imprimir','success');
 }
+
 
 function renderImportReview(data) {
   var inv = getInventory();
@@ -7070,23 +7823,92 @@ function renderImportReview(data) {
   var okCount = 0, parcialCount = 0, noStockCount = 0, noRefCount = 0;
   var totalUSD = 0, totalBCV = 0, totalTF = 0;
 
+  // TF_SPREAD puede estar definido globalmente; si no, 0
+  var tfSpread = (typeof TF_SPREAD !== 'undefined') ? TF_SPREAD : 0;
+  var tasaTF   = tasa > 0 ? tasa * (1 + tfSpread / 100) : 0;
+
   function getPrecios(it, prod) {
-    var usd = it.precio || (prod ? (prod.u||0) : 0);
-    var bcv = prod ? (prod.bv||0) : (usd * tasa);
-    var tf  = prod ? (prod.t||0)  : (usd * tasa * 1.08);
-    return { usd: usd, bcv: bcv, tf: tf };
+    // prod.u  = precio USD   (en dólares)
+    // prod.bv = precio BCV   (en dólares, distinto al USD)
+    // prod.t  = precio TF    (en dólares, distinto al USD)
+    // Para Bs: precio_modalidad_USD × tasa_del_dia
+    var usdM, bcvM, tfM;   // precios en USD según modalidad
+    var bcvBs, tfBs;       // equivalentes en bolívares
+
+    if (prod && prod.u > 0) {
+      if (it._editado && it.precio > 0) {
+        // Usuario editó manualmente → usar su valor en las 3 modalidades
+        usdM  = it.precio;
+        bcvM  = it.precio;
+        tfM   = it.precio;
+      } else {
+        usdM  = prod.u  || 0;
+        bcvM  = prod.bv || prod.u || 0;
+        tfM   = prod.t  || prod.u || 0;
+      }
+    } else {
+      usdM = bcvM = tfM = it.precio || 0;
+    }
+
+    // Bs = precio_en_USD × tasa
+    bcvBs = tasa   > 0 ? bcvM * tasa   : 0;
+    tfBs  = tasaTF > 0 ? tfM  * tasaTF : 0;
+
+    // El precio activo (lo que se usa para subtotales y totales) depende de la moneda
+    var precioActivo = _impMoneda === 'BCV' ? bcvM
+                     : _impMoneda === 'TF'  ? tfM
+                     : usdM;
+
+    return {
+      usd:         usdM,         // precio modalidad USD
+      bcvUSD:      bcvM,         // precio modalidad BCV (en USD)
+      tfUSD:       tfM,          // precio modalidad TF  (en USD)
+      bcvBs:       bcvBs,        // equivalente Bs modalidad BCV
+      tfBs:        tfBs,         // equivalente Bs modalidad TF
+      activo:      precioActivo  // precio activo según moneda seleccionada
+    };
   }
+  // ── VISUALIZACIÓN DE PRECIOS ──────────────────────────────────────────
+  // USD activo:  muestra $ prod.u
+  // BCV activo:  muestra $ prod.bv  +  Bs.(prod.bv × tasa) en azul
+  // TF activo:   muestra $ prod.t   +  Bs.(prod.t × tasaTF) en morado
   function precioDisplay(pr) {
-    if (_impMoneda === 'USD') return '<strong>$ '+fmt(pr.usd)+'</strong>';
-    if (_impMoneda === 'BCV') return '<strong>$ '+fmt(pr.bcv)+'</strong>';
-    if (_impMoneda === 'TF')  return '<strong>$ '+fmt(pr.tf)+'</strong>';
-    return '<strong>$ '+fmt(pr.usd)+'</strong>';
+    var precioUSD, bsVal, bsColor;
+    if (_impMoneda === 'BCV') {
+      precioUSD = pr.bcvUSD;
+      bsVal     = pr.bcvBs;
+      bsColor   = '#1d4ed8';
+    } else if (_impMoneda === 'TF') {
+      precioUSD = pr.tfUSD;
+      bsVal     = pr.tfBs;
+      bsColor   = '#6d28d9';
+    } else {
+      precioUSD = pr.usd;
+      bsVal     = 0;
+    }
+    var html = '<strong style="color:#1B1F6B;">$ ' + fmt(precioUSD) + '</strong>';
+    if (bsVal > 0)
+      html += '<div style="font-size:.68rem;color:'+bsColor+';font-weight:700;margin-top:1px;">Bs. ' + fmt(bsVal) + '</div>';
+    return html;
   }
   function subtotalDisplay(pr, qty) {
-    if (_impMoneda === 'USD') return '$ ' + fmt(pr.usd * qty);
-    if (_impMoneda === 'BCV') return '$ ' + fmt(pr.bcv * qty);
-    if (_impMoneda === 'TF')  return '$ ' + fmt(pr.tf  * qty);
-    return '$ ' + fmt(pr.usd * qty);
+    var precioUSD, bsVal, bsColor;
+    if (_impMoneda === 'BCV') {
+      precioUSD = pr.bcvUSD;
+      bsVal     = pr.bcvBs;
+      bsColor   = '#1d4ed8';
+    } else if (_impMoneda === 'TF') {
+      precioUSD = pr.tfUSD;
+      bsVal     = pr.tfBs;
+      bsColor   = '#6d28d9';
+    } else {
+      precioUSD = pr.usd;
+      bsVal     = 0;
+    }
+    var html = '<strong style="color:#1B1F6B;">$ ' + fmt(precioUSD * qty) + '</strong>';
+    if (bsVal > 0)
+      html += '<div style="font-size:.68rem;color:'+bsColor+';font-weight:700;margin-top:1px;">Bs. ' + fmt(bsVal * qty) + '</div>';
+    return html;
   }
 
   // Ordenar: ok primero, luego parcial, luego sinstock, luego noref
@@ -7098,7 +7920,10 @@ function renderImportReview(data) {
       var qty=parseInt(it.qty)||0;
       if(!prod) return 'noref'; if(stock<=0) return 'nostock'; if(stock<qty) return 'parcial'; return 'ok';
     }
-    return (order[est(a)]||0)-(order[est(b)]||0);
+    // Primero por estado, luego alfanumérico por referencia dentro de cada grupo
+    var estDiff = (order[est(a)]||0) - (order[est(b)]||0);
+    if (estDiff !== 0) return estDiff;
+    return (a.r||'').localeCompare(b.r||'', 'es', {numeric: true});
   });
 
   var rows = itemsSorted.map(function(it, i) {
@@ -7106,7 +7931,7 @@ function renderImportReview(data) {
     var stock = parseInt(inv[it.r] !== undefined ? inv[it.r] : (prod ? (prod.ex||0) : 0)) || 0;
     var qty   = parseInt(it.qty)||0;
     var pr    = getPrecios(it, prod);
-    totalUSD += qty * pr.usd; totalBCV += qty * pr.bcv; totalTF += qty * pr.tf;
+    totalUSD += qty * pr.usd; totalBCV += qty * pr.bcvUSD; totalTF += qty * pr.tfUSD;
 
     var estado, estadoBadge, rowBg, leftBorder;
     if (!prod) {
@@ -7134,21 +7959,46 @@ function renderImportReview(data) {
     var barColor = stock<=0?'#f87171':stock<qty?'#fbbf24':'#4ade80';
     var stockBar = '<div style="height:3px;background:#e5e7eb;border-radius:2px;margin-top:3px;"><div style="height:100%;width:'+stockPct+'%;background:'+barColor+';border-radius:2px;"></div></div>';
 
-    return '<tr data-estado="'+estado+'" data-ref="'+(it.r||'')+'" data-desc="'+(prod?prod.d:'')+'" style="background:'+rowBg+';border-bottom:1px solid #f0f0f0;border-left:'+leftBorder+';">'+
-      '<td style="padding:7px 10px;font-size:.68rem;color:#94a3b8;font-weight:600;text-align:center;">'+(i+1)+'</td>'+
-      '<td style="padding:7px 10px;">'+
-        '<div style="font-weight:800;color:'+(prod?'#1a2050':'#dc2626')+';font-size:.78rem;">'+it.r+'</div>'+
-        '<div style="font-size:.7rem;color:#64748b;margin-top:1px;">'+(prod?prod.d:'— referencia no encontrada')+'</div>'+
+    // iIdx = índice REAL en _importData.items (no el índice visual tras el sort)
+    var iIdx = (data.items||[]).indexOf(it);
+    if (iIdx < 0) iIdx = i; // fallback
+    var inputStyle = 'border:1.5px solid #e2e8f0;border-radius:6px;padding:4px 6px;font-size:.82rem;font-weight:800;color:#1a2050;background:#f8faff;outline:none;width:100%;box-sizing:border-box;text-align:center;transition:border-color .15s;';
+    var precioVal = pr.usd; // Input de precio SIEMPRE en USD
+    return '<tr data-idx="'+iIdx+'" data-estado="'+estado+'" data-ref="'+(it.r||'')+'" data-desc="'+(prod?prod.d:'')+'" style="background:'+rowBg+';border-bottom:1px solid #f0f0f0;border-left:'+leftBorder+';">'+
+      '<td style="padding:7px 8px;font-size:.68rem;color:#94a3b8;font-weight:600;text-align:center;">'+(i+1)+'</td>'+
+      '<td style="padding:7px 10px;min-width:160px;">'+
+        '<input type="text" class="imp-edit-ref" data-idx="'+iIdx+'"'+
+          ' value="'+(it.r||'')+'"'+
+          ' onfocus="this.style.borderColor=\'#e8692a\'" onblur="this.style.borderColor=\'#e2e8f0\'"'+
+          ' oninput="impEditRef('+iIdx+',this.value)"'+
+          ' title="Editar referencia"'+
+          ' style="'+inputStyle+'font-size:.75rem;font-weight:900;color:'+(prod?'#1a2050':'#dc2626')+';margin-bottom:3px;">'+
+        '<div style="font-size:.67rem;color:#64748b;margin-top:2px;padding:0 2px;">'+(prod?prod.d:(it.desc||'— no encontrado'))+'</div>'+
       '</td>'+
-      '<td style="padding:7px 10px;text-align:center;font-weight:900;color:#1a2050;font-size:.88rem;">'+qty+'</td>'+
-      '<td style="padding:7px 10px;text-align:center;">'+
+      '<td style="padding:7px 8px;min-width:80px;">'+
+        '<div style="display:flex;align-items:center;gap:3px;justify-content:center;">'+
+          '<button onclick="impQtyStep('+iIdx+',-1)" style="width:22px;height:22px;border-radius:5px;border:1.5px solid #e2e8f0;background:#fff;color:#475569;font-weight:900;cursor:pointer;font-size:.85rem;line-height:1;flex-shrink:0;">−</button>'+
+          '<input type="number" class="imp-edit-qty" data-idx="'+iIdx+'"'+
+            ' value="'+qty+'" min="0" step="1"'+
+            ' onfocus="this.style.borderColor=\'#e8692a\'" onblur="this.style.borderColor=\'#e2e8f0\'"'+
+            ' oninput="impEditQty('+iIdx+',this.value)"'+
+            ' style="'+inputStyle+'width:52px;font-size:.9rem;">'+
+          '<button onclick="impQtyStep('+iIdx+',1)" style="width:22px;height:22px;border-radius:5px;border:1.5px solid #e2e8f0;background:#fff;color:#475569;font-weight:900;cursor:pointer;font-size:.85rem;line-height:1;flex-shrink:0;">+</button>'+
+        '</div>'+
+      '</td>'+
+      '<td style="padding:7px 8px;text-align:center;">'+
         '<div style="font-size:.78rem;font-weight:700;color:'+(stock>0?'#15803d':'#dc2626')+';">'+stock+'</div>'+stockBar+
       '</td>'+
-      '<td style="padding:7px 10px;text-align:right;font-size:.75rem;color:#374151;">'+precioDisplay(pr)+'</td>'+
-      '<td style="padding:7px 10px;text-align:right;font-weight:800;font-size:.78rem;color:#1a2050;">'+subtotalDisplay(pr,qty)+
-        ((_impMoneda!=='USD'&&tasa>0)?'<div style="font-size:.63rem;color:#94a3b8;font-weight:500;">= $ '+fmt(pr.usd*qty)+'</div>':'')+
+      '<td style="padding:7px 8px;min-width:90px;text-align:right;">'+
+        precioDisplay(pr)+
       '</td>'+
-      '<td style="padding:7px 10px;text-align:center;">'+estadoBadge+'</td>'+
+      '<td style="padding:7px 8px;text-align:right;font-weight:800;font-size:.78rem;color:#1a2050;" id="imp-sub-'+iIdx+'">'+subtotalDisplay(pr,qty)+
+      '</td>'+
+      '<td style="padding:7px 8px;text-align:center;">'+
+        estadoBadge+
+        '<button onclick="impEliminarFila('+iIdx+')" title="Eliminar producto"'+
+          ' style="display:block;margin:3px auto 0;background:#fef2f2;border:1px solid #fecaca;color:#dc2626;border-radius:4px;padding:1px 7px;font-size:.65rem;font-weight:700;cursor:pointer;">✕</button>'+
+      '</td>'+
     '</tr>';
   }).join('');
 
@@ -7182,15 +8032,17 @@ function renderImportReview(data) {
     '<div style="display:flex;gap:5px;flex-shrink:0;">'+
       '<div style="background:#fff7ed;border:1.5px solid #fed7aa;border-radius:6px;padding:4px 10px;text-align:center;">'+
         '<div style="font-size:.6rem;color:#92400e;font-weight:700;text-transform:uppercase;">USD</div>'+
-        '<div style="font-size:.88rem;font-weight:900;color:#c2410c;">$ '+fmt(totalUSD)+'</div>'+
+        '<div id="imp-hdr-usd" style="font-size:.88rem;font-weight:900;color:#c2410c;">$ '+fmt(totalUSD)+'</div>'+
       '</div>'+
       (tasa>0?'<div style="background:#eff6ff;border:1.5px solid #bfdbfe;border-radius:6px;padding:4px 10px;text-align:center;">'+
         '<div style="font-size:.6rem;color:#1d4ed8;font-weight:700;text-transform:uppercase;">BCV</div>'+
-        '<div style="font-size:.88rem;font-weight:900;color:#1d4ed8;">Bs '+fmt(totalBCV)+'</div>'+
+        '<div id="imp-hdr-bcv" style="font-size:.88rem;font-weight:900;color:#1d4ed8;">$ '+fmt(totalBCV)+'</div>'+
+        '<div id="imp-hdr-bcv-bs" style="font-size:.6rem;color:#1d4ed8;font-weight:700;">Bs. '+fmt(totalBCV*tasa)+'</div>'+
       '</div>':'')+
-      (tasa>0?'<div style="background:#f5f3ff;border:1.5px solid #ddd6fe;border-radius:6px;padding:4px 10px;text-align:center;">'+
+      (tasaTF>0?'<div style="background:#f5f3ff;border:1.5px solid #ddd6fe;border-radius:6px;padding:4px 10px;text-align:center;">'+
         '<div style="font-size:.6rem;color:#6d28d9;font-weight:700;text-transform:uppercase;">TF</div>'+
-        '<div style="font-size:.88rem;font-weight:900;color:#6d28d9;">Bs '+fmt(totalTF)+'</div>'+
+        '<div id="imp-hdr-tf" style="font-size:.88rem;font-weight:900;color:#6d28d9;">$ '+fmt(totalTF)+'</div>'+
+        '<div id="imp-hdr-tf-bs" style="font-size:.6rem;color:#6d28d9;font-weight:700;">Bs. '+fmt(totalTF*tasaTF)+'</div>'+
       '</div>':'')+
     '</div></div>';
 
@@ -7199,7 +8051,7 @@ function renderImportReview(data) {
 
   var tf2=document.getElementById('import-tfoot');
   if(tf2){
-    var subLabel=_impMoneda==='USD'?'$ '+fmt(totalUSD):_impMoneda==='BCV'?'$ '+fmt(totalBCV):'$ '+fmt(totalTF);
+    var _activoUSD = _impMoneda==='BCV'?totalBCV:_impMoneda==='TF'?totalTF:totalUSD; var _activoBs = _impMoneda==='BCV'&&tasa>0?totalBCV*tasa:_impMoneda==='TF'&&tasaTF>0?totalTF*tasaTF:0; var bsRef = _activoBs>0?' <span style="font-size:.65rem;color:#94a3b8;font-weight:400;">Bs. '+fmt(_activoBs)+'</span>':''; var subLabel = '$ '+fmt(_activoUSD)+bsRef;
     tf2.innerHTML='<tr>'+
       '<td colspan="4" style="padding:8px 10px;font-size:.7rem;color:#94a3b8;">'+itemsSorted.length+' línea(s) · Precios base USD</td>'+
       '<td style="padding:8px 10px;text-align:right;font-weight:700;font-size:.72rem;color:#475569;text-transform:uppercase;">Total:</td>'+
@@ -7225,8 +8077,9 @@ function renderImportReview(data) {
         '<div style="display:flex;flex-wrap:wrap;gap:4px;">'+wNostock.map(function(w){return '<span style="background:#fef2f2;border:1px solid #fecaca;color:#991b1b;border-radius:4px;padding:2px 7px;font-size:.7rem;font-weight:700;">'+w.txt+'</span>';}).join('')+'</div></div>');
       if(wParcial.length) secs.push('<div style="margin-bottom:8px;"><div style="font-size:.68rem;font-weight:800;color:#92400e;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px;">⚠ Stock insuficiente ('+wParcial.length+')</div>'+
         '<div style="display:flex;flex-wrap:wrap;gap:4px;">'+wParcial.map(function(w){return '<span style="background:#fffbeb;border:1px solid #fde68a;color:#78350f;border-radius:4px;padding:2px 7px;font-size:.7rem;font-weight:700;">'+w.txt+'</span>';}).join('')+'</div></div>');
-      if(wNoref.length) secs.push('<div><div style="font-size:.68rem;font-weight:800;color:#475569;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px;">? Referencias no encontradas ('+wNoref.length+')</div>'+
-        '<div style="display:flex;flex-wrap:wrap;gap:4px;">'+wNoref.map(function(w){return '<span style="background:#f1f5f9;border:1px solid #cbd5e1;color:#475569;border-radius:4px;padding:2px 7px;font-size:.7rem;font-weight:700;">'+w.txt+'</span>';}).join('')+'</div></div>');
+      if(wNoref.length) secs.push('<div><div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;"><div style="font-size:.68rem;font-weight:800;color:#475569;text-transform:uppercase;letter-spacing:.5px;">? Referencias no encontradas ('+wNoref.length+')</div>'
+        +'<button onclick="impCorregirNoref()" style="padding:3px 10px;border-radius:6px;border:1.5px solid #1B1F6B;background:#f0f2ff;color:#1B1F6B;font-size:.65rem;font-weight:800;cursor:pointer;">🔍 Corregir automáticamente</button></div>'
+        +'<div style="display:flex;flex-wrap:wrap;gap:4px;">'+wNoref.map(function(w){return '<span style="background:#f1f5f9;border:1px solid #cbd5e1;color:#475569;border-radius:4px;padding:2px 7px;font-size:.7rem;font-weight:700;">'+w.txt+'</span>';}).join('')+'</div></div>');
       wn.innerHTML='<div style="background:#fafafa;border:1.5px solid #e2e8f0;border-radius:8px;padding:12px 16px;margin:8px 22px 4px;">'+secs.join('')+'</div>';
     }
   }
@@ -7330,14 +8183,24 @@ function _doConfirmImport(ajustarStock) {
     }
 
     totalUSD += qty * pr.usd;
-    totalBCV += qty * pr.bcv;
-    totalTF  += qty * pr.tf;
-    itemsProcesados.push({ r:it.r, d:prod.d, br:prod.br||'', orden:qty, precio:pr.usd, total:qty*pr.usd });
+    totalBCV += qty * pr.bcvUSD;
+    totalTF  += qty * pr.tfUSD;
+    var _precioItem = _impMoneda==='BCV' ? pr.bcvUSD : _impMoneda==='TF' ? pr.tfUSD : pr.usd;
+    itemsProcesados.push({ r:it.r, d:prod.d, br:prod.br||'', orden:qty, precio:_precioItem, total:qty*_precioItem, precioUSD:pr.usd });
   });
 
   if (!itemsProcesados.length) {
     showToast('No hay productos con stock para procesar', 'warning'); return;
   }
+
+  // Total activo según moneda seleccionada al confirmar
+  var _monedaConf = _impMoneda || 'USD';
+  var _totalActivo = _monedaConf==='BCV' ? totalBCV : _monedaConf==='TF' ? totalTF : totalUSD;
+  var _tasaConf    = getTasaHoy() || 0;
+  var _tfSprConf   = (typeof TF_SPREAD !== 'undefined') ? TF_SPREAD : 0;
+  var _tasaTFConf  = _tasaConf > 0 ? _tasaConf * (1 + _tfSprConf/100) : 0;
+  var _totalBsConf = _monedaConf==='BCV' && _tasaConf>0  ? _totalActivo * _tasaConf
+                   : _monedaConf==='TF'  && _tasaTFConf>0 ? _totalActivo * _tasaTFConf : 0;
 
   var sale = {
     id: 'sale_' + Date.now(),
@@ -7348,8 +8211,13 @@ function _doConfirmImport(ajustarStock) {
     telefono: d.telefono||'', direccion: d.direccion||'',
     correo: d.correo||'', credito: d.credito||'',
     vendedor: d.vendedor||'', sucursal: '',
-    moneda: 'USD', total: totalUSD,
-    totalBCV: totalBCV, totalTF: totalTF,
+    moneda: _monedaConf,
+    tasa: _tasaConf || '',
+    total: _totalActivo,
+    totalUSD: totalUSD,
+    totalBCV: totalBCV,
+    totalTF: totalTF,
+    totalBs: _totalBsConf,
     units: itemsProcesados.reduce(function(s,it){ return s+it.orden; }, 0),
     items: itemsProcesados, importado: true,
     clienteId: d._clienteId || '',
@@ -7391,12 +8259,12 @@ function _doConfirmImport(ajustarStock) {
       '</div>' +
       (tasa>0?'<div style="background:#eff6ff;border:1.5px solid #bfdbfe;border-radius:8px;padding:8px 18px;text-align:center;">' +
         '<div style="font-size:.65rem;color:#1d4ed8;font-weight:700;text-transform:uppercase;letter-spacing:.5px;">BCV $</div>' +
-        '<div style="font-size:1.3rem;font-weight:900;color:#1d4ed8;">'+fmt(totalBCV)+'</div>' +
+        '<div style="font-size:1.3rem;font-weight:900;color:#1d4ed8;">$ '+fmt(totalBCV)+'</div>' +
         '<div style="font-size:.6rem;color:#93c5fd;">= $ '+fmt(totalUSD)+' USD</div>' +
       '</div>':'') +
       (tasa>0?'<div style="background:#f5f3ff;border:1.5px solid #ddd6fe;border-radius:8px;padding:8px 18px;text-align:center;">' +
         '<div style="font-size:.65rem;color:#6d28d9;font-weight:700;text-transform:uppercase;letter-spacing:.5px;">TF $</div>' +
-        '<div style="font-size:1.3rem;font-weight:900;color:#6d28d9;">'+fmt(totalTF)+'</div>' +
+        '<div style="font-size:1.3rem;font-weight:900;color:#6d28d9;">$ '+fmt(totalTF)+'</div>' +
         '<div style="font-size:.6rem;color:#c4b5fd;">= $ '+fmt(totalUSD)+' USD</div>' +
       '</div>':'') +
     '</div>';
@@ -7500,14 +8368,30 @@ function _doConfirmImport(ajustarStock) {
     style="border:2.5px dashed #c5cae9;border-radius:16px;padding:40px 24px;text-align:center;cursor:pointer;background:#f8f9ff;transition:all .2s;margin-bottom:20px;position:relative;">
     <div style="font-size:3rem;margin-bottom:12px;">📎</div>
     <div style="font-weight:800;color:#1a2050;font-size:1.05rem;">Arrastra tu factura aquí</div>
-    <div style="color:#8892b0;font-size:.8rem;margin-top:6px;">Formatos soportados: <strong>PDF · XLS · XLSX</strong></div>
-    <input type="file" id="import-file" accept=".pdf,.xls,.xlsx" style="display:none" onchange="handleImportFile(this)">
+    <div style="font-size:.8rem;margin-top:6px;">Formatos soportados: <strong>PDF · XLS · XLSX · JPG · PNG</strong></div>
+    <input type="file" id="import-file" accept=".pdf,.xls,.xlsx,.jpg,.jpeg,.png,.webp,.heic,.heif" style="display:none" onchange="handleImportFile(this)">
     <div id="import-file-name" style="display:none;margin-top:16px;background:rgba(232,105,42,.1);border:1.5px solid rgba(232,105,42,.3);border-radius:8px;padding:9px 16px;display:inline-flex;align-items:center;gap:8px;">
      <span style="font-size:1rem;">📄</span>
      <span id="import-file-name-text" style="font-size:.83rem;color:#c2410c;font-weight:700;"></span>
      <button onclick="event.stopPropagation();importLimpiarArchivo()" style="background:rgba(194,65,12,.15);border:none;color:#c2410c;border-radius:4px;width:20px;height:20px;cursor:pointer;font-size:.75rem;font-weight:900;line-height:1;padding:0;">✕</button>
     </div>
    </div>
+   <!-- Preview imagen adjunta -->
+   <div id="import-img-preview" style="display:none;margin-bottom:16px;border-radius:12px;overflow:hidden;border:2px solid #e8692a;position:relative;">
+     <img id="import-img-el" src="" alt="Factura"
+       style="width:100%;max-height:320px;object-fit:contain;background:#0f172a;display:block;">
+     <div style="position:absolute;top:8px;right:8px;">
+       <button onclick="importLimpiarArchivo()"
+         style="background:rgba(0,0,0,.6);color:#fff;border:none;border-radius:6px;padding:4px 10px;cursor:pointer;font-size:.72rem;font-weight:700;">
+         ✕ Quitar imagen
+       </button>
+     </div>
+     <div style="background:linear-gradient(135deg,rgba(232,105,42,.9),rgba(124,45,18,.9));padding:8px 14px;display:flex;align-items:center;gap:8px;">
+       <span style="font-size:.85rem;">🤖</span>
+       <span style="font-size:.72rem;color:#fff;font-weight:700;">La IA leerá esta imagen directamente — no necesitas copiar texto</span>
+     </div>
+   </div>
+
    <div style="display:flex;align-items:center;gap:14px;margin-bottom:18px;">
     <div style="flex:1;height:1px;background:#e0e4f0;"></div>
     <span style="color:#94a3b8;font-size:.72rem;font-weight:700;letter-spacing:1.2px;">O PEGA EL TEXTO</span>
@@ -7605,6 +8489,17 @@ function _doConfirmImport(ajustarStock) {
      <tbody id="import-products-list"></tbody>
      <tfoot id="import-tfoot" style="position:sticky;bottom:0;z-index:2;background:#f8fafc;border-top:2px solid #e2e8f0;"></tfoot>
     </table>
+   </div>
+
+   <!-- ── BARRA DE EDICIÓN ───────────────────────────────────── -->
+   <div style="padding:8px 28px;background:#fafbff;border-top:1px solid #e8edf5;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+     <span style="font-size:.68rem;color:#94a3b8;flex:1;">✏️ Edita directamente las cantidades, precios o referencias en la tabla</span>
+     <button onclick="impAgregarFila()"
+       style="padding:6px 16px;border-radius:8px;border:1.5px solid #e8692a;background:#fff7f0;color:#c2410c;font-size:.75rem;font-weight:800;cursor:pointer;display:flex;align-items:center;gap:5px;transition:all .15s;"
+       onmouseover="this.style.background='#e8692a';this.style.color='#fff'"
+       onmouseout="this.style.background='#fff7f0';this.style.color='#c2410c'">
+       ＋ Agregar producto
+     </button>
    </div>
 
    <!-- ── WARNINGS + ANOMALÍAS ──────────────────────────────── -->
@@ -15906,18 +16801,7 @@ window.cxcmpAplicarPago=cxcmpAplicarPago;
 // Solo crea factura CXC si el cliente tiene tipoPrecio === 'CRÉDITO'
 // ══════════════════════════════════════════════════════
 function cxcCrearDesdePedido(sale) {
-  // Determinar si es cliente de crédito
-  var tipoPrecio = sale.tipoPrecio || '';
-  var esCredito  = tipoPrecio === 'CRÉDITO';
-
-  // También intentar leer directamente del directorio de clientes
-  if (!esCredito && sale.clienteId) {
-    var clDB = typeof getClientsDB === 'function' ? getClientsDB() : [];
-    var cl   = clDB.find(function(x){ return x.id === sale.clienteId; });
-    if (cl && cl.tipoPrecio === 'CRÉDITO') esCredito = true;
-  }
-
-  if (!esCredito) return; // No es crédito → no crear factura
+  // Siempre crear factura CXC al confirmar un pedido
 
   // Verificar que no existe ya una factura para este pedido
   var facturasExistentes = cxcFacs();
@@ -15945,9 +16829,10 @@ function cxcCrearDesdePedido(sale) {
     rif:         sale.rif        || '',
     correo:      sale.correo     || (clObj && clObj.correo) || '',
     numpedido:   sale.numpedido  || ('PED-' + sale.id),
-    moneda:      'USD',
-    monto:       sale.total      || 0,
+    moneda:      sale.moneda || 'USD',
+    monto:       sale.total      || 0,  // total en la moneda de la venta
     saldo:       sale.total      || 0,
+    totalBs:     sale.totalBs    || 0,
     fechaEmision:    fmtDate(hoy),
     fechaVencimiento: fmtDate(vence),
     diasCredito: diasCred,
