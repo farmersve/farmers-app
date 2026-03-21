@@ -4959,7 +4959,34 @@ async function loadFromFirebase() {
         if (typeof renderHistorial === 'function') renderHistorial();
       }
     }
-    // ── Cargar HCL (Historial de Clientes) ────────────────────────────────
+    // ── Corregir ventas HCL con nombre incorrecto ───────────────────────────
+    try {
+      var salesFix = getSales ? getSales() : [];
+      var clDB3 = typeof getClientsDB === 'function' ? getClientsDB() : [];
+      var normR3 = function(r){ return (r||'').replace(/[-. ]/g,'').toUpperCase(); };
+      var changed3 = false;
+      salesFix.forEach(function(s) {
+        if (s.fuente !== 'hcl_import') return;
+        if ((s.cliente||'').toUpperCase().indexOf('FARMERS') < 0) return;
+        // Tiene FARMERS como cliente — corregir por RIF
+        var clFix = clDB3.find(function(c){ return normR3(c.rif) === normR3(s.rif); });
+        if (clFix) {
+          // Encontrado en directorio — corregir nombre
+          s.cliente   = clFix.nombre;
+          s.clienteId = clFix.id || clFix.rif || '';
+          changed3 = true;
+          console.log('Corregido: FARMERS ->', clFix.nombre, '| RIF:', s.rif);
+        } else {
+          // No encontrado — marcar como "Sin identificar" pero NO eliminar
+          s.cliente = 'Sin identificar (' + (s.rif||'S/RIF') + ')';
+          changed3 = true;
+          console.log('Sin cliente para RIF:', s.rif, '— marcado como Sin identificar');
+        }
+      });
+      if (changed3 && typeof saveSales === 'function') saveSales(salesFix);
+    } catch(e) {}
+
+  // ── Cargar HCL (Historial de Clientes) ────────────────────────────────
     if (window.fbGetHCL) {
       var hclData = await window.fbGetHCL();
       if (hclData && hclData.length) {
@@ -9125,7 +9152,9 @@ function catVerClientesRef(ref) {
     porCliente[key].pedidos++;
     if (!porCliente[key].ultimaFecha) porCliente[key].ultimaFecha = h.sale.fecha||'';
   });
-  var clientes = Object.values(porCliente).sort(function(a,b){ return b.uds - a.uds; });
+  var clientes = Object.values(porCliente)
+    .filter(function(cl){ return (cl.nombre||'').toUpperCase().indexOf('FARMERS') < 0; })
+    .sort(function(a,b){ return b.uds - a.uds; });
 
   var filas = hits.length === 0
     ? '<tr><td colspan="6" style="text-align:center;padding:36px;color:#64748b;font-size:.85rem;">&#128721; Este producto no aparece en ningún pedido del historial</td></tr>'
@@ -23774,13 +23803,23 @@ function hclGuardarFactura(data, fuente) {
         return s.nroFacturaExternal === factura.nroFactura &&
                (s.rif === factura.rif || s.cliente === factura.clienteNombre);
       });
-      if (!yaExiste) {
+      // Buscar nombre correcto del cliente por RIF en el directorio
+      var normRifSync = function(r){ return (r||'').replace(/[-. ]/g,'').toUpperCase(); };
+      var clDB2 = typeof getClientsDB === 'function' ? getClientsDB() : [];
+      var clReal = clDB2.find(function(c){
+        return normRifSync(c.rif) === normRifSync(factura.rif);
+      });
+      var nombreReal = clReal ? clReal.nombre : factura.clienteNombre;
+      var esEmisorSync = function(n){ return (n||'').toUpperCase().indexOf('FARMERS') >= 0; };
+
+      // Solo sincronizar si tenemos un cliente real válido
+      if (!yaExiste && nombreReal && !esEmisorSync(nombreReal)) {
         var nuevaVenta = {
           id:                  'hcl_sale_' + id,
           fecha:               factura.fechaEmision,
-          cliente:             factura.clienteNombre,
+          cliente:             nombreReal,
           rif:                 factura.rif,
-          clienteId:           factura.clienteId,
+          clienteId:           clReal ? (clReal.id||clReal.rif||'') : factura.clienteId,
           vendedor:            factura.vendedor || 'OGK',
           moneda:              factura.moneda,
           nroFacturaExternal:  factura.nroFactura,
