@@ -22789,14 +22789,17 @@ function hclTabReposicion() {
     if (!fechaMin || fd < fechaMin) fechaMin = fd;
     if (!fechaMax || fd > fechaMax) fechaMax = fd;
   });
-  // Período = desde primera factura hasta HOY (no hasta última factura)
-  // Esto refleja correctamente la velocidad real de venta incluyendo días sin facturar
+  // Período = desde primera factura hasta HOY
   var hoyDate = new Date();
-  var diasPeriodo  = fechaMin ? Math.max(1, (hoyDate - fechaMin) / 86400000) : 30;
+  var diasPeriodo    = fechaMin ? Math.max(1, (hoyDate - fechaMin) / 86400000) : 30;
   var semanasPeriodo = diasPeriodo / 7;
-  var COB = 30, MARG = 1.2;
 
-  // ── Mapa global por ref (todas las facturas) ──────────────────────────────
+  // ── Parámetros de reposición Farmers ─────────────────────────────────────
+  var LEAD_TIME   = 25;  // días promedio de importación (21-30 días)
+  var STOCK_SEG   = 15;  // días de stock de seguridad
+  var COB_TOTAL   = LEAD_TIME + STOCK_SEG; // 40 días cobertura total
+
+  // ── Mapa global por ref ───────────────────────────────────────────────────
   var mapaGlobal = {};
   facs.forEach(function(f) {
     (f.items||[]).forEach(function(it) {
@@ -22808,15 +22811,30 @@ function hclTabReposicion() {
     });
   });
 
-  // ── Calcular sugerencias globales ─────────────────────────────────────────
+  // ── Calcular orden de compra al proveedor ─────────────────────────────────
+  // Punto de reorden = velocidad diaria × COB_TOTAL
+  // Cantidad a pedir = cobertura total − stock actual (si está por debajo del punto)
   var sugerencias = Object.values(mapaGlobal).map(function(p) {
-    var stock     = parseInt((inv[p.ref])||0)||0;
-    var udsSemana = parseFloat((p.uds/semanasPeriodo).toFixed(2));
-    var nec       = Math.ceil(udsSemana*(COB/7)*MARG);
-    var reponer   = Math.max(0, nec-stock);
-    var urgencia  = stock===0?3:stock<udsSemana?2:stock<udsSemana*2?1:0;
-    return Object.assign({}, p, {stock:stock, udsSemana:udsSemana, nec:nec, reponer:reponer, urgencia:urgencia});
-  }).filter(function(p){ return p.reponer>0; })
+    var stock      = parseInt((inv[p.ref])||0)||0;
+    var udsDia     = p.uds / diasPeriodo;
+    var udsSemana  = parseFloat((udsDia * 7).toFixed(2));
+    var puntoReord = Math.ceil(udsDia * COB_TOTAL);  // stock mínimo antes de pedir
+    var nec        = Math.ceil(udsDia * COB_TOTAL);  // cantidad para cubrir el período
+    var reponer    = Math.max(0, nec - stock);
+
+    // Semáforo basado en días de stock restante
+    var diasStock  = udsDia > 0 ? Math.floor(stock / udsDia) : 999;
+    var urgencia   = diasStock === 0 ? 3          // rojo: sin stock
+                   : diasStock <= LEAD_TIME ? 2   // naranja: llega antes que el pedido
+                   : diasStock <= COB_TOTAL ? 1   // amarillo: en zona de reorden
+                   : 0;                           // verde: suficiente
+
+    return Object.assign({}, p, {
+      stock:stock, udsSemana:udsSemana, udsDia:udsDia,
+      puntoReord:puntoReord, nec:nec, reponer:reponer,
+      diasStock:diasStock, urgencia:urgencia
+    });
+  }).filter(function(p){ return p.reponer > 0 || p.urgencia >= 1; })
     .sort(function(a,b){ return b.urgencia-a.urgencia || b.reponer-a.reponer; });
 
   if (!sugerencias.length) return (
@@ -22831,8 +22849,8 @@ function hclTabReposicion() {
   // ── Tabla de reposición global ────────────────────────────────────────────
   var html =
     '<div style="background:#fff7ed;border:1.5px solid #fed7aa;border-radius:10px;padding:12px 18px;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">' +
-      '<div><span style="font-weight:800;color:#c2410c;">🔄 Orden de reposición global</span>' +
-        '<span style="font-size:.75rem;color:#92400e;margin-left:8px;">Basada en ' + Math.round(diasPeriodo) + ' días · Cobertura 30d · +20% margen</span></div>' +
+      '<div><span style="font-weight:800;color:#c2410c;">🔄 Orden de compra al proveedor</span>' +
+        '<span style="font-size:.75rem;color:#92400e;margin-left:8px;">Lead time 25d · Stock seguridad 15d · Basada en ' + Math.round(diasPeriodo) + ' días de ventas</span></div>' +
       '<div style="text-align:right;">' +
         '<div style="font-size:.68rem;color:#92400e;font-weight:700;">INVERSIÓN ESTIMADA</div>' +
         '<div style="font-size:1.3rem;font-weight:900;color:#c2410c;">$ ' + fmt(totalInversion) + '</div>' +
@@ -22867,7 +22885,8 @@ function hclTablaReposicion(sugerencias) {
       '<th style="padding:9px 12px;text-align:left;color:#92400e;font-weight:800;">Descripción</th>' +
       '<th style="padding:9px 12px;text-align:center;color:#92400e;font-weight:800;">Uds/sem</th>' +
       '<th style="padding:9px 12px;text-align:center;color:#92400e;font-weight:800;">Stock</th>' +
-      '<th style="padding:9px 12px;text-align:center;color:#92400e;font-weight:800;">Nec. 30d</th>' +
+      '<th style="padding:9px 12px;text-align:center;color:#92400e;font-weight:800;">Días stock</th>' +
+      '<th style="padding:9px 12px;text-align:center;color:#92400e;font-weight:800;">Punto reorden</th>' +
       '<th style="padding:9px 12px;text-align:center;color:#92400e;font-weight:800;background:#FFF3CD;">PEDIR</th>' +
       '<th style="padding:9px 12px;text-align:right;color:#92400e;font-weight:800;">Inversión $</th>' +
     '</tr></thead><tbody>' +
@@ -22880,7 +22899,8 @@ function hclTablaReposicion(sugerencias) {
         '<td style="padding:8px 12px;color:#1e293b;max-width:180px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+p.desc+'</td>' +
         '<td style="padding:8px 12px;text-align:center;color:#7c3aed;font-weight:700;">'+p.udsSemana+'</td>' +
         '<td style="padding:8px 12px;text-align:center;font-weight:700;color:'+(p.stock>0?'#059669':'#dc2626')+';">'+p.stock+'</td>' +
-        '<td style="padding:8px 12px;text-align:center;color:#475569;">'+p.nec+'</td>' +
+        '<td style="padding:8px 12px;text-align:center;font-weight:700;color:'+(p.diasStock===0?'#dc2626':p.diasStock<=15?'#c2410c':p.diasStock<=40?'#92400e':'#15803d')+'">'+(p.diasStock===999?'∞':p.diasStock+'d')+'</td>' +
+        '<td style="padding:8px 12px;text-align:center;color:#475569;">'+p.puntoReord+'</td>' +
         '<td style="padding:8px 12px;text-align:center;background:#FFF9C4;font-weight:900;font-size:1rem;color:#1B1F6B;">'+p.reponer+'</td>' +
         '<td style="padding:8px 12px;text-align:right;font-weight:700;color:#c2410c;">$ '+fmt(p.reponer*(p.precio||0))+'</td>' +
       '</tr>';
@@ -23171,6 +23191,26 @@ function hclGuardarEdicionCliente(id) {
   if (clObj) facs[idx].clienteId = clObj.id || clObj.rif || '';
 
   hclSaveFacturas(facs);
+
+  // ── Sincronizar cambio en farmers_sales ──────────────────────────────────
+  // Cuando se edita un cliente en HCL, actualizar también la venta correspondiente
+  try {
+    var nroFac = facs[idx].nroFactura;
+    var sales  = typeof getSales === 'function' ? getSales() : [];
+    var updated = false;
+    sales.forEach(function(s) {
+      if (s.fuente === 'hcl_import' && s.nroFacturaExternal === nroFac) {
+        s.cliente   = nombre.trim();
+        s.rif       = rif.trim();
+        s.clienteId = clObj ? (clObj.id||clObj.rif||'') : rif.trim();
+        updated = true;
+      }
+    });
+    if (updated && typeof saveSales === 'function') {
+      saveSales(sales);
+      console.log('Venta sincronizada con corrección de cliente:', nombre.trim());
+    }
+  } catch(e) { console.warn('Sync sales error:', e); }
 
   // Cerrar modal de edición
   var ov = document.querySelector('[style*="z-index: 99999"]') ||
