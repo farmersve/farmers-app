@@ -22372,7 +22372,7 @@ function hclRender() {
         hclStatBox('📋', 'Facturas', total, '#1B1F6B') +
         hclStatBox('👥', 'Clientes', clientes, '#7c3aed') +
         hclStatBox('📦', 'Líneas', items, '#059669') +
-        hclStatBox('📅', 'Última', total > 0 ? facs[0].fechaEmision||'—' : '—', '#c2410c');
+        hclStatBox('📅', 'Última', total > 0 ? facs.reduce(function(max,f){ var fd=f.fechaEmision?new Date(f.fechaEmision.split('/').reverse().join('-')):null; var fm=max?new Date(max.split('/').reverse().join('-')):null; return (fd&&(!fm||fd>fm))?f.fechaEmision:max; }, '') || '—' : '—', '#c2410c');
     }
     sb.innerHTML = statsHtml;
   }
@@ -22789,9 +22789,32 @@ function hclTabReposicion() {
     if (!fechaMin || fd < fechaMin) fechaMin = fd;
     if (!fechaMax || fd > fechaMax) fechaMax = fd;
   });
-  // Período = desde primera factura hasta HOY
-  var hoyDate = new Date();
-  var diasPeriodo    = fechaMin ? Math.max(1, (hoyDate - fechaMin) / 86400000) : 30;
+  // Período = entre primera y última factura real
+  // Más preciso que usar HOY cuando hay meses sin facturar
+  var diasPeriodo    = (fechaMin && fechaMax) ? Math.max(1, (fechaMax - fechaMin) / 86400000) : 30;
+  // Si el período es muy largo (>180 días) usar solo los últimos 90 días de facturas
+  // para que la velocidad refleje la realidad reciente
+  if (diasPeriodo > 180) {
+    var cutoff = new Date(fechaMax);
+    cutoff.setDate(cutoff.getDate() - 90);
+    var mapaReciente = {};
+    facs.forEach(function(f) {
+      var fd = f.fechaEmision ? new Date(f.fechaEmision.split('/').reverse().join('-')) : null;
+      if (!fd || fd < cutoff) return;
+      (f.items||[]).forEach(function(it) {
+        var r = it.ref||''; if (!r) return;
+        if (!mapaReciente[r]) mapaReciente[r] = 0;
+        mapaReciente[r] += it.cantidad||0;
+      });
+    });
+    // Si hay suficientes datos recientes, usar velocidad de los últimos 90 días
+    if (Object.keys(mapaReciente).length > 10) {
+      diasPeriodo = 90;
+      Object.keys(mapaGlobal).forEach(function(r) {
+        if (mapaReciente[r]) mapaGlobal[r].uds = mapaReciente[r];
+      });
+    }
+  }
   var semanasPeriodo = diasPeriodo / 7;
 
   // ── Parámetros de reposición Farmers ─────────────────────────────────────
