@@ -22789,12 +22789,28 @@ function hclTabReposicion() {
     if (!fechaMin || fd < fechaMin) fechaMin = fd;
     if (!fechaMax || fd > fechaMax) fechaMax = fd;
   });
-  // Período = entre primera y última factura real
-  // Más preciso que usar HOY cuando hay meses sin facturar
-  var diasPeriodo    = (fechaMin && fechaMax) ? Math.max(1, (fechaMax - fechaMin) / 86400000) : 30;
-  // Si el período es muy largo (>180 días) usar solo los últimos 90 días de facturas
-  // para que la velocidad refleje la realidad reciente
-  if (diasPeriodo > 180) {
+  // ── Parámetros de reposición Farmers ─────────────────────────────────────
+  var LEAD_TIME = 25;  // días promedio de importación (21-30 días)
+  var STOCK_SEG = 15;  // días de stock de seguridad
+  var COB_TOTAL = LEAD_TIME + STOCK_SEG; // 40 días cobertura total
+
+  // ── Mapa global por ref (TODAS las facturas) ──────────────────────────────
+  var mapaGlobal = {};
+  facs.forEach(function(f) {
+    (f.items||[]).forEach(function(it) {
+      var r = it.ref||'';
+      if (!r) return;
+      if (!mapaGlobal[r]) mapaGlobal[r] = { ref:r, desc:it.descripcion||'', uds:0, precio:0 };
+      mapaGlobal[r].uds   += it.cantidad||0;
+      mapaGlobal[r].precio = it.precioUnitario || mapaGlobal[r].precio || 0;
+    });
+  });
+
+  // ── Período: entre primera y última factura ───────────────────────────────
+  var diasPeriodo = (fechaMin && fechaMax) ? Math.max(1, (fechaMax - fechaMin) / 86400000) : 30;
+
+  // Si el período supera 180 días, recalcular velocidad con los últimos 90 días
+  if (diasPeriodo > 180 && fechaMax) {
     var cutoff = new Date(fechaMax);
     cutoff.setDate(cutoff.getDate() - 90);
     var mapaReciente = {};
@@ -22807,7 +22823,6 @@ function hclTabReposicion() {
         mapaReciente[r] += it.cantidad||0;
       });
     });
-    // Si hay suficientes datos recientes, usar velocidad de los últimos 90 días
     if (Object.keys(mapaReciente).length > 10) {
       diasPeriodo = 90;
       Object.keys(mapaGlobal).forEach(function(r) {
@@ -22815,24 +22830,8 @@ function hclTabReposicion() {
       });
     }
   }
+
   var semanasPeriodo = diasPeriodo / 7;
-
-  // ── Parámetros de reposición Farmers ─────────────────────────────────────
-  var LEAD_TIME   = 25;  // días promedio de importación (21-30 días)
-  var STOCK_SEG   = 15;  // días de stock de seguridad
-  var COB_TOTAL   = LEAD_TIME + STOCK_SEG; // 40 días cobertura total
-
-  // ── Mapa global por ref ───────────────────────────────────────────────────
-  var mapaGlobal = {};
-  facs.forEach(function(f) {
-    (f.items||[]).forEach(function(it) {
-      var r = it.ref||'';
-      if (!r) return;
-      if (!mapaGlobal[r]) mapaGlobal[r] = { ref:r, desc:it.descripcion||'', uds:0, precio:0 };
-      mapaGlobal[r].uds   += it.cantidad||0;
-      mapaGlobal[r].precio = it.precioUnitario || mapaGlobal[r].precio || 0;
-    });
-  });
 
   // ── Calcular orden de compra al proveedor ─────────────────────────────────
   // Punto de reorden = velocidad diaria × COB_TOTAL
