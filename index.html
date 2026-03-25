@@ -3467,7 +3467,7 @@ function renderHistorial(){
   const ce=document.getElementById('hist-count');
   if(ce) ce.textContent=sales.length+' pedidos registrados';
   const totalV=sales.reduce((s,v)=>s+v.total,0);
-  const totalU=sales.reduce((s,v)=>s+v.units,0);
+  const totalU=sales.reduce((s,v)=>s+(parseInt(v.units)||0),0);
   const clientesU=new Set(sales.map(v=>v.cliente)).size;
   const cards=document.getElementById('hist-summary-cards');
   if(cards) cards.innerHTML=[
@@ -3536,6 +3536,7 @@ function renderHistorial(){
           </table>
         </div>
         <div style="padding:8px 14px;border-top:1px solid #f0f2f8;display:flex;justify-content:flex-end;gap:6px;">
+          <button onclick="ncMostrarModal(${sale.id},'venta')" style="background:#f0fdf4;border:1px solid #86efac;color:#15803d;border-radius:6px;padding:4px 12px;cursor:pointer;font-size:0.75rem;font-weight:700;">📋 Nota de Crédito</button>
           <button onclick="vtMostrarDevolucion(${sale.id})" style="background:#fff7ed;border:1px solid #fed7aa;color:#c2410c;border-radius:6px;padding:4px 12px;cursor:pointer;font-size:0.75rem;font-weight:700;">↩ Devolución</button>
           <button onclick="deleteSale(${sale.id})" style="background:none;border:1px solid #fca5a5;color:#dc2626;border-radius:6px;padding:4px 12px;cursor:pointer;font-size:0.75rem;font-weight:600;">🗑 Eliminar pedido</button>
         </div>
@@ -15083,6 +15084,13 @@ function cxcBuildTable(facs, compact){
     bEdit.innerHTML='✏️'; bEdit.title='Editar';
     bEdit.onclick=function(e){e.stopPropagation();cxcEditarFactura(this.dataset.facid);};
     btnWrap.appendChild(bEdit);
+    // Botón Nota de Crédito en CXC
+    var bNC=document.createElement('button');
+    bNC.className='cxc-btn cxc-btn-xs'; bNC.dataset.facid=f.id;
+    bNC.innerHTML='📋 NC'; bNC.title='Generar Nota de Crédito';
+    bNC.style.cssText='background:#f0fdf4;color:#15803d;border:1px solid #86efac;';
+    bNC.onclick=function(e){e.stopPropagation();ncMostrarModal(null,'cxc',this.dataset.facid);};
+    btnWrap.appendChild(bNC);
     if(!compact){
       var bDel=document.createElement('button');
       bDel.className='cxc-btn cxc-btn-danger cxc-btn-xs'; bDel.dataset.facid=f.id;
@@ -24117,7 +24125,7 @@ window.hclExportarReposicion = hclExportarReposicion;
         <div id="calc-tasa-info" style="font-size:.68rem;color:rgba(255,255,255,.55);margin-top:1px;"></div>
       </div>
     </div>
-    <button onclick="calcClose()" style="background:rgba(255,255,255,.1);border:none;color:white;border-radius:8px;padding:4px 10px;cursor:pointer;font-size:.82rem;flex-shrink:0;">✕</button>
+    <button onclick="calcClose()" title="Minimizar (los datos se conservan)" style="background:rgba(255,255,255,.1);border:none;color:white;border-radius:8px;padding:4px 10px;cursor:pointer;font-size:.82rem;flex-shrink:0;">— Min</button>
   </div>
 
   <!-- Tabs -->
@@ -24128,15 +24136,65 @@ window.hclExportarReposicion = hclExportarReposicion;
     <button id="calc-tab-imp"    onclick="calcSetTab('imp')"    style="flex:1;padding:9px 0;border:none;background:transparent;color:#64748b;font-weight:700;font-size:.62rem;cursor:pointer;letter-spacing:.3px;">📦 IMPORT</button>
   </div>
 
-  <!-- Body -->
+  <!-- Tab BÁSICA — HTML estático permanente para evitar problemas con onclick en innerHTML -->
+  <div id="calc-basica-panel" style="display:none;padding:14px 16px 8px;">
+    <!-- Display -->
+    <div style="background:#060918;border:1.5px solid rgba(99,102,241,.25);border-radius:12px;padding:12px 16px;margin-bottom:10px;">
+      <div id="calc-expr" style="font-size:.72rem;color:#4b5563;min-height:16px;text-align:right;">&nbsp;</div>
+      <div id="calc-disp" style="font-size:2rem;font-weight:900;color:white;letter-spacing:1px;text-align:right;word-break:break-all;">0</div>
+    </div>
+    <!-- Botones 4x5 -->
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;">
+      <button class="cbtn cbtn-red"  onclick="calcBasicaAC()">C</button>
+      <button class="cbtn cbtn-gray" onclick="calcBasicaSign()">±</button>
+      <button class="cbtn cbtn-gray" onclick="calcBasicaPct()">%</button>
+      <button class="cbtn cbtn-op"   onclick="calcBasicaOp('/')">÷</button>
+
+      <button class="cbtn cbtn-num"  onclick="calcBasicaNum('7')">7</button>
+      <button class="cbtn cbtn-num"  onclick="calcBasicaNum('8')">8</button>
+      <button class="cbtn cbtn-num"  onclick="calcBasicaNum('9')">9</button>
+      <button class="cbtn cbtn-op"   onclick="calcBasicaOp('*')">×</button>
+
+      <button class="cbtn cbtn-num"  onclick="calcBasicaNum('4')">4</button>
+      <button class="cbtn cbtn-num"  onclick="calcBasicaNum('5')">5</button>
+      <button class="cbtn cbtn-num"  onclick="calcBasicaNum('6')">6</button>
+      <button class="cbtn cbtn-op"   onclick="calcBasicaOp('-')">−</button>
+
+      <button class="cbtn cbtn-num"  onclick="calcBasicaNum('1')">1</button>
+      <button class="cbtn cbtn-num"  onclick="calcBasicaNum('2')">2</button>
+      <button class="cbtn cbtn-num"  onclick="calcBasicaNum('3')">3</button>
+      <button class="cbtn cbtn-op"   onclick="calcBasicaOp('+')">+</button>
+
+      <button class="cbtn cbtn-num"  onclick="calcBasicaNum('0')" style="grid-column:span 2;">0</button>
+      <button class="cbtn cbtn-num"  onclick="calcBasicaDot()">.</button>
+      <button class="cbtn cbtn-eq"   onclick="calcBasicaEqual()">=</button>
+    </div>
+  </div>
+
+  <!-- Body para tabs dinámicas (Conversión, Precio, Importación) -->
   <div id="calc-body" style="padding:16px;color:#e2e8f0;"></div>
 
-  <!-- Historial tasas -->
-  <div style="padding:0 16px 14px;">
+  <!-- Historial tasas — oculto en tab básica -->
+  <div id="calc-hist-wrap" style="padding:0 16px 14px;">
     <div style="font-size:.63rem;color:#4b5563;font-weight:700;text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;">📆 Historial — clic para usar</div>
     <div id="calc-tasa-hist" style="display:flex;gap:5px;flex-wrap:wrap;"></div>
   </div>
 </div>
+
+<style>
+.cbtn {
+  padding:14px 0;border:none;border-radius:10px;
+  font-family:'Barlow Condensed',sans-serif;font-weight:900;font-size:1.15rem;
+  cursor:pointer;transition:filter .1s,transform .08s;
+  -webkit-tap-highlight-color:transparent;
+}
+.cbtn:active { filter:brightness(1.5) !important; transform:scale(.94); }
+.cbtn-num  { background:rgba(255,255,255,.07); color:white; }
+.cbtn-op   { background:rgba(244,123,62,.22);  color:#f9a87a; }
+.cbtn-eq   { background:linear-gradient(135deg,#1B1F6B,#f47b3e); color:white; }
+.cbtn-red  { background:rgba(220,38,38,.18);   color:#f87171; }
+.cbtn-gray { background:rgba(99,102,241,.12);  color:#94a3b8; }
+</style>
 
 <script>
 var _calcTab = 'conv';
@@ -24187,7 +24245,8 @@ function calcInitDrag() {
 function calcToggle() {
   var m = document.getElementById('calc-modal');
   if (!m) return;
-  if (m.style.display === 'none' || !m.style.display) {
+  var visible = m.style.display !== 'none' && m.style.display !== '';
+  if (!visible) {
     m.style.display = 'block';
     calcRenderTasaInfo();
     calcSetTab(_calcTab);
@@ -24200,6 +24259,7 @@ function calcToggle() {
 window.calcToggle = calcToggle;
 
 function calcClose() {
+  // Solo oculta — NO destruye el estado de la calculadora
   var m = document.getElementById('calc-modal');
   if (m) m.style.display = 'none';
 }
@@ -24214,7 +24274,20 @@ function calcSetTab(tab) {
     btn.style.background = t === tab ? '#1B1F6B' : 'transparent';
     btn.style.color      = t === tab ? 'white'   : '#64748b';
   });
-  calcRenderBody();
+  // Panel estático básica
+  var basicaPanel = document.getElementById('calc-basica-panel');
+  var dynBody     = document.getElementById('calc-body');
+  var histWrap    = document.getElementById('calc-hist-wrap');
+  if (tab === 'basica') {
+    if (basicaPanel) basicaPanel.style.display = 'block';
+    if (dynBody)     dynBody.style.display = 'none';
+    if (histWrap)    histWrap.style.display = 'none';
+  } else {
+    if (basicaPanel) basicaPanel.style.display = 'none';
+    if (dynBody)     dynBody.style.display = 'block';
+    if (histWrap)    histWrap.style.display = 'block';
+    calcRenderBody();
+  }
 }
 window.calcSetTab = calcSetTab;
 
@@ -24283,37 +24356,8 @@ function calcRenderBody() {
   var tasa = calcGetTasa();
 
   if (_calcTab === 'basica') {
-    body.innerHTML =
-      '<div id="calc-display" style="background:#060918;border:1.5px solid rgba(99,102,241,.25);border-radius:12px;padding:14px 16px;margin-bottom:10px;text-align:right;">' +
-        '<div id="calc-expr" style="font-size:.72rem;color:#4b5563;min-height:16px;word-break:break-all;">&nbsp;</div>' +
-        '<div id="calc-disp" style="font-size:2rem;font-weight:900;color:white;letter-spacing:1px;word-break:break-all;">0</div>' +
-      '</div>' +
-      '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;">' +
-        // Fila 1
-        _calcBtn('C',   'calcBasicaAC()',    '#e55',   'rgba(220,38,38,.15)') +
-        _calcBtn('±',   'calcBasicaSign()',  '#94a3b8','rgba(99,102,241,.1)') +
-        _calcBtn('%',   'calcBasicaPct()',   '#94a3b8','rgba(99,102,241,.1)') +
-        _calcBtn('÷',   'calcBasicaOp("/")', '#f9a87a','rgba(244,123,62,.2)') +
-        // Fila 2
-        _calcBtn('7',   'calcBasicaNum("7")', 'white', 'rgba(255,255,255,.07)') +
-        _calcBtn('8',   'calcBasicaNum("8")', 'white', 'rgba(255,255,255,.07)') +
-        _calcBtn('9',   'calcBasicaNum("9")', 'white', 'rgba(255,255,255,.07)') +
-        _calcBtn('×',   'calcBasicaOp("*")', '#f9a87a','rgba(244,123,62,.2)') +
-        // Fila 3
-        _calcBtn('4',   'calcBasicaNum("4")', 'white', 'rgba(255,255,255,.07)') +
-        _calcBtn('5',   'calcBasicaNum("5")', 'white', 'rgba(255,255,255,.07)') +
-        _calcBtn('6',   'calcBasicaNum("6")', 'white', 'rgba(255,255,255,.07)') +
-        _calcBtn('−',   'calcBasicaOp("-")', '#f9a87a','rgba(244,123,62,.2)') +
-        // Fila 4
-        _calcBtn('1',   'calcBasicaNum("1")', 'white', 'rgba(255,255,255,.07)') +
-        _calcBtn('2',   'calcBasicaNum("2")', 'white', 'rgba(255,255,255,.07)') +
-        _calcBtn('3',   'calcBasicaNum("3")', 'white', 'rgba(255,255,255,.07)') +
-        _calcBtn('+',   'calcBasicaOp("+")', '#f9a87a','rgba(244,123,62,.2)') +
-        // Fila 5
-        _calcBtn('0',   'calcBasicaNum("0")', 'white', 'rgba(255,255,255,.07)', 'grid-column:span 2') +
-        _calcBtn('.',   'calcBasicaDot()',    'white', 'rgba(255,255,255,.07)') +
-        _calcBtn('=',   'calcBasicaEqual()', 'white', 'linear-gradient(135deg,#1B1F6B,#f47b3e)') +
-      '</div>';
+    // La tab básica es estática en el HTML — no se renderiza aquí
+    return;
 
   } else if (_calcTab === 'conv') {
     body.innerHTML =
@@ -24549,6 +24593,465 @@ function calcBasicaPct() {
   _cbUpdate();
 }
 window.calcBasicaPct = calcBasicaPct;
+</script>
+<!-- ══════════════════════════════════════════════════════════════════════════
+     MÓDULO NOTA DE CRÉDITO — farmers_nc
+     ══════════════════════════════════════════════════════════════════════════ -->
+<script>
+// ── Storage ──────────────────────────────────────────────────────────────────
+function ncGetAll() {
+  try { return JSON.parse(localStorage.getItem('farmers_nc') || '[]'); } catch(e){ return []; }
+}
+function ncSaveAll(arr) {
+  localStorage.setItem('farmers_nc', JSON.stringify(arr));
+  if (window.fbSaveNC) window.fbSaveNC(arr);
+}
+function ncNextNum() {
+  var all = ncGetAll();
+  var max = all.reduce(function(m, nc){ return Math.max(m, parseInt((nc.numero||'NC-0000').replace('NC-',''))||0); }, 0);
+  return 'NC-' + String(max + 1).padStart(4, '0');
+}
+
+// ── Modal principal ───────────────────────────────────────────────────────────
+function ncMostrarModal(saleId, origen, cxcFacId) {
+  // Obtener datos de la venta o factura CXC
+  var sale = null, cliente = '', rif = '', numpedido = '', items = [], tasa = 0, moneda = 'USD';
+
+  if (origen === 'venta' && saleId) {
+    sale = getSales().find(function(s){ return String(s.id) === String(saleId); });
+    if (!sale) { showToast('Venta no encontrada', 'error'); return; }
+    cliente    = sale.cliente || '';
+    rif        = sale.rif     || '';
+    numpedido  = sale.numpedido || String(sale.id);
+    items      = (sale.items || []).map(function(it){ return { r: it.r, d: it.d, precio: it.precio||0, ordenOrig: it.orden, devolver: 0 }; });
+    tasa       = sale.tasa || getTasaHoy() || 0;
+    moneda     = sale.moneda || 'USD';
+  } else if (origen === 'cxc' && cxcFacId) {
+    var fac = cxcFacs().find(function(f){ return String(f.id) === String(cxcFacId); });
+    if (!fac) { showToast('Factura CXC no encontrada', 'error'); return; }
+    cliente   = fac.cliente   || '';
+    rif       = fac.rif       || '';
+    numpedido = fac.numpedido || String(fac.id);
+    tasa      = getTasaHoy() || 0;
+    moneda    = 'USD';
+    // Buscar venta vinculada para obtener items
+    var ventaVinc = getSales().find(function(s){
+      return s.numpedido === fac.numpedido || String(s.id) === String(fac.saleId);
+    });
+    if (ventaVinc) {
+      items = (ventaVinc.items || []).map(function(it){ return { r: it.r, d: it.d, precio: it.precio||0, ordenOrig: it.orden, devolver: 0 }; });
+      saleId = ventaVinc.id;
+    } else {
+      // Sin items: NC de monto libre
+      items = [];
+    }
+  }
+
+  // Cerrar modal anterior si existe
+  var old = document.getElementById('nc-modal-overlay');
+  if (old) old.remove();
+
+  var itemsHtml = items.length > 0 ? items.map(function(it, i) {
+    return '<tr style="border-bottom:1px solid #f1f5f9;">' +
+      '<td style="padding:7px 10px;font-weight:700;color:#1B1F6B;font-size:.85rem;">' + it.r + '</td>' +
+      '<td style="padding:7px 10px;font-size:.82rem;color:#475569;">' + (it.d||'').substring(0,40) + '</td>' +
+      '<td style="padding:7px 10px;text-align:center;font-size:.85rem;">$ ' + (it.precio||0).toFixed(4) + '</td>' +
+      '<td style="padding:7px 10px;text-align:center;"><span style="background:#1B1F6B;color:white;border-radius:4px;padding:2px 7px;font-weight:700;font-size:.82rem;">' + it.ordenOrig + '</span></td>' +
+      '<td style="padding:7px 10px;text-align:center;">' +
+        '<input type="number" id="nc-qty-' + i + '" min="0" max="' + it.ordenOrig + '" value="0" oninput="ncActualizarTotal()" ' +
+        'style="width:58px;border:1.5px solid #e2e8f0;border-radius:6px;padding:4px 6px;text-align:center;font-weight:800;font-size:.9rem;">' +
+      '</td>' +
+      '<td style="padding:7px 10px;text-align:right;font-weight:700;color:#15803d;font-size:.85rem;" id="nc-sub-' + i + '">$ 0.00</td>' +
+    '</tr>';
+  }).join('') : '<tr><td colspan="6" style="text-align:center;color:#94a3b8;padding:20px;font-size:.85rem;">Sin items vinculados — ingresa el monto manualmente</td></tr>';
+
+  var overlay = document.createElement('div');
+  overlay.id  = 'nc-modal-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:99998;display:flex;align-items:center;justify-content:center;padding:16px;';
+  overlay.innerHTML =
+    '<div style="background:white;border-radius:16px;width:min(740px,100%);max-height:90vh;overflow-y:auto;box-shadow:0 24px 64px rgba(0,0,0,.4);">' +
+
+      // Header
+      '<div style="background:linear-gradient(135deg,#14532d,#15803d);padding:18px 24px;border-radius:16px 16px 0 0;display:flex;justify-content:space-between;align-items:center;">' +
+        '<div>' +
+          '<div style="font-family:Barlow Condensed,sans-serif;font-weight:900;font-size:1.2rem;color:white;letter-spacing:.5px;">📋 NOTA DE CRÉDITO</div>' +
+          '<div style="font-size:.75rem;color:rgba(255,255,255,.7);margin-top:2px;">Factura: ' + numpedido + ' · ' + cliente + '</div>' +
+        '</div>' +
+        '<button onclick="ncCerrarModal()" style="background:rgba(255,255,255,.15);border:none;color:white;border-radius:8px;padding:6px 14px;cursor:pointer;font-weight:700;font-size:.9rem;">✕</button>' +
+      '</div>' +
+
+      '<div style="padding:20px 24px;">' +
+
+        // Tipo NC
+        '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px;">' +
+          '<div>' +
+            '<label style="font-size:.65rem;font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:#64748b;display:block;margin-bottom:4px;">Tipo de Nota de Crédito</label>' +
+            '<select id="nc-tipo" onchange="ncTipoCambio()" style="width:100%;padding:9px 12px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:.9rem;color:#1B1F6B;font-weight:700;background:white;">' +
+              '<option value="devolucion">🔄 Devolución Física (mercancía regresa)</option>' +
+              '<option value="incompleto">📦 Despacho Incompleto (no salió del almacén)</option>' +
+              '<option value="ajuste">✏️ Ajuste de Precio / Descuento</option>' +
+            '</select>' +
+          '</div>' +
+          '<div>' +
+            '<label style="font-size:.65rem;font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:#64748b;display:block;margin-bottom:4px;">Motivo / Observación</label>' +
+            '<input id="nc-motivo" type="text" placeholder="Ej: Mercancía defectuosa, falta en despacho..." ' +
+              'style="width:100%;padding:9px 12px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:.88rem;box-sizing:border-box;">' +
+          '</div>' +
+        '</div>' +
+
+        // Aviso tipo
+        '<div id="nc-tipo-aviso" style="background:#fef3c7;border:1px solid #f59e0b;border-radius:8px;padding:8px 12px;margin-bottom:14px;font-size:.78rem;color:#92400e;">' +
+          '⚠️ <strong>Devolución Física:</strong> El inventario se repondrá con las cantidades devueltas.' +
+        '</div>' +
+
+        // Tabla items
+        (items.length > 0 ? (
+          '<div style="font-size:.63rem;font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:#94a3b8;margin-bottom:8px;">Selecciona las cantidades a acreditar</div>' +
+          '<div style="border:1px solid #e2e8f0;border-radius:10px;overflow:hidden;margin-bottom:14px;">' +
+            '<table style="width:100%;border-collapse:collapse;">' +
+              '<thead><tr style="background:#f8faff;">' +
+                '<th style="padding:7px 10px;text-align:left;font-size:.65rem;color:#94a3b8;font-weight:700;text-transform:uppercase;">Ref</th>' +
+                '<th style="padding:7px 10px;text-align:left;font-size:.65rem;color:#94a3b8;font-weight:700;text-transform:uppercase;">Descripción</th>' +
+                '<th style="padding:7px 10px;text-align:center;font-size:.65rem;color:#94a3b8;font-weight:700;text-transform:uppercase;">Precio</th>' +
+                '<th style="padding:7px 10px;text-align:center;font-size:.65rem;color:#94a3b8;font-weight:700;text-transform:uppercase;">Orig.</th>' +
+                '<th style="padding:7px 10px;text-align:center;font-size:.65rem;color:#94a3b8;font-weight:700;text-transform:uppercase;">NC Qty</th>' +
+                '<th style="padding:7px 10px;text-align:right;font-size:.65rem;color:#94a3b8;font-weight:700;text-transform:uppercase;">Subtotal</th>' +
+              '</tr></thead>' +
+              '<tbody>' + itemsHtml + '</tbody>' +
+            '</table>' +
+          '</div>'
+        ) : itemsHtml) +
+
+        // Monto manual (visible si no hay items o tipo ajuste)
+        '<div id="nc-monto-manual-wrap" style="display:none;margin-bottom:14px;">' +
+          '<label style="font-size:.65rem;font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:#64748b;display:block;margin-bottom:4px;">Monto de la Nota de Crédito (USD)</label>' +
+          '<input id="nc-monto-manual" type="number" step="0.01" min="0" placeholder="0.00" oninput="ncActualizarTotal()" ' +
+            'style="width:100%;padding:10px 14px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:1rem;font-weight:800;box-sizing:border-box;">' +
+        '</div>' +
+
+        // Resumen total
+        '<div style="background:#f0fdf4;border:1.5px solid #86efac;border-radius:10px;padding:12px 16px;display:flex;justify-content:space-between;align-items:center;">' +
+          '<div style="font-size:.78rem;color:#15803d;font-weight:700;">TOTAL NOTA DE CRÉDITO</div>' +
+          '<div>' +
+            '<div id="nc-total-usd" style="font-size:1.3rem;font-weight:900;color:#15803d;text-align:right;">$ 0.00</div>' +
+            '<div id="nc-total-bs" style="font-size:.72rem;color:#64748b;text-align:right;">' + (tasa > 0 ? 'Bs. 0.00 (tasa ' + tasa.toFixed(2) + ')' : '') + '</div>' +
+          '</div>' +
+        '</div>' +
+
+        // Botones
+        '<div style="display:flex;gap:10px;justify-content:flex-end;margin-top:16px;">' +
+          '<button onclick="ncCerrarModal()" style="padding:10px 22px;border-radius:8px;border:1.5px solid #e2e8f0;background:white;color:#475569;font-weight:700;cursor:pointer;">Cancelar</button>' +
+          '<button onclick="ncConfirmar(\'' + (saleId||'') + '\',\'' + (cxcFacId||'') + '\',' + tasa + ',\'' + moneda + '\',' + JSON.stringify(items) + ')" ' +
+            'style="padding:10px 24px;border-radius:8px;border:none;background:linear-gradient(135deg,#14532d,#15803d);color:white;font-weight:900;cursor:pointer;font-size:.95rem;">✓ Emitir Nota de Crédito</button>' +
+        '</div>' +
+
+      '</div>' +
+    '</div>';
+
+  document.body.appendChild(overlay);
+
+  // Si no hay items, mostrar campo manual
+  if (items.length === 0) {
+    var wrap = document.getElementById('nc-monto-manual-wrap');
+    if (wrap) wrap.style.display = 'block';
+  }
+}
+window.ncMostrarModal = ncMostrarModal;
+
+function ncCerrarModal() {
+  var el = document.getElementById('nc-modal-overlay');
+  if (el) el.remove();
+}
+window.ncCerrarModal = ncCerrarModal;
+
+function ncTipoCambio() {
+  var tipo   = (document.getElementById('nc-tipo')||{}).value || 'devolucion';
+  var aviso  = document.getElementById('nc-tipo-aviso');
+  var wrap   = document.getElementById('nc-monto-manual-wrap');
+  var avisos = {
+    devolucion: '⚠️ <strong>Devolución Física:</strong> El inventario se repondrá con las cantidades devueltas.',
+    incompleto: 'ℹ️ <strong>Despacho Incompleto:</strong> NO se repone inventario (la mercancía nunca salió). Solo se ajusta CXC.',
+    ajuste:     '✏️ <strong>Ajuste/Descuento:</strong> Solo reduce el saldo en CXC. Ingresa el monto manualmente.'
+  };
+  if (aviso) aviso.innerHTML = avisos[tipo] || '';
+  if (wrap)  wrap.style.display = tipo === 'ajuste' ? 'block' : 'none';
+  ncActualizarTotal();
+}
+window.ncTipoCambio = ncTipoCambio;
+
+function ncActualizarTotal() {
+  var tipo  = (document.getElementById('nc-tipo')||{}).value || 'devolucion';
+  var total = 0;
+
+  if (tipo === 'ajuste') {
+    total = parseFloat((document.getElementById('nc-monto-manual')||{}).value) || 0;
+  } else {
+    // Sumar subtotales por item
+    var tabla = document.querySelectorAll('[id^="nc-qty-"]');
+    tabla.forEach(function(inp, i) {
+      var qty    = parseInt(inp.value) || 0;
+      var precio = parseFloat(inp.closest('tr').querySelector('td:nth-child(3)').textContent.replace('$','').trim()) || 0;
+      var sub    = qty * precio;
+      var subEl  = document.getElementById('nc-sub-' + i);
+      if (subEl) subEl.textContent = '$ ' + sub.toFixed(2);
+      total += sub;
+    });
+  }
+
+  var elUSD = document.getElementById('nc-total-usd');
+  var elBS  = document.getElementById('nc-total-bs');
+  if (elUSD) elUSD.textContent = '$ ' + total.toFixed(2);
+  // Tasa: intentar leer del DOM del modal (pasada al botón confirmar)
+  if (elBS) {
+    var tasa = getTasaHoy() || 0;
+    elBS.textContent = tasa > 0 ? 'Bs. ' + (total * tasa).toLocaleString('es-VE', {minimumFractionDigits:2, maximumFractionDigits:2}) : '';
+  }
+}
+window.ncActualizarTotal = ncActualizarTotal;
+
+// ── Confirmar y guardar NC ────────────────────────────────────────────────────
+function ncConfirmar(saleId, cxcFacId, tasa, moneda, itemsOrig) {
+  var tipo   = (document.getElementById('nc-tipo')||{}).value || 'devolucion';
+  var motivo = ((document.getElementById('nc-motivo')||{}).value || '').trim();
+  var ncItems = [];
+  var total   = 0;
+
+  if (tipo === 'ajuste') {
+    total = parseFloat((document.getElementById('nc-monto-manual')||{}).value) || 0;
+    if (total <= 0) { showToast('Ingresa un monto válido para el ajuste.', 'warning'); return; }
+  } else {
+    (itemsOrig || []).forEach(function(it, i) {
+      var qty = Math.min(parseInt((document.getElementById('nc-qty-'+i)||{}).value)||0, it.ordenOrig);
+      if (qty > 0) {
+        var sub = qty * (it.precio||0);
+        ncItems.push({ r: it.r, d: it.d, precio: it.precio, qty: qty, subtotal: sub });
+        total += sub;
+      }
+    });
+    if (total <= 0 && tipo !== 'ajuste') { showToast('Selecciona al menos una cantidad para la nota de crédito.', 'warning'); return; }
+  }
+
+  // Crear registro NC
+  var now    = new Date();
+  var numero = ncNextNum();
+  var nc = {
+    id:        Date.now(),
+    numero:    numero,
+    fecha:     now.toLocaleDateString('es-VE', {day:'2-digit', month:'2-digit', year:'numeric'}),
+    hora:      now.toLocaleTimeString('es-VE', {hour:'2-digit', minute:'2-digit'}),
+    tipo:      tipo,
+    motivo:    motivo || (tipo === 'devolucion' ? 'Devolución de mercancía' : tipo === 'incompleto' ? 'Despacho incompleto' : 'Ajuste de precio'),
+    saleId:    String(saleId || ''),
+    cxcFacId:  String(cxcFacId || ''),
+    moneda:    moneda || 'USD',
+    tasa:      tasa || 0,
+    total:     total,
+    totalBs:   tasa > 0 ? total * tasa : 0,
+    items:     ncItems
+  };
+
+  // Obtener cliente/RIF para la NC
+  if (saleId) {
+    var sale = getSales().find(function(s){ return String(s.id) === String(saleId); });
+    if (sale) { nc.cliente = sale.cliente; nc.rif = sale.rif; nc.numpedido = sale.numpedido; }
+  }
+  if (!nc.cliente && cxcFacId) {
+    var fac = cxcFacs().find(function(f){ return String(f.id) === String(cxcFacId); });
+    if (fac) { nc.cliente = fac.cliente; nc.rif = fac.rif; nc.numpedido = fac.numpedido; }
+  }
+
+  // ── Efectos según tipo ──
+  if (tipo === 'devolucion' && ncItems.length > 0) {
+    // Reponer inventario
+    var inv = getInventory();
+    ncItems.forEach(function(it) { inv[it.r] = (parseInt(inv[it.r])||0) + it.qty; });
+    saveInventory(inv);
+    syncInventoryToProducts();
+  }
+
+  // Ajustar CXC
+  var facs   = cxcFacs();
+  var facIdx = facs.findIndex(function(f){
+    return String(f.id) === String(cxcFacId) ||
+           (saleId && (f.saleId === String(saleId) || (nc.numpedido && f.numpedido === nc.numpedido)));
+  });
+  if (facIdx >= 0) {
+    facs[facIdx].saldo = Math.max(0, (facs[facIdx].saldo || 0) - total);
+    facs[facIdx].monto = Math.max(0, (facs[facIdx].monto || 0) - total);
+    facs[facIdx].notas = ((facs[facIdx].notas||'') + ' | NC ' + numero + ': -$' + total.toFixed(2) + ' (' + nc.motivo + ')').trim();
+    cxcSaveFacs(facs);
+    if (typeof cxcUpdateBadge === 'function') cxcUpdateBadge();
+  }
+
+  // Guardar NC
+  var allNC = ncGetAll();
+  allNC.unshift(nc);
+  ncSaveAll(allNC);
+
+  ncCerrarModal();
+
+  // Generar PDF automáticamente
+  setTimeout(function(){ ncGenerarPDF(nc.id); }, 300);
+
+  var tipoMsg = tipo === 'devolucion' ? 'Inventario repuesto. ' : tipo === 'incompleto' ? 'Sin cambio en inventario. ' : '';
+  showToast('✅ ' + numero + ' emitida. ' + tipoMsg + 'CXC ajustada.', 'success');
+
+  // Refrescar vistas
+  if (typeof renderHistorial === 'function') renderHistorial();
+  if (typeof cxcRenderBody   === 'function') cxcRenderBody();
+}
+window.ncConfirmar = ncConfirmar;
+
+// ── Generar PDF de NC ─────────────────────────────────────────────────────────
+function ncGenerarPDF(ncId) {
+  var allNC = ncGetAll();
+  var nc    = allNC.find(function(n){ return String(n.id) === String(ncId); });
+  if (!nc) return;
+
+  var logoSrc = (document.querySelector('.header-logo')||{}).src || '';
+  var tipoLabel = { devolucion: 'Devolución Física', incompleto: 'Despacho Incompleto', ajuste: 'Ajuste / Descuento' }[nc.tipo] || nc.tipo;
+  var tipoColor = { devolucion: '#15803d', incompleto: '#1d4ed8', ajuste: '#9333ea' }[nc.tipo] || '#1B1F6B';
+
+  var itemsRows = (nc.items || []).map(function(it) {
+    return '<tr>' +
+      '<td style="padding:6px 10px;font-weight:700;color:#1B1F6B;">' + it.r + '</td>' +
+      '<td style="padding:6px 10px;">' + (it.d||'') + '</td>' +
+      '<td style="padding:6px 10px;text-align:center;">' + it.qty + '</td>' +
+      '<td style="padding:6px 10px;text-align:right;">$ ' + (it.precio||0).toFixed(4) + '</td>' +
+      '<td style="padding:6px 10px;text-align:right;font-weight:700;">$ ' + (it.subtotal||0).toFixed(2) + '</td>' +
+    '</tr>';
+  }).join('');
+
+  var html = '<!DOCTYPE html><html><head><meta charset="utf-8">' +
+    '<style>' +
+      '@page{size:A4 portrait;margin:8mm 10mm;}' +
+      'print-color-adjust:exact;-webkit-print-color-adjust:exact;' +
+      'body{font-family:Arial,sans-serif;font-size:11px;color:#1a1a2e;margin:0;padding:0;}' +
+      '.hdr{background:linear-gradient(135deg,#1B1F6B,#2d3580);color:white;padding:14px 20px;display:flex;justify-content:space-between;align-items:center;border-radius:6px 6px 0 0;}' +
+      '.hdr-logo{background:white;border-radius:6px;padding:5px 10px;}' +
+      '.hdr-logo img{height:38px;object-fit:contain;}' +
+      '.hdr-title{text-align:right;}' +
+      '.nc-num{font-size:20px;font-weight:900;letter-spacing:1px;}' +
+      '.nc-sub{font-size:10px;opacity:.75;margin-top:2px;}' +
+      '.tipo-badge{display:inline-block;padding:3px 10px;border-radius:20px;font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:.5px;border:1.5px solid ' + tipoColor + ';color:' + tipoColor + ';margin:8px 0;}' +
+      '.info-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:12px 20px;background:#f8faff;}' +
+      '.info-item label{font-size:8px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#94a3b8;display:block;margin-bottom:2px;}' +
+      '.info-item span{font-size:11px;font-weight:700;color:#1B1F6B;}' +
+      'table{width:100%;border-collapse:collapse;margin:10px 20px;width:calc(100% - 40px);}' +
+      'th{background:#1B1F6B;color:white;padding:6px 10px;text-align:left;font-size:9px;text-transform:uppercase;letter-spacing:.4px;}' +
+      'tbody tr:nth-child(even){background:#f8faff;}' +
+      '.total-box{margin:10px 20px;background:linear-gradient(135deg,#14532d,#15803d);color:white;border-radius:8px;padding:12px 18px;display:flex;justify-content:space-between;align-items:center;}' +
+      '.total-box .lbl{font-size:10px;font-weight:700;opacity:.85;}' +
+      '.total-box .val{font-size:18px;font-weight:900;}' +
+      '.footer{padding:10px 20px;border-top:1px solid #e2e8f0;font-size:9px;color:#94a3b8;text-align:center;margin-top:8px;}' +
+      '@media print{button{display:none!important;}}' +
+    '</style></head><body>' +
+
+    '<div class="hdr">' +
+      '<div class="hdr-logo">' + (logoSrc ? '<img src="' + logoSrc + '">' : '<span style="font-size:14px;font-weight:900;color:#1B1F6B;">FARMERS C.A.</span>') + '</div>' +
+      '<div class="hdr-title">' +
+        '<div class="nc-num">' + nc.numero + '</div>' +
+        '<div class="nc-sub">NOTA DE CRÉDITO · ' + nc.fecha + '</div>' +
+      '</div>' +
+    '</div>' +
+
+    '<div style="padding:8px 20px 0;">' +
+      '<span class="tipo-badge">' + tipoLabel + '</span>' +
+      '<span style="font-size:9px;color:#64748b;margin-left:10px;">' + nc.motivo + '</span>' +
+    '</div>' +
+
+    '<div class="info-grid">' +
+      '<div class="info-item"><label>Cliente</label><span>' + (nc.cliente||'—') + '</span></div>' +
+      '<div class="info-item"><label>RIF</label><span>' + (nc.rif||'—') + '</span></div>' +
+      '<div class="info-item"><label>Factura Original</label><span>' + (nc.numpedido||'—') + '</span></div>' +
+      '<div class="info-item"><label>Fecha Emisión</label><span>' + nc.fecha + ' ' + (nc.hora||'') + '</span></div>' +
+    '</div>' +
+
+    (nc.items && nc.items.length > 0 ?
+      '<table><thead><tr>' +
+        '<th>Referencia</th><th>Descripción</th><th style="text-align:center;">Cant.</th>' +
+        '<th style="text-align:right;">Precio Unit.</th><th style="text-align:right;">Subtotal</th>' +
+      '</tr></thead><tbody>' + itemsRows + '</tbody></table>'
+    : '<div style="padding:10px 20px;font-size:10px;color:#64748b;">Nota de crédito por ajuste de precio/descuento.</div>') +
+
+    '<div class="total-box">' +
+      '<div class="lbl">TOTAL NOTA DE CRÉDITO</div>' +
+      '<div>' +
+        '<div class="val">$ ' + (nc.total||0).toFixed(2) + '</div>' +
+        (nc.totalBs > 0 ? '<div style="font-size:10px;opacity:.8;">Bs. ' + (nc.totalBs||0).toLocaleString('es-VE',{minimumFractionDigits:2,maximumFractionDigits:2}) + '</div>' : '') +
+      '</div>' +
+    '</div>' +
+
+    '<div class="footer">' +
+      'FARMERS C.A. · 0412-0445797 · farmersve@gmail.com · Nueva Esparta, Venezuela<br>' +
+      'Este documento es válido como soporte de crédito contra factura ' + (nc.numpedido||'') +
+    '</div>' +
+
+    '<div style="text-align:center;padding:10px;"><button onclick="window.print()" ' +
+      'style="padding:8px 20px;background:#1B1F6B;color:white;border:none;border-radius:6px;cursor:pointer;font-weight:700;">🖨️ Imprimir / Guardar PDF</button></div>' +
+
+    '</body></html>';
+
+  var blob = new Blob([html], {type:'text/html'});
+  var url  = URL.createObjectURL(blob);
+  var a    = document.createElement('a');
+  a.href   = url;
+  a.download = nc.numero + '_' + (nc.cliente||'cliente').replace(/[^a-zA-Z0-9]/g,'_').toUpperCase() + '_' + nc.fecha.replace(/\//g,'-') + '.html';
+  a.click();
+  setTimeout(function(){ URL.revokeObjectURL(url); }, 3000);
+}
+window.ncGenerarPDF = ncGenerarPDF;
+
+// ── Ver historial de NCs ──────────────────────────────────────────────────────
+function ncVerHistorial() {
+  var all = ncGetAll();
+  if (all.length === 0) { showToast('No hay notas de crédito emitidas aún.', 'info'); return; }
+
+  var old = document.getElementById('nc-hist-overlay');
+  if (old) old.remove();
+
+  var tipoLabel = function(t){ return { devolucion:'🔄 Dev. Física', incompleto:'📦 Desp. Incomp.', ajuste:'✏️ Ajuste' }[t]||t; };
+  var rows = all.map(function(nc){
+    return '<tr style="border-bottom:1px solid #f1f5f9;">' +
+      '<td style="padding:8px 12px;font-weight:900;color:#14532d;">' + nc.numero + '</td>' +
+      '<td style="padding:8px 12px;font-size:.82rem;">' + nc.fecha + '</td>' +
+      '<td style="padding:8px 12px;font-size:.82rem;color:#1B1F6B;font-weight:700;">' + (nc.cliente||'—') + '</td>' +
+      '<td style="padding:8px 12px;font-size:.78rem;">' + (nc.numpedido||'—') + '</td>' +
+      '<td style="padding:8px 12px;font-size:.78rem;">' + tipoLabel(nc.tipo) + '</td>' +
+      '<td style="padding:8px 12px;text-align:right;font-weight:700;color:#15803d;">$ ' + (nc.total||0).toFixed(2) + '</td>' +
+      '<td style="padding:8px 12px;">' +
+        '<button onclick="ncGenerarPDF(' + nc.id + ')" style="background:#f0fdf4;border:1px solid #86efac;color:#15803d;border-radius:5px;padding:3px 10px;cursor:pointer;font-size:.72rem;font-weight:700;">⬇️ PDF</button>' +
+      '</td>' +
+    '</tr>';
+  }).join('');
+
+  var ov = document.createElement('div');
+  ov.id = 'nc-hist-overlay';
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:99998;display:flex;align-items:center;justify-content:center;padding:16px;';
+  ov.innerHTML =
+    '<div style="background:white;border-radius:16px;width:min(820px,100%);max-height:88vh;overflow-y:auto;box-shadow:0 24px 64px rgba(0,0,0,.4);">' +
+      '<div style="background:linear-gradient(135deg,#14532d,#15803d);padding:16px 22px;border-radius:16px 16px 0 0;display:flex;justify-content:space-between;align-items:center;">' +
+        '<div style="font-family:Barlow Condensed,sans-serif;font-weight:900;font-size:1.15rem;color:white;">📋 Historial de Notas de Crédito (' + all.length + ')</div>' +
+        '<button onclick="document.getElementById(\'nc-hist-overlay\').remove()" style="background:rgba(255,255,255,.15);border:none;color:white;border-radius:8px;padding:5px 12px;cursor:pointer;font-weight:700;">✕</button>' +
+      '</div>' +
+      '<div style="padding:16px;">' +
+        '<table style="width:100%;border-collapse:collapse;">' +
+          '<thead><tr style="background:#f8faff;">' +
+            '<th style="padding:8px 12px;text-align:left;font-size:.65rem;color:#94a3b8;font-weight:700;text-transform:uppercase;">N°</th>' +
+            '<th style="padding:8px 12px;text-align:left;font-size:.65rem;color:#94a3b8;font-weight:700;text-transform:uppercase;">Fecha</th>' +
+            '<th style="padding:8px 12px;text-align:left;font-size:.65rem;color:#94a3b8;font-weight:700;text-transform:uppercase;">Cliente</th>' +
+            '<th style="padding:8px 12px;text-align:left;font-size:.65rem;color:#94a3b8;font-weight:700;text-transform:uppercase;">Factura</th>' +
+            '<th style="padding:8px 12px;text-align:left;font-size:.65rem;color:#94a3b8;font-weight:700;text-transform:uppercase;">Tipo</th>' +
+            '<th style="padding:8px 12px;text-align:right;font-size:.65rem;color:#94a3b8;font-weight:700;text-transform:uppercase;">Total</th>' +
+            '<th style="padding:8px 12px;font-size:.65rem;color:#94a3b8;font-weight:700;text-transform:uppercase;">Acción</th>' +
+          '</tr></thead>' +
+          '<tbody>' + rows + '</tbody>' +
+        '</table>' +
+      '</div>' +
+    '</div>';
+  document.body.appendChild(ov);
+}
+window.ncVerHistorial = ncVerHistorial;
 </script>
 </body>
 </html>
