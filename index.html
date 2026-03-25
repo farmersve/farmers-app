@@ -3274,6 +3274,7 @@ function downloadExcel() {
   const rowHeights = [{hpt:40},{hpt:30},{hpt:30},{hpt:15},{hpt:30}];
   for(let i=0; i<orderedProducts.length; i++) rowHeights.push({hpt:22});
   ws['!rows'] = rowHeights;
+  ws['!calcpr'] = { fullCalcOnLoad: true };
 
   XLSX.utils.book_append_sheet(wb, ws, 'PEDIDO '+mn[selectedMoneda]);
 
@@ -9551,10 +9552,9 @@ function catDownloadExcel(monedasParam) {
         var ordRef = XLSX.utils.encode_col(colO-1) + fila;
         var preRef = XLSX.utils.encode_col(colP-1) + fila;
         if (!modoCliente) {
-          var exCol   = XLSX.utils.encode_col(colO+1) + fila;  // columna EXISTENCIA
           return [p.r||'', String(p.b||''), p.c||'', p.d||'',
                   p.e||'UNIDAD', p.m||'', p.br||'',
-                  precio, null, {f: ordRef+'*'+preRef}, ex, {f: exCol+'-'+ordRef}];
+                  precio, null, {f: ordRef+'*'+preRef}, ex, ex];  // EXIST.TOTAL se sobreescribe con fórmula abajo
         } else {
           return [p.r||'', String(p.b||''), p.d||'',
                   p.e||'UNIDAD', p.m||'', p.br||'',
@@ -9580,6 +9580,19 @@ function catDownloadExcel(monedasParam) {
 
       var aoa = [r1, r2, r3, new Array(ncols).fill(null), heads].concat(rows).concat([totRow]);
       var ws  = XLSX.utils.aoa_to_sheet(aoa);
+
+      // Escribir fórmulas EXIST. TOTAL directamente en cada celda (col L = índice 11)
+      if (!modoCliente) {
+        var existCol = XLSX.utils.encode_col(10);  // K = EXISTENCIA
+        var ordColL  = XLSX.utils.encode_col(8);   // I = ORDEN
+        var etCol    = XLSX.utils.encode_col(11);  // L = EXIST. TOTAL
+        prods.forEach(function(p, i) {
+          var row = i + 6;
+          var exVal = _catGetStock(p, inv);
+          ws[etCol + row] = { t:'n', f: existCol+row+'-'+ordColL+row, v: exVal };
+        });
+      }
+      ws['!calcpr'] = { fullCalcOnLoad: true };
       ws['!cols']   = widths.map(function(w){ return {wch:w}; });
       ws['!merges'] = [{s:{r:0,c:0}, e:{r:0,c:ncols-1}}];
       XLSX.utils.book_append_sheet(wb, ws, '('+monLabel+')');
