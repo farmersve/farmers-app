@@ -25276,27 +25276,38 @@ function ncConfirmar(saleId, cxcFacId, tasa, moneda, itemsOrig) {
   }
 
   if (facIdx < 0 && saleId) {
-    // Último fallback: buscar por saleId vinculado
+    // Fallback: buscar por saleId vinculado
     facIdx = facs.findIndex(function(f){
       return f.saleId && f.saleId === String(saleId);
     });
   }
 
+  // Fallback final: buscar por nombre de cliente (cuando NC no tiene ID ni numpedido)
+  if (facIdx < 0 && nc.cliente) {
+    var clienteNorm = nc.cliente.toLowerCase().trim();
+    var matches = [];
+    facs.forEach(function(f, i) {
+      var nombre = (f.clienteNombre || f.cliente || '').toLowerCase().trim();
+      if (nombre === clienteNorm && cxcEstado(f) !== 'PAGADA') matches.push(i);
+    });
+    // Solo vincular automáticamente si hay UNA sola factura pendiente del cliente
+    if (matches.length === 1) facIdx = matches[0];
+  }
+
   if (facIdx >= 0) {
+    // Actualizar nc con los datos reales de la factura encontrada (para que reconciliación futura funcione)
+    if (!nc.cxcFacId || nc.cxcFacId === '') nc.cxcFacId = facs[facIdx].id || '';
+    if (!nc.numpedido || nc.numpedido === '') nc.numpedido = facs[facIdx].numpedido || '';
     var facAntes = facs[facIdx].saldo || 0;
     // NC solo reduce el SALDO (pendiente de cobro), nunca el MONTO (monto facturado original)
-    // f.monto = monto original de la factura → NUNCA cambia
-    // f.saldo = lo que queda por cobrar → se reduce con pagos y NCs
-    // totalPagado = f.monto - f.saldo (incluye pagos en efectivo + NCs)
     facs[facIdx].saldo = Math.max(0, facAntes - total);
     facs[facIdx].notas = ((facs[facIdx].notas||'') + ' | NC ' + numero + ': -$' + total.toFixed(2) + ' (' + nc.motivo + ')').trim();
     cxcSaveFacs(facs);
     if (typeof cxcUpdateBadge === 'function') cxcUpdateBadge();
     console.log('[NC] Factura', facs[facIdx].numpedido, '— saldo', facAntes.toFixed(2), '→', facs[facIdx].saldo.toFixed(2));
   } else {
-    // No se encontró factura vinculada — avisar pero guardar NC igual
-    console.warn('[NC] No se encontró factura CXC para vincular. cxcFacId:', cxcFacId, 'numpedido:', nc.numpedido);
-    showToast('⚠️ NC emitida pero no se encontró factura CXC vinculada. Ajusta el saldo manualmente.', 'warning');
+    console.warn('[NC] No se encontró factura CXC. cxcFacId:', cxcFacId, 'numpedido:', nc.numpedido, 'cliente:', nc.cliente);
+    showToast('⚠️ NC emitida pero no se encontró factura CXC vinculada. Usa "Reconciliar NC" para corregir.', 'warning');
   }
 
   // Guardar NC
@@ -25484,48 +25495,67 @@ function ncReconciliarSaldos() {
   var allNC  = ncGetAll();
   if (!allNC.length) { showToast('No hay Notas de Crédito registradas.', 'info'); return; }
 
-  var facs   = cxcFacs();
-  var fixes  = [];
+  var facs  = cxcFacs();
+  var fixes = [];
+  // Mapa: facIdx → NCs que le corresponden (para calcular sumNCs correctamente)
+  var facNCs = {};
 
+  // PASO 1: Vincular cada NC a su factura (múltiples estrategias)
   allNC.forEach(function(nc) {
-    // Encontrar la factura vinculada (mismo orden de prioridad que ncConfirmar)
     var facIdx = -1;
 
-    if (nc.cxcFacId && nc.cxcFacId !== '' && nc.cxcFacId !== 'null') {
+    // Estrategia 1: ID exacto
+    if (nc.cxcFacId && nc.cxcFacId !== '' && nc.cxcFacId !== 'null' && nc.cxcFacId !== 'undefined') {
       facIdx = facs.findIndex(function(f){ return String(f.id) === String(nc.cxcFacId); });
     }
-    if (facIdx < 0 && nc.numpedido) {
+    // Estrategia 2: numpedido
+    if (facIdx < 0 && nc.numpedido && nc.numpedido !== '') {
       facIdx = facs.findIndex(function(f){ return f.numpedido && f.numpedido === nc.numpedido; });
     }
+    // Estrategia 3: saleId
     if (facIdx < 0 && nc.saleId && nc.saleId !== '') {
       facIdx = facs.findIndex(function(f){ return f.saleId && f.saleId === String(nc.saleId); });
     }
-
-    if (facIdx < 0) return; // NC sin factura vinculada
-
-    var fac = facs[facIdx];
-
-    // Calcular saldo esperado: monto original - sum(pagos) - sum(NCs vinculadas a esta factura)
-    var sumPagos = (fac.pagos || []).reduce(function(s, p){ return s + (p.monto||0); }, 0);
-    var sumNCs   = allNC.filter(function(n){
-      return String(n.cxcFacId) === String(fac.id) ||
-             (n.numpedido && n.numpedido === fac.numpedido);
-    }).reduce(function(s, n){ return s + (n.total||0); }, 0);
-
-    var saldoEsperado = Math.max(0, (fac.monto||0) - sumPagos - sumNCs);
-    var saldoActual   = fac.saldo || 0;
-    var diff          = Math.abs(saldoActual - saldoEsperado);
-
-    if (diff > 0.001) {
-      fixes.push({
-        facIdx:   facIdx,
-        numpedido: fac.numpedido || fac.id,
-        cliente:  fac.clienteNombre || fac.cliente || '—',
-        antes:    saldoActual,
-        despues:  saldoEsperado,
-        diff:     saldoActual - saldoEsperado
+    // Estrategia 4: cliente + monto exacto o cercano (NC huérfana)
+    if (facIdx < 0 && nc.cliente && nc.cliente !== '') {
+      // Buscar factura del mismo cliente donde el saldo no cuadra con las NCs
+      var matches = [];
+      facs.forEach(function(f, i) {
+        var nombre = f.clienteNombre || f.cliente || '';
+        if (nombre.toLowerCase().trim() === nc.cliente.toLowerCase().trim()) {
+          matches.push(i);
+        }
       });
-      facs[facIdx].saldo = saldoEsperado;
+      // Si solo hay una factura de ese cliente, vincular directamente
+      if (matches.length === 1) facIdx = matches[0];
+    }
+
+    if (facIdx >= 0) {
+      if (!facNCs[facIdx]) facNCs[facIdx] = [];
+      facNCs[facIdx].push(nc);
+    }
+  });
+
+  // PASO 2: Para cada factura con NCs vinculadas, calcular saldo esperado
+  Object.keys(facNCs).forEach(function(idxStr) {
+    var facIdx     = parseInt(idxStr);
+    var fac        = facs[facIdx];
+    var ncsVinc    = facNCs[facIdx];
+    var sumPagos   = (fac.pagos || []).reduce(function(s,p){ return s+(p.monto||0); }, 0);
+    var sumNCs     = ncsVinc.reduce(function(s,n){ return s+(n.total||0); }, 0);
+    var saldoEsp   = Math.max(0, (fac.monto||0) - sumPagos - sumNCs);
+    var saldoActual = fac.saldo || 0;
+
+    if (Math.abs(saldoActual - saldoEsp) > 0.001) {
+      fixes.push({
+        facIdx:    facIdx,
+        numpedido: fac.numpedido || fac.id,
+        cliente:   fac.clienteNombre || fac.cliente || '—',
+        antes:     saldoActual,
+        despues:   saldoEsp,
+        ncs:       ncsVinc.map(function(n){ return n.numero; }).join(', ')
+      });
+      facs[facIdx].saldo = saldoEsp;
     }
   });
 
@@ -25534,9 +25564,9 @@ function ncReconciliarSaldos() {
     return;
   }
 
-  // Confirmar antes de aplicar
+  // Confirmar
   var resumen = fixes.map(function(f){
-    return '• ' + f.cliente + ' (Fac. ' + f.numpedido + '): $' +
+    return '• ' + f.cliente + ' (Fac. ' + f.numpedido + ') [' + f.ncs + ']: $' +
       f.antes.toFixed(2) + ' → $' + f.despues.toFixed(2);
   }).join('\n');
 
@@ -25544,11 +25574,9 @@ function ncReconciliarSaldos() {
 
   cxcSaveFacs(facs);
   if (typeof cxcUpdateBadge === 'function') cxcUpdateBadge();
-
   setTimeout(function(){
     if (typeof cxcGoTab === 'function' && typeof _cxcTab !== 'undefined') cxcGoTab(_cxcTab);
   }, 150);
-
   showToast('✅ ' + fixes.length + ' saldo(s) corregido(s) y sincronizados con Firebase.', 'success');
 }
 window.ncReconciliarSaldos = ncReconciliarSaldos;
