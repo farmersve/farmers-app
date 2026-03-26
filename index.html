@@ -14928,7 +14928,7 @@ function cxcRenderEstadoCuenta(body,cl){
       var tr = document.createElement('tr');
       tr.style.cssText = 'border-bottom:1px solid #e7f9ee;' + (i%2===0?'background:#fff;':'background:#f9fffe;');
       tr.innerHTML = '<td style="padding:9px 16px;font-weight:900;color:#14532d;font-size:.82rem;">' + nc.numero + '</td>'
-        + '<td style="padding:9px 16px;font-size:.78rem;color:var(--cxc-muted);">' + nc.fecha + '</td>'
+        + '<td style="padding:9px 16px;font-size:.78rem;color:var(--cxc-muted);">' + (nc.fechaDisplay||nc.fecha) + '</td>'
         + '<td style="padding:9px 16px;font-size:.78rem;color:var(--cxc-navy);font-weight:700;">' + (nc.numpedido||'—') + '</td>'
         + '<td style="padding:9px 16px;font-size:.75rem;">' + (tipoLabel[nc.tipo]||nc.tipo) + '</td>'
         + '<td style="padding:9px 16px;font-size:.75rem;color:var(--cxc-muted);max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + (nc.motivo||'') + '">' + (nc.motivo||'—') + '</td>'
@@ -25205,10 +25205,17 @@ function ncConfirmar(saleId, cxcFacId, tasa, moneda, itemsOrig) {
   // Crear registro NC
   var now    = new Date();
   var numero = ncNextNum();
+  // Fecha en YYYY-MM-DD para compatibilidad con cxcFecha() y ordenamiento cronológico
+  var ncFechaISO = now.getFullYear() + '-' +
+    String(now.getMonth()+1).padStart(2,'0') + '-' +
+    String(now.getDate()).padStart(2,'0');
+  // Fecha legible para mostrar en PDF y UI
+  var ncFechaDisplay = now.toLocaleDateString('es-VE', {day:'2-digit', month:'2-digit', year:'numeric'});
   var nc = {
     id:        Date.now(),
     numero:    numero,
-    fecha:     now.toLocaleDateString('es-VE', {day:'2-digit', month:'2-digit', year:'numeric'}),
+    fecha:     ncFechaISO,          // YYYY-MM-DD — para cxcFecha() y orden cronológico
+    fechaDisplay: ncFechaDisplay,   // dd/mm/yyyy — para mostrar en UI y PDF
     hora:      now.toLocaleTimeString('es-VE', {hour:'2-digit', minute:'2-digit'}),
     tipo:      tipo,
     motivo:    motivo || (tipo === 'devolucion' ? 'Devolución de mercancía' : tipo === 'incompleto' ? 'Despacho incompleto' : 'Ajuste de precio'),
@@ -25270,8 +25277,11 @@ function ncConfirmar(saleId, cxcFacId, tasa, moneda, itemsOrig) {
 
   if (facIdx >= 0) {
     var facAntes = facs[facIdx].saldo || 0;
+    // NC solo reduce el SALDO (pendiente de cobro), nunca el MONTO (monto facturado original)
+    // f.monto = monto original de la factura → NUNCA cambia
+    // f.saldo = lo que queda por cobrar → se reduce con pagos y NCs
+    // totalPagado = f.monto - f.saldo (incluye pagos en efectivo + NCs)
     facs[facIdx].saldo = Math.max(0, facAntes - total);
-    facs[facIdx].monto = Math.max(0, (facs[facIdx].monto || 0) - total);
     facs[facIdx].notas = ((facs[facIdx].notas||'') + ' | NC ' + numero + ': -$' + total.toFixed(2) + ' (' + nc.motivo + ')').trim();
     cxcSaveFacs(facs);
     if (typeof cxcUpdateBadge === 'function') cxcUpdateBadge();
@@ -25298,11 +25308,14 @@ function ncConfirmar(saleId, cxcFacId, tasa, moneda, itemsOrig) {
 
   // Refrescar vistas
   if (typeof renderHistorial === 'function') renderHistorial();
-  // Refrescar CXC si está abierto
-  if (typeof cxcGoTab === 'function' && typeof _cxcTab !== 'undefined') {
+  // Refrescar CXC si está abierto — con pequeño delay para que cxcSaveFacs haya persistido
+  setTimeout(function() {
+    if (typeof cxcGoTab !== 'function') return;
     var cxcModal = document.getElementById('cxc-modal');
-    if (cxcModal && cxcModal.classList.contains('open')) cxcGoTab(_cxcTab);
-  }
+    if (!cxcModal || !cxcModal.classList.contains('open')) return;
+    // Siempre recargar el tab activo (incluye 'clientes' con _cxcSelCl)
+    if (typeof _cxcTab !== 'undefined') cxcGoTab(_cxcTab);
+  }, 150);
 }
 window.ncConfirmar = ncConfirmar;
 
@@ -25355,7 +25368,7 @@ function ncGenerarPDF(ncId) {
       '<div class="hdr-logo">' + (logoSrc ? '<img src="' + logoSrc + '">' : '<span style="font-size:14px;font-weight:900;color:#1B1F6B;">FARMERS C.A.</span>') + '</div>' +
       '<div class="hdr-title">' +
         '<div class="nc-num">' + nc.numero + '</div>' +
-        '<div class="nc-sub">NOTA DE CRÉDITO · ' + nc.fecha + '</div>' +
+        '<div class="nc-sub">NOTA DE CRÉDITO · ' + (nc.fechaDisplay||nc.fecha) + '</div>' +
       '</div>' +
     '</div>' +
 
@@ -25368,7 +25381,7 @@ function ncGenerarPDF(ncId) {
       '<div class="info-item"><label>Cliente</label><span>' + (nc.cliente||'—') + '</span></div>' +
       '<div class="info-item"><label>RIF</label><span>' + (nc.rif||'—') + '</span></div>' +
       '<div class="info-item"><label>Factura Original</label><span>' + (nc.numpedido||'—') + '</span></div>' +
-      '<div class="info-item"><label>Fecha Emisión</label><span>' + nc.fecha + ' ' + (nc.hora||'') + '</span></div>' +
+      '<div class="info-item"><label>Fecha Emisión</label><span>' + (nc.fechaDisplay||nc.fecha) + ' ' + (nc.hora||'') + '</span></div>' +
     '</div>' +
 
     (nc.items && nc.items.length > 0 ?
@@ -25400,7 +25413,7 @@ function ncGenerarPDF(ncId) {
   var url  = URL.createObjectURL(blob);
   var a    = document.createElement('a');
   a.href   = url;
-  a.download = nc.numero + '_' + (nc.cliente||'cliente').replace(/[^a-zA-Z0-9]/g,'_').toUpperCase() + '_' + nc.fecha.replace(/\//g,'-') + '.html';
+  a.download = nc.numero + '_' + (nc.cliente||'cliente').replace(/[^a-zA-Z0-9]/g,'_').toUpperCase() + '_' + (nc.fechaDisplay||nc.fecha).replace(/\//g,'-').replace(/-/g,'_') + '.html';
   a.click();
   setTimeout(function(){ URL.revokeObjectURL(url); }, 3000);
 }
@@ -25418,7 +25431,7 @@ function ncVerHistorial() {
   var rows = all.map(function(nc){
     return '<tr style="border-bottom:1px solid #f1f5f9;">' +
       '<td style="padding:8px 12px;font-weight:900;color:#14532d;">' + nc.numero + '</td>' +
-      '<td style="padding:8px 12px;font-size:.82rem;">' + nc.fecha + '</td>' +
+      '<td style="padding:8px 12px;font-size:.82rem;">' + (nc.fechaDisplay||nc.fecha) + '</td>' +
       '<td style="padding:8px 12px;font-size:.82rem;color:#1B1F6B;font-weight:700;">' + (nc.cliente||'—') + '</td>' +
       '<td style="padding:8px 12px;font-size:.78rem;">' + (nc.numpedido||'—') + '</td>' +
       '<td style="padding:8px 12px;font-size:.78rem;">' + tipoLabel(nc.tipo) + '</td>' +
