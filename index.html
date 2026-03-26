@@ -13392,6 +13392,13 @@ document.addEventListener('keydown',function(e){if(e.key==='Escape')closeImgLigh
     <div class="cxc-tab"       id="cxc-tab-clientes" onclick="cxcGoTab('clientes')">👥 Por Cliente</div>
     <div class="cxc-tab"       id="cxc-tab-notif"    onclick="cxcGoTab('notif')">🔔 Notificaciones</div>
     <div style="flex:1;"></div>
+    <button onclick="ncReconciliarSaldos()" 
+      title="Corregir saldos de facturas según Notas de Crédito emitidas"
+      style="margin-right:8px;padding:5px 12px;border-radius:8px;border:1.5px solid #86efac;
+             background:#f0fdf4;color:#15803d;font-size:.7rem;font-weight:700;cursor:pointer;
+             display:flex;align-items:center;gap:5px;transition:all .15s;white-space:nowrap;">
+      🔁 <span>Reconciliar NC</span>
+    </button>
     <button id="cxc-reconciliar-btn" onclick="cxcMostrarReconciliacion()"
       title="Detectar pagos de CXC no registrados en Bancos"
       style="margin-right:12px;padding:5px 12px;border-radius:8px;border:1.5px solid #f59e0b;
@@ -25469,6 +25476,82 @@ function ncVerHistorial() {
   document.body.appendChild(ov);
 }
 window.ncVerHistorial = ncVerHistorial;
+
+// ── Reconciliar saldos CXC con NCs emitidas ───────────────────────────────
+// Corrige facturas cuyo f.saldo no refleja las NCs emitidas
+// (útil para datos emitidos con versiones anteriores del sistema)
+function ncReconciliarSaldos() {
+  var allNC  = ncGetAll();
+  if (!allNC.length) { showToast('No hay Notas de Crédito registradas.', 'info'); return; }
+
+  var facs   = cxcFacs();
+  var fixes  = [];
+
+  allNC.forEach(function(nc) {
+    // Encontrar la factura vinculada (mismo orden de prioridad que ncConfirmar)
+    var facIdx = -1;
+
+    if (nc.cxcFacId && nc.cxcFacId !== '' && nc.cxcFacId !== 'null') {
+      facIdx = facs.findIndex(function(f){ return String(f.id) === String(nc.cxcFacId); });
+    }
+    if (facIdx < 0 && nc.numpedido) {
+      facIdx = facs.findIndex(function(f){ return f.numpedido && f.numpedido === nc.numpedido; });
+    }
+    if (facIdx < 0 && nc.saleId && nc.saleId !== '') {
+      facIdx = facs.findIndex(function(f){ return f.saleId && f.saleId === String(nc.saleId); });
+    }
+
+    if (facIdx < 0) return; // NC sin factura vinculada
+
+    var fac = facs[facIdx];
+
+    // Calcular saldo esperado: monto original - sum(pagos) - sum(NCs vinculadas a esta factura)
+    var sumPagos = (fac.pagos || []).reduce(function(s, p){ return s + (p.monto||0); }, 0);
+    var sumNCs   = allNC.filter(function(n){
+      return String(n.cxcFacId) === String(fac.id) ||
+             (n.numpedido && n.numpedido === fac.numpedido);
+    }).reduce(function(s, n){ return s + (n.total||0); }, 0);
+
+    var saldoEsperado = Math.max(0, (fac.monto||0) - sumPagos - sumNCs);
+    var saldoActual   = fac.saldo || 0;
+    var diff          = Math.abs(saldoActual - saldoEsperado);
+
+    if (diff > 0.001) {
+      fixes.push({
+        facIdx:   facIdx,
+        numpedido: fac.numpedido || fac.id,
+        cliente:  fac.clienteNombre || fac.cliente || '—',
+        antes:    saldoActual,
+        despues:  saldoEsperado,
+        diff:     saldoActual - saldoEsperado
+      });
+      facs[facIdx].saldo = saldoEsperado;
+    }
+  });
+
+  if (!fixes.length) {
+    showToast('✅ Todos los saldos están correctos. No se necesitan correcciones.', 'success');
+    return;
+  }
+
+  // Confirmar antes de aplicar
+  var resumen = fixes.map(function(f){
+    return '• ' + f.cliente + ' (Fac. ' + f.numpedido + '): $' +
+      f.antes.toFixed(2) + ' → $' + f.despues.toFixed(2);
+  }).join('\n');
+
+  if (!confirm('🔁 Reconciliar NC — Se corregirán ' + fixes.length + ' factura(s):\n\n' + resumen + '\n\n¿Aplicar correcciones?')) return;
+
+  cxcSaveFacs(facs);
+  if (typeof cxcUpdateBadge === 'function') cxcUpdateBadge();
+
+  setTimeout(function(){
+    if (typeof cxcGoTab === 'function' && typeof _cxcTab !== 'undefined') cxcGoTab(_cxcTab);
+  }, 150);
+
+  showToast('✅ ' + fixes.length + ' saldo(s) corregido(s) y sincronizados con Firebase.', 'success');
+}
+window.ncReconciliarSaldos = ncReconciliarSaldos;
 </script>
 </body>
 </html>
