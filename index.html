@@ -14747,7 +14747,7 @@ function cxcRenderEstadoCuenta(body,cl){
     +'<div style="font-size:.68rem;color:var(--cxc-muted);">'+facs.length+' factura'+(facs.length!==1?'s':'')+'</div>';
   estCard.appendChild(estHdr);
 
-  // Construir movimientos: mezclar facturas y pagos cronológicamente
+  // Construir movimientos: mezclar facturas, pagos y NCs cronológicamente
   var movs=[];
   facs.forEach(function(f){
     movs.push({tipo:'factura',fecha:f.fechaEmision||'',factura:f,monto:f.monto||0});
@@ -14755,6 +14755,18 @@ function cxcRenderEstadoCuenta(body,cl){
       movs.push({tipo:'pago',fecha:p.fecha||'',factura:f,pago:p,monto:p.monto||0});
     });
   });
+
+  // Agregar NCs del cliente como movimientos de abono
+  var facIds    = facs.map(function(f){ return f.id; });
+  var numpedArr = facs.map(function(f){ return f.numpedido; }).filter(Boolean);
+  ncGetAll().filter(function(nc){
+    return facIds.indexOf(nc.cxcFacId) >= 0 ||
+           numpedArr.indexOf(nc.numpedido) >= 0 ||
+           nc.cliente === cl.nombre;
+  }).forEach(function(nc){
+    movs.push({tipo:'nc', fecha:nc.fecha||'', nc:nc, monto:nc.total||0});
+  });
+
   movs.sort(function(a,b){return (a.fecha||'').localeCompare(b.fecha||'');});
 
   // Saldo corriente
@@ -14817,7 +14829,7 @@ function cxcRenderEstadoCuenta(body,cl){
           +'<span style="background:'+badgeBg+';color:'+estCol+';padding:3px 9px;border-radius:20px;font-size:.65rem;font-weight:800;letter-spacing:.5px;text-transform:uppercase;display:block;margin-bottom:5px;">'+est+'</span>'
           +(est!=='PAGADA'?'<button onclick="ncMostrarModal(null,\'cxc\',\''+m.factura.id+'\')" style="padding:3px 10px;background:#f0fdf4;color:#15803d;border:1px solid #86efac;border-radius:6px;font-size:.62rem;font-weight:700;cursor:pointer;white-space:nowrap;">📋 NC</button>':'')
         +'</td>';
-    } else {
+    } else if (m.tipo === 'pago') {
       saldoAcum-=m.monto;
       var mod=m.pago.modalidadLabel||m.pago.modalidad||'Pago';
       var ref=m.pago.ref?(' · Ref: '+m.pago.ref):'';
@@ -14835,6 +14847,28 @@ function cxcRenderEstadoCuenta(body,cl){
         +'<td style="padding:8px 12px;text-align:center;">'
         +'<span style="background:#dcfce7;color:var(--cxc-green);padding:3px 9px;border-radius:20px;font-size:.65rem;font-weight:800;letter-spacing:.5px;display:block;margin-bottom:4px;">ABONO</span>'
         +'<button onclick="cxcComprobantePago(\'' +m.factura.id+ '\',\'' +m.pago.ts+ '\')" style="padding:3px 10px;background:#6d28d9;color:#fff;border:none;border-radius:6px;font-size:.62rem;font-weight:700;cursor:pointer;font-family:var(--cxc-font);white-space:nowrap;">📄 Comprobante</button>'
+        +'</td>';
+    } else if (m.tipo === 'nc') {
+      // ── FILA NOTA DE CRÉDITO ───────────────────────────────────────────
+      saldoAcum -= m.monto;
+      var tipoNcLabel = {devolucion:'Dev. Física', incompleto:'Desp. Incompl.', ajuste:'Ajuste'}[m.nc.tipo] || m.nc.tipo;
+      var bsNc = (m.nc.totalBs > 0 && m.nc.tasa > 0)
+        ? ' · Bs. ' + Number(m.nc.totalBs).toLocaleString('es-VE',{minimumFractionDigits:2,maximumFractionDigits:2})
+          + ' (' + Number(m.nc.tasa).toFixed(2) + ' Bs/$)'
+        : '';
+      tr.style.background = i%2===0 ? '#f0fdf4' : '#dcfce7';
+      tr.innerHTML = '<td style="padding:11px 16px;font-size:.75rem;color:var(--cxc-muted);white-space:nowrap;">'+cxcFecha(m.fecha)+'</td>'
+        +'<td style="padding:11px 16px;">'
+          +'<div style="font-size:.78rem;font-weight:700;color:#14532d;">📋 '+m.nc.numero+' — '+ tipoNcLabel +'</div>'
+          +'<div style="font-size:.68rem;color:var(--cxc-muted);margin-top:2px;">'+(m.nc.motivo||'')+(bsNc||'')+'</div>'
+        +'</td>'
+        +'<td style="padding:11px 16px;text-align:right;color:var(--cxc-muted);">—</td>'
+        +'<td style="padding:11px 16px;text-align:right;font-family:Barlow Condensed,sans-serif;font-size:.95rem;font-weight:900;color:#14532d;">$ '+cxcFmt(m.monto)+'</td>'
+        +ecCeldaBs(m.monto)
+        +'<td style="padding:11px 16px;text-align:right;font-family:Barlow Condensed,sans-serif;font-size:.95rem;font-weight:900;color:'+(saldoAcum<=0?'var(--cxc-green)':'var(--cxc-navy)')+';">$ '+cxcFmt(Math.max(0,saldoAcum))+'</td>'
+        +'<td style="padding:8px 12px;text-align:center;">'
+          +'<span style="background:#dcfce7;color:#14532d;padding:3px 9px;border-radius:20px;font-size:.65rem;font-weight:800;letter-spacing:.5px;display:block;margin-bottom:4px;">NC</span>'
+          +'<button onclick="ncGenerarPDF('+m.nc.id+')" style="padding:3px 10px;background:#f0fdf4;color:#15803d;border:1px solid #86efac;border-radius:6px;font-size:.62rem;font-weight:700;cursor:pointer;white-space:nowrap;">📋 PDF</button>'
         +'</td>';
     }
     tbody.appendChild(tr);
@@ -25193,8 +25227,12 @@ function ncConfirmar(saleId, cxcFacId, tasa, moneda, itemsOrig) {
     if (sale) { nc.cliente = sale.cliente; nc.rif = sale.rif; nc.numpedido = sale.numpedido; }
   }
   if (!nc.cliente && cxcFacId) {
-    var fac = cxcFacs().find(function(f){ return String(f.id) === String(cxcFacId); });
-    if (fac) { nc.cliente = fac.cliente; nc.rif = fac.rif; nc.numpedido = fac.numpedido; }
+    var fac0 = cxcFacs().find(function(f){ return String(f.id) === String(cxcFacId); });
+    if (fac0) {
+      nc.cliente   = fac0.clienteNombre || fac0.cliente || '';
+      nc.rif       = fac0.rif || '';
+      nc.numpedido = fac0.numpedido || '';
+    }
   }
 
   // ── Efectos según tipo ──
@@ -25206,18 +25244,42 @@ function ncConfirmar(saleId, cxcFacId, tasa, moneda, itemsOrig) {
     syncInventoryToProducts();
   }
 
-  // Ajustar CXC
+  // ── Ajustar CXC ─────────────────────────────────────────────────────────
+  // IMPORTANTE: solo buscar por cxcFacId si es un ID real (no vacío)
   var facs   = cxcFacs();
-  var facIdx = facs.findIndex(function(f){
-    return String(f.id) === String(cxcFacId) ||
-           (saleId && (f.saleId === String(saleId) || (nc.numpedido && f.numpedido === nc.numpedido)));
-  });
+  var facIdx = -1;
+
+  if (cxcFacId && cxcFacId !== 'null' && cxcFacId !== 'undefined' && cxcFacId !== '') {
+    // Viene directamente desde CXC — buscar por ID exacto
+    facIdx = facs.findIndex(function(f){ return String(f.id) === String(cxcFacId); });
+  }
+
+  if (facIdx < 0 && nc.numpedido) {
+    // Fallback: buscar por número de pedido/factura
+    facIdx = facs.findIndex(function(f){
+      return f.numpedido && f.numpedido === nc.numpedido;
+    });
+  }
+
+  if (facIdx < 0 && saleId) {
+    // Último fallback: buscar por saleId vinculado
+    facIdx = facs.findIndex(function(f){
+      return f.saleId && f.saleId === String(saleId);
+    });
+  }
+
   if (facIdx >= 0) {
-    facs[facIdx].saldo = Math.max(0, (facs[facIdx].saldo || 0) - total);
+    var facAntes = facs[facIdx].saldo || 0;
+    facs[facIdx].saldo = Math.max(0, facAntes - total);
     facs[facIdx].monto = Math.max(0, (facs[facIdx].monto || 0) - total);
     facs[facIdx].notas = ((facs[facIdx].notas||'') + ' | NC ' + numero + ': -$' + total.toFixed(2) + ' (' + nc.motivo + ')').trim();
     cxcSaveFacs(facs);
     if (typeof cxcUpdateBadge === 'function') cxcUpdateBadge();
+    console.log('[NC] Factura', facs[facIdx].numpedido, '— saldo', facAntes.toFixed(2), '→', facs[facIdx].saldo.toFixed(2));
+  } else {
+    // No se encontró factura vinculada — avisar pero guardar NC igual
+    console.warn('[NC] No se encontró factura CXC para vincular. cxcFacId:', cxcFacId, 'numpedido:', nc.numpedido);
+    showToast('⚠️ NC emitida pero no se encontró factura CXC vinculada. Ajusta el saldo manualmente.', 'warning');
   }
 
   // Guardar NC
@@ -25231,11 +25293,16 @@ function ncConfirmar(saleId, cxcFacId, tasa, moneda, itemsOrig) {
   setTimeout(function(){ ncGenerarPDF(nc.id); }, 300);
 
   var tipoMsg = tipo === 'devolucion' ? 'Inventario repuesto. ' : tipo === 'incompleto' ? 'Sin cambio en inventario. ' : '';
-  showToast('✅ ' + numero + ' emitida. ' + tipoMsg + 'CXC ajustada.', 'success');
+  var cxcMsg  = facIdx >= 0 ? 'CXC ajustada (-$' + total.toFixed(2) + ').' : '';
+  showToast('✅ ' + numero + ' emitida. ' + tipoMsg + cxcMsg, 'success');
 
   // Refrescar vistas
   if (typeof renderHistorial === 'function') renderHistorial();
-  if (typeof cxcRenderBody   === 'function') cxcRenderBody();
+  // Refrescar CXC si está abierto
+  if (typeof cxcGoTab === 'function' && typeof _cxcTab !== 'undefined') {
+    var cxcModal = document.getElementById('cxc-modal');
+    if (cxcModal && cxcModal.classList.contains('open')) cxcGoTab(_cxcTab);
+  }
 }
 window.ncConfirmar = ncConfirmar;
 
@@ -25315,7 +25382,7 @@ function ncGenerarPDF(ncId) {
       '<div class="lbl">TOTAL NOTA DE CRÉDITO</div>' +
       '<div>' +
         '<div class="val">$ ' + (nc.total||0).toFixed(2) + '</div>' +
-        (nc.totalBs > 0 ? '<div style="font-size:10px;opacity:.8;">Bs. ' + (nc.totalBs||0).toLocaleString('es-VE',{minimumFractionDigits:2,maximumFractionDigits:2}) + '</div>' : '') +
+        (nc.totalBs > 0 ? '<div style="font-size:10px;opacity:.8;">Bs. ' + (nc.totalBs||0).toLocaleString('es-VE',{minimumFractionDigits:2,maximumFractionDigits:2}) + (nc.tasa>0?' · Tasa: '+Number(nc.tasa).toFixed(2)+' Bs/$':'') + '</div>' : '') +
       '</div>' +
     '</div>' +
 
