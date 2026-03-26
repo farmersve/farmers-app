@@ -14751,7 +14751,10 @@ function cxcRenderEstadoCuenta(body,cl){
         +'<td style="padding:11px 16px;text-align:right;color:var(--cxc-muted);">—</td>'
         +'<td style="padding:11px 16px;text-align:right;color:var(--cxc-muted);">—</td>'
         +'<td style="padding:11px 16px;text-align:right;font-family:Barlow Condensed,sans-serif;font-size:.95rem;font-weight:900;color:var(--cxc-navy);">$ '+cxcFmt(saldoAcum)+'</td>'
-        +'<td style="padding:11px 16px;text-align:center;"><span style="background:'+badgeBg+';color:'+estCol+';padding:3px 9px;border-radius:20px;font-size:.65rem;font-weight:800;letter-spacing:.5px;text-transform:uppercase;">'+est+'</span></td>';
+        +'<td style="padding:11px 16px;text-align:center;">'
+          +'<span style="background:'+badgeBg+';color:'+estCol+';padding:3px 9px;border-radius:20px;font-size:.65rem;font-weight:800;letter-spacing:.5px;text-transform:uppercase;display:block;margin-bottom:5px;">'+est+'</span>'
+          +(est!=='PAGADA'?'<button onclick="ncMostrarModal(null,\'cxc\',\''+m.factura.id+'\')" style="padding:3px 10px;background:#f0fdf4;color:#15803d;border:1px solid #86efac;border-radius:6px;font-size:.62rem;font-weight:700;cursor:pointer;white-space:nowrap;">📋 NC</button>':'')
+        +'</td>';
     } else {
       saldoAcum-=m.monto;
       var mod=m.pago.modalidadLabel||m.pago.modalidad||'Pago';
@@ -14788,7 +14791,61 @@ function cxcRenderEstadoCuenta(body,cl){
   tbl.appendChild(tbody);
   estCard.appendChild(tbl);
   body.appendChild(estCard);
-}
+
+  // ── NOTAS DE CRÉDITO EMITIDAS AL CLIENTE ────────────────────────────────
+  var facIds = facs.map(function(f){ return f.id; });
+  var numpedidos = facs.map(function(f){ return f.numpedido; }).filter(Boolean);
+  var ncsCliente = ncGetAll().filter(function(nc){
+    return facIds.indexOf(nc.cxcFacId) >= 0 ||
+           numpedidos.indexOf(nc.numpedido) >= 0 ||
+           nc.cliente === cl.nombre;
+  });
+
+  if (ncsCliente.length > 0) {
+    var ncCard = document.createElement('div');
+    ncCard.style.cssText = 'background:var(--cxc-surface);border-radius:12px;border:1.5px solid #86efac;overflow:hidden;margin-top:14px;';
+
+    var ncHdr = document.createElement('div');
+    ncHdr.style.cssText = 'padding:12px 20px;border-bottom:1.5px solid #86efac;background:#f0fdf4;display:flex;align-items:center;justify-content:space-between;';
+    ncHdr.innerHTML = '<div style="font-size:.78rem;font-weight:800;text-transform:uppercase;letter-spacing:.8px;color:#15803d;display:flex;align-items:center;gap:8px;">'
+      + '<span style="display:inline-block;width:3px;height:14px;background:#15803d;border-radius:2px;"></span>Notas de Crédito Emitidas'
+      + '</div>'
+      + '<div style="font-size:.68rem;color:#15803d;font-weight:700;">' + ncsCliente.length + ' NC' + (ncsCliente.length !== 1 ? 's' : '') + ' · Total: $ ' + ncsCliente.reduce(function(s,n){ return s+(n.total||0); }, 0).toFixed(2) + '</div>';
+    ncCard.appendChild(ncHdr);
+
+    var tipoLabel = { devolucion:'🔄 Dev. Física', incompleto:'📦 Desp. Incomp.', ajuste:'✏️ Ajuste' };
+    var ncTbl = document.createElement('table');
+    ncTbl.style.cssText = 'width:100%;border-collapse:collapse;';
+    ncTbl.innerHTML = '<thead><tr style="background:#f8fffe;">'
+      + '<th style="padding:7px 16px;text-align:left;font-size:.65rem;font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:var(--cxc-muted);">N° NC</th>'
+      + '<th style="padding:7px 16px;text-align:left;font-size:.65rem;font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:var(--cxc-muted);">Fecha</th>'
+      + '<th style="padding:7px 16px;text-align:left;font-size:.65rem;font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:var(--cxc-muted);">Factura</th>'
+      + '<th style="padding:7px 16px;text-align:left;font-size:.65rem;font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:var(--cxc-muted);">Tipo</th>'
+      + '<th style="padding:7px 16px;text-align:left;font-size:.65rem;font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:var(--cxc-muted);">Motivo</th>'
+      + '<th style="padding:7px 16px;text-align:right;font-size:.65rem;font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:var(--cxc-muted);">Total $</th>'
+      + '<th style="padding:7px 16px;text-align:right;font-size:.65rem;font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:var(--cxc-muted);">Total Bs</th>'
+      + '<th style="padding:7px 12px;font-size:.65rem;font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:var(--cxc-muted);">PDF</th>'
+      + '</tr></thead>';
+
+    var ncBody = document.createElement('tbody');
+    ncsCliente.forEach(function(nc, i) {
+      var tr = document.createElement('tr');
+      tr.style.cssText = 'border-bottom:1px solid #e7f9ee;' + (i%2===0?'background:#fff;':'background:#f9fffe;');
+      tr.innerHTML = '<td style="padding:9px 16px;font-weight:900;color:#14532d;font-size:.82rem;">' + nc.numero + '</td>'
+        + '<td style="padding:9px 16px;font-size:.78rem;color:var(--cxc-muted);">' + nc.fecha + '</td>'
+        + '<td style="padding:9px 16px;font-size:.78rem;color:var(--cxc-navy);font-weight:700;">' + (nc.numpedido||'—') + '</td>'
+        + '<td style="padding:9px 16px;font-size:.75rem;">' + (tipoLabel[nc.tipo]||nc.tipo) + '</td>'
+        + '<td style="padding:9px 16px;font-size:.75rem;color:var(--cxc-muted);max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + (nc.motivo||'') + '">' + (nc.motivo||'—') + '</td>'
+        + '<td style="padding:9px 16px;text-align:right;font-family:Barlow Condensed,sans-serif;font-size:.95rem;font-weight:900;color:#15803d;">$ ' + (nc.total||0).toFixed(2) + '</td>'
+        + '<td style="padding:9px 16px;text-align:right;font-size:.78rem;color:var(--cxc-muted);">' + (nc.totalBs>0?'Bs. '+nc.totalBs.toLocaleString('es-VE',{minimumFractionDigits:2,maximumFractionDigits:2}):'—') + '</td>'
+        + '<td style="padding:7px 12px;"><button onclick="ncGenerarPDF(' + nc.id + ')" style="padding:3px 10px;background:#f0fdf4;color:#15803d;border:1px solid #86efac;border-radius:6px;font-size:.62rem;font-weight:700;cursor:pointer;">⬇️ PDF</button></td>';
+      ncBody.appendChild(tr);
+    });
+    ncTbl.appendChild(ncBody);
+    ncCard.appendChild(ncTbl);
+    body.appendChild(ncCard);
+  }
+} // fin cxcTabClientes
 
 function cxcTabNotif(body){
   cxcUpdateBadge();
@@ -24614,147 +24671,240 @@ function ncNextNum() {
 
 // ── Modal principal ───────────────────────────────────────────────────────────
 function ncMostrarModal(saleId, origen, cxcFacId) {
-  // Obtener datos de la venta o factura CXC
-  var sale = null, cliente = '', rif = '', numpedido = '', items = [], tasa = 0, moneda = 'USD';
+  var sale = null, fac = null;
+  var cliente = '', rif = '', numpedido = '', items = [];
+  var tasaFactura = 0, tasaFechaLabel = '', moneda = 'USD';
+  var montoFactura = 0, saldoFactura = 0;
 
-  if (origen === 'venta' && saleId) {
-    sale = getSales().find(function(s){ return String(s.id) === String(saleId); });
-    if (!sale) { showToast('Venta no encontrada', 'error'); return; }
-    cliente    = sale.cliente || '';
-    rif        = sale.rif     || '';
-    numpedido  = sale.numpedido || String(sale.id);
-    items      = (sale.items || []).map(function(it){ return { r: it.r, d: it.d, precio: it.precio||0, ordenOrig: it.orden, devolver: 0 }; });
-    tasa       = sale.tasa || getTasaHoy() || 0;
-    moneda     = sale.moneda || 'USD';
-  } else if (origen === 'cxc' && cxcFacId) {
-    var fac = cxcFacs().find(function(f){ return String(f.id) === String(cxcFacId); });
-    if (!fac) { showToast('Factura CXC no encontrada', 'error'); return; }
-    cliente   = fac.cliente   || '';
-    rif       = fac.rif       || '';
-    numpedido = fac.numpedido || String(fac.id);
-    tasa      = getTasaHoy() || 0;
-    moneda    = 'USD';
-    // Buscar venta vinculada para obtener items
-    var ventaVinc = getSales().find(function(s){
-      return s.numpedido === fac.numpedido || String(s.id) === String(fac.saleId);
-    });
-    if (ventaVinc) {
-      items = (ventaVinc.items || []).map(function(it){ return { r: it.r, d: it.d, precio: it.precio||0, ordenOrig: it.orden, devolver: 0 }; });
-      saleId = ventaVinc.id;
-    } else {
-      // Sin items: NC de monto libre
-      items = [];
-    }
+  // ── 1. Resolver factura CXC ──────────────────────────────────────────────
+  if (cxcFacId) {
+    fac = cxcFacs().find(function(f){ return String(f.id) === String(cxcFacId); });
   }
 
-  // Cerrar modal anterior si existe
+  // ── 2. Resolver venta vinculada ──────────────────────────────────────────
+  if (origen === 'venta' && saleId) {
+    sale = getSales().find(function(s){ return String(s.id) === String(saleId); });
+  } else if (fac) {
+    // Buscar venta por numpedido o saleId
+    sale = getSales().find(function(s){
+      return (fac.numpedido && s.numpedido && s.numpedido === fac.numpedido) ||
+             (fac.saleId && String(s.id) === String(fac.saleId));
+    });
+    if (sale) saleId = sale.id;
+  }
+
+  if (!sale && !fac) { showToast('No se encontró la venta o factura.', 'error'); return; }
+
+  // ── 3. Extraer datos del cliente ─────────────────────────────────────────
+  cliente    = (sale && sale.cliente) || (fac && (fac.clienteNombre || fac.cliente)) || '';
+  rif        = (sale && sale.rif)     || (fac && fac.rif) || '';
+  numpedido  = (sale && sale.numpedido) || (fac && fac.numpedido) || String(saleId || cxcFacId || '');
+  moneda     = (sale && sale.moneda)  || (fac && fac.moneda) || 'USD';
+  montoFactura = (fac && fac.monto) || (sale && sale.total) || 0;
+  saldoFactura = (fac && fac.saldo) || montoFactura;
+
+  // ── 4. Resolver tasa histórica correcta ──────────────────────────────────
+  // Prioridad: tasa guardada en la venta > tasa del día de emisión > tasa de hoy
+  if (sale && sale.tasa && sale.tasa > 0) {
+    tasaFactura = sale.tasa;
+    tasaFechaLabel = 'Tasa de la venta (' + (sale.tasaFecha || sale.fecha || '') + ')';
+  } else if (fac && fac.fechaEmision) {
+    // Buscar en historial la tasa del día de emisión
+    var hist = getTasaHistory();
+    // fechaEmision puede ser YYYY-MM-DD o DD/MM/YYYY
+    var fechaKey = fac.fechaEmision;
+    if (fechaKey && fechaKey.includes('/')) {
+      var p = fechaKey.split('/');
+      if (p.length === 3) fechaKey = p[2] + '-' + p[1].padStart(2,'0') + '-' + p[0].padStart(2,'0');
+    }
+    var entryFecha = hist.find(function(h){ return h.fecha === fechaKey; });
+    if (entryFecha) {
+      tasaFactura = entryFecha.tasa;
+      tasaFechaLabel = 'Tasa histórica del ' + fac.fechaEmision;
+    } else {
+      tasaFactura = getTasaHoy() || 0;
+      tasaFechaLabel = tasaFactura > 0 ? 'Tasa de hoy (no hay histórica del ' + fac.fechaEmision + ')' : 'Sin tasa registrada';
+    }
+  } else {
+    tasaFactura = getTasaHoy() || 0;
+    tasaFechaLabel = 'Tasa de hoy';
+  }
+
+  // ── 5. Extraer ítems de la venta vinculada ───────────────────────────────
+  if (sale && sale.items && sale.items.length > 0) {
+    items = sale.items.map(function(it){
+      return { r: it.r, d: it.d, precio: it.precio||0, ordenOrig: it.orden, br: it.br||'' };
+    });
+  }
+
+  // ── 6. Guardar contexto en window para usar en ncConfirmar ───────────────
+  window._ncCtx = {
+    saleId:    String(saleId || ''),
+    cxcFacId:  String(cxcFacId || ''),
+    tasa:      tasaFactura,
+    moneda:    moneda,
+    items:     items,
+    montoFac:  montoFactura,
+    saldoFac:  saldoFactura
+  };
+
+  // ── 7. Construir HTML del modal ──────────────────────────────────────────
   var old = document.getElementById('nc-modal-overlay');
   if (old) old.remove();
 
-  var itemsHtml = items.length > 0 ? items.map(function(it, i) {
-    return '<tr style="border-bottom:1px solid #f1f5f9;">' +
-      '<td style="padding:7px 10px;font-weight:700;color:#1B1F6B;font-size:.85rem;">' + it.r + '</td>' +
-      '<td style="padding:7px 10px;font-size:.82rem;color:#475569;">' + (it.d||'').substring(0,40) + '</td>' +
-      '<td style="padding:7px 10px;text-align:center;font-size:.85rem;">$ ' + (it.precio||0).toFixed(4) + '</td>' +
-      '<td style="padding:7px 10px;text-align:center;"><span style="background:#1B1F6B;color:white;border-radius:4px;padding:2px 7px;font-weight:700;font-size:.82rem;">' + it.ordenOrig + '</span></td>' +
-      '<td style="padding:7px 10px;text-align:center;">' +
-        '<input type="number" id="nc-qty-' + i + '" min="0" max="' + it.ordenOrig + '" value="0" oninput="ncActualizarTotal()" ' +
-        'style="width:58px;border:1.5px solid #e2e8f0;border-radius:6px;padding:4px 6px;text-align:center;font-weight:800;font-size:.9rem;">' +
-      '</td>' +
-      '<td style="padding:7px 10px;text-align:right;font-weight:700;color:#15803d;font-size:.85rem;" id="nc-sub-' + i + '">$ 0.00</td>' +
-    '</tr>';
-  }).join('') : '<tr><td colspan="6" style="text-align:center;color:#94a3b8;padding:20px;font-size:.85rem;">Sin items vinculados — ingresa el monto manualmente</td></tr>';
+  // Filas de ítems
+  var itemsHtml = '';
+  if (items.length > 0) {
+    itemsHtml = items.map(function(it, i) {
+      return '<tr style="border-bottom:1px solid #f1f5f9;">' +
+        '<td style="padding:6px 10px;font-weight:700;color:#1B1F6B;font-size:.82rem;">' + it.r + '</td>' +
+        '<td style="padding:6px 10px;font-size:.78rem;color:#475569;max-width:180px;">' + (it.d||'').substring(0,38) + '</td>' +
+        '<td style="padding:6px 10px;text-align:right;font-size:.82rem;color:#334155;">$ ' + (it.precio||0).toFixed(4) + '</td>' +
+        '<td style="padding:6px 10px;text-align:center;">' +
+          '<span style="background:#1B1F6B;color:white;border-radius:4px;padding:2px 8px;font-weight:700;font-size:.82rem;">' + it.ordenOrig + '</span>' +
+        '</td>' +
+        '<td style="padding:6px 10px;text-align:center;">' +
+          '<input type="number" id="nc-qty-' + i + '" min="0" max="' + it.ordenOrig + '" value="0" ' +
+          'oninput="ncActualizarTotal()" ' +
+          'style="width:56px;border:1.5px solid #e2e8f0;border-radius:6px;padding:4px 5px;text-align:center;font-weight:800;font-size:.9rem;color:#1B1F6B;">' +
+        '</td>' +
+        '<td style="padding:6px 10px;text-align:right;font-weight:700;color:#15803d;font-size:.82rem;" id="nc-sub-' + i + '">$ 0.00</td>' +
+      '</tr>';
+    }).join('');
+  }
+
+  // Panel tasas históricas para seleccionar
+  var histTasas = getTasaHistory().slice(0,10);
+  var histHtml = histTasas.map(function(h) {
+    var active = Math.abs(h.tasa - tasaFactura) < 0.01;
+    return '<div onclick="ncSelTasa(' + h.tasa + ',\'' + h.fecha + '\')" ' +
+      'style="cursor:pointer;padding:5px 9px;border-radius:8px;' +
+      'background:' + (active ? 'rgba(21,128,61,.15)' : 'rgba(255,255,255,.04)') + ';' +
+      'border:1.5px solid ' + (active ? '#86efac' : 'rgba(255,255,255,.08)') + ';">' +
+      '<div style="font-size:.57rem;color:' + (active ? '#15803d' : '#4b5563') + ';font-weight:700;">' + h.fecha + (active ? ' ★' : '') + '</div>' +
+      '<div style="font-size:.8rem;font-weight:900;color:' + (active ? '#15803d' : '#94a3b8') + ';">' + h.tasa.toFixed(2) + '</div>' +
+    '</div>';
+  }).join('');
 
   var overlay = document.createElement('div');
   overlay.id  = 'nc-modal-overlay';
-  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:99998;display:flex;align-items:center;justify-content:center;padding:16px;';
-  overlay.innerHTML =
-    '<div style="background:white;border-radius:16px;width:min(740px,100%);max-height:90vh;overflow-y:auto;box-shadow:0 24px 64px rgba(0,0,0,.4);">' +
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.68);z-index:99998;display:flex;align-items:center;justify-content:center;padding:12px;overflow-y:auto;';
 
-      // Header
-      '<div style="background:linear-gradient(135deg,#14532d,#15803d);padding:18px 24px;border-radius:16px 16px 0 0;display:flex;justify-content:space-between;align-items:center;">' +
+  overlay.innerHTML =
+    '<div style="background:white;border-radius:16px;width:min(760px,100%);max-height:92vh;overflow-y:auto;box-shadow:0 24px 64px rgba(0,0,0,.45);margin:auto;">' +
+
+      // ── HEADER ──
+      '<div style="background:linear-gradient(135deg,#14532d,#15803d);padding:16px 22px;border-radius:16px 16px 0 0;display:flex;justify-content:space-between;align-items:center;">' +
         '<div>' +
-          '<div style="font-family:Barlow Condensed,sans-serif;font-weight:900;font-size:1.2rem;color:white;letter-spacing:.5px;">📋 NOTA DE CRÉDITO</div>' +
-          '<div style="font-size:.75rem;color:rgba(255,255,255,.7);margin-top:2px;">Factura: ' + numpedido + ' · ' + cliente + '</div>' +
+          '<div style="font-family:Barlow Condensed,sans-serif;font-weight:900;font-size:1.15rem;color:white;letter-spacing:.5px;">📋 NOTA DE CRÉDITO</div>' +
+          '<div style="font-size:.72rem;color:rgba(255,255,255,.7);margin-top:2px;">' +
+            'Factura: <strong style="color:white;">' + numpedido + '</strong> · ' + cliente +
+          '</div>' +
         '</div>' +
-        '<button onclick="ncCerrarModal()" style="background:rgba(255,255,255,.15);border:none;color:white;border-radius:8px;padding:6px 14px;cursor:pointer;font-weight:700;font-size:.9rem;">✕</button>' +
+        '<button onclick="ncCerrarModal()" style="background:rgba(255,255,255,.15);border:none;color:white;border-radius:8px;padding:5px 13px;cursor:pointer;font-weight:700;">✕</button>' +
       '</div>' +
 
-      '<div style="padding:20px 24px;">' +
+      '<div style="padding:18px 22px;display:flex;flex-direction:column;gap:14px;">' +
 
-        // Tipo NC
-        '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px;">' +
+        // ── FILA 1: Tipo + Motivo ──
+        '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">' +
           '<div>' +
-            '<label style="font-size:.65rem;font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:#64748b;display:block;margin-bottom:4px;">Tipo de Nota de Crédito</label>' +
-            '<select id="nc-tipo" onchange="ncTipoCambio()" style="width:100%;padding:9px 12px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:.9rem;color:#1B1F6B;font-weight:700;background:white;">' +
+            '<label style="font-size:.62rem;font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:#64748b;display:block;margin-bottom:4px;">Tipo</label>' +
+            '<select id="nc-tipo" onchange="ncTipoCambio()" style="width:100%;padding:9px 12px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:.88rem;color:#1B1F6B;font-weight:700;background:white;">' +
               '<option value="devolucion">🔄 Devolución Física (mercancía regresa)</option>' +
-              '<option value="incompleto">📦 Despacho Incompleto (no salió del almacén)</option>' +
+              '<option value="incompleto">📦 Despacho Incompleto (no salió)</option>' +
               '<option value="ajuste">✏️ Ajuste de Precio / Descuento</option>' +
             '</select>' +
           '</div>' +
           '<div>' +
-            '<label style="font-size:.65rem;font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:#64748b;display:block;margin-bottom:4px;">Motivo / Observación</label>' +
+            '<label style="font-size:.62rem;font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:#64748b;display:block;margin-bottom:4px;">Motivo / Observación</label>' +
             '<input id="nc-motivo" type="text" placeholder="Ej: Mercancía defectuosa, falta en despacho..." ' +
-              'style="width:100%;padding:9px 12px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:.88rem;box-sizing:border-box;">' +
+              'style="width:100%;padding:9px 12px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:.86rem;box-sizing:border-box;color:#1a2050;">' +
           '</div>' +
         '</div>' +
 
-        // Aviso tipo
-        '<div id="nc-tipo-aviso" style="background:#fef3c7;border:1px solid #f59e0b;border-radius:8px;padding:8px 12px;margin-bottom:14px;font-size:.78rem;color:#92400e;">' +
+        // ── AVISO TIPO ──
+        '<div id="nc-tipo-aviso" style="background:#fef3c7;border:1px solid #f59e0b;border-radius:8px;padding:8px 12px;font-size:.76rem;color:#92400e;">' +
           '⚠️ <strong>Devolución Física:</strong> El inventario se repondrá con las cantidades devueltas.' +
         '</div>' +
 
-        // Tabla items
-        (items.length > 0 ? (
-          '<div style="font-size:.63rem;font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:#94a3b8;margin-bottom:8px;">Selecciona las cantidades a acreditar</div>' +
-          '<div style="border:1px solid #e2e8f0;border-radius:10px;overflow:hidden;margin-bottom:14px;">' +
-            '<table style="width:100%;border-collapse:collapse;">' +
-              '<thead><tr style="background:#f8faff;">' +
-                '<th style="padding:7px 10px;text-align:left;font-size:.65rem;color:#94a3b8;font-weight:700;text-transform:uppercase;">Ref</th>' +
-                '<th style="padding:7px 10px;text-align:left;font-size:.65rem;color:#94a3b8;font-weight:700;text-transform:uppercase;">Descripción</th>' +
-                '<th style="padding:7px 10px;text-align:center;font-size:.65rem;color:#94a3b8;font-weight:700;text-transform:uppercase;">Precio</th>' +
-                '<th style="padding:7px 10px;text-align:center;font-size:.65rem;color:#94a3b8;font-weight:700;text-transform:uppercase;">Orig.</th>' +
-                '<th style="padding:7px 10px;text-align:center;font-size:.65rem;color:#94a3b8;font-weight:700;text-transform:uppercase;">NC Qty</th>' +
-                '<th style="padding:7px 10px;text-align:right;font-size:.65rem;color:#94a3b8;font-weight:700;text-transform:uppercase;">Subtotal</th>' +
-              '</tr></thead>' +
-              '<tbody>' + itemsHtml + '</tbody>' +
-            '</table>' +
-          '</div>'
-        ) : itemsHtml) +
-
-        // Monto manual (visible si no hay items o tipo ajuste)
-        '<div id="nc-monto-manual-wrap" style="display:none;margin-bottom:14px;">' +
-          '<label style="font-size:.65rem;font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:#64748b;display:block;margin-bottom:4px;">Monto de la Nota de Crédito (USD)</label>' +
-          '<input id="nc-monto-manual" type="number" step="0.01" min="0" placeholder="0.00" oninput="ncActualizarTotal()" ' +
-            'style="width:100%;padding:10px 14px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:1rem;font-weight:800;box-sizing:border-box;">' +
+        // ── TASA ──
+        '<div style="background:#f0fdf4;border:1.5px solid #86efac;border-radius:10px;padding:12px 16px;">' +
+          '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px;">' +
+            '<div>' +
+              '<div style="font-size:.62rem;font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:#64748b;">Tasa de cambio usada</div>' +
+              '<div id="nc-tasa-label" style="font-size:.72rem;color:#15803d;margin-top:2px;">' + tasaFechaLabel + '</div>' +
+            '</div>' +
+            '<div style="text-align:right;">' +
+              '<div style="font-size:.62rem;color:#64748b;font-weight:700;text-transform:uppercase;">Bs / $</div>' +
+              '<input id="nc-tasa-val" type="number" step="0.01" value="' + tasaFactura.toFixed(2) + '" ' +
+                'oninput="ncActualizarTotal()" ' +
+                'style="width:100px;border:1.5px solid #86efac;border-radius:7px;padding:5px 8px;text-align:right;font-size:1rem;font-weight:900;color:#14532d;background:white;">' +
+            '</div>' +
+          '</div>' +
+          (histHtml ? '<div style="font-size:.6rem;color:#64748b;font-weight:700;text-transform:uppercase;letter-spacing:.3px;margin-bottom:5px;">📆 Historial — clic para seleccionar</div>' +
+            '<div style="display:flex;gap:5px;flex-wrap:wrap;">' + histHtml + '</div>' : '') +
         '</div>' +
 
-        // Resumen total
-        '<div style="background:#f0fdf4;border:1.5px solid #86efac;border-radius:10px;padding:12px 16px;display:flex;justify-content:space-between;align-items:center;">' +
-          '<div style="font-size:.78rem;color:#15803d;font-weight:700;">TOTAL NOTA DE CRÉDITO</div>' +
+        // ── ITEMS ──
+        (items.length > 0 ? (
           '<div>' +
-            '<div id="nc-total-usd" style="font-size:1.3rem;font-weight:900;color:#15803d;text-align:right;">$ 0.00</div>' +
-            '<div id="nc-total-bs" style="font-size:.72rem;color:#64748b;text-align:right;">' + (tasa > 0 ? 'Bs. 0.00 (tasa ' + tasa.toFixed(2) + ')' : '') + '</div>' +
+            '<div style="font-size:.62rem;font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:#94a3b8;margin-bottom:6px;">' +
+              'Productos — ingresa la cantidad a acreditar (0 = sin NC para ese ítem)' +
+            '</div>' +
+            '<div style="border:1px solid #e2e8f0;border-radius:10px;overflow:hidden;">' +
+              '<table style="width:100%;border-collapse:collapse;">' +
+                '<thead><tr style="background:#f8faff;">' +
+                  '<th style="padding:6px 10px;text-align:left;font-size:.62rem;color:#94a3b8;font-weight:700;text-transform:uppercase;">Ref</th>' +
+                  '<th style="padding:6px 10px;text-align:left;font-size:.62rem;color:#94a3b8;font-weight:700;text-transform:uppercase;">Descripción</th>' +
+                  '<th style="padding:6px 10px;text-align:right;font-size:.62rem;color:#94a3b8;font-weight:700;text-transform:uppercase;">P/U</th>' +
+                  '<th style="padding:6px 10px;text-align:center;font-size:.62rem;color:#94a3b8;font-weight:700;text-transform:uppercase;">Facturado</th>' +
+                  '<th style="padding:6px 10px;text-align:center;font-size:.62rem;color:#94a3b8;font-weight:700;text-transform:uppercase;">NC Cant.</th>' +
+                  '<th style="padding:6px 10px;text-align:right;font-size:.62rem;color:#94a3b8;font-weight:700;text-transform:uppercase;">Subtotal</th>' +
+                '</tr></thead>' +
+                '<tbody>' + itemsHtml + '</tbody>' +
+              '</table>' +
+            '</div>' +
+          '</div>'
+        ) : '') +
+
+        // ── MONTO MANUAL (siempre visible como alternativa) ──
+        '<div id="nc-monto-manual-wrap">' +
+          '<label style="font-size:.62rem;font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:#64748b;display:block;margin-bottom:4px;">' +
+            (items.length > 0 ? '💡 O ingresa un monto manual (en USD) para ajuste libre' : 'Monto de la Nota de Crédito (USD)') +
+          '</label>' +
+          '<div style="display:flex;align-items:center;gap:8px;">' +
+            '<span style="font-size:1.1rem;font-weight:700;color:#64748b;">$</span>' +
+            '<input id="nc-monto-manual" type="number" step="0.01" min="0" placeholder="0.00" oninput="ncActualizarTotal()" ' +
+              'style="flex:1;padding:9px 12px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:1rem;font-weight:800;color:#1a2050;box-sizing:border-box;">' +
+            (saldoFactura > 0 ? '<button onclick="document.getElementById(\'nc-monto-manual\').value=' + saldoFactura.toFixed(2) + ';ncActualizarTotal();" ' +
+              'style="white-space:nowrap;padding:8px 12px;border:1.5px solid #86efac;background:#f0fdf4;color:#15803d;border-radius:8px;cursor:pointer;font-size:.75rem;font-weight:700;">' +
+              'Saldo total<br>$ ' + saldoFactura.toFixed(2) + '</button>' : '') +
           '</div>' +
         '</div>' +
 
-        // Botones
-        '<div style="display:flex;gap:10px;justify-content:flex-end;margin-top:16px;">' +
+        // ── RESUMEN TOTAL ──
+        '<div style="background:#f0fdf4;border:2px solid #86efac;border-radius:12px;padding:14px 18px;display:flex;justify-content:space-between;align-items:center;">' +
+          '<div>' +
+            '<div style="font-size:.65rem;font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:#15803d;">Total Nota de Crédito</div>' +
+            '<div id="nc-total-bs" style="font-size:.72rem;color:#64748b;margin-top:3px;">Bs. 0.00</div>' +
+          '</div>' +
+          '<div id="nc-total-usd" style="font-size:1.5rem;font-weight:900;color:#14532d;">$ 0.00</div>' +
+        '</div>' +
+
+        // ── BOTONES ──
+        '<div style="display:flex;gap:10px;justify-content:flex-end;">' +
           '<button onclick="ncCerrarModal()" style="padding:10px 22px;border-radius:8px;border:1.5px solid #e2e8f0;background:white;color:#475569;font-weight:700;cursor:pointer;">Cancelar</button>' +
-          '<button onclick="ncConfirmar(\'' + (saleId||'') + '\',\'' + (cxcFacId||'') + '\',' + tasa + ',\'' + moneda + '\',' + JSON.stringify(items) + ')" ' +
-            'style="padding:10px 24px;border-radius:8px;border:none;background:linear-gradient(135deg,#14532d,#15803d);color:white;font-weight:900;cursor:pointer;font-size:.95rem;">✓ Emitir Nota de Crédito</button>' +
+          '<button onclick="ncConfirmarDesdeCtx()" ' +
+            'style="padding:10px 26px;border-radius:8px;border:none;background:linear-gradient(135deg,#14532d,#15803d);color:white;font-weight:900;cursor:pointer;font-size:.95rem;">' +
+            '✓ Emitir Nota de Crédito' +
+          '</button>' +
         '</div>' +
 
       '</div>' +
     '</div>';
 
   document.body.appendChild(overlay);
-
-  // Si no hay items, mostrar campo manual
-  if (items.length === 0) {
-    var wrap = document.getElementById('nc-monto-manual-wrap');
-    if (wrap) wrap.style.display = 'block';
-  }
 }
 window.ncMostrarModal = ncMostrarModal;
 
@@ -24779,40 +24929,70 @@ function ncTipoCambio() {
 }
 window.ncTipoCambio = ncTipoCambio;
 
+// Seleccionar tasa del historial
+function ncSelTasa(tasa, fecha) {
+  var inp = document.getElementById('nc-tasa-val');
+  var lbl = document.getElementById('nc-tasa-label');
+  if (inp) inp.value = tasa.toFixed(2);
+  if (lbl) lbl.textContent = 'Tasa histórica del ' + fecha;
+  // Resaltar botón seleccionado
+  document.querySelectorAll('#nc-modal-overlay [onclick^="ncSelTasa"]').forEach(function(el){
+    el.style.background = 'rgba(255,255,255,.04)';
+    el.style.borderColor = 'rgba(255,255,255,.08)';
+    el.querySelectorAll('div').forEach(function(d){ d.style.color = d.style.fontSize === '.8rem' ? '#94a3b8' : '#4b5563'; });
+  });
+  ncActualizarTotal();
+}
+window.ncSelTasa = ncSelTasa;
+
 function ncActualizarTotal() {
-  var tipo  = (document.getElementById('nc-tipo')||{}).value || 'devolucion';
-  var total = 0;
+  var tipo   = (document.getElementById('nc-tipo')||{}).value || 'devolucion';
+  var tasa   = parseFloat((document.getElementById('nc-tasa-val')||{}).value) || 0;
+  var total  = 0;
+  var ctx    = window._ncCtx || {};
 
   if (tipo === 'ajuste') {
     total = parseFloat((document.getElementById('nc-monto-manual')||{}).value) || 0;
   } else {
-    // Sumar subtotales por item
-    var tabla = document.querySelectorAll('[id^="nc-qty-"]');
-    tabla.forEach(function(inp, i) {
-      var qty    = parseInt(inp.value) || 0;
-      var precio = parseFloat(inp.closest('tr').querySelector('td:nth-child(3)').textContent.replace('$','').trim()) || 0;
-      var sub    = qty * precio;
-      var subEl  = document.getElementById('nc-sub-' + i);
+    // Sumar desde items
+    var items = ctx.items || [];
+    items.forEach(function(it, i) {
+      var qty   = parseInt((document.getElementById('nc-qty-'+i)||{}).value) || 0;
+      var sub   = qty * (it.precio || 0);
+      var subEl = document.getElementById('nc-sub-' + i);
       if (subEl) subEl.textContent = '$ ' + sub.toFixed(2);
       total += sub;
     });
+    // Sumar monto manual si también tiene valor
+    var manual = parseFloat((document.getElementById('nc-monto-manual')||{}).value) || 0;
+    total += manual;
   }
 
   var elUSD = document.getElementById('nc-total-usd');
   var elBS  = document.getElementById('nc-total-bs');
   if (elUSD) elUSD.textContent = '$ ' + total.toFixed(2);
-  // Tasa: intentar leer del DOM del modal (pasada al botón confirmar)
-  if (elBS) {
-    var tasa = getTasaHoy() || 0;
-    elBS.textContent = tasa > 0 ? 'Bs. ' + (total * tasa).toLocaleString('es-VE', {minimumFractionDigits:2, maximumFractionDigits:2}) : '';
-  }
+  if (elBS)  elBS.textContent  = tasa > 0
+    ? 'Bs. ' + (total * tasa).toLocaleString('es-VE', {minimumFractionDigits:2, maximumFractionDigits:2}) + ' (tasa ' + tasa.toFixed(2) + ')'
+    : 'Sin tasa registrada';
 }
 window.ncActualizarTotal = ncActualizarTotal;
+
+// Confirmar desde contexto guardado en window._ncCtx
+function ncConfirmarDesdeCtx() {
+  var ctx = window._ncCtx || {};
+  ncConfirmar(ctx.saleId||'', ctx.cxcFacId||'',
+    parseFloat((document.getElementById('nc-tasa-val')||{}).value) || ctx.tasa || 0,
+    ctx.moneda || 'USD',
+    ctx.items || []);
+}
+window.ncConfirmarDesdeCtx = ncConfirmarDesdeCtx;
 
 // ── Confirmar y guardar NC ────────────────────────────────────────────────────
 function ncConfirmar(saleId, cxcFacId, tasa, moneda, itemsOrig) {
   var tipo   = (document.getElementById('nc-tipo')||{}).value || 'devolucion';
   var motivo = ((document.getElementById('nc-motivo')||{}).value || '').trim();
+  // Leer tasa del campo del modal (puede haber sido cambiada manualmente)
+  var tasaModal = parseFloat((document.getElementById('nc-tasa-val')||{}).value) || tasa || 0;
   var ncItems = [];
   var total   = 0;
 
@@ -24820,6 +25000,7 @@ function ncConfirmar(saleId, cxcFacId, tasa, moneda, itemsOrig) {
     total = parseFloat((document.getElementById('nc-monto-manual')||{}).value) || 0;
     if (total <= 0) { showToast('Ingresa un monto válido para el ajuste.', 'warning'); return; }
   } else {
+    // Sumar items seleccionados
     (itemsOrig || []).forEach(function(it, i) {
       var qty = Math.min(parseInt((document.getElementById('nc-qty-'+i)||{}).value)||0, it.ordenOrig);
       if (qty > 0) {
@@ -24828,7 +25009,10 @@ function ncConfirmar(saleId, cxcFacId, tasa, moneda, itemsOrig) {
         total += sub;
       }
     });
-    if (total <= 0 && tipo !== 'ajuste') { showToast('Selecciona al menos una cantidad para la nota de crédito.', 'warning'); return; }
+    // Sumar monto manual si hay
+    var manual = parseFloat((document.getElementById('nc-monto-manual')||{}).value) || 0;
+    total += manual;
+    if (total <= 0) { showToast('Selecciona al menos una cantidad o ingresa un monto.', 'warning'); return; }
   }
 
   // Crear registro NC
@@ -24844,9 +25028,9 @@ function ncConfirmar(saleId, cxcFacId, tasa, moneda, itemsOrig) {
     saleId:    String(saleId || ''),
     cxcFacId:  String(cxcFacId || ''),
     moneda:    moneda || 'USD',
-    tasa:      tasa || 0,
+    tasa:      tasaModal,
     total:     total,
-    totalBs:   tasa > 0 ? total * tasa : 0,
+    totalBs:   tasaModal > 0 ? total * tasaModal : 0,
     items:     ncItems
   };
 
