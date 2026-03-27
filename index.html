@@ -13685,6 +13685,8 @@ document.addEventListener('keydown',function(e){if(e.key==='Escape')closeImgLigh
             step="0.01" min="0" oninput="cxcPagoCalcBs()"
             style="width:100%;border:1.5px solid #fde68a;border-radius:8px;padding:7px 10px;
               font-size:.85rem;font-weight:700;color:#92400e;background:#fffbeb;outline:none;box-sizing:border-box;">
+          <!-- Historial de tasas clickeable -->
+          <div id="cxcp-tasa-hist" style="display:flex;flex-wrap:wrap;gap:4px;margin-top:5px;"></div>
         </div>
         <div id="cxcp-bs-result">
           <div id="cxcp-bs-result-val">Bs. —</div>
@@ -15883,6 +15885,9 @@ function cxcAbrirPago(facId){
   var bsRow = document.getElementById('cxcp-bs-row');
   if(bsRow) bsRow.classList.remove('show');
 
+  // ── Historial de tasas clickeable ───────────────────────────
+  tasaHistRender('cxcp-tasa-hist', 'cxcp_tasa', function() { cxcPagoCalcBs(); });
+
   document.getElementById('cxc-pago-overlay').classList.add('open');
 }
 window.cxcAbrirPago=cxcAbrirPago;
@@ -16692,6 +16697,10 @@ function cxcAbrirMultiPago(){
     if (tw) tw.style.display = 'none';
     if (ew) ew.style.display = 'none';
     if (ml) ml.textContent  = 'Monto (USD)';
+    // Historial tasas en campo Bs
+    if (typeof tasaHistRender === 'function') {
+      tasaHistRender('cxcmp-tasa-hist', 'cxcmp-tasa-bs-input', function(){ cxcmpCalcBs(); });
+    }
   }, 50);
   document.getElementById('cxcmp-paso2').style.display='none';
   document.getElementById('cxcmp-cl-search').value='';
@@ -19380,6 +19389,7 @@ window.cxcMostrarReconciliacion = cxcMostrarReconciliacion;
                     <input id="cxcmp-tasa-bs-input" type="number" step="0.01" placeholder="Ej: 91.50"
                       style="width:100%;padding:6px 8px;border:1.5px solid #fbbf24;border-radius:6px;font-size:.82rem;font-weight:700;color:#b45309;font-family:var(--cxc-font);"
                       oninput="cxcmpCalcBs()">
+                    <div id="cxcmp-tasa-hist" style="display:flex;flex-wrap:wrap;gap:3px;margin-top:5px;"></div>
                   </div>
                 </div>
                 <div id="cxcmp-bs-resultado" style="margin-top:6px;display:none;padding:6px 10px;background:#fff;border-radius:6px;border:1px solid #fcd34d;font-size:.75rem;">
@@ -24509,6 +24519,49 @@ function calcAplicarTasa(t) {
   if (el) el.innerHTML = 'Tasa activa: Bs. ' + calcFmt(t);
 }
 window.calcAplicarTasa = calcAplicarTasa;
+
+// ── Historial de tasas reutilizable ──────────────────────────────────────────
+// Inyecta pills del historial en un contenedor. Al hacer click aplica la tasa
+// al input indicado por inputId y llama onCalc() para recalcular.
+function tasaHistRender(containerId, inputId, onCalc) {
+  var wrap = document.getElementById(containerId);
+  if (!wrap) return;
+  var hist = (typeof getTasaHistory === 'function') ? getTasaHistory().slice(0, 8) : [];
+  if (!hist.length) {
+    wrap.innerHTML = '<span style="font-size:.62rem;color:#94a3b8;font-style:italic;">Sin tasas registradas</span>';
+    return;
+  }
+  var tasaHoy = (typeof getTasaHoy === 'function') ? getTasaHoy() : 0;
+  wrap.innerHTML = '';
+  hist.forEach(function(h) {
+    var esHoy = Math.abs(h.tasa - tasaHoy) < 0.01;
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.innerHTML = (esHoy ? '⭐ ' : '') + h.tasa.toFixed(2) +
+      ' <span style="font-weight:400;opacity:.6;font-size:.58rem;">' + h.fecha + '</span>';
+    btn.style.cssText = 'padding:3px 8px;border-radius:20px;border:1.5px solid ' +
+      (esHoy ? '#86efac' : '#e2e8f0') + ';background:' +
+      (esHoy ? '#f0fdf4' : '#f8faff') + ';cursor:pointer;font-size:.65rem;' +
+      'font-weight:800;color:' + (esHoy ? '#15803d' : '#1B1F6B') +
+      ';white-space:nowrap;transition:all .12s;';
+    btn.onclick = function() {
+      var inp = document.getElementById(inputId);
+      if (inp) { inp.value = h.tasa.toFixed(2); inp.dispatchEvent(new Event('input')); }
+      if (typeof onCalc === 'function') onCalc(h.tasa);
+      // Resaltar pill activa
+      wrap.querySelectorAll('button').forEach(function(b) {
+        b.style.background   = '#f8faff';
+        b.style.borderColor  = '#e2e8f0';
+        b.style.color        = '#1B1F6B';
+      });
+      btn.style.background  = '#f0fdf4';
+      btn.style.borderColor = '#86efac';
+      btn.style.color       = '#15803d';
+    };
+    wrap.appendChild(btn);
+  });
+}
+window.tasaHistRender = tasaHistRender;
 
 // ── Render body ───────────────────────────────────────────────────────────────
 function calcRenderBody() {
