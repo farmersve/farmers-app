@@ -10516,6 +10516,7 @@ function doRefSearch() {
             '<option value="comprometido">Comprometido</option>' +
           '</select>' +
           '<button onclick="ptNuevoProducto()" style="background:#1B1F6B;color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:700;font-size:.8rem;white-space:nowrap;">+ Nuevo Producto</button>' +
+          '<button onclick="ptImportarPedido()" style="background:linear-gradient(135deg,#059669,#065f46);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:700;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;">📦 Importar Pedido Proveedor</button>' +
         '</div>' +
         '<div id="pt-stats" style="padding:8px 20px;background:#fff;border-bottom:1px solid #eef0f8;display:flex;gap:16px;font-size:.72rem;color:#5a6080;flex-wrap:wrap;"></div>' +
         '<div style="overflow-y:auto;max-height:55vh;">' +
@@ -10870,6 +10871,551 @@ function ptNuevoProducto() {
   ptAbrirFicha(null);
 }
 window.ptNuevoProducto = ptNuevoProducto;
+
+// ══════════════════════════════════════════════════════════════════
+// MÓDULO: IMPORTAR PEDIDO DE PROVEEDOR
+// ══════════════════════════════════════════════════════════════════
+
+// Mapa de prefijos por marca
+var PT_BRAND_PREFIX = {
+  'EXCALIBUR': 'EXC',
+  'GENIAL':    'GEN',
+  'LUMEN':     'LUM',
+  'MATRIX':    'MAT',
+  'MAXKILLER': 'MAXK',
+  'VARIOS':    'VAR',
+};
+
+// Obtener siguiente referencia interna disponible para una marca
+function ptNextRef(brandPrefix) {
+  var nums = [];
+  PRODUCTS.forEach(function(p) {
+    var m = p.r.match(new RegExp('^(' + brandPrefix + ')(\\d+)$'));
+    if (m) nums.push(parseInt(m[2]));
+  });
+  var nxt = nums.length > 0 ? Math.max.apply(null, nums) + 1 : 1;
+  return brandPrefix + String(nxt).padStart(3, '0');
+}
+
+// Estado del módulo importación
+var _ptImport = { rows: [], file: null };
+
+function ptImportarPedido() {
+  if (document.getElementById('pt-import-overlay')) return;
+
+  var ov = document.createElement('div');
+  ov.id  = 'pt-import-overlay';
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:99999;display:flex;align-items:flex-start;justify-content:center;padding:16px;overflow-y:auto;';
+
+  ov.innerHTML =
+    '<div style="background:white;border-radius:16px;width:min(1000px,100%);margin:auto;box-shadow:0 24px 64px rgba(0,0,0,.45);overflow:hidden;">' +
+
+    '<div style="background:linear-gradient(135deg,#059669,#065f46);color:white;padding:16px 22px;display:flex;justify-content:space-between;align-items:center;">' +
+      '<div>' +
+        '<div style="font-size:.7rem;opacity:.75;text-transform:uppercase;letter-spacing:.6px;">Productos Terminados — Farmers C.A.</div>' +
+        '<div style="font-size:1rem;font-weight:900;margin-top:2px;">📦 Importar Pedido de Proveedor</div>' +
+      '</div>' +
+      '<button onclick="ptCerrarImport()" style="background:rgba(255,255,255,.15);border:none;color:white;border-radius:8px;padding:6px 14px;cursor:pointer;font-weight:700;">✕</button>' +
+    '</div>' +
+
+    // PASO 1: Cargar archivo
+    '<div id="pt-imp-step1" style="padding:24px;">' +
+      '<div style="text-align:center;padding:20px;">' +
+        '<div style="font-size:2.5rem;margin-bottom:12px;">📄</div>' +
+        '<div style="font-size:.95rem;font-weight:800;color:#1B1F6B;margin-bottom:6px;">Carga el pedido del proveedor</div>' +
+        '<div style="font-size:.75rem;color:#64748b;margin-bottom:20px;">Acepta Excel (.xlsx), CSV, PDF o imagen (JPG/PNG)</div>' +
+        '<div id="pt-imp-drop" ' +
+          'ondragover="event.preventDefault();this.style.background=\'#f0fdf4\';this.style.borderColor=\'#059669\';" ' +
+          'ondragleave="this.style.background=\'#f8faff\';this.style.borderColor=\'#e0e4f0\';" ' +
+          'ondrop="ptImpDrop(event)" ' +
+          'onclick="document.getElementById(\'pt-imp-file\').click()" ' +
+          'style="border:2.5px dashed #e0e4f0;border-radius:14px;padding:40px 20px;cursor:pointer;background:#f8faff;transition:all .2s;max-width:500px;margin:0 auto;">' +
+          '<div style="font-size:1.8rem;margin-bottom:8px;">📁</div>' +
+          '<div style="font-size:.82rem;color:#5a6080;font-weight:600;">Arrastra el archivo aquí o haz click para seleccionar</div>' +
+          '<div style="font-size:.68rem;color:#94a3b8;margin-top:4px;">.xlsx · .csv · .pdf · .jpg · .png</div>' +
+        '</div>' +
+        '<input type="file" id="pt-imp-file" accept=".xlsx,.csv,.pdf,.jpg,.jpeg,.png" style="display:none;" onchange="ptImpFileSelected(this)">' +
+        '<div id="pt-imp-status" style="margin-top:14px;font-size:.78rem;color:#059669;font-weight:700;display:none;"></div>' +
+        '<div id="pt-imp-progress" style="display:none;margin-top:12px;">' +
+          '<div style="font-size:.75rem;color:#64748b;margin-bottom:6px;" id="pt-imp-prog-txt">Analizando...</div>' +
+          '<div style="background:#e0e4f0;border-radius:20px;height:6px;"><div id="pt-imp-prog-bar" style="background:#059669;height:6px;border-radius:20px;width:0%;transition:width .3s;"></div></div>' +
+        '</div>' +
+      '</div>' +
+    '</div>' +
+
+    // PASO 2: Preview
+    '<div id="pt-imp-step2" style="display:none;">' +
+      '<div id="pt-imp-summary" style="padding:12px 22px;background:#f0fdf4;border-bottom:1px solid #86efac;display:flex;gap:20px;flex-wrap:wrap;align-items:center;">' +
+      '</div>' +
+
+      // Tabs del preview
+      '<div style="display:flex;gap:0;border-bottom:2px solid #e0e4f0;background:#f8faff;">' +
+        '<button id="pt-imp-tab-exist" onclick="ptImpTab(\'exist\')" style="padding:9px 18px;border:none;background:#059669;color:white;font-weight:700;font-size:.75rem;cursor:pointer;">✅ Existentes</button>' +
+        '<button id="pt-imp-tab-new"   onclick="ptImpTab(\'new\')"   style="padding:9px 18px;border:none;background:transparent;color:#5a6080;font-weight:700;font-size:.75rem;cursor:pointer;border-right:1px solid #e0e4f0;">🆕 Nuevos</button>' +
+        '<button id="pt-imp-tab-skip"  onclick="ptImpTab(\'skip\')"  style="padding:9px 18px;border:none;background:transparent;color:#5a6080;font-weight:700;font-size:.75rem;cursor:pointer;border-right:1px solid #e0e4f0;">⚠️ Sin cruzar</button>' +
+      '</div>' +
+
+      '<div style="max-height:45vh;overflow-y:auto;">' +
+
+        // Panel existentes
+        '<div id="pt-imp-panel-exist">' +
+          '<div style="padding:10px 22px;background:#f0fdf4;font-size:.7rem;color:#15803d;font-weight:700;">' +
+            '✅ Estas referencias ya existen — se actualizarán: Costo Unitario, Existencia Ordenada, Medidas (Largo/Ancho/Alto), Código de Barras' +
+          '</div>' +
+          '<table style="width:100%;border-collapse:collapse;font-size:.74rem;">' +
+            '<thead style="position:sticky;top:0;z-index:1;">' +
+              '<tr style="background:#059669;color:white;">' +
+                '<th style="padding:7px 12px;text-align:left;white-space:nowrap;">Ref. Proveedor</th>' +
+                '<th style="padding:7px 12px;text-align:left;">Descripción</th>' +
+                '<th style="padding:7px 12px;text-align:center;">Marca</th>' +
+                '<th style="padding:7px 12px;text-align:center;">Ref. Interna</th>' +
+                '<th style="padding:7px 12px;text-align:right;">Uds.</th>' +
+                '<th style="padding:7px 12px;text-align:right;">Costo Unit.</th>' +
+                '<th style="padding:7px 12px;text-align:right;">P. Venta</th>' +
+                '<th style="padding:7px 12px;text-align:center;">Medidas</th>' +
+                '<th style="padding:7px 12px;text-align:center;">✓</th>' +
+              '</tr>' +
+            '</thead>' +
+            '<tbody id="pt-imp-tbody-exist"></tbody>' +
+          '</table>' +
+        '</div>' +
+
+        // Panel nuevos
+        '<div id="pt-imp-panel-new" style="display:none;">' +
+          '<div style="padding:10px 22px;background:#eff6ff;font-size:.7rem;color:#1d4ed8;font-weight:700;">' +
+            '🆕 Referencias nuevas — se crearán con ref. interna asignada automáticamente siguiendo la secuencia por marca' +
+          '</div>' +
+          '<table style="width:100%;border-collapse:collapse;font-size:.74rem;">' +
+            '<thead style="position:sticky;top:0;z-index:1;">' +
+              '<tr style="background:#1B1F6B;color:white;">' +
+                '<th style="padding:7px 12px;text-align:left;white-space:nowrap;">Ref. Proveedor</th>' +
+                '<th style="padding:7px 12px;text-align:left;">Descripción</th>' +
+                '<th style="padding:7px 12px;text-align:center;">Marca</th>' +
+                '<th style="padding:7px 12px;text-align:center;">Ref. Interna</th>' +
+                '<th style="padding:7px 12px;text-align:right;">Uds./Bulto</th>' +
+                '<th style="padding:7px 12px;text-align:right;">Costo Unit.</th>' +
+                '<th style="padding:7px 12px;text-align:right;">P. Venta</th>' +
+                '<th style="padding:7px 12px;text-align:center;">Medidas</th>' +
+                '<th style="padding:7px 12px;text-align:center;">✓</th>' +
+              '</tr>' +
+            '</thead>' +
+            '<tbody id="pt-imp-tbody-new"></tbody>' +
+          '</table>' +
+        '</div>' +
+
+        // Panel sin cruzar
+        '<div id="pt-imp-panel-skip" style="display:none;">' +
+          '<div style="padding:10px 22px;background:#fffbeb;font-size:.7rem;color:#92400e;font-weight:700;">' +
+            '⚠️ Sin cruzar — no se encontró ref. alterna coincidente ni se pudo asignar marca' +
+          '</div>' +
+          '<table style="width:100%;border-collapse:collapse;font-size:.74rem;">' +
+            '<thead><tr style="background:#f59e0b;color:white;">' +
+              '<th style="padding:7px 12px;text-align:left;">Ref. Proveedor</th>' +
+              '<th style="padding:7px 12px;text-align:left;">Descripción</th>' +
+              '<th style="padding:7px 12px;text-align:center;">Marca</th>' +
+              '<th style="padding:7px 12px;text-align:right;">Uds.</th>' +
+            '</tr></thead>' +
+            '<tbody id="pt-imp-tbody-skip"></tbody>' +
+          '</table>' +
+        '</div>' +
+
+      '</div>' +
+
+      '<div style="padding:14px 22px;border-top:1px solid #e0e4f0;display:flex;justify-content:space-between;align-items:center;background:#f8faff;">' +
+        '<div style="font-size:.7rem;color:#64748b;">' +
+          '<label style="display:flex;align-items:center;gap:6px;cursor:pointer;">' +
+            '<input type="checkbox" id="pt-imp-chk-all" onchange="ptImpToggleAll(this.checked)" checked style="accent-color:#059669;"> ' +
+            'Seleccionar/deseleccionar todo' +
+          '</label>' +
+        '</div>' +
+        '<div style="display:flex;gap:8px;">' +
+          '<button onclick="ptCerrarImport()" style="background:#f1f5f9;color:#64748b;border:none;border-radius:8px;padding:8px 18px;cursor:pointer;font-weight:700;">Cancelar</button>' +
+          '<button onclick="ptImpConfirmar()" style="background:linear-gradient(135deg,#059669,#065f46);color:white;border:none;border-radius:8px;padding:8px 24px;cursor:pointer;font-weight:700;font-size:.82rem;">✅ Confirmar Importación</button>' +
+        '</div>' +
+      '</div>' +
+    '</div>' +
+
+    '</div>';
+
+  document.body.appendChild(ov);
+  ov.onclick = function(e){ if(e.target===ov) ptCerrarImport(); };
+}
+window.ptImportarPedido = ptImportarPedido;
+
+function ptCerrarImport() {
+  var el = document.getElementById('pt-import-overlay');
+  if (el) el.remove();
+  _ptImport = { rows: [], file: null };
+}
+window.ptCerrarImport = ptCerrarImport;
+
+function ptImpDrop(e) {
+  e.preventDefault();
+  var drop = document.getElementById('pt-imp-drop');
+  if (drop) { drop.style.background='#f8faff'; drop.style.borderColor='#e0e4f0'; }
+  var f = e.dataTransfer.files[0];
+  if (f) ptImpProcesarArchivo(f);
+}
+window.ptImpDrop = ptImpDrop;
+
+function ptImpFileSelected(inp) {
+  if (inp.files[0]) ptImpProcesarArchivo(inp.files[0]);
+}
+window.ptImpFileSelected = ptImpFileSelected;
+
+function ptImpProcesarArchivo(file) {
+  var ext = file.name.split('.').pop().toLowerCase();
+  var status = document.getElementById('pt-imp-status');
+  var prog   = document.getElementById('pt-imp-progress');
+  var progTxt= document.getElementById('pt-imp-prog-txt');
+  var progBar= document.getElementById('pt-imp-prog-bar');
+
+  if (status) { status.style.display='block'; status.textContent='📄 ' + file.name + ' cargado'; }
+  if (prog)   prog.style.display = 'block';
+
+  if (ext === 'xlsx' || ext === 'csv') {
+    // Leer Excel con SheetJS
+    var reader = new FileReader();
+    reader.onload = function(e) {
+      if (progTxt) progTxt.textContent = 'Procesando Excel...';
+      if (progBar) progBar.style.width = '40%';
+      try {
+        var XLSX = window.XLSX;
+        if (!XLSX) { ptImpError('SheetJS no disponible'); return; }
+        var wb   = XLSX.read(e.target.result, {type:'array'});
+        var ws   = wb.Sheets[wb.SheetNames[0]];
+        var rows = XLSX.utils.sheet_to_json(ws, {defval:''});
+        if (progBar) progBar.style.width = '70%';
+        ptImpAnalizarRows(rows, 'excel');
+      } catch(err) {
+        ptImpError('Error leyendo Excel: ' + err.message);
+      }
+    };
+    reader.readAsArrayBuffer(file);
+  } else if (ext === 'pdf' || ['jpg','jpeg','png'].includes(ext)) {
+    // Usar IA para extraer datos
+    if (progTxt) progTxt.textContent = 'Enviando a IA para análisis...';
+    if (progBar) progBar.style.width = '20%';
+    ptImpAnalizarConIA(file, ext, progTxt, progBar);
+  } else {
+    ptImpError('Formato no soportado: .' + ext);
+  }
+}
+window.ptImpProcesarArchivo = ptImpProcesarArchivo;
+
+function ptImpError(msg) {
+  var s = document.getElementById('pt-imp-status');
+  if (s) { s.style.color='#dc2626'; s.textContent='❌ ' + msg; }
+  var p = document.getElementById('pt-imp-progress');
+  if (p) p.style.display = 'none';
+}
+
+// Analizar con IA (PDF/imagen)
+function ptImpAnalizarConIA(file, ext, progTxt, progBar) {
+  var reader = new FileReader();
+  reader.onload = function(ev) {
+    var b64 = ev.target.result.split(',')[1];
+    var mediaType = ext === 'pdf' ? 'application/pdf' :
+                    ext === 'png' ? 'image/png' : 'image/jpeg';
+    if (progBar) progBar.style.width = '35%';
+    if (progTxt) progTxt.textContent = 'IA extrayendo datos del pedido...';
+
+    fetch('https://farmers-proxy.farmersve.workers.dev/', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 4000,
+        messages: [{
+          role: 'user',
+          content: [
+            { type: ext==='pdf'?'document':'image',
+              source: { type:'base64', media_type: mediaType, data: b64 }
+            },
+            { type: 'text', text: 'Extrae los productos de este pedido/factura de proveedor. Responde SOLO JSON (sin backticks): {"productos":[{"ref_prov":"","barcode":"","desc":"","bultos":0,"uds":0,"medida":"","p_total":0,"p_neto":0,"marca":"","largo":0,"ancho":0,"alto":0,"p_venta":0,"composicion":""}]}. Si un campo no existe usa "" o 0.' }
+          ]
+        }]
+      })
+    })
+    .then(function(r){ return r.json(); })
+    .then(function(data) {
+      if (progBar) progBar.style.width = '80%';
+      var txt = (data.content||[]).map(function(x){return x.text||'';}).join('');
+      var clean = txt.replace(/```json|```/g,'').trim();
+      var parsed = JSON.parse(clean);
+      ptImpAnalizarRows(parsed.productos || [], 'ia');
+    })
+    .catch(function(err){ ptImpError('Error IA: ' + err.message); });
+  };
+  reader.readAsDataURL(file);
+}
+
+// Analizar rows y generar preview
+function ptImpAnalizarRows(rows, source) {
+  var progBar= document.getElementById('pt-imp-prog-bar');
+  var progTxt= document.getElementById('pt-imp-prog-txt');
+  if (progBar) progBar.style.width = '90%';
+  if (progTxt) progTxt.textContent = 'Cruzando con inventario...';
+
+  // Normalizar campos (Excel tiene headers distintos)
+  var normalizada = rows.map(function(row) {
+    // Detectar columnas por nombre aproximado
+    var keys = Object.keys(row);
+    function get(patterns) {
+      for (var i=0; i<patterns.length; i++) {
+        var k = keys.find(function(k){ return k.toLowerCase().includes(patterns[i].toLowerCase()); });
+        if (k !== undefined && row[k] !== '' && row[k] !== null) return row[k];
+      }
+      return '';
+    }
+    var uds    = parseFloat(get(['unidades','units','qty','cantidad'])) || 0;
+    var p_neto = parseFloat(get(['neto','net','p. neto'])) || 0;
+    return {
+      ref_prov:    String(get(['referecia','referencia','ref','code','codigo interno'])).trim(),
+      barcode:     String(get(['codigo barra','barcode','ean','upc'])).trim(),
+      desc:        String(get(['descripción','descripcion','description','nombre','producto'])).trim(),
+      bultos:      parseFloat(get(['bultos','cajas','boxes'])) || 0,
+      uds:         uds,
+      medida:      String(get(['medida','unidad','unit'])).trim(),
+      p_total:     parseFloat(get(['p.total','total','price total'])) || 0,
+      p_neto:      p_neto,
+      marca:       String(get(['marca','brand'])).trim().toUpperCase(),
+      largo:       parseFloat(get(['longitud','largo','length'])) || 0,
+      ancho:       parseFloat(get(['ancho','width'])) || 0,
+      alto:        parseFloat(get(['altura','alto','height'])) || 0,
+      p_venta:     parseFloat(get(['precio venta','venta','sale price','price'])) || 0,
+      composicion: String(get(['composición','composicion','composition','material'])).trim(),
+      costo_unit:  uds > 0 && p_neto > 0 ? Math.round(p_neto/uds*10000)/10000 : 0,
+    };
+  }).filter(function(r){ return r.ref_prov && r.ref_prov !== 'undefined'; });
+
+  // Cruzar con PRODUCTS
+  var byC = {};
+  PRODUCTS.forEach(function(p){ if(p.c) byC[p.c.trim()] = p; });
+
+  var existentes = [], nuevos = [], sincruzar = [];
+  // Contadores para secuencia de refs nuevas
+  var seqCounters = {};
+
+  normalizada.forEach(function(row) {
+    var marca  = row.marca || '';
+    var prefix = PT_BRAND_PREFIX[marca] || '';
+
+    if (byC[row.ref_prov]) {
+      existentes.push(Object.assign({}, row, { ref_interna: byC[row.ref_prov].r }));
+    } else if (prefix) {
+      if (!seqCounters[prefix]) {
+        var nums = [];
+        PRODUCTS.forEach(function(p) {
+          var m = p.r.match(new RegExp('^' + prefix + '(\\d+)$'));
+          if (m) nums.push(parseInt(m[1]));
+        });
+        seqCounters[prefix] = nums.length > 0 ? Math.max.apply(null,nums)+1 : 1;
+        // Agregar offset por refs ya asignadas en esta sesión
+      } else {
+        seqCounters[prefix]++;
+      }
+      var padded = prefix === 'MAXK' ? String(seqCounters[prefix]).padStart(3,'0') : String(seqCounters[prefix]).padStart(3,'0');
+      nuevos.push(Object.assign({}, row, { ref_sugerida: prefix + padded }));
+    } else {
+      sincruzar.push(row);
+    }
+  });
+
+  _ptImport.rows = { existentes: existentes, nuevos: nuevos, sincruzar: sincruzar };
+
+  if (progBar) progBar.style.width = '100%';
+  setTimeout(function(){
+    document.getElementById('pt-imp-step1').style.display = 'none';
+    document.getElementById('pt-imp-step2').style.display = 'block';
+    ptImpRenderPreview();
+    ptImpTab('exist');
+  }, 400);
+}
+window.ptImpAnalizarRows = ptImpAnalizarRows;
+
+function ptImpRenderPreview() {
+  var d   = _ptImport.rows;
+  var sum = document.getElementById('pt-imp-summary');
+  if (sum) sum.innerHTML =
+    '<div style="font-size:.78rem;font-weight:800;color:#059669;">✅ ' + d.existentes.length + ' existentes</div>' +
+    '<div style="font-size:.72rem;color:#64748b;">(se actualizará costo, existencia ordenada y medidas)</div>' +
+    '<div style="width:1px;background:#e0e4f0;margin:0 4px;"></div>' +
+    '<div style="font-size:.78rem;font-weight:800;color:#1B1F6B;">🆕 ' + d.nuevos.length + ' nuevos</div>' +
+    '<div style="font-size:.72rem;color:#64748b;">(se crearán con ref. interna asignada)</div>' +
+    (d.sincruzar.length > 0 ? '<div style="width:1px;background:#e0e4f0;margin:0 4px;"></div><div style="font-size:.78rem;font-weight:800;color:#f59e0b;">⚠️ ' + d.sincruzar.length + ' sin cruzar</div>' : '');
+
+  // Render tabla existentes
+  var tbE = document.getElementById('pt-imp-tbody-exist');
+  if (tbE) tbE.innerHTML = d.existentes.map(function(row, i) {
+    var bg = i%2===0?'#fff':'#f0fdf4';
+    return '<tr style="background:'+bg+';border-bottom:1px solid #dcfce7;">' +
+      '<td style="padding:6px 12px;font-weight:700;color:#064e3b;font-size:.72rem;">' + row.ref_prov + '</td>' +
+      '<td style="padding:6px 12px;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="'+row.desc+'">'+row.desc+'</td>' +
+      '<td style="padding:6px 12px;text-align:center;"><span style="background:#dcfce7;color:#15803d;padding:2px 8px;border-radius:10px;font-size:.65rem;font-weight:700;">'+row.marca+'</span></td>' +
+      '<td style="padding:6px 12px;text-align:center;font-weight:900;color:#1B1F6B;font-size:.8rem;">'+row.ref_interna+'</td>' +
+      '<td style="padding:6px 12px;text-align:right;font-weight:700;">'+row.uds+'</td>' +
+      '<td style="padding:6px 12px;text-align:right;font-weight:700;color:#059669;">$'+row.costo_unit.toFixed(4)+'</td>' +
+      '<td style="padding:6px 12px;text-align:right;color:#64748b;">$'+row.p_venta.toFixed(2)+'</td>' +
+      '<td style="padding:6px 12px;text-align:center;font-size:.65rem;color:#64748b;">' + (row.largo||row.ancho||row.alto ? row.largo+'×'+row.ancho+'×'+row.alto : '—') + '</td>' +
+      '<td style="padding:6px 12px;text-align:center;"><input type="checkbox" class="pt-imp-chk" data-type="exist" data-idx="'+i+'" checked style="accent-color:#059669;width:15px;height:15px;"></td>' +
+    '</tr>';
+  }).join('');
+
+  // Render tabla nuevos
+  var tbN = document.getElementById('pt-imp-tbody-new');
+  if (tbN) tbN.innerHTML = d.nuevos.map(function(row, i) {
+    var bg = i%2===0?'#fff':'#eff6ff';
+    return '<tr style="background:'+bg+';border-bottom:1px solid #dbeafe;">' +
+      '<td style="padding:6px 12px;font-weight:700;color:#1e3a8a;font-size:.72rem;">'+row.ref_prov+'</td>' +
+      '<td style="padding:6px 12px;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="'+row.desc+'">'+row.desc+'</td>' +
+      '<td style="padding:6px 12px;text-align:center;"><span style="background:#dbeafe;color:#1d4ed8;padding:2px 8px;border-radius:10px;font-size:.65rem;font-weight:700;">'+row.marca+'</span></td>' +
+      '<td style="padding:6px 12px;text-align:center;">' +
+        '<input type="text" value="'+row.ref_sugerida+'" data-idx="'+i+'" onchange="_ptImport.rows.nuevos['+i+'].ref_sugerida=this.value" ' +
+        'style="width:80px;padding:3px 6px;border:1.5px solid #93c5fd;border-radius:6px;font-size:.75rem;font-weight:900;text-align:center;color:#1B1F6B;">' +
+      '</td>' +
+      '<td style="padding:6px 12px;text-align:right;font-weight:700;">'+row.uds+(row.bultos?' / '+row.bultos+' blt':'')+'</td>' +
+      '<td style="padding:6px 12px;text-align:right;font-weight:700;color:#059669;">$'+row.costo_unit.toFixed(4)+'</td>' +
+      '<td style="padding:6px 12px;text-align:right;color:#64748b;">$'+row.p_venta.toFixed(2)+'</td>' +
+      '<td style="padding:6px 12px;text-align:center;font-size:.65rem;color:#64748b;">'+(row.largo||row.ancho||row.alto ? row.largo+'×'+row.ancho+'×'+row.alto : '—')+'</td>' +
+      '<td style="padding:6px 12px;text-align:center;"><input type="checkbox" class="pt-imp-chk" data-type="new" data-idx="'+i+'" checked style="accent-color:#1B1F6B;width:15px;height:15px;"></td>' +
+    '</tr>';
+  }).join('');
+
+  // Render sin cruzar
+  var tbS = document.getElementById('pt-imp-tbody-skip');
+  if (tbS) tbS.innerHTML = d.sincruzar.map(function(row, i) {
+    return '<tr style="background:'+(i%2===0?'#fff':'#fffbeb')+';border-bottom:1px solid #fde68a;">' +
+      '<td style="padding:6px 12px;font-weight:700;color:#78350f;font-size:.72rem;">'+row.ref_prov+'</td>' +
+      '<td style="padding:6px 12px;">'+row.desc+'</td>' +
+      '<td style="padding:6px 12px;text-align:center;">'+row.marca+'</td>' +
+      '<td style="padding:6px 12px;text-align:right;">'+row.uds+'</td>' +
+    '</tr>';
+  }).join('');
+}
+
+function ptImpTab(tab) {
+  ['exist','new','skip'].forEach(function(t) {
+    var p = document.getElementById('pt-imp-panel-'+t);
+    var b = document.getElementById('pt-imp-tab-'+t);
+    if (p) p.style.display = t===tab ? 'block' : 'none';
+    if (b) {
+      var colors = { exist:'#059669', new:'#1B1F6B', skip:'#f59e0b' };
+      b.style.background = t===tab ? (colors[t]||'#059669') : 'transparent';
+      b.style.color      = t===tab ? 'white' : '#5a6080';
+    }
+  });
+}
+window.ptImpTab = ptImpTab;
+
+function ptImpToggleAll(checked) {
+  document.querySelectorAll('.pt-imp-chk').forEach(function(chk){ chk.checked = checked; });
+}
+window.ptImpToggleAll = ptImpToggleAll;
+
+function ptImpConfirmar() {
+  var d = _ptImport.rows;
+  if (!d || (!d.existentes && !d.nuevos)) { if(typeof showToast==='function') showToast('Nada para importar','info'); return; }
+
+  var chks = document.querySelectorAll('.pt-imp-chk');
+  var selExist = new Set(), selNew = new Set();
+  chks.forEach(function(chk) {
+    if (!chk.checked) return;
+    if (chk.dataset.type === 'exist') selExist.add(parseInt(chk.dataset.idx));
+    if (chk.dataset.type === 'new')   selNew.add(parseInt(chk.dataset.idx));
+  });
+
+  var ptData  = ptGetData();
+  var inv     = typeof getInventory === 'function' ? getInventory() : {};
+  var updated = 0, created = 0;
+
+  // ACTUALIZAR EXISTENTES
+  d.existentes.forEach(function(row, i) {
+    if (!selExist.has(i)) return;
+    var ref = row.ref_interna;
+    var prodIdx = PRODUCTS.findIndex(function(p){ return p.r === ref; });
+
+    // Actualizar PRODUCTS
+    if (prodIdx >= 0) {
+      if (row.barcode) PRODUCTS[prodIdx].b = row.barcode;
+      if (row.largo)   PRODUCTS[prodIdx].largo = row.largo;
+      if (row.ancho)   PRODUCTS[prodIdx].ancho = row.ancho;
+      if (row.alto)    PRODUCTS[prodIdx].alto  = row.alto;
+    }
+
+    // Actualizar PT datos extendidos
+    ptData[ref] = ptData[ref] || {};
+    if (row.costo_unit > 0) ptData[ref].costo = row.costo_unit;
+    if (row.uds > 0) ptData[ref].exOrdenada = (ptData[ref].exOrdenada||0) + row.uds;
+    if (row.largo || row.ancho || row.alto) {
+      ptData[ref].medidas = ptData[ref].medidas || {};
+      if (row.largo) ptData[ref].medidas.largo = row.largo;
+      if (row.ancho) ptData[ref].medidas.ancho = row.ancho;
+      if (row.alto)  ptData[ref].medidas.alto  = row.alto;
+    }
+    ptData[ref].proveedorRef  = row.ref_prov;
+    ptData[ref].ultimaCompra  = new Date().toISOString().split('T')[0];
+    updated++;
+  });
+
+  // CREAR NUEVOS
+  d.nuevos.forEach(function(row, i) {
+    if (!selNew.has(i)) return;
+    var ref = (document.querySelector('[data-idx="'+i+'"][data-type="new"]') ? 
+               document.querySelector('input[data-idx="'+i+'"]') : null);
+    var refVal = row.ref_sugerida;
+
+    // Verificar que no existe ya
+    if (PRODUCTS.find(function(p){ return p.r === refVal; })) {
+      if(typeof showToast==='function') showToast('⚠️ Ref. '+refVal+' ya existe, se omitió', 'warning');
+      return;
+    }
+
+    // Crear en PRODUCTS
+    PRODUCTS.push({
+      r:  refVal,
+      b:  row.barcode || '',
+      c:  row.ref_prov,
+      d:  row.desc,
+      e:  row.medida || 'UNIDAD',
+      m:  row.bultos ? Math.round(row.uds / (row.bultos||1)) : row.uds,
+      br: row.marca,
+      ex: 0,
+      u:  row.p_venta || 0,
+      bv: 0,
+      t:  0,
+    });
+
+    // Crear en PT datos extendidos
+    ptData[refVal] = {
+      costo:       row.costo_unit,
+      exOrdenada:  row.uds,
+      proveedorRef: row.ref_prov,
+      ultimaCompra: new Date().toISOString().split('T')[0],
+      composicion: row.composicion || '',
+      medidas: {
+        largo: row.largo || 0,
+        ancho: row.ancho || 0,
+        alto:  row.alto  || 0,
+      }
+    };
+
+    created++;
+  });
+
+  // Guardar todo
+  ptSaveData(ptData);
+
+  ptCerrarImport();
+  if(typeof showToast==='function') showToast(
+    '✅ Importación completada: ' + updated + ' actualizados, ' + created + ' creados.',
+    'success'
+  );
+  ptRender();
+}
+window.ptImpConfirmar = ptImpConfirmar;
+
+
 
 function ptEditarProducto(ref) {
   ptAbrirFicha(ref);
