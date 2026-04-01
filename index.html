@@ -10971,7 +10971,6 @@ function ptImportarPedido() {
                 '<th style="padding:7px 12px;text-align:center;">Ref. Interna</th>' +
                 '<th style="padding:7px 12px;text-align:right;">Uds.</th>' +
                 '<th style="padding:7px 12px;text-align:right;">Costo Unit.</th>' +
-                '<th style="padding:7px 12px;text-align:right;">P. Venta</th>' +
                 '<th style="padding:7px 12px;text-align:center;">Medidas</th>' +
                 '<th style="padding:7px 12px;text-align:center;">✓</th>' +
               '</tr>' +
@@ -10994,7 +10993,6 @@ function ptImportarPedido() {
                 '<th style="padding:7px 12px;text-align:center;">Ref. Interna</th>' +
                 '<th style="padding:7px 12px;text-align:right;">Uds./Bulto</th>' +
                 '<th style="padding:7px 12px;text-align:right;">Costo Unit.</th>' +
-                '<th style="padding:7px 12px;text-align:right;">P. Venta</th>' +
                 '<th style="padding:7px 12px;text-align:center;">Medidas</th>' +
                 '<th style="padding:7px 12px;text-align:center;">✓</th>' +
               '</tr>' +
@@ -11172,9 +11170,8 @@ function ptImpAnalizarRows(rows, source) {
     var p_neto = parseFloat(get(['neto','net','p. neto'])) || 0;
 
     // "Precio Venta" = lo que cobra el proveedor = COSTO unitario para Farmers
-    // Buscamos con múltiples variantes para máxima compatibilidad
     var p_venta_prov = 0;
-    // Intento 1: buscar key que contenga exactamente 'precio' Y 'venta'
+    // Intento 1: buscar key que contenga 'precio' Y 'venta'
     var pvKey = keys.find(function(k) {
       var kl = k.toLowerCase();
       return kl.includes('precio') && kl.includes('venta');
@@ -11182,26 +11179,12 @@ function ptImpAnalizarRows(rows, source) {
     if (pvKey && row[pvKey] !== '' && row[pvKey] !== null) {
       p_venta_prov = parseFloat(row[pvKey]) || 0;
     }
-    // Intento 2: buscar por patrones individuales si no encontró
+    // Intento 2: patrones alternativos si no encontró
     if (!p_venta_prov) {
       p_venta_prov = parseFloat(get(['precio venta','precio_venta','sale price','unit price'])) || 0;
     }
-    // Intento 3: última columna numérica positiva (en este formato siempre es col 17)
-    if (!p_venta_prov) {
-      var lastNumKey = null;
-      keys.forEach(function(k) {
-        var v = parseFloat(row[k]);
-        if (!isNaN(v) && v > 0 && k !== '' &&
-            !k.toLowerCase().includes('bulto') &&
-            !k.toLowerCase().includes('total') &&
-            !k.toLowerCase().includes('neto') &&
-            !k.toLowerCase().includes('unidad') &&
-            !k.toLowerCase().includes('cub')) {
-          lastNumKey = k;
-        }
-      });
-      if (lastNumKey) p_venta_prov = parseFloat(row[lastNumKey]) || 0;
-    }
+    // Fallback: p_neto / uds (cuando Precio Venta no existe en el formato)
+    var costo_calc = (uds > 0 && p_neto > 0) ? Math.round(p_neto/uds*10000)/10000 : 0;
 
     return {
       ref_prov:    String(get(['referecia','referencia','ref','code','codigo interno'])).trim(),
@@ -11218,8 +11201,8 @@ function ptImpAnalizarRows(rows, source) {
       alto:        parseFloat(get(['altura','alto','height'])) || 0,
       p_venta:     p_venta_prov,
       composicion: String(get(['composici','composition','material'])).trim(),
-      // Costo = Precio Venta del proveedor (lo que Farmers paga por unidad)
-      costo_unit:  p_venta_prov > 0 ? p_venta_prov : (uds > 0 && p_neto > 0 ? Math.round(p_neto/uds*10000)/10000 : 0),
+      // Costo = Precio Venta del proveedor. Si es 0, usar p_neto/uds como fallback
+      costo_unit:  p_venta_prov > 0 ? p_venta_prov : costo_calc,
     };
   }).filter(function(r){ return r.ref_prov && r.ref_prov !== 'undefined'; });
 
@@ -11314,7 +11297,6 @@ function ptImpRenderPreview() {
       '<td style="padding:6px 12px;text-align:center;font-weight:900;color:#1B1F6B;font-size:.8rem;">'+row.ref_interna+'</td>' +
       '<td style="padding:6px 12px;text-align:right;font-weight:700;">'+row.uds+'</td>' +
       '<td style="padding:6px 12px;text-align:right;font-weight:700;color:#059669;">$'+row.costo_unit.toFixed(4)+'</td>' +
-      '<td style="padding:6px 12px;text-align:right;color:#64748b;">$'+row.p_venta.toFixed(2)+'</td>' +
       '<td style="padding:6px 12px;text-align:center;font-size:.65rem;color:#64748b;">' + (row.largo||row.ancho||row.alto ? row.largo+'×'+row.ancho+'×'+row.alto : '—') + '</td>' +
       '<td style="padding:6px 12px;text-align:center;"><input type="checkbox" class="pt-imp-chk" data-type="exist" data-idx="'+i+'" checked style="accent-color:#059669;width:15px;height:15px;"></td>' +
     '</tr>';
@@ -11334,7 +11316,6 @@ function ptImpRenderPreview() {
       '</td>' +
       '<td style="padding:6px 12px;text-align:right;font-weight:700;">'+row.uds+(row.bultos?' / '+row.bultos+' blt':'')+'</td>' +
       '<td style="padding:6px 12px;text-align:right;font-weight:700;color:#059669;">$'+row.costo_unit.toFixed(4)+'</td>' +
-      '<td style="padding:6px 12px;text-align:right;color:#64748b;">$'+row.p_venta.toFixed(2)+'</td>' +
       '<td style="padding:6px 12px;text-align:center;font-size:.65rem;color:#64748b;">'+(row.largo||row.ancho||row.alto ? row.largo+'×'+row.ancho+'×'+row.alto : '—')+'</td>' +
       '<td style="padding:6px 12px;text-align:center;"><input type="checkbox" class="pt-imp-chk" data-type="new" data-idx="'+i+'" checked style="accent-color:#1B1F6B;width:15px;height:15px;"></td>' +
     '</tr>';
