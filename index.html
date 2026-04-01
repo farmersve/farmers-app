@@ -11072,29 +11072,84 @@ function ptImpProcesarArchivo(file) {
   if (prog)   prog.style.display = 'block';
 
   if (ext === 'xlsx' || ext === 'csv') {
-    // SheetJS convierte a CSV → IA extrae datos con precisión total
     var reader = new FileReader();
     reader.onload = function(e) {
-      if (progTxt) progTxt.textContent = 'Leyendo archivo...';
-      if (progBar) progBar.style.width = '25%';
+      if (progTxt) progTxt.textContent = 'Procesando Excel...';
+      if (progBar) progBar.style.width = '40%';
       try {
         var XLSX = window.XLSX;
-        var csvText = '';
-        if (XLSX) {
-          var wb  = XLSX.read(e.target.result, {type:'array'});
-          var ws  = wb.Sheets[wb.SheetNames[0]];
-          csvText = XLSX.utils.sheet_to_csv(ws);
+        if (!XLSX) { ptImpError('SheetJS no disponible'); return; }
+        var wb   = XLSX.read(e.target.result, {type:'array'});
+        var ws   = wb.Sheets[wb.SheetNames[0]];
+        // Leer como arrays (header:1) para mapear por índice, evitando problemas de encoding en keys
+        var allRows = XLSX.utils.sheet_to_json(ws, {header:1, defval:''});
+        if (!allRows || allRows.length < 2) { ptImpError('Archivo vacío o sin datos'); return; }
+
+        // Fila 0 = headers, detectar índices por búsqueda insensible a tildes/encoding
+        var hdrs = allRows[0].map(function(h){ return String(h||'').toLowerCase().replace(/[áàä]/g,'a').replace(/[éèë]/g,'e').replace(/[íìï]/g,'i').replace(/[óòö]/g,'o').replace(/[úùü]/g,'u'); });
+
+        function colIdx(patterns) {
+          for (var pi=0; pi<patterns.length; pi++) {
+            for (var ci=0; ci<hdrs.length; ci++) {
+              if (hdrs[ci].includes(patterns[pi])) return ci;
+            }
+          }
+          return -1;
         }
-        if (progTxt) progTxt.textContent = 'IA analizando pedido...';
-        if (progBar) progBar.style.width = '50%';
-        ptImpAnalizarConIATexto(csvText, file.name, progTxt, progBar);
+
+        var iBarcode = colIdx(['codigo barra','barcode','ean','upc']);
+        var iRef     = colIdx(['referecia','referencia','ref.','codigo interno']);
+        var iDesc    = colIdx(['descripcion','description','descripci']);
+        var iBultos  = colIdx(['bultos','cajas','boxes']);
+        var iUds     = colIdx(['unidades','units','qty','cantidad']);
+        var iMedida  = colIdx(['medida','unidad de medida']);
+        var iNeto    = colIdx(['neto','p. neto','p.neto']);
+        var iMarca   = colIdx(['marca','brand']);
+        var iComp    = colIdx(['composicion','composici','composition','material']);
+        var iLargo   = colIdx(['longitud','largo','length']);
+        var iAncho   = colIdx(['ancho','width']);
+        var iAlto    = colIdx(['altura','alto','height']);
+        // Precio Venta = costo unitario para Farmers
+        var iCosto   = colIdx(['precio venta','precio_venta','unit price','sale price','precio']);
+
+        if (iRef < 0) { ptImpError('No se encontró columna de Referencia'); return; }
+        if (iCosto < 0) { ptImpError('No se encontró columna de Precio/Costo'); return; }
+
+        if (progBar) progBar.style.width = '70%';
+
+        var rows = [];
+        for (var ri=1; ri<allRows.length; ri++) {
+          var r = allRows[ri];
+          if (!r || !r[iRef] || String(r[iRef]).trim() === '') continue;
+          var uds   = parseFloat(r[iUds]  >= 0 ? r[iUds]  : 0) || 0;
+          var neto  = parseFloat(r[iNeto] >= 0 ? r[iNeto] : 0) || 0;
+          var costo = parseFloat(r[iCosto]>= 0 ? r[iCosto]: 0) || 0;
+          // Si Precio Venta es 0 usar p_neto/uds como fallback
+          if (!costo && uds > 0 && neto > 0) costo = Math.round(neto/uds*10000)/10000;
+          rows.push({
+            barcode:     String(iBarcode>=0 ? r[iBarcode]||'' : '').trim(),
+            ref_prov:    String(r[iRef]||'').trim(),
+            desc:        String(iDesc>=0   ? r[iDesc]  ||'' : '').trim(),
+            bultos:      parseFloat(iBultos>=0 ? r[iBultos]||0 : 0)||0,
+            uds:         uds,
+            medida:      String(iMedida>=0 ? r[iMedida]||'' : '').trim(),
+            p_neto:      neto,
+            marca:       String(iMarca>=0  ? r[iMarca] ||'' : '').trim().toUpperCase(),
+            composicion: String(iComp>=0   ? r[iComp]  ||'' : '').trim(),
+            largo:       parseFloat(iLargo>=0  ? r[iLargo] ||0 : 0)||0,
+            ancho:       parseFloat(iAncho>=0  ? r[iAncho] ||0 : 0)||0,
+            alto:        parseFloat(iAlto>=0   ? r[iAlto]  ||0 : 0)||0,
+            costo_unit:  costo,
+          });
+        }
+        ptImpAnalizarRows(rows);
       } catch(err) {
-        ptImpError('Error: ' + err.message);
+        ptImpError('Error leyendo Excel: ' + err.message);
       }
     };
     reader.readAsArrayBuffer(file);
   } else if (ext === 'pdf' || ['jpg','jpeg','png'].includes(ext)) {
-    if (progTxt) progTxt.textContent = 'IA analizando archivo...';
+    if (progTxt) progTxt.textContent = 'Enviando a IA para análisis...';
     if (progBar) progBar.style.width = '20%';
     ptImpAnalizarConIA(file, ext, progTxt, progBar);
   } else {
@@ -11110,66 +11165,14 @@ function ptImpError(msg) {
   if (p) p.style.display = 'none';
 }
 
-// Analizar CSV/texto con IA (para Excel convertido)
-function ptImpAnalizarConIATexto(csvText, fileName, progTxt, progBar) {
-  if (!csvText || csvText.trim().length < 10) {
-    ptImpError('No se pudo leer el contenido del archivo');
-    return;
-  }
-  // Truncar si es muy largo (max ~12000 chars para no exceder contexto)
-  var textToSend = csvText.length > 12000 ? csvText.substring(0, 12000) : csvText;
-
-  fetch('https://farmers-proxy.farmersve.workers.dev/', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({
-      model: 'claude-sonnet-4-20250514',
-      max_tokens: 4000,
-      messages: [{
-        role: 'user',
-        content: 'Analiza este pedido/factura de proveedor en formato CSV y extrae cada producto.\n\n' +
-          'REGLAS CRÍTICAS:\n' +
-          '- "Precio Venta" = precio unitario que cobra el proveedor = costo para Farmers (campo costo_unit)\n' +
-          '- "Referecia" o "Referencia" = ref del proveedor (campo ref_prov)\n' +
-          '- "Unidades" = cantidad total de unidades\n' +
-          '- "Bultos" = cantidad de cajas/bultos\n' +
-          '- Longitud/Ancho/Altura = medidas del bulto en cm\n' +
-          '- NO mezcles P.Total ni P.Neto con el costo unitario\n\n' +
-          'Responde SOLO JSON sin backticks ni explicaciones:\n' +
-          '{"productos":[{"ref_prov":"","barcode":"","desc":"","bultos":0,"uds":0,"medida":"","p_neto":0,"marca":"","largo":0,"ancho":0,"alto":0,"costo_unit":0,"composicion":""}]}\n\n' +
-          'DATOS:\n' + textToSend
-      }]
-    })
-  })
-  .then(function(r) { return r.json(); })
-  .then(function(data) {
-    if (progBar) progBar.style.width = '85%';
-    var txt   = (data.content || []).map(function(x){ return x.text || ''; }).join('');
-    var clean = txt.replace(/```json|```/g, '').trim();
-    // Extraer JSON aunque haya texto alrededor
-    var jsonMatch = clean.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) { ptImpError('IA no devolvió JSON válido'); return; }
-    var parsed = JSON.parse(jsonMatch[0]);
-    var prods  = parsed.productos || [];
-    if (!prods.length) { ptImpError('IA no encontró productos en el archivo'); return; }
-    // Los productos ya vienen con costo_unit correcto desde la IA
-    // Solo necesitamos pasar por ptImpAnalizarRows para el cruce con PRODUCTS
-    ptImpAnalizarRows(prods, 'ia');
-  })
-  .catch(function(err) { ptImpError('Error IA: ' + err.message); });
-}
-window.ptImpAnalizarConIATexto = ptImpAnalizarConIATexto;
-
 // Analizar con IA (PDF/imagen)
 function ptImpAnalizarConIA(file, ext, progTxt, progBar) {
   var reader = new FileReader();
   reader.onload = function(ev) {
     var b64 = ev.target.result.split(',')[1];
-    var mediaType = ext === 'pdf' ? 'application/pdf' :
-                    ext === 'png' ? 'image/png' : 'image/jpeg';
+    var mediaType = ext === 'pdf' ? 'application/pdf' : ext === 'png' ? 'image/png' : 'image/jpeg';
     if (progBar) progBar.style.width = '35%';
     if (progTxt) progTxt.textContent = 'IA extrayendo datos del pedido...';
-
     fetch('https://farmers-proxy.farmersve.workers.dev/', {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
@@ -11182,102 +11185,44 @@ function ptImpAnalizarConIA(file, ext, progTxt, progBar) {
             { type: ext==='pdf'?'document':'image',
               source: { type:'base64', media_type: mediaType, data: b64 }
             },
-            { type: 'text', text: 'Extrae los productos de este pedido/factura de proveedor. Responde SOLO JSON (sin backticks): {"productos":[{"ref_prov":"","barcode":"","desc":"","bultos":0,"uds":0,"medida":"","p_total":0,"p_neto":0,"marca":"","largo":0,"ancho":0,"alto":0,"p_venta":0,"composicion":""}]}. Si un campo no existe usa "" o 0.' }
+            { type: 'text', text: 'Extrae los productos de este pedido de proveedor. "Precio Venta" es el costo unitario para Farmers. Responde SOLO JSON sin backticks: {"productos":[{"ref_prov":"","barcode":"","desc":"","bultos":0,"uds":0,"medida":"","p_neto":0,"marca":"","largo":0,"ancho":0,"alto":0,"costo_unit":0,"composicion":""}]}' }
           ]
         }]
       })
     })
     .then(function(r){ return r.json(); })
     .then(function(data) {
-      if (progBar) progBar.style.width = '80%';
-      var txt = (data.content||[]).map(function(x){return x.text||'';}).join('');
+      if (progBar) progBar.style.width = '85%';
+      var txt   = (data.content||[]).map(function(x){return x.text||'';}).join('');
       var clean = txt.replace(/```json|```/g,'').trim();
-      var parsed = JSON.parse(clean);
-      ptImpAnalizarRows(parsed.productos || [], 'ia');
+      var jm    = clean.match(/\{[\s\S]*\}/);
+      if (!jm) { ptImpError('IA no devolvió JSON válido'); return; }
+      var parsed = JSON.parse(jm[0]);
+      ptImpAnalizarRows(parsed.productos || []);
     })
     .catch(function(err){ ptImpError('Error IA: ' + err.message); });
   };
   reader.readAsDataURL(file);
 }
 
-// Analizar rows y generar preview
-function ptImpAnalizarRows(rows, source) {
-  var progBar= document.getElementById('pt-imp-prog-bar');
-  var progTxt= document.getElementById('pt-imp-prog-txt');
-  if (progBar) progBar.style.width = '90%';
+// Analizar rows y generar preview (cruce con inventario)
+function ptImpAnalizarRows(rows) {
+  var progBar = document.getElementById('pt-imp-prog-bar');
+  var progTxt = document.getElementById('pt-imp-prog-txt');
+  if (progBar) progBar.style.width = '95%';
   if (progTxt) progTxt.textContent = 'Cruzando con inventario...';
 
-  // Si viene de IA, los campos ya están normalizados y costo_unit es correcto
-  var normalizada;
-  if (source === 'ia') {
-    normalizada = rows.map(function(row) {
-      return {
-        ref_prov:    String(row.ref_prov   || '').trim(),
-        barcode:     String(row.barcode    || '').trim(),
-        desc:        String(row.desc       || '').trim(),
-        bultos:      parseFloat(row.bultos)  || 0,
-        uds:         parseFloat(row.uds)     || 0,
-        medida:      String(row.medida     || '').trim(),
-        p_neto:      parseFloat(row.p_neto)  || 0,
-        marca:       String(row.marca      || '').trim().toUpperCase(),
-        largo:       parseFloat(row.largo)   || 0,
-        ancho:       parseFloat(row.ancho)   || 0,
-        alto:        parseFloat(row.alto)    || 0,
-        composicion: String(row.composicion|| '').trim(),
-        costo_unit:  parseFloat(row.costo_unit) || 0,  // ← IA ya lo calculó correctamente
-      };
-    }).filter(function(r){ return r.ref_prov && r.ref_prov !== 'undefined' && r.ref_prov !== ''; });
-  } else {
-  // Normalizar campos desde Excel/CSV con headers variables
-  normalizada = rows.map(function(row) {
-    var keys = Object.keys(row);
-    function get(patterns) {
-      for (var i=0; i<patterns.length; i++) {
-        var k = keys.find(function(k){ return k.toLowerCase().includes(patterns[i].toLowerCase()); });
-        if (k !== undefined && row[k] !== '' && row[k] !== null) return row[k];
-      }
-      return '';
-    }
-    var uds    = parseFloat(get(['unidades','units','qty','cantidad'])) || 0;
-    var p_neto = parseFloat(get(['neto','net','p. neto'])) || 0;
-    var p_venta_prov = 0;
-    var pvKey = keys.find(function(k) {
-      var kl = k.toLowerCase();
-      return kl.includes('precio') && kl.includes('venta');
-    });
-    if (pvKey && row[pvKey] !== '' && row[pvKey] !== null) {
-      p_venta_prov = parseFloat(row[pvKey]) || 0;
-    }
-    if (!p_venta_prov) {
-      p_venta_prov = parseFloat(get(['precio venta','precio_venta','sale price','unit price'])) || 0;
-    }
-    var costo_calc = (uds > 0 && p_neto > 0) ? Math.round(p_neto/uds*10000)/10000 : 0;
-    return {
-      ref_prov:    String(get(['referecia','referencia','ref','code','codigo interno'])).trim(),
-      barcode:     String(get(['codigo barra','barcode','ean','upc','código'])).trim(),
-      desc:        String(get(['descripci','description','nombre','producto'])).trim(),
-      bultos:      parseFloat(get(['bultos','cajas','boxes'])) || 0,
-      uds:         uds,
-      medida:      String(get(['medida','unidad','unit'])).trim(),
-      p_neto:      p_neto,
-      marca:       String(get(['marca','brand'])).trim().toUpperCase(),
-      largo:       parseFloat(get(['longitud','largo','length'])) || 0,
-      ancho:       parseFloat(get(['ancho','width'])) || 0,
-      alto:        parseFloat(get(['altura','alto','height'])) || 0,
-      composicion: String(get(['composici','composition','material'])).trim(),
-      costo_unit:  p_venta_prov > 0 ? p_venta_prov : costo_calc,
-    };
-  }).filter(function(r){ return r.ref_prov && r.ref_prov !== 'undefined'; });
-  } // end else
+  // Filtrar filas vacías
+  var data = rows.filter(function(r){ return r.ref_prov && String(r.ref_prov).trim() !== ''; });
 
-  // Cruzar con PRODUCTS
+  // Cruzar con PRODUCTS por campo c (referencia alterna del proveedor)
   var byC = {};
   PRODUCTS.forEach(function(p){ if(p.c) byC[p.c.trim()] = p; });
 
   var existentes = [], nuevosSinOrden = [], sincruzar = [];
 
-  normalizada.forEach(function(row) {
-    var marca  = row.marca || '';
+  data.forEach(function(row) {
+    var marca  = (row.marca || '').trim().toUpperCase();
     var prefix = PT_BRAND_PREFIX[marca] || '';
     if (byC[row.ref_prov]) {
       existentes.push(Object.assign({}, row, { ref_interna: byC[row.ref_prov].r }));
@@ -11288,19 +11233,17 @@ function ptImpAnalizarRows(rows, source) {
     }
   });
 
-  // Ordenar nuevos: primero por marca/prefix, luego alfabéticamente por descripción
-  // Esto garantiza que series como "SARTEN 22CM, 24CM, 26CM" queden consecutivas
-  nuevosSinOrden.sort(function(a, b) {
-    if (a._prefix !== b._prefix) return a._prefix.localeCompare(b._prefix);
-    // Normalizar descripción para orden alfanumérico correcto
-    // Extraer números del final para ordenar 22CM < 24CM < 26CM
-    var da = (a.desc || '').trim().toUpperCase();
-    var db = (b.desc || '').trim().toUpperCase();
-    // Comparación alfanumérica natural (maneja "22" < "26" correctamente)
-    return da.localeCompare(db, undefined, { numeric: true, sensitivity: 'base' });
+  // Ordenar existentes por referencia interna (EXC001 < EXC002...)
+  existentes.sort(function(a, b) {
+    return (a.ref_interna||'').localeCompare(b.ref_interna||'', undefined, {numeric:true, sensitivity:'base'});
   });
 
-  // Asignar secuencia numérica a los nuevos ya ordenados
+  // Ordenar nuevos A→Z por descripción (alfanumérico), luego asignar secuencia
+  nuevosSinOrden.sort(function(a, b) {
+    if (a._prefix !== b._prefix) return a._prefix.localeCompare(b._prefix);
+    return (a.desc||'').localeCompare(b.desc||'', undefined, {numeric:true, sensitivity:'base'});
+  });
+
   var seqCounters = {};
   var nuevos = nuevosSinOrden.map(function(row) {
     var prefix = row._prefix;
@@ -11314,17 +11257,9 @@ function ptImpAnalizarRows(rows, source) {
     } else {
       seqCounters[prefix]++;
     }
-    var ref = prefix + String(seqCounters[prefix]).padStart(3, '0');
-    var r   = Object.assign({}, row, { ref_sugerida: ref });
-    delete r._prefix;
-    return r;
-  });
-
-  // Ordenar existentes por referencia interna (EXC001 < EXC002 < EXC100...)
-  existentes.sort(function(a, b) {
-    var ra = (a.ref_interna || '').trim().toUpperCase();
-    var rb = (b.ref_interna || '').trim().toUpperCase();
-    return ra.localeCompare(rb, undefined, { numeric: true, sensitivity: 'base' });
+    var r2 = Object.assign({}, row, { ref_sugerida: prefix + String(seqCounters[prefix]).padStart(3,'0') });
+    delete r2._prefix;
+    return r2;
   });
 
   _ptImport.rows = { existentes: existentes, nuevos: nuevos, sincruzar: sincruzar };
@@ -11335,7 +11270,7 @@ function ptImpAnalizarRows(rows, source) {
     document.getElementById('pt-imp-step2').style.display = 'block';
     ptImpRenderPreview();
     ptImpTab('exist');
-  }, 400);
+  }, 300);
 }
 window.ptImpAnalizarRows = ptImpAnalizarRows;
 
