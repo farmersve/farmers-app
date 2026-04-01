@@ -10435,13 +10435,146 @@ function doRefSearch() {
 
 /* ══ INVENTORY MANAGEMENT MODULE ══ */
 (function(){
-  var modalHTML = '<div id="inv-modal" style="display:none;position:fixed;inset:0;background:rgba(10,15,40,.7);z-index:9000;align-items:flex-start;justify-content:center;padding:20px;overflow-y:auto;"><div style="background:white;border-radius:16px;width:100%;max-width:1200px;box-shadow:0 20px 60px rgba(0,0,0,.35);overflow:hidden;margin:auto;"><div style="background:linear-gradient(135deg,#1a2050,#16a34a);color:white;padding:18px 24px;display:flex;justify-content:space-between;align-items:center;"><div><div style=\"font-size:1.1rem;font-weight:900;\">&#128230; AJUSTE DE INVENTARIO</div><div style=\"font-size:.72rem;opacity:.75;margin-top:2px;\">Escribe +20 para sumar, -5 para restar, o =50 para fijar exacto</div></div><button onclick=\"closeInventoryModal()\" style=\"background:rgba(255,255,255,.15);border:none;color:white;border-radius:8px;padding:7px 14px;cursor:pointer;font-weight:700;\">&#10005;</button></div><div style=\"padding:14px 20px;background:#f8f9ff;border-bottom:1px solid #e8eaf6;display:flex;gap:10px;align-items:center;flex-wrap:wrap;\"><input id=\"inv-search\" type=\"text\" placeholder=\"Buscar referencia o descripcion...\" oninput=\"filterInvTable()\" style=\"flex:1;min-width:200px;padding:8px 12px;border:1.5px solid #e0e4f0;border-radius:8px;font-size:.82rem;outline:none;\"><select id=\"inv-filter-brand\" onchange=\"filterInvTable()\" style=\"padding:8px 12px;border:1.5px solid #e0e4f0;border-radius:8px;font-size:.82rem;background:white;cursor:pointer;\"><option value=\"\">Todas las marcas</option><option value=\"EXCALIBUR\">EXCALIBUR</option><option value=\"GENIAL\">GENIAL</option><option value=\"MATRIX\">MATRIX</option><option value=\"LUMEN\">LUMEN</option><option value=\"MAXKILLER\">MAXKILLER</option><option value=\"VARIOS\">VARIOS</option></select><select id=\"inv-filter-stock\" onchange=\"filterInvTable()\" style=\"padding:8px 12px;border:1.5px solid #e0e4f0;border-radius:8px;font-size:.82rem;background:white;cursor:pointer;\"><option value=\"\">Todo el stock</option><option value=\"in\">Con stock</option><option value=\"out\">Sin stock</option></select><button onclick=\"invSaveAll()\" style=\"background:#16a34a;color:white;border:none;border-radius:8px;padding:8px 18px;cursor:pointer;font-weight:700;font-size:.8rem;\">Guardar Todo</button><button onclick="openInvAudit()" style="background:linear-gradient(135deg,#7c3aed,#5b21b6);color:white;border:none;border-radius:8px;padding:8px 18px;cursor:pointer;font-weight:700;font-size:.8rem;display:inline-flex;align-items:center;gap:6px;">&#128202; Auditar Excel</button></div><div id=\"inv-stats\" style=\"padding:10px 20px;background:#fff;border-bottom:1px solid #eef0f8;display:flex;gap:20px;font-size:.75rem;color:#5a6080;flex-wrap:wrap;\"></div><div style=\"overflow-y:auto;max-height:55vh;padding:0 16px 16px;\"><table style=\"width:100%;border-collapse:collapse;font-size:.78rem;\"><thead style=\"position:sticky;top:0;z-index:2;\"><tr style=\"background:#1a2050;color:white;\"><th style=\"padding:8px 10px;text-align:left;\">Referencia</th><th style=\"padding:8px 10px;text-align:left;\">Descripcion</th><th style=\"padding:8px 10px;text-align:center;\">Marca</th><th style=\"padding:8px 10px;text-align:center;\">Stock Actual</th><th style=\"padding:8px 10px;text-align:center;\">Ajuste</th><th style=\"padding:8px 10px;text-align:center;\">Preview</th><th style=\"padding:8px 10px;text-align:center;\">Accion</th></tr></thead><tbody id=\"inv-tbody\"></tbody></table></div><div style=\"padding:12px 20px;background:#f8f9ff;border-top:1px solid #e8eaf6;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;\"><div style=\"font-size:.72rem;color:#8892b0;\"><strong>+20</strong> suma &nbsp;|&nbsp; <strong>-5</strong> resta &nbsp;|&nbsp; <strong>=50</strong> fija exacto</div><button onclick=\"invSaveAll()\" style=\"background:linear-gradient(135deg,#1a2050,#16a34a);color:white;border:none;border-radius:8px;padding:9px 24px;cursor:pointer;font-weight:700;font-size:.82rem;\">Guardar y Sincronizar</button></div></div></div>';
+  var modalHTML = '<div id="inv-modal" style="display:none;position:fixed;inset:0;background:rgba(10,15,40,.7);z-index:9000;align-items:flex-start;justify-content:center;padding:20px;overflow-y:auto;">' +
+    '<div style="background:white;border-radius:16px;width:100%;max-width:1200px;box-shadow:0 20px 60px rgba(0,0,0,.35);overflow:hidden;margin:auto;">' +
+      // HEADER
+      '<div style="background:linear-gradient(135deg,#1a2050,#16a34a);color:white;padding:18px 24px;display:flex;justify-content:space-between;align-items:center;">' +
+        '<div>' +
+          '<div style="font-size:1.1rem;font-weight:900;">&#128230; INVENTARIO</div>' +
+          '<div style="font-size:.72rem;opacity:.75;margin-top:2px;">Gestión de stock y ficha de productos</div>' +
+        '</div>' +
+        '<button onclick="closeInventoryModal()" style="background:rgba(255,255,255,.15);border:none;color:white;border-radius:8px;padding:7px 14px;cursor:pointer;font-weight:700;">&#10005;</button>' +
+      '</div>' +
+      // TABS
+      '<div style="display:flex;gap:0;background:#f0f2ff;border-bottom:2px solid #e0e4f0;">' +
+        '<button id="inv-tab-ajuste" onclick="invGoTab(\'ajuste\')" style="padding:11px 22px;border:none;background:#1a2050;color:white;font-weight:800;font-size:.78rem;cursor:pointer;border-radius:0;letter-spacing:.3px;">📦 Ajuste de Inventario</button>' +
+        '<button id="inv-tab-productos" onclick="invGoTab(\'productos\')" style="padding:11px 22px;border:none;background:transparent;color:#5a6080;font-weight:700;font-size:.78rem;cursor:pointer;border-right:1px solid #e0e4f0;letter-spacing:.3px;">🏷️ Productos Terminados</button>' +
+      '</div>' +
+      // PANEL AJUSTE
+      '<div id="inv-panel-ajuste">' +
+        '<div style="padding:14px 20px;background:#f8f9ff;border-bottom:1px solid #e8eaf6;display:flex;gap:10px;align-items:center;flex-wrap:wrap;">' +
+          '<input id="inv-search" type="text" placeholder="Buscar referencia o descripcion..." oninput="filterInvTable()" style="flex:1;min-width:200px;padding:8px 12px;border:1.5px solid #e0e4f0;border-radius:8px;font-size:.82rem;outline:none;">' +
+          '<select id="inv-filter-brand" onchange="filterInvTable()" style="padding:8px 12px;border:1.5px solid #e0e4f0;border-radius:8px;font-size:.82rem;background:white;cursor:pointer;">' +
+            '<option value="">Todas las marcas</option>' +
+            '<option value="EXCALIBUR">EXCALIBUR</option>' +
+            '<option value="GENIAL">GENIAL</option>' +
+            '<option value="MATRIX">MATRIX</option>' +
+            '<option value="LUMEN">LUMEN</option>' +
+            '<option value="MAXKILLER">MAXKILLER</option>' +
+            '<option value="VARIOS">VARIOS</option>' +
+          '</select>' +
+          '<select id="inv-filter-stock" onchange="filterInvTable()" style="padding:8px 12px;border:1.5px solid #e0e4f0;border-radius:8px;font-size:.82rem;background:white;cursor:pointer;">' +
+            '<option value="">Todo el stock</option>' +
+            '<option value="in">Con stock</option>' +
+            '<option value="out">Sin stock</option>' +
+          '</select>' +
+          '<button onclick="invSaveAll()" style="background:#16a34a;color:white;border:none;border-radius:8px;padding:8px 18px;cursor:pointer;font-weight:700;font-size:.8rem;">Guardar Todo</button>' +
+          '<button onclick="openInvAudit()" style="background:linear-gradient(135deg,#7c3aed,#5b21b6);color:white;border:none;border-radius:8px;padding:8px 18px;cursor:pointer;font-weight:700;font-size:.8rem;display:inline-flex;align-items:center;gap:6px;">&#128202; Auditar Excel</button>' +
+        '</div>' +
+        '<div id="inv-stats" style="padding:10px 20px;background:#fff;border-bottom:1px solid #eef0f8;display:flex;gap:20px;font-size:.75rem;color:#5a6080;flex-wrap:wrap;"></div>' +
+        '<div style="overflow-y:auto;max-height:55vh;padding:0 16px 16px;">' +
+          '<table style="width:100%;border-collapse:collapse;font-size:.78rem;">' +
+            '<thead style="position:sticky;top:0;z-index:2;">' +
+              '<tr style="background:#1a2050;color:white;">' +
+                '<th style="padding:8px 10px;text-align:left;">Referencia</th>' +
+                '<th style="padding:8px 10px;text-align:left;">Descripcion</th>' +
+                '<th style="padding:8px 10px;text-align:center;">Marca</th>' +
+                '<th style="padding:8px 10px;text-align:center;">Stock Actual</th>' +
+                '<th style="padding:8px 10px;text-align:center;">Ajuste</th>' +
+                '<th style="padding:8px 10px;text-align:center;">Preview</th>' +
+                '<th style="padding:8px 10px;text-align:center;">Accion</th>' +
+              '</tr>' +
+            '</thead>' +
+            '<tbody id="inv-tbody"></tbody>' +
+          '</table>' +
+        '</div>' +
+        '<div style="padding:12px 20px;background:#f8f9ff;border-top:1px solid #e8eaf6;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">' +
+          '<div style="font-size:.72rem;color:#8892b0;"><strong>+20</strong> suma &nbsp;|&nbsp; <strong>-5</strong> resta &nbsp;|&nbsp; <strong>=50</strong> fija exacto</div>' +
+          '<button onclick="invSaveAll()" style="background:linear-gradient(135deg,#1a2050,#16a34a);color:white;border:none;border-radius:8px;padding:9px 24px;cursor:pointer;font-weight:700;font-size:.82rem;">Guardar y Sincronizar</button>' +
+        '</div>' +
+      '</div>' +
+      // PANEL PRODUCTOS TERMINADOS
+      '<div id="inv-panel-productos" style="display:none;">' +
+        '<div style="padding:14px 20px;background:#f8f9ff;border-bottom:1px solid #e8eaf6;display:flex;gap:10px;align-items:center;flex-wrap:wrap;">' +
+          '<input id="pt-search" type="text" placeholder="Buscar por referencia, nombre, marca, código de barras..." oninput="ptRender()" style="flex:1;min-width:200px;padding:8px 12px;border:1.5px solid #e0e4f0;border-radius:8px;font-size:.82rem;outline:none;">' +
+          '<select id="pt-filter-brand" onchange="ptRender()" style="padding:8px 12px;border:1.5px solid #e0e4f0;border-radius:8px;font-size:.82rem;background:white;cursor:pointer;">' +
+            '<option value="">Todas las marcas</option>' +
+            '<option value="EXCALIBUR">EXCALIBUR</option>' +
+            '<option value="GENIAL">GENIAL</option>' +
+            '<option value="MATRIX">MATRIX</option>' +
+            '<option value="LUMEN">LUMEN</option>' +
+            '<option value="MAXKILLER">MAXKILLER</option>' +
+            '<option value="VARIOS">VARIOS</option>' +
+          '</select>' +
+          '<select id="pt-filter-dept" onchange="ptRender()" style="padding:8px 12px;border:1.5px solid #e0e4f0;border-radius:8px;font-size:.82rem;background:white;cursor:pointer;">' +
+            '<option value="">Todos los departamentos</option>' +
+          '</select>' +
+          '<select id="pt-filter-stock" onchange="ptRender()" style="padding:8px 12px;border:1.5px solid #e0e4f0;border-radius:8px;font-size:.82rem;background:white;cursor:pointer;">' +
+            '<option value="">Todo el stock</option>' +
+            '<option value="in">Con stock</option>' +
+            '<option value="out">Sin stock</option>' +
+            '<option value="comprometido">Comprometido</option>' +
+          '</select>' +
+          '<button onclick="ptNuevoProducto()" style="background:#1B1F6B;color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:700;font-size:.8rem;white-space:nowrap;">+ Nuevo Producto</button>' +
+        '</div>' +
+        '<div id="pt-stats" style="padding:8px 20px;background:#fff;border-bottom:1px solid #eef0f8;display:flex;gap:16px;font-size:.72rem;color:#5a6080;flex-wrap:wrap;"></div>' +
+        '<div style="overflow-y:auto;max-height:55vh;">' +
+          '<table style="width:100%;border-collapse:collapse;font-size:.76rem;">' +
+            '<thead style="position:sticky;top:0;z-index:2;">' +
+              '<tr style="background:#1B1F6B;color:white;">' +
+                '<th style="padding:8px 12px;text-align:left;white-space:nowrap;">Referencia</th>' +
+                '<th style="padding:8px 12px;text-align:left;">Nombre</th>' +
+                '<th style="padding:8px 12px;text-align:center;white-space:nowrap;">Marca</th>' +
+                '<th style="padding:8px 12px;text-align:center;white-space:nowrap;">Depto.</th>' +
+                '<th style="padding:8px 12px;text-align:center;white-space:nowrap;">Costo $</th>' +
+                '<th style="padding:8px 12px;text-align:center;white-space:nowrap;">P. USD</th>' +
+                '<th style="padding:8px 12px;text-align:center;white-space:nowrap;">P. BCV</th>' +
+                '<th style="padding:8px 12px;text-align:center;white-space:nowrap;">P. TF</th>' +
+                '<th style="padding:8px 12px;text-align:center;white-space:nowrap;">Actual</th>' +
+                '<th style="padding:8px 12px;text-align:center;white-space:nowrap;">Ordenada</th>' +
+                '<th style="padding:8px 12px;text-align:center;white-space:nowrap;">Disponible</th>' +
+                '<th style="padding:8px 12px;text-align:center;white-space:nowrap;">Comprometida</th>' +
+                '<th style="padding:8px 12px;text-align:center;white-space:nowrap;">Acciones</th>' +
+              '</tr>' +
+            '</thead>' +
+            '<tbody id="pt-tbody"></tbody>' +
+          '</table>' +
+        '</div>' +
+      '</div>' +
+    '</div>' +
+  '</div>';
   document.addEventListener('DOMContentLoaded', function(){ document.body.insertAdjacentHTML('beforeend', modalHTML); });
 })();
 
+
+// ── Tab control del módulo Inventario ────────────────────────────────────────
+var _invTab = 'ajuste';
+function invGoTab(tab) {
+  _invTab = tab;
+  // Panels
+  var pAjuste   = document.getElementById('inv-panel-ajuste');
+  var pProductos= document.getElementById('inv-panel-productos');
+  if (pAjuste)    pAjuste.style.display    = tab === 'ajuste'    ? 'block' : 'none';
+  if (pProductos) pProductos.style.display = tab === 'productos' ? 'block' : 'none';
+  // Tab buttons
+  var tAjuste   = document.getElementById('inv-tab-ajuste');
+  var tProductos= document.getElementById('inv-tab-productos');
+  if (tAjuste) {
+    tAjuste.style.background = tab === 'ajuste' ? '#1a2050' : 'transparent';
+    tAjuste.style.color      = tab === 'ajuste' ? 'white'   : '#5a6080';
+  }
+  if (tProductos) {
+    tProductos.style.background = tab === 'productos' ? '#1B1F6B' : 'transparent';
+    tProductos.style.color      = tab === 'productos' ? 'white'   : '#5a6080';
+  }
+  if (tab === 'ajuste')    renderInvTable();
+  if (tab === 'productos') ptRender();
+}
+window.invGoTab = invGoTab;
+
 function openInventoryModal() {
   var m = document.getElementById('inv-modal');
-  if(m){ m.style.display='flex'; document.body.style.overflow='hidden'; renderInvTable(); }
+  if(m){ m.style.display='flex'; document.body.style.overflow='hidden'; invGoTab(_invTab||'ajuste'); }
 }
 function closeInventoryModal() {
   var m = document.getElementById('inv-modal');
@@ -10523,6 +10656,694 @@ function invSaveAll(){
   saveInventory(inv); syncInventoryToProducts();
   if(typeof showToast==='function') showToast('&#9989; '+changed+' productos actualizados','success');
   renderInvTable();
+}
+
+
+/* ══ PRODUCTOS TERMINADOS MODULE ══ */
+
+// Storage para datos extendidos de productos
+var PT_STORAGE_KEY = 'farmers_pt_data';
+
+function ptGetData() {
+  try { return JSON.parse(localStorage.getItem(PT_STORAGE_KEY) || '{}'); } catch(e) { return {}; }
+}
+function ptSaveData(data) {
+  localStorage.setItem(PT_STORAGE_KEY, JSON.stringify(data));
+  if (window.fbSavePT) window.fbSavePT(data);
+}
+
+// Obtener existencias comprometidas por producto desde farmers_sales (pedidos)
+function ptGetComprometidas() {
+  var sales = typeof getSales === 'function' ? getSales() : [];
+  var comprometidas = {}; // ref → [{pedido, cliente, qty}]
+  sales.forEach(function(s) {
+    if (s.tipo !== 'pedido') return; // Solo pedidos, no ventas
+    (s.items || []).forEach(function(it) {
+      if (!comprometidas[it.r]) comprometidas[it.r] = [];
+      comprometidas[it.r].push({
+        pedido:  s.numpedido || s.id,
+        cliente: s.cliente   || '—',
+        qty:     parseInt(it.orden) || 0,
+        fecha:   s.fecha     || ''
+      });
+    });
+  });
+  return comprometidas;
+}
+
+// Calcular existencia disponible
+function ptDisponible(ref, exActual, comprometidas) {
+  var comp = (comprometidas[ref] || []).reduce(function(s,c){ return s+c.qty; }, 0);
+  return Math.max(0, exActual - comp);
+}
+
+// Render principal de la tabla Productos Terminados
+function ptRender() {
+  var tbody = document.getElementById('pt-tbody');
+  if (!tbody) return;
+
+  var inv          = typeof getInventory === 'function' ? getInventory() : {};
+  var ptData       = ptGetData();
+  var comprometidas= ptGetComprometidas();
+
+  var q      = (document.getElementById('pt-search')     ||{value:''}).value.toLowerCase();
+  var brand  = (document.getElementById('pt-filter-brand')||{value:''}).value;
+  var dept   = (document.getElementById('pt-filter-dept') ||{value:''}).value;
+  var stockF = (document.getElementById('pt-filter-stock')||{value:''}).value;
+
+  // Poblar filtro de departamentos dinámicamente
+  var deptSel = document.getElementById('pt-filter-dept');
+  if (deptSel && deptSel.options.length <= 1) {
+    var depts = new Set();
+    PRODUCTS.forEach(function(p) {
+      var d = (ptData[p.r] || {}).dept || '';
+      if (d) depts.add(d);
+    });
+    depts.forEach(function(d) {
+      var opt = document.createElement('option');
+      opt.value = d; opt.textContent = d;
+      deptSel.appendChild(opt);
+    });
+  }
+
+  var filtered = PRODUCTS.filter(function(p) {
+    if (brand && p.br !== brand) return false;
+    if (dept) {
+      var d = (ptData[p.r] || {}).dept || '';
+      if (d !== dept) return false;
+    }
+    var exActual = inv[p.r] !== undefined ? (inv[p.r]||0) : (p.ex||0);
+    var comp = (comprometidas[p.r] || []).reduce(function(s,c){ return s+c.qty; }, 0);
+    if (stockF === 'in'         && exActual <= 0) return false;
+    if (stockF === 'out'        && exActual > 0)  return false;
+    if (stockF === 'comprometido' && comp === 0)  return false;
+    if (q && !p.r.toLowerCase().includes(q) &&
+        !(p.d||'').toLowerCase().includes(q) &&
+        !(p.br||'').toLowerCase().includes(q) &&
+        !(p.b||'').toLowerCase().includes(q) &&
+        !((ptData[p.r]||{}).nombreCorto||'').toLowerCase().includes(q)) return false;
+    return true;
+  });
+
+  // Stats
+  var totalComp = 0, totalDisp = 0, totalActual = 0;
+  filtered.forEach(function(p) {
+    var ex   = inv[p.r] !== undefined ? (inv[p.r]||0) : (p.ex||0);
+    var comp = (comprometidas[p.r]||[]).reduce(function(s,c){ return s+c.qty; },0);
+    totalActual  += ex;
+    totalComp    += comp;
+    totalDisp    += Math.max(0, ex - comp);
+  });
+  var stats = document.getElementById('pt-stats');
+  if (stats) stats.innerHTML =
+    '<span>📋 <strong>' + filtered.length + '</strong> productos</span>' +
+    '<span> | 📦 <strong>' + totalActual.toLocaleString() + '</strong> uds total</span>' +
+    '<span style="color:#16a34a;"> | ✅ <strong>' + totalDisp.toLocaleString() + '</strong> disponibles</span>' +
+    (totalComp > 0 ? '<span style="color:#dc2626;"> | 🔒 <strong>' + totalComp.toLocaleString() + '</strong> comprometidas</span>' : '');
+
+  tbody.innerHTML = filtered.map(function(p, i) {
+    var pd       = ptData[p.r] || {};
+    var exActual = inv[p.r] !== undefined ? (inv[p.r]||0) : (p.ex||0);
+    var exOrden  = pd.exOrdenada || 0;
+    var compList = comprometidas[p.r] || [];
+    var compTotal= compList.reduce(function(s,c){ return s+c.qty; }, 0);
+    var dispTotal= Math.max(0, exActual - compTotal);
+    var bg       = i%2===0 ? '#fff' : '#f8f9ff';
+
+    // Colores de existencia
+    var exColor  = exActual > 0 ? '#16a34a' : '#dc2626';
+    var exBg     = exActual > 0 ? '#dcfce7' : '#fee2e2';
+    var dispColor= dispTotal > 0 ? '#1d4ed8' : '#dc2626';
+    var dispBg   = dispTotal > 0 ? '#dbeafe' : '#fee2e2';
+    var compColor= compTotal > 0 ? '#dc2626' : '#6b7280';
+    var compBg   = compTotal > 0 ? '#fee2e2' : '#f3f4f6';
+
+    // Costo total (proveedor + extras)
+    var costoBase  = pd.costo || 0;
+    var costoExtras= (pd.costos||{});
+    var costoTotal = costoBase +
+      (costoExtras.impuesto||0) + (costoExtras.arancel||0) +
+      (costoExtras.flete||0)    + (costoExtras.otros||0);
+
+    // Comprometida tooltip
+    var compTip = compList.length > 0 ?
+      compList.map(function(c){ return c.cliente+' ('+c.qty+')'; }).join(', ') : '';
+
+    var row = '<tr style="background:' + bg + ';border-bottom:1px solid #f0f2f8;transition:background .1s;" ' +
+      'onmouseover="this.style.background=\'#f0f4ff\'" onmouseout="this.style.background=\'' + bg + '\'">';
+
+    row += '<td style="padding:8px 12px;font-family:\'Barlow Condensed\',sans-serif;font-weight:900;color:#1a2050;font-size:.85rem;">' +
+      '<div>' + p.r + '</div>' +
+      (p.b ? '<div style="font-size:.58rem;color:#94a3b8;font-family:sans-serif;">' + p.b + '</div>' : '') +
+    '</td>';
+
+    row += '<td style="padding:8px 12px;">' +
+      '<div style="font-weight:700;color:#1a2050;font-size:.78rem;">' + (p.d||'—') + '</div>' +
+      (pd.nombreCorto ? '<div style="font-size:.62rem;color:#64748b;">' + pd.nombreCorto + '</div>' : '') +
+      (pd.modelo ? '<div style="font-size:.6rem;color:#94a3b8;">Mod: ' + pd.modelo + '</div>' : '') +
+    '</td>';
+
+    row += '<td style="padding:8px 12px;text-align:center;">' +
+      '<span style="background:#eef0f8;color:#1a2050;padding:2px 8px;border-radius:10px;font-size:.68rem;font-weight:700;">' + (p.br||'—') + '</span>' +
+    '</td>';
+
+    row += '<td style="padding:8px 12px;text-align:center;font-size:.72rem;color:#64748b;">' + (pd.dept||'—') + '</td>';
+
+    row += '<td style="padding:8px 12px;text-align:right;font-size:.75rem;">' +
+      (costoTotal > 0 ? '<span style="font-weight:700;color:#1a2050;">$' + costoTotal.toFixed(2) + '</span>' +
+      (costoBase > 0 && costoTotal !== costoBase ? '<div style="font-size:.58rem;color:#94a3b8;">base $'+costoBase.toFixed(2)+'</div>' : '') : '—') +
+    '</td>';
+
+    row += '<td style="padding:8px 12px;text-align:right;font-size:.75rem;font-weight:700;color:#1a2050;">' + (p.u > 0 ? '$'+p.u.toFixed(2) : '—') + '</td>';
+    row += '<td style="padding:8px 12px;text-align:right;font-size:.75rem;color:#64748b;">' + (p.bv > 0 ? '$'+p.bv.toFixed(2) : '—') + '</td>';
+    row += '<td style="padding:8px 12px;text-align:right;font-size:.75rem;color:#64748b;">' + (p.t > 0 ? '$'+p.t.toFixed(2) : '—') + '</td>';
+
+    row += '<td style="padding:8px 12px;text-align:center;">' +
+      '<span style="background:' + exBg + ';color:' + exColor + ';padding:3px 10px;border-radius:12px;font-weight:700;font-size:.78rem;">' + exActual + '</span>' +
+    '</td>';
+
+    row += '<td style="padding:8px 12px;text-align:center;">' +
+      (exOrden > 0 ? '<span style="background:#fef3c7;color:#92400e;padding:3px 10px;border-radius:12px;font-weight:700;font-size:.78rem;">' + exOrden + '</span>' : '<span style="color:#94a3b8;">—</span>') +
+    '</td>';
+
+    row += '<td style="padding:8px 12px;text-align:center;">' +
+      '<span style="background:' + dispBg + ';color:' + dispColor + ';padding:3px 10px;border-radius:12px;font-weight:700;font-size:.78rem;">' + dispTotal + '</span>' +
+    '</td>';
+
+    row += '<td style="padding:8px 12px;text-align:center;">';
+    if (compTotal > 0) {
+      row += '<span title="' + compTip + '" style="background:' + compBg + ';color:' + compColor + ';padding:3px 10px;border-radius:12px;font-weight:700;font-size:.78rem;cursor:help;border-bottom:1.5px dashed ' + compColor + ';">' +
+        compTotal + ' 🔒</span>';
+      if (compList.length > 0) {
+        row += '<div style="font-size:.58rem;color:#94a3b8;margin-top:2px;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' +
+          compList.slice(0,2).map(function(c){ return c.cliente; }).join(', ') +
+          (compList.length > 2 ? ' +' + (compList.length-2) : '') +
+        '</div>';
+      }
+    } else {
+      row += '<span style="color:#94a3b8;font-size:.72rem;">—</span>';
+    }
+    row += '</td>';
+
+    row += '<td style="padding:8px 12px;text-align:center;white-space:nowrap;">' +
+      '<button onclick="ptEditarProducto(\'' + p.r + '\')" ' +
+        'style="background:#1B1F6B;color:white;border:none;border-radius:6px;padding:4px 10px;cursor:pointer;font-size:.68rem;font-weight:700;margin-right:3px;" ' +
+        'title="Editar ficha">✏️</button>' +
+      (compTotal > 0 ?
+        '<button onclick="ptVerComprometidos(\'' + p.r + '\')" ' +
+          'style="background:#dc2626;color:white;border:none;border-radius:6px;padding:4px 10px;cursor:pointer;font-size:.68rem;font-weight:700;" ' +
+          'title="Ver pedidos comprometidos">🔒</button>' : '') +
+    '</td>';
+
+    row += '</tr>';
+    return row;
+  }).join('');
+
+  if (!filtered.length) {
+    tbody.innerHTML = '<tr><td colspan="13" style="text-align:center;padding:40px;color:#94a3b8;">No se encontraron productos</td></tr>';
+  }
+}
+window.ptRender = ptRender;
+
+// ── Ficha de Producto (modal) ────────────────────────────────────────────────
+function ptNuevoProducto() {
+  ptAbrirFicha(null);
+}
+window.ptNuevoProducto = ptNuevoProducto;
+
+function ptEditarProducto(ref) {
+  ptAbrirFicha(ref);
+}
+window.ptEditarProducto = ptEditarProducto;
+
+function ptAbrirFicha(ref) {
+  var prod = ref ? PRODUCTS.find(function(p){ return p.r === ref; }) : null;
+  var pd   = ref ? (ptGetData()[ref] || {}) : {};
+  var inv  = typeof getInventory === 'function' ? getInventory() : {};
+  var exActual     = prod ? (inv[ref] !== undefined ? (inv[ref]||0) : (prod.ex||0)) : 0;
+  var comprometidas= ptGetComprometidas();
+  var compList     = comprometidas[ref] || [];
+  var compTotal    = compList.reduce(function(s,c){ return s+c.qty; }, 0);
+  var exOrdenada   = pd.exOrdenada  || 0;
+  var exMin        = pd.exMin       || 0;
+  var exMax        = pd.exMax       || 0;
+  var exDisponible = Math.max(0, exActual - compTotal);
+  var costos       = pd.costos  || {};
+  var medidas      = pd.medidas || {};
+  var provs        = pd.proveedores || [];
+
+  // Calcular KPIs de existencia
+  var diasExistencia  = pd.diasExistencia  || 0;
+  var tiempoDespacho  = pd.tiempoDespacho  || 0;
+  var puntoPedido     = pd.puntoPedido     || 0;
+  var puntoReorden    = pd.puntoReorden    || 0;
+
+  if (document.getElementById('pt-ficha-overlay')) return;
+  var overlay = document.createElement('div');
+  overlay.id  = 'pt-ficha-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.72);z-index:99999;display:flex;align-items:flex-start;justify-content:center;padding:16px;overflow-y:auto;';
+
+  // Helper inline
+  function fi(id, lbl, val, ro, tp) {
+    tp = tp||'text';
+    var roAttr = ro ? 'readonly style="background:#f1f5f9;width:100%;padding:6px 10px;border:1.5px solid #e2e8f0;border-radius:7px;font-size:.8rem;outline:none;box-sizing:border-box;color:#64748b;"'
+                    : 'style="width:100%;padding:6px 10px;border:1.5px solid #e2e8f0;border-radius:7px;font-size:.8rem;outline:none;box-sizing:border-box;" onfocus="this.style.borderColor=\'#1B1F6B\'" onblur="this.style.borderColor=\'#e2e8f0\'"';
+    return '<div><label style="display:block;font-size:.6rem;font-weight:700;color:#64748b;margin-bottom:3px;text-transform:uppercase;letter-spacing:.4px;">'+lbl+'</label>'+
+      '<input id="'+id+'" type="'+tp+'" value="'+(val||'')+'" '+roAttr+'></div>';
+  }
+  function fs(id, lbl, val, opts) {
+    return '<div><label style="display:block;font-size:.6rem;font-weight:700;color:#64748b;margin-bottom:3px;text-transform:uppercase;letter-spacing:.4px;">'+lbl+'</label>'+
+      '<select id="'+id+'" style="width:100%;padding:6px 10px;border:1.5px solid #e2e8f0;border-radius:7px;font-size:.8rem;background:white;outline:none;box-sizing:border-box;">'+
+      opts.map(function(o){ return '<option value="'+o+'"'+(o===val?' selected':'')+'>'+o+'</option>'; }).join('')+
+      '</select></div>';
+  }
+  function fkpi(lbl, val, color, bg) {
+    return '<div style="background:'+(bg||'#f8faff')+';border-radius:8px;padding:10px 12px;border:1.5px solid '+(color||'#e2e8f0')+';text-align:center;">'+
+      '<div style="font-size:.58rem;font-weight:700;color:'+(color||'#64748b')+';text-transform:uppercase;letter-spacing:.4px;margin-bottom:4px;">'+lbl+'</div>'+
+      '<div style="font-size:1.1rem;font-weight:900;color:'+(color||'#1B1F6B')+';">'+val+'</div>'+
+    '</div>';
+  }
+
+  // Construir tabs
+  var tabStyle   = 'padding:9px 18px;border:none;cursor:pointer;font-size:.75rem;font-weight:700;letter-spacing:.3px;transition:all .15s;';
+  var tabActive  = tabStyle+'background:#1B1F6B;color:white;';
+  var tabInactive= tabStyle+'background:#f0f2ff;color:#5a6080;border-bottom:2px solid #e0e4f0;';
+
+  overlay.innerHTML =
+    '<div style="background:white;border-radius:16px;width:min(900px,100%);margin:auto;box-shadow:0 24px 64px rgba(0,0,0,.45);overflow:hidden;">' +
+
+    // ── HEADER ────────────────────────────────────────────────────────────────
+    '<div style="background:linear-gradient(135deg,#1B1F6B,#2d3580);color:white;padding:16px 22px;display:flex;justify-content:space-between;align-items:center;">' +
+      '<div>' +
+        '<div style="font-size:.72rem;opacity:.65;text-transform:uppercase;letter-spacing:.6px;">Productos Terminados — Farmers C.A.</div>' +
+        '<div style="font-size:1.05rem;font-weight:900;margin-top:2px;">🏷️ '+(ref?('Ficha: '+ref):'Nuevo Producto')+'</div>' +
+      '</div>' +
+      '<button onclick="ptCerrarFicha()" style="background:rgba(255,255,255,.15);border:none;color:white;border-radius:8px;padding:6px 14px;cursor:pointer;font-weight:700;font-size:.9rem;">✕</button>' +
+    '</div>' +
+
+    // ── TABS ──────────────────────────────────────────────────────────────────
+    '<div style="display:flex;gap:0;border-bottom:2px solid #e0e4f0;background:#f8faff;" id="pt-ficha-tabs">' +
+      '<button id="ptf-tab-info"  onclick="ptFichaTab(\'info\')"  style="'+tabActive +'">📋 Info. General</button>' +
+      '<button id="ptf-tab-exist" onclick="ptFichaTab(\'exist\')" style="'+tabInactive+'">📦 Existencias</button>' +
+      '<button id="ptf-tab-prov"  onclick="ptFichaTab(\'prov\')"  style="'+tabInactive+'">🏭 Proveedores</button>' +
+    '</div>' +
+
+    '<div style="padding:20px 22px;display:flex;gap:16px;">' +
+
+      // ── PANEL IZQUIERDO (tabs) ──────────────────────────────────────────────
+      '<div style="flex:1;min-width:0;">' +
+
+        // TAB INFO GENERAL
+        '<div id="ptf-panel-info" style="display:grid;gap:14px;">' +
+
+          // Identificación
+          '<fieldset style="border:1px solid #e0e4f0;border-radius:10px;padding:14px;margin:0;">' +
+            '<legend style="font-size:.65rem;font-weight:800;color:#1B1F6B;padding:0 8px;text-transform:uppercase;letter-spacing:.6px;">📋 Identificación</legend>' +
+            '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;">' +
+              fi('ptf-ref',    'Código *',              ref||'',       !!ref) +
+              fi('ptf-barcode','Código de Barras',       prod?(prod.b||''):'') +
+              fi('ptf-refalt', 'Ref. Alterna (Prov.)',   prod?(prod.c||''):'') +
+            '</div>' +
+            '<div style="display:grid;grid-template-columns:2fr 1fr;gap:8px;margin-top:8px;">' +
+              fi('ptf-nombre', 'Nombre Completo *',      prod?(prod.d||''):'') +
+              fi('ptf-corto',  'Nombre Corto',           pd.nombreCorto||'') +
+            '</div>' +
+            '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:8px;">' +
+              fs('ptf-marca',  'Marca',                  prod?(prod.br||''):'',
+                ['EXCALIBUR','GENIAL','MATRIX','LUMEN','MAXKILLER','VARIOS']) +
+              fi('ptf-dept',   'Departamento',           pd.dept||'') +
+              fi('ptf-modelo', 'Modelo',                 pd.modelo||'') +
+            '</div>' +
+            '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px;">' +
+              fs('ptf-unidad', 'Unidad',                 prod?(prod.e||'UNIDAD'):'UNIDAD',
+                ['UNIDAD','PAR','SET','PACK','DOCENA','CAJA','BULTO']) +
+              fi('ptf-bulto',  'Uds. por Bulto',         prod?(prod.m||''):'', false, 'number') +
+            '</div>' +
+          '</fieldset>' +
+
+          // Costos
+          '<fieldset style="border:1px solid #fde68a;border-radius:10px;padding:14px;margin:0;background:#fffdf0;">' +
+            '<legend style="font-size:.65rem;font-weight:800;color:#92400e;padding:0 8px;text-transform:uppercase;letter-spacing:.6px;">💰 Estructura de Costos (USD)</legend>' +
+            '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;">' +
+              fi('ptf-costo',     'Costo Proveedor $',  pd.costo||'', false, 'number') +
+              fi('ptf-impuesto',  'Impuestos $',        costos.impuesto||'', false, 'number') +
+              fi('ptf-arancel',   'Aranceles $',        costos.arancel||'', false, 'number') +
+            '</div>' +
+            '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:8px;">' +
+              fi('ptf-flete',     'Flete $',            costos.flete||'', false, 'number') +
+              fi('ptf-otros',     'Otros Costos $',     costos.otros||'', false, 'number') +
+              '<div style="background:#fffbeb;border-radius:8px;padding:8px 10px;border:1.5px solid #fbbf24;">' +
+                '<div style="font-size:.6rem;color:#92400e;font-weight:700;margin-bottom:4px;">COSTO TOTAL</div>' +
+                '<div id="ptf-costo-total" style="font-size:1rem;font-weight:900;color:#92400e;">$ —</div>' +
+              '</div>' +
+            '</div>' +
+          '</fieldset>' +
+
+          // Precios de venta
+          '<fieldset style="border:1px solid #86efac;border-radius:10px;padding:14px;margin:0;background:#f0fdf4;">' +
+            '<legend style="font-size:.65rem;font-weight:800;color:#15803d;padding:0 8px;text-transform:uppercase;letter-spacing:.6px;">💲 Precios de Venta</legend>' +
+            '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;">' +
+              fi('ptf-pusd', 'Precio USD $',        prod?(prod.u||''):'',  false, 'number') +
+              fi('ptf-pbcv', 'Precio BCV (ref. $)', prod?(prod.bv||''):'', false, 'number') +
+              fi('ptf-ptf',  'Precio TF (ref. $)',  prod?(prod.t||''):'',  false, 'number') +
+            '</div>' +
+          '</fieldset>' +
+
+          // Medidas del bulto
+          '<fieldset style="border:1px solid #e0e4f0;border-radius:10px;padding:14px;margin:0;">' +
+            '<legend style="font-size:.65rem;font-weight:800;color:#1B1F6B;padding:0 8px;text-transform:uppercase;letter-spacing:.6px;">📐 Medidas del Bulto</legend>' +
+            '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;">' +
+              fi('ptf-largo', 'Largo (cm)',  medidas.largo||'', false, 'number') +
+              fi('ptf-ancho', 'Ancho (cm)',  medidas.ancho||'', false, 'number') +
+              fi('ptf-alto',  'Alto (cm)',   medidas.alto||'',  false, 'number') +
+              fi('ptf-peso',  'Peso (kg)',   medidas.peso||'',  false, 'number') +
+            '</div>' +
+          '</fieldset>' +
+
+        '</div>' + // end ptf-panel-info
+
+        // TAB EXISTENCIAS
+        '<div id="ptf-panel-exist" style="display:none;gap:14px;flex-direction:column;">' +
+
+          // KPIs de existencia
+          '<fieldset style="border:1px solid #93c5fd;border-radius:10px;padding:14px;margin:0;background:#eff6ff;">' +
+            '<legend style="font-size:.65rem;font-weight:800;color:#1d4ed8;padding:0 8px;text-transform:uppercase;letter-spacing:.6px;">📦 Existencias Actuales</legend>' +
+            '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:12px;">' +
+              fkpi('Actual',       exActual,      exActual>0?'#16a34a':'#dc2626', exActual>0?'#f0fdf4':'#fef2f2') +
+              fkpi('Comprometida', compTotal,     compTotal>0?'#dc2626':'#64748b', compTotal>0?'#fef2f2':'#f8faff') +
+              fkpi('Ordenada',     exOrdenada,    exOrdenada>0?'#f59e0b':'#64748b', exOrdenada>0?'#fffbeb':'#f8faff') +
+              fkpi('Disponible',   exDisponible,  exDisponible>0?'#1d4ed8':'#dc2626', exDisponible>0?'#dbeafe':'#fef2f2') +
+            '</div>' +
+            '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">' +
+              fi('ptf-exmin',     'Existencia Mínima',   exMin, false, 'number') +
+              fi('ptf-exmax',     'Existencia Máxima',   exMax, false, 'number') +
+            '</div>' +
+          '</fieldset>' +
+
+          // Control de existencia (igual que Valery)
+          '<fieldset style="border:1px solid #e0e4f0;border-radius:10px;padding:14px;margin:0;">' +
+            '<legend style="font-size:.65rem;font-weight:800;color:#1B1F6B;padding:0 8px;text-transform:uppercase;letter-spacing:.6px;">⚙️ Control de Inventario</legend>' +
+            '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">' +
+              fi('ptf-exordenada',   'Existencia Ordenada',     exOrdenada,      false, 'number') +
+              fi('ptf-dias-exist',   'Días de Existencia',      diasExistencia,  false, 'number') +
+              fi('ptf-t-despacho',   'Tiempo de Despacho (días)', tiempoDespacho, false, 'number') +
+              fi('ptf-pto-pedido',   'Punto de Pedido',         puntoPedido,     false, 'number') +
+              fi('ptf-pto-reorden',  'Punto de Reorden',        puntoReorden,    false, 'number') +
+            '</div>' +
+          '</fieldset>' +
+
+          // Listado de comprometidos por pedido
+          '<fieldset style="border:1px solid #fca5a5;border-radius:10px;padding:14px;margin:0;">' +
+            '<legend style="font-size:.65rem;font-weight:800;color:#dc2626;padding:0 8px;text-transform:uppercase;letter-spacing:.6px;">🔒 Listado de Existencia Comprometida</legend>' +
+            (compList.length > 0 ?
+              '<table style="width:100%;border-collapse:collapse;font-size:.75rem;">' +
+                '<thead><tr style="background:#fee2e2;">' +
+                  '<th style="padding:6px 10px;text-align:left;color:#dc2626;">Pedido</th>' +
+                  '<th style="padding:6px 10px;text-align:left;color:#dc2626;">Cliente</th>' +
+                  '<th style="padding:6px 10px;text-align:center;color:#dc2626;">Fecha</th>' +
+                  '<th style="padding:6px 10px;text-align:right;color:#dc2626;">Cant.</th>' +
+                '</tr></thead><tbody>' +
+                compList.map(function(cl, i) {
+                  return '<tr style="background:'+(i%2===0?'#fff':'#fef2f2')+';border-bottom:1px solid #fee2e2;">' +
+                    '<td style="padding:6px 10px;font-weight:700;color:#1B1F6B;">#' + cl.pedido + '</td>' +
+                    '<td style="padding:6px 10px;">' + cl.cliente + '</td>' +
+                    '<td style="padding:6px 10px;text-align:center;color:#64748b;">' + (cl.fecha||'—') + '</td>' +
+                    '<td style="padding:6px 10px;text-align:right;font-weight:900;color:#dc2626;">' + cl.qty + '</td>' +
+                  '</tr>';
+                }).join('') +
+                '<tr style="background:#fee2e2;font-weight:900;"><td colspan="3" style="padding:6px 10px;text-align:right;color:#dc2626;">TOTAL</td>' +
+                '<td style="padding:6px 10px;text-align:right;color:#dc2626;">' + compTotal + '</td></tr>' +
+                '</tbody></table>' :
+              '<div style="padding:20px;text-align:center;color:#94a3b8;font-size:.78rem;">Sin existencias comprometidas</div>'
+            ) +
+          '</fieldset>' +
+
+        '</div>' + // end ptf-panel-exist
+
+        // TAB PROVEEDORES
+        '<div id="ptf-panel-prov" style="display:none;">' +
+          '<fieldset style="border:1px solid #e0e4f0;border-radius:10px;padding:14px;margin:0;">' +
+            '<legend style="font-size:.65rem;font-weight:800;color:#1B1F6B;padding:0 8px;text-transform:uppercase;letter-spacing:.6px;">🏭 Proveedores del Producto</legend>' +
+            '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px;">' +
+              fi('ptf-prov-nombre',  'Nombre del Proveedor',   (provs[0]||{}).nombre||'') +
+              fi('ptf-prov-rif',     'RIF / ID Proveedor',     (provs[0]||{}).rif||'') +
+              fi('ptf-prov-ref',     'Ref. en Proveedor',      (provs[0]||{}).refProv||'') +
+              fi('ptf-prov-costo',   'Último Costo $',         (provs[0]||{}).costo||'', false, 'number') +
+              fi('ptf-prov-tlead',   'Lead Time (días)',        (provs[0]||{}).leadTime||'', false, 'number') +
+              fi('ptf-prov-min',     'Pedido Mínimo (uds.)',   (provs[0]||{}).minOrder||'', false, 'number') +
+            '</div>' +
+            '<div>' +
+              fi('ptf-prov-notas',   'Notas / Condiciones',    (provs[0]||{}).notas||'') +
+            '</div>' +
+          '</fieldset>' +
+        '</div>' + // end ptf-panel-prov
+
+      '</div>' + // end panel izquierdo
+
+      // ── PANEL DERECHO — Configuración rápida ───────────────────────────────
+      '<div style="width:180px;flex-shrink:0;display:flex;flex-direction:column;gap:8px;">' +
+
+        '<div style="background:#1B1F6B;color:white;border-radius:10px;padding:12px;font-size:.68rem;">' +
+          '<div style="font-weight:800;margin-bottom:8px;text-transform:uppercase;letter-spacing:.5px;">⚡ Estado</div>' +
+          fs('ptf-estado', '', 'Activo', ['Activo','Inactivo']) +
+        '</div>' +
+
+        '<div style="background:#f8faff;border-radius:10px;padding:12px;border:1px solid #e0e4f0;font-size:.68rem;">' +
+          '<div style="font-weight:800;color:#1B1F6B;margin-bottom:8px;text-transform:uppercase;letter-spacing:.5px;">🔧 Config.</div>' +
+          '<div style="display:flex;flex-direction:column;gap:6px;">' +
+            ptfCheck('ptf-facturable',  'Parte Facturable',  pd.facturable !== false) +
+            ptfCheck('ptf-activo',      'Activo en Catálogo', pd.activoCatalogo !== false) +
+            ptfCheck('ptf-permitezero', 'Permite venta en cero', pd.permiteVentaCero||false) +
+          '</div>' +
+        '</div>' +
+
+        (ref ?
+        '<div style="background:#f0fdf4;border-radius:10px;padding:12px;border:1px solid #86efac;font-size:.68rem;">' +
+          '<div style="font-weight:800;color:#15803d;margin-bottom:8px;text-transform:uppercase;letter-spacing:.5px;">📊 Resumen</div>' +
+          '<div style="display:flex;flex-direction:column;gap:5px;font-size:.65rem;">' +
+            '<div style="display:flex;justify-content:space-between;"><span style="color:#64748b;">Actual</span><strong style="color:'+(exActual>0?'#16a34a':'#dc2626')+'">'+exActual+'</strong></div>' +
+            '<div style="display:flex;justify-content:space-between;"><span style="color:#64748b;">Comprometida</span><strong style="color:'+(compTotal>0?'#dc2626':'#64748b')+'">'+compTotal+'</strong></div>' +
+            '<div style="display:flex;justify-content:space-between;"><span style="color:#64748b;">Disponible</span><strong style="color:'+(exDisponible>0?'#1d4ed8':'#dc2626')+'">'+exDisponible+'</strong></div>' +
+            '<div style="display:flex;justify-content:space-between;"><span style="color:#64748b;">Ordenada</span><strong style="color:#f59e0b">'+exOrdenada+'</strong></div>' +
+            '<hr style="border:none;border-top:1px solid #e0e4f0;margin:4px 0;">' +
+            '<div style="display:flex;justify-content:space-between;"><span style="color:#64748b;">USD</span><strong>$'+(prod&&prod.u?prod.u.toFixed(2):'—')+'</strong></div>' +
+            '<div style="display:flex;justify-content:space-between;"><span style="color:#64748b;">BCV</span><span style="color:#64748b;">$'+(prod&&prod.bv?prod.bv.toFixed(2):'—')+'</span></div>' +
+            '<div style="display:flex;justify-content:space-between;"><span style="color:#64748b;">TF</span><span style="color:#64748b;">$'+(prod&&prod.t?prod.t.toFixed(2):'—')+'</span></div>' +
+          '</div>' +
+        '</div>' : '') +
+
+      '</div>' + // end panel derecho
+
+    '</div>' + // end flex container
+
+    // ── FOOTER ────────────────────────────────────────────────────────────────
+    '<div style="padding:14px 22px;border-top:1px solid #e8eaf6;display:flex;justify-content:space-between;align-items:center;background:#f8faff;">' +
+      '<div style="font-size:.68rem;color:#94a3b8;">' +
+        (ref ? 'Último código: ' + ref : 'Nuevo producto') +
+      '</div>' +
+      '<div style="display:flex;gap:8px;">' +
+        '<button onclick="ptCerrarFicha()" style="background:#f1f5f9;color:#64748b;border:none;border-radius:8px;padding:8px 18px;cursor:pointer;font-weight:700;font-size:.8rem;">ESC Cerrar</button>' +
+        '<button onclick="ptGuardarFicha(\''+(ref||'')+'\')" style="background:linear-gradient(135deg,#16a34a,#15803d);color:white;border:none;border-radius:8px;padding:8px 22px;cursor:pointer;font-weight:700;font-size:.8rem;">F9 Registrar</button>' +
+      '</div>' +
+    '</div>' +
+
+  '</div>'; // end main container
+
+  document.body.appendChild(overlay);
+  overlay.onclick = function(e){ if(e.target===overlay) ptCerrarFicha(); };
+
+  // Inicializar costo total
+  ['ptf-costo','ptf-impuesto','ptf-arancel','ptf-flete','ptf-otros'].forEach(function(id){
+    var el = document.getElementById(id);
+    if (el) el.addEventListener('input', ptActualizarCostoTotal);
+  });
+  ptActualizarCostoTotal();
+
+  // Activar tab info por defecto
+  ptFichaTab('info');
+}
+window.ptAbrirFicha = ptAbrirFicha;
+
+// Helper checkbox para panel derecho
+function ptfCheck(id, lbl, checked) {
+  return '<label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:.65rem;color:#374151;">' +
+    '<input type="checkbox" id="'+id+'"'+(checked?' checked':'')+' style="accent-color:#1B1F6B;width:13px;height:13px;">' +
+    lbl + '</label>';
+}
+
+// Tab switcher de la ficha
+function ptFichaTab(tab) {
+  var panels = ['info','exist','prov'];
+  panels.forEach(function(t) {
+    var p = document.getElementById('ptf-panel-'+t);
+    var b = document.getElementById('ptf-tab-'+t);
+    if (p) p.style.display = t===tab ? (t==='info'?'grid':'flex') : 'none';
+    if (b) {
+      b.style.background = t===tab ? '#1B1F6B' : 'transparent';
+      b.style.color      = t===tab ? 'white'   : '#5a6080';
+      b.style.borderBottom = t===tab ? 'none' : '2px solid #e0e4f0';
+    }
+  });
+}
+window.ptFichaTab = ptFichaTab;
+
+function ptActualizarCostoTotal() {
+  var ids = ['ptf-costo','ptf-impuesto','ptf-arancel','ptf-flete','ptf-otros'];
+  var total = ids.reduce(function(s,id){
+    return s + (parseFloat((document.getElementById(id)||{}).value)||0);
+  }, 0);
+  var el = document.getElementById('ptf-costo-total');
+  if (el) el.textContent = total > 0 ? '$ ' + total.toFixed(2) : '$ —';
+}
+window.ptActualizarCostoTotal = ptActualizarCostoTotal;
+
+function ptCerrarFicha() {
+  var el = document.getElementById('pt-ficha-overlay');
+  if (el) el.remove();
+}
+window.ptCerrarFicha = ptCerrarFicha;
+
+function ptGuardarFicha(refOriginal) {
+  var ref = ((document.getElementById('ptf-ref')||{}).value||'').trim().toUpperCase();
+  if (!ref) { if(typeof showToast==='function') showToast('La referencia es obligatoria','warning'); return; }
+  var nombre = ((document.getElementById('ptf-nombre')||{}).value||'').trim();
+  if (!nombre) { if(typeof showToast==='function') showToast('El nombre es obligatorio','warning'); return; }
+
+  var pd = ptGetData();
+  pd[ref] = pd[ref] || {};
+
+  // Info general
+  pd[ref].nombreCorto   = ((document.getElementById('ptf-corto')||{}).value||'').trim();
+  pd[ref].dept          = ((document.getElementById('ptf-dept')||{}).value||'').trim();
+  pd[ref].modelo        = ((document.getElementById('ptf-modelo')||{}).value||'').trim();
+  pd[ref].facturable    = (document.getElementById('ptf-facturable')||{checked:true}).checked;
+  pd[ref].activoCatalogo= (document.getElementById('ptf-activo')||{checked:true}).checked;
+  pd[ref].permiteVentaCero = (document.getElementById('ptf-permitezero')||{}).checked||false;
+
+  // Costos
+  pd[ref].costo         = parseFloat((document.getElementById('ptf-costo')||{}).value)||0;
+  pd[ref].costos = {
+    impuesto: parseFloat((document.getElementById('ptf-impuesto')||{}).value)||0,
+    arancel:  parseFloat((document.getElementById('ptf-arancel') ||{}).value)||0,
+    flete:    parseFloat((document.getElementById('ptf-flete')   ||{}).value)||0,
+    otros:    parseFloat((document.getElementById('ptf-otros')   ||{}).value)||0,
+  };
+
+  // Medidas
+  pd[ref].medidas = {
+    largo: parseFloat((document.getElementById('ptf-largo')||{}).value)||0,
+    ancho: parseFloat((document.getElementById('ptf-ancho')||{}).value)||0,
+    alto:  parseFloat((document.getElementById('ptf-alto') ||{}).value)||0,
+    peso:  parseFloat((document.getElementById('ptf-peso') ||{}).value)||0,
+  };
+
+  // Existencias control
+  pd[ref].exMin          = parseFloat((document.getElementById('ptf-exmin')      ||{}).value)||0;
+  pd[ref].exMax          = parseFloat((document.getElementById('ptf-exmax')      ||{}).value)||0;
+  pd[ref].exOrdenada     = parseFloat((document.getElementById('ptf-exordenada') ||{}).value)||0;
+  pd[ref].diasExistencia = parseFloat((document.getElementById('ptf-dias-exist') ||{}).value)||0;
+  pd[ref].tiempoDespacho = parseFloat((document.getElementById('ptf-t-despacho') ||{}).value)||0;
+  pd[ref].puntoPedido    = parseFloat((document.getElementById('ptf-pto-pedido') ||{}).value)||0;
+  pd[ref].puntoReorden   = parseFloat((document.getElementById('ptf-pto-reorden')||{}).value)||0;
+
+  // Proveedor
+  var provNombre = ((document.getElementById('ptf-prov-nombre')||{}).value||'').trim();
+  if (provNombre) {
+    pd[ref].proveedores = [{
+      nombre:   provNombre,
+      rif:      ((document.getElementById('ptf-prov-rif')    ||{}).value||'').trim(),
+      refProv:  ((document.getElementById('ptf-prov-ref')    ||{}).value||'').trim(),
+      costo:    parseFloat((document.getElementById('ptf-prov-costo')||{}).value)||0,
+      leadTime: parseFloat((document.getElementById('ptf-prov-tlead')||{}).value)||0,
+      minOrder: parseFloat((document.getElementById('ptf-prov-min')  ||{}).value)||0,
+      notas:    ((document.getElementById('ptf-prov-notas')  ||{}).value||'').trim(),
+    }];
+  }
+
+  ptSaveData(pd);
+
+  // Actualizar PRODUCTS
+  var prodIdx = PRODUCTS.findIndex(function(p){ return p.r === ref; });
+  var upd = {
+    r:  ref,
+    b:  ((document.getElementById('ptf-barcode')||{}).value||'').trim(),
+    c:  ((document.getElementById('ptf-refalt') ||{}).value||'').trim(),
+    d:  nombre,
+    e:  (document.getElementById('ptf-unidad')  ||{value:'UNIDAD'}).value,
+    m:  parseInt((document.getElementById('ptf-bulto') ||{}).value)||0,
+    br: (document.getElementById('ptf-marca')   ||{value:''}).value,
+    u:  parseFloat((document.getElementById('ptf-pusd')||{}).value)||0,
+    bv: parseFloat((document.getElementById('ptf-pbcv')||{}).value)||0,
+    t:  parseFloat((document.getElementById('ptf-ptf') ||{}).value)||0,
+  };
+  if (prodIdx >= 0) {
+    Object.assign(PRODUCTS[prodIdx], upd);
+  } else {
+    upd.ex = 0;
+    PRODUCTS.push(upd);
+  }
+
+  ptCerrarFicha();
+  if(typeof showToast==='function') showToast('✅ Ficha guardada: ' + ref, 'success');
+  ptRender();
+}
+window.ptGuardarFicha = ptGuardarFicha;
+
+// Ver comprometidos (acceso rápido desde tabla)
+function ptVerComprometidos(ref) {
+  var comp  = ptGetComprometidas();
+  var lista = comp[ref] || [];
+  var prod  = PRODUCTS.find(function(p){ return p.r === ref; });
+  if (!lista.length) { if(typeof showToast==='function') showToast('Sin pedidos comprometidos','info'); return; }
+  var ov = document.createElement('div');
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:999999;display:flex;align-items:center;justify-content:center;padding:16px;';
+  ov.innerHTML =
+    '<div style="background:white;border-radius:14px;width:min(540px,100%);box-shadow:0 20px 50px rgba(0,0,0,.3);overflow:hidden;">' +
+      '<div style="background:#dc2626;color:white;padding:14px 20px;display:flex;justify-content:space-between;align-items:center;">' +
+        '<div style="font-weight:800;">🔒 Comprometidos — ' + ref + '</div>' +
+        '<button onclick="this.closest(\'[style*=fixed]\').remove()" style="background:rgba(255,255,255,.2);border:none;color:white;border-radius:6px;padding:4px 10px;cursor:pointer;font-weight:700;">✕</button>' +
+      '</div>' +
+      '<div style="padding:16px 20px;">' +
+        '<div style="font-size:.75rem;color:#64748b;margin-bottom:12px;">' + (prod?prod.d:ref) + '</div>' +
+        '<table style="width:100%;border-collapse:collapse;font-size:.78rem;">' +
+          '<thead><tr style="background:#fee2e2;">' +
+            '<th style="padding:7px 10px;text-align:left;color:#dc2626;">Pedido</th>' +
+            '<th style="padding:7px 10px;text-align:left;color:#dc2626;">Cliente</th>' +
+            '<th style="padding:7px 10px;text-align:center;color:#dc2626;">Fecha</th>' +
+            '<th style="padding:7px 10px;text-align:right;color:#dc2626;">Cant.</th>' +
+          '</tr></thead><tbody>' +
+          lista.map(function(cl,i){
+            return '<tr style="background:'+(i%2===0?'#fff':'#fef2f2')+';border-bottom:1px solid #fee2e2;">' +
+              '<td style="padding:7px 10px;font-weight:700;color:#1B1F6B;">#'+cl.pedido+'</td>' +
+              '<td style="padding:7px 10px;">'+cl.cliente+'</td>' +
+              '<td style="padding:7px 10px;text-align:center;color:#64748b;">'+(cl.fecha||'—')+'</td>' +
+              '<td style="padding:7px 10px;text-align:right;font-weight:900;color:#dc2626;">'+cl.qty+'</td>' +
+            '</tr>';
+          }).join('') +
+          '<tr style="background:#fee2e2;font-weight:900;"><td colspan="3" style="padding:7px 10px;text-align:right;color:#dc2626;">TOTAL</td>' +
+          '<td style="padding:7px 10px;text-align:right;color:#dc2626;">'+lista.reduce(function(s,cl){return s+cl.qty;},0)+'</td></tr>' +
+          '</tbody></table>' +
+      '</div>' +
+    '</div>';
+  document.body.appendChild(ov);
+  ov.onclick = function(e){ if(e.target===ov) ov.remove(); };
+}
+window.ptVerComprometidos = ptVerComprometidos;
+
+// Helpers constructores de campos
+function ptInputField(id,lbl,val,ro,tp){
+  var s=ro?'background:#f1f5f9;':'';
+  return '<div><label style="display:block;font-size:.6rem;font-weight:700;color:#64748b;margin-bottom:3px;text-transform:uppercase;letter-spacing:.4px;">'+lbl+'</label>'+
+    '<input id="'+id+'" type="'+(tp||'text')+'" value="'+(val||'')+'" '+(ro?'readonly ':'')+
+    'style="'+s+'width:100%;padding:7px 10px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:.82rem;outline:none;box-sizing:border-box;" '+
+    (ro?'':' onfocus="this.style.borderColor=\'#1B1F6B\'" onblur="this.style.borderColor=\'#e2e8f0\'"')+
+    '></div>';
+}
+function ptSelectField(id,lbl,val,opts){
+  return '<div><label style="display:block;font-size:.6rem;font-weight:700;color:#64748b;margin-bottom:3px;text-transform:uppercase;letter-spacing:.4px;">'+lbl+'</label>'+
+    '<select id="'+id+'" style="width:100%;padding:7px 10px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:.82rem;background:white;outline:none;box-sizing:border-box;">'+
+    opts.map(function(o){return '<option value="'+o+'"'+(o===val?' selected':'')+'>'+o+'</option>';}).join('')+
+    '</select></div>';
 }
 
 
