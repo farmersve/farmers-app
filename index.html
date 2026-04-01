@@ -11062,37 +11062,39 @@ function ptImpFileSelected(inp) {
 window.ptImpFileSelected = ptImpFileSelected;
 
 function ptImpProcesarArchivo(file) {
-  var ext = file.name.split('.').pop().toLowerCase();
-  var status = document.getElementById('pt-imp-status');
-  var prog   = document.getElementById('pt-imp-progress');
-  var progTxt= document.getElementById('pt-imp-prog-txt');
-  var progBar= document.getElementById('pt-imp-prog-bar');
+  var ext     = file.name.split('.').pop().toLowerCase();
+  var status  = document.getElementById('pt-imp-status');
+  var prog    = document.getElementById('pt-imp-progress');
+  var progTxt = document.getElementById('pt-imp-prog-txt');
+  var progBar = document.getElementById('pt-imp-prog-bar');
 
   if (status) { status.style.display='block'; status.textContent='📄 ' + file.name + ' cargado'; }
   if (prog)   prog.style.display = 'block';
 
   if (ext === 'xlsx' || ext === 'csv') {
-    // Leer Excel con SheetJS
+    // SheetJS convierte a CSV → IA extrae datos con precisión total
     var reader = new FileReader();
     reader.onload = function(e) {
-      if (progTxt) progTxt.textContent = 'Procesando Excel...';
-      if (progBar) progBar.style.width = '40%';
+      if (progTxt) progTxt.textContent = 'Leyendo archivo...';
+      if (progBar) progBar.style.width = '25%';
       try {
         var XLSX = window.XLSX;
-        if (!XLSX) { ptImpError('SheetJS no disponible'); return; }
-        var wb   = XLSX.read(e.target.result, {type:'array'});
-        var ws   = wb.Sheets[wb.SheetNames[0]];
-        var rows = XLSX.utils.sheet_to_json(ws, {defval:''});
-        if (progBar) progBar.style.width = '70%';
-        ptImpAnalizarRows(rows, 'excel');
+        var csvText = '';
+        if (XLSX) {
+          var wb  = XLSX.read(e.target.result, {type:'array'});
+          var ws  = wb.Sheets[wb.SheetNames[0]];
+          csvText = XLSX.utils.sheet_to_csv(ws);
+        }
+        if (progTxt) progTxt.textContent = 'IA analizando pedido...';
+        if (progBar) progBar.style.width = '50%';
+        ptImpAnalizarConIATexto(csvText, file.name, progTxt, progBar);
       } catch(err) {
-        ptImpError('Error leyendo Excel: ' + err.message);
+        ptImpError('Error: ' + err.message);
       }
     };
     reader.readAsArrayBuffer(file);
   } else if (ext === 'pdf' || ['jpg','jpeg','png'].includes(ext)) {
-    // Usar IA para extraer datos
-    if (progTxt) progTxt.textContent = 'Enviando a IA para análisis...';
+    if (progTxt) progTxt.textContent = 'IA analizando archivo...';
     if (progBar) progBar.style.width = '20%';
     ptImpAnalizarConIA(file, ext, progTxt, progBar);
   } else {
@@ -11107,6 +11109,56 @@ function ptImpError(msg) {
   var p = document.getElementById('pt-imp-progress');
   if (p) p.style.display = 'none';
 }
+
+// Analizar CSV/texto con IA (para Excel convertido)
+function ptImpAnalizarConIATexto(csvText, fileName, progTxt, progBar) {
+  if (!csvText || csvText.trim().length < 10) {
+    ptImpError('No se pudo leer el contenido del archivo');
+    return;
+  }
+  // Truncar si es muy largo (max ~12000 chars para no exceder contexto)
+  var textToSend = csvText.length > 12000 ? csvText.substring(0, 12000) : csvText;
+
+  fetch('https://farmers-proxy.farmersve.workers.dev/', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 4000,
+      messages: [{
+        role: 'user',
+        content: 'Analiza este pedido/factura de proveedor en formato CSV y extrae cada producto.\n\n' +
+          'REGLAS CRÍTICAS:\n' +
+          '- "Precio Venta" = precio unitario que cobra el proveedor = costo para Farmers (campo costo_unit)\n' +
+          '- "Referecia" o "Referencia" = ref del proveedor (campo ref_prov)\n' +
+          '- "Unidades" = cantidad total de unidades\n' +
+          '- "Bultos" = cantidad de cajas/bultos\n' +
+          '- Longitud/Ancho/Altura = medidas del bulto en cm\n' +
+          '- NO mezcles P.Total ni P.Neto con el costo unitario\n\n' +
+          'Responde SOLO JSON sin backticks ni explicaciones:\n' +
+          '{"productos":[{"ref_prov":"","barcode":"","desc":"","bultos":0,"uds":0,"medida":"","p_neto":0,"marca":"","largo":0,"ancho":0,"alto":0,"costo_unit":0,"composicion":""}]}\n\n' +
+          'DATOS:\n' + textToSend
+      }]
+    })
+  })
+  .then(function(r) { return r.json(); })
+  .then(function(data) {
+    if (progBar) progBar.style.width = '85%';
+    var txt   = (data.content || []).map(function(x){ return x.text || ''; }).join('');
+    var clean = txt.replace(/```json|```/g, '').trim();
+    // Extraer JSON aunque haya texto alrededor
+    var jsonMatch = clean.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) { ptImpError('IA no devolvió JSON válido'); return; }
+    var parsed = JSON.parse(jsonMatch[0]);
+    var prods  = parsed.productos || [];
+    if (!prods.length) { ptImpError('IA no encontró productos en el archivo'); return; }
+    // Los productos ya vienen con costo_unit correcto desde la IA
+    // Solo necesitamos pasar por ptImpAnalizarRows para el cruce con PRODUCTS
+    ptImpAnalizarRows(prods, 'ia');
+  })
+  .catch(function(err) { ptImpError('Error IA: ' + err.message); });
+}
+window.ptImpAnalizarConIATexto = ptImpAnalizarConIATexto;
 
 // Analizar con IA (PDF/imagen)
 function ptImpAnalizarConIA(file, ext, progTxt, progBar) {
@@ -11155,9 +11207,29 @@ function ptImpAnalizarRows(rows, source) {
   if (progBar) progBar.style.width = '90%';
   if (progTxt) progTxt.textContent = 'Cruzando con inventario...';
 
-  // Normalizar campos (Excel tiene headers distintos)
-  var normalizada = rows.map(function(row) {
-    // Detectar columnas por nombre aproximado
+  // Si viene de IA, los campos ya están normalizados y costo_unit es correcto
+  var normalizada;
+  if (source === 'ia') {
+    normalizada = rows.map(function(row) {
+      return {
+        ref_prov:    String(row.ref_prov   || '').trim(),
+        barcode:     String(row.barcode    || '').trim(),
+        desc:        String(row.desc       || '').trim(),
+        bultos:      parseFloat(row.bultos)  || 0,
+        uds:         parseFloat(row.uds)     || 0,
+        medida:      String(row.medida     || '').trim(),
+        p_neto:      parseFloat(row.p_neto)  || 0,
+        marca:       String(row.marca      || '').trim().toUpperCase(),
+        largo:       parseFloat(row.largo)   || 0,
+        ancho:       parseFloat(row.ancho)   || 0,
+        alto:        parseFloat(row.alto)    || 0,
+        composicion: String(row.composicion|| '').trim(),
+        costo_unit:  parseFloat(row.costo_unit) || 0,  // ← IA ya lo calculó correctamente
+      };
+    }).filter(function(r){ return r.ref_prov && r.ref_prov !== 'undefined' && r.ref_prov !== ''; });
+  } else {
+  // Normalizar campos desde Excel/CSV con headers variables
+  normalizada = rows.map(function(row) {
     var keys = Object.keys(row);
     function get(patterns) {
       for (var i=0; i<patterns.length; i++) {
@@ -11168,10 +11240,7 @@ function ptImpAnalizarRows(rows, source) {
     }
     var uds    = parseFloat(get(['unidades','units','qty','cantidad'])) || 0;
     var p_neto = parseFloat(get(['neto','net','p. neto'])) || 0;
-
-    // "Precio Venta" = lo que cobra el proveedor = COSTO unitario para Farmers
     var p_venta_prov = 0;
-    // Intento 1: buscar key que contenga 'precio' Y 'venta'
     var pvKey = keys.find(function(k) {
       var kl = k.toLowerCase();
       return kl.includes('precio') && kl.includes('venta');
@@ -11179,13 +11248,10 @@ function ptImpAnalizarRows(rows, source) {
     if (pvKey && row[pvKey] !== '' && row[pvKey] !== null) {
       p_venta_prov = parseFloat(row[pvKey]) || 0;
     }
-    // Intento 2: patrones alternativos si no encontró
     if (!p_venta_prov) {
       p_venta_prov = parseFloat(get(['precio venta','precio_venta','sale price','unit price'])) || 0;
     }
-    // Fallback: p_neto / uds (cuando Precio Venta no existe en el formato)
     var costo_calc = (uds > 0 && p_neto > 0) ? Math.round(p_neto/uds*10000)/10000 : 0;
-
     return {
       ref_prov:    String(get(['referecia','referencia','ref','code','codigo interno'])).trim(),
       barcode:     String(get(['codigo barra','barcode','ean','upc','código'])).trim(),
@@ -11193,18 +11259,16 @@ function ptImpAnalizarRows(rows, source) {
       bultos:      parseFloat(get(['bultos','cajas','boxes'])) || 0,
       uds:         uds,
       medida:      String(get(['medida','unidad','unit'])).trim(),
-      p_total:     parseFloat(get(['p.total','ptotal','total','price total'])) || 0,
       p_neto:      p_neto,
       marca:       String(get(['marca','brand'])).trim().toUpperCase(),
       largo:       parseFloat(get(['longitud','largo','length'])) || 0,
       ancho:       parseFloat(get(['ancho','width'])) || 0,
       alto:        parseFloat(get(['altura','alto','height'])) || 0,
-      p_venta:     p_venta_prov,
       composicion: String(get(['composici','composition','material'])).trim(),
-      // Costo = Precio Venta del proveedor. Si es 0, usar p_neto/uds como fallback
       costo_unit:  p_venta_prov > 0 ? p_venta_prov : costo_calc,
     };
   }).filter(function(r){ return r.ref_prov && r.ref_prov !== 'undefined'; });
+  } // end else
 
   // Cruzar con PRODUCTS
   var byC = {};
