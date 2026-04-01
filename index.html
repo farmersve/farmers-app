@@ -11170,24 +11170,55 @@ function ptImpAnalizarRows(rows, source) {
     }
     var uds    = parseFloat(get(['unidades','units','qty','cantidad'])) || 0;
     var p_neto = parseFloat(get(['neto','net','p. neto'])) || 0;
-    // "Precio Venta" en el pedido del proveedor = precio que cobra = COSTO para Farmers
-    var p_venta_prov = parseFloat(get(['precio venta','venta','sale price','price'])) || 0;
+
+    // "Precio Venta" = lo que cobra el proveedor = COSTO unitario para Farmers
+    // Buscamos con múltiples variantes para máxima compatibilidad
+    var p_venta_prov = 0;
+    // Intento 1: buscar key que contenga exactamente 'precio' Y 'venta'
+    var pvKey = keys.find(function(k) {
+      var kl = k.toLowerCase();
+      return kl.includes('precio') && kl.includes('venta');
+    });
+    if (pvKey && row[pvKey] !== '' && row[pvKey] !== null) {
+      p_venta_prov = parseFloat(row[pvKey]) || 0;
+    }
+    // Intento 2: buscar por patrones individuales si no encontró
+    if (!p_venta_prov) {
+      p_venta_prov = parseFloat(get(['precio venta','precio_venta','sale price','unit price'])) || 0;
+    }
+    // Intento 3: última columna numérica positiva (en este formato siempre es col 17)
+    if (!p_venta_prov) {
+      var lastNumKey = null;
+      keys.forEach(function(k) {
+        var v = parseFloat(row[k]);
+        if (!isNaN(v) && v > 0 && k !== '' &&
+            !k.toLowerCase().includes('bulto') &&
+            !k.toLowerCase().includes('total') &&
+            !k.toLowerCase().includes('neto') &&
+            !k.toLowerCase().includes('unidad') &&
+            !k.toLowerCase().includes('cub')) {
+          lastNumKey = k;
+        }
+      });
+      if (lastNumKey) p_venta_prov = parseFloat(row[lastNumKey]) || 0;
+    }
+
     return {
       ref_prov:    String(get(['referecia','referencia','ref','code','codigo interno'])).trim(),
-      barcode:     String(get(['codigo barra','barcode','ean','upc'])).trim(),
-      desc:        String(get(['descripción','descripcion','description','nombre','producto'])).trim(),
+      barcode:     String(get(['codigo barra','barcode','ean','upc','código'])).trim(),
+      desc:        String(get(['descripci','description','nombre','producto'])).trim(),
       bultos:      parseFloat(get(['bultos','cajas','boxes'])) || 0,
       uds:         uds,
       medida:      String(get(['medida','unidad','unit'])).trim(),
-      p_total:     parseFloat(get(['p.total','total','price total'])) || 0,
+      p_total:     parseFloat(get(['p.total','ptotal','total','price total'])) || 0,
       p_neto:      p_neto,
       marca:       String(get(['marca','brand'])).trim().toUpperCase(),
       largo:       parseFloat(get(['longitud','largo','length'])) || 0,
       ancho:       parseFloat(get(['ancho','width'])) || 0,
       alto:        parseFloat(get(['altura','alto','height'])) || 0,
       p_venta:     p_venta_prov,
-      composicion: String(get(['composición','composicion','composition','material'])).trim(),
-      // Costo unitario = "Precio Venta" del proveedor (lo que Farmers paga por cada unidad)
+      composicion: String(get(['composici','composition','material'])).trim(),
+      // Costo = Precio Venta del proveedor (lo que Farmers paga por unidad)
       costo_unit:  p_venta_prov > 0 ? p_venta_prov : (uds > 0 && p_neto > 0 ? Math.round(p_neto/uds*10000)/10000 : 0),
     };
   }).filter(function(r){ return r.ref_prov && r.ref_prov !== 'undefined'; });
