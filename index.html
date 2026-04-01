@@ -11170,6 +11170,8 @@ function ptImpAnalizarRows(rows, source) {
     }
     var uds    = parseFloat(get(['unidades','units','qty','cantidad'])) || 0;
     var p_neto = parseFloat(get(['neto','net','p. neto'])) || 0;
+    // "Precio Venta" en el pedido del proveedor = precio que cobra = COSTO para Farmers
+    var p_venta_prov = parseFloat(get(['precio venta','venta','sale price','price'])) || 0;
     return {
       ref_prov:    String(get(['referecia','referencia','ref','code','codigo interno'])).trim(),
       barcode:     String(get(['codigo barra','barcode','ean','upc'])).trim(),
@@ -11183,9 +11185,10 @@ function ptImpAnalizarRows(rows, source) {
       largo:       parseFloat(get(['longitud','largo','length'])) || 0,
       ancho:       parseFloat(get(['ancho','width'])) || 0,
       alto:        parseFloat(get(['altura','alto','height'])) || 0,
-      p_venta:     parseFloat(get(['precio venta','venta','sale price','price'])) || 0,
+      p_venta:     p_venta_prov,
       composicion: String(get(['composición','composicion','composition','material'])).trim(),
-      costo_unit:  uds > 0 && p_neto > 0 ? Math.round(p_neto/uds*10000)/10000 : 0,
+      // Costo unitario = "Precio Venta" del proveedor (lo que Farmers paga por cada unidad)
+      costo_unit:  p_venta_prov > 0 ? p_venta_prov : (uds > 0 && p_neto > 0 ? Math.round(p_neto/uds*10000)/10000 : 0),
     };
   }).filter(function(r){ return r.ref_prov && r.ref_prov !== 'undefined'; });
 
@@ -11237,6 +11240,13 @@ function ptImpAnalizarRows(rows, source) {
     var r   = Object.assign({}, row, { ref_sugerida: ref });
     delete r._prefix;
     return r;
+  });
+
+  // Ordenar existentes alfabéticamente por descripción (sin agrupar por marca)
+  existentes.sort(function(a, b) {
+    var da = (a.desc || '').trim().toUpperCase();
+    var db = (b.desc || '').trim().toUpperCase();
+    return da.localeCompare(db, undefined, { numeric: true, sensitivity: 'base' });
   });
 
   _ptImport.rows = { existentes: existentes, nuevos: nuevos, sincruzar: sincruzar };
