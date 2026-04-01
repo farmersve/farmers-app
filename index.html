@@ -11193,33 +11193,50 @@ function ptImpAnalizarRows(rows, source) {
   var byC = {};
   PRODUCTS.forEach(function(p){ if(p.c) byC[p.c.trim()] = p; });
 
-  var existentes = [], nuevos = [], sincruzar = [];
-  // Contadores para secuencia de refs nuevas
-  var seqCounters = {};
+  var existentes = [], nuevosSinOrden = [], sincruzar = [];
 
   normalizada.forEach(function(row) {
     var marca  = row.marca || '';
     var prefix = PT_BRAND_PREFIX[marca] || '';
-
     if (byC[row.ref_prov]) {
       existentes.push(Object.assign({}, row, { ref_interna: byC[row.ref_prov].r }));
     } else if (prefix) {
-      if (!seqCounters[prefix]) {
-        var nums = [];
-        PRODUCTS.forEach(function(p) {
-          var m = p.r.match(new RegExp('^' + prefix + '(\\d+)$'));
-          if (m) nums.push(parseInt(m[1]));
-        });
-        seqCounters[prefix] = nums.length > 0 ? Math.max.apply(null,nums)+1 : 1;
-        // Agregar offset por refs ya asignadas en esta sesión
-      } else {
-        seqCounters[prefix]++;
-      }
-      var padded = prefix === 'MAXK' ? String(seqCounters[prefix]).padStart(3,'0') : String(seqCounters[prefix]).padStart(3,'0');
-      nuevos.push(Object.assign({}, row, { ref_sugerida: prefix + padded }));
+      nuevosSinOrden.push(Object.assign({}, row, { _prefix: prefix }));
     } else {
       sincruzar.push(row);
     }
+  });
+
+  // Ordenar nuevos: primero por marca/prefix, luego alfabéticamente por descripción
+  // Esto garantiza que series como "SARTEN 22CM, 24CM, 26CM" queden consecutivas
+  nuevosSinOrden.sort(function(a, b) {
+    if (a._prefix !== b._prefix) return a._prefix.localeCompare(b._prefix);
+    // Normalizar descripción para orden alfanumérico correcto
+    // Extraer números del final para ordenar 22CM < 24CM < 26CM
+    var da = (a.desc || '').trim().toUpperCase();
+    var db = (b.desc || '').trim().toUpperCase();
+    // Comparación alfanumérica natural (maneja "22" < "26" correctamente)
+    return da.localeCompare(db, undefined, { numeric: true, sensitivity: 'base' });
+  });
+
+  // Asignar secuencia numérica a los nuevos ya ordenados
+  var seqCounters = {};
+  var nuevos = nuevosSinOrden.map(function(row) {
+    var prefix = row._prefix;
+    if (!seqCounters[prefix]) {
+      var nums = [];
+      PRODUCTS.forEach(function(p) {
+        var m = p.r.match(new RegExp('^' + prefix + '(\\d+)$'));
+        if (m) nums.push(parseInt(m[1]));
+      });
+      seqCounters[prefix] = nums.length > 0 ? Math.max.apply(null, nums) + 1 : 1;
+    } else {
+      seqCounters[prefix]++;
+    }
+    var ref = prefix + String(seqCounters[prefix]).padStart(3, '0');
+    var r   = Object.assign({}, row, { ref_sugerida: ref });
+    delete r._prefix;
+    return r;
   });
 
   _ptImport.rows = { existentes: existentes, nuevos: nuevos, sincruzar: sincruzar };
