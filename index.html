@@ -10644,6 +10644,7 @@ function doRefSearch() {
             '<option value="comprometido">Comprometido</option>' +
           '</select>' +
           '<button onclick="ptNuevoProducto()" style="background:#1B1F6B;color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:700;font-size:.8rem;white-space:nowrap;">+ Nuevo Producto</button>' +
+          '<button onclick="ptResetOrdenada()" style="background:linear-gradient(135deg,#92400e,#b45309);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:700;font-size:.8rem;white-space:nowrap;">📦 Actualizar Ordenada</button>' +
           '<button onclick="ptImportarPedido()" style="background:linear-gradient(135deg,#059669,#065f46);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:700;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;">📦 Importar Pedido Proveedor</button>' +
         '</div>' +
         '<div id="pt-stats" style="padding:8px 20px;background:#fff;border-bottom:1px solid #eef0f8;display:flex;gap:16px;font-size:.72rem;color:#5a6080;flex-wrap:wrap;"></div>' +
@@ -11354,7 +11355,124 @@ function ptImpAnalizarConIA(file, ext, progTxt, progBar) {
   reader.readAsDataURL(file);
 }
 
-// Analizar rows y generar preview (cruce con inventario)
+// ── Actualizar Ordenada desde Excel del pedido ────────────────────
+function ptResetOrdenada() {
+  // Modal simple de carga de archivo
+  var el = document.createElement('div');
+  el.id = 'pt-reset-modal';
+  el.style.cssText = 'position:fixed;inset:0;background:rgba(10,15,40,.8);z-index:99999;display:flex;align-items:center;justify-content:center;';
+  el.innerHTML =
+    '<div style="background:white;border-radius:16px;width:min(480px,94vw);overflow:hidden;box-shadow:0 24px 64px rgba(0,0,0,.4);">' +
+      '<div style="background:linear-gradient(135deg,#92400e,#b45309);padding:18px 24px;display:flex;justify-content:space-between;align-items:center;">' +
+        '<div>' +
+          '<div style="font-size:1rem;font-weight:900;color:white;">📦 Actualizar Cantidad Ordenada</div>' +
+          '<div style="font-size:.72rem;color:rgba(255,255,255,.7);margin-top:2px;">Carga el Excel del pedido — solo actualiza la columna ORDENADA</div>' +
+        '</div>' +
+        '<button onclick="document.getElementById(\'pt-reset-modal\').remove()" style="background:rgba(255,255,255,.15);border:none;color:white;border-radius:8px;padding:5px 12px;cursor:pointer;font-weight:700;font-size:1rem;">✕</button>' +
+      '</div>' +
+      '<div style="padding:24px;">' +
+        '<div style="border:2px dashed #d97706;border-radius:12px;padding:28px;text-align:center;background:#fffbeb;margin-bottom:16px;cursor:pointer;" onclick="document.getElementById(\'pt-reset-file\').click()">' +
+          '<div style="font-size:2rem;margin-bottom:8px;">📂</div>' +
+          '<div style="font-weight:700;color:#92400e;">Seleccionar Excel del pedido</div>' +
+          '<div style="font-size:.75rem;color:#78716c;margin-top:4px;">.xlsx</div>' +
+          '<input type="file" id="pt-reset-file" accept=".xlsx,.csv" style="display:none" onchange="ptResetOrdenadaProcess(this.files[0])">' +
+        '</div>' +
+        '<div id="pt-reset-status" style="font-size:.8rem;color:#92400e;min-height:20px;text-align:center;"></div>' +
+      '</div>' +
+    '</div>';
+  document.body.appendChild(el);
+}
+window.ptResetOrdenada = ptResetOrdenada;
+
+function ptResetOrdenadaProcess(file) {
+  if (!file) return;
+  var status = document.getElementById('pt-reset-status');
+  if (status) status.textContent = '⏳ Leyendo archivo...';
+
+  var reader = new FileReader();
+  reader.onload = function(e) {
+    try {
+      var XLSX = window.XLSX;
+      if (!XLSX) { if(status) status.textContent = '❌ SheetJS no disponible'; return; }
+      var wb = XLSX.read(e.target.result, {type:'array'});
+      var ws = wb.Sheets[wb.SheetNames[0]];
+      var allRows = XLSX.utils.sheet_to_json(ws, {header:1, defval:''});
+      if (!allRows || allRows.length < 2) { if(status) status.textContent = '❌ Archivo vacío'; return; }
+
+      // Detectar columnas (mismo sistema que ptImpProcesarArchivo)
+      var hdrs = allRows[0].map(function(h){
+        return String(h||'').toLowerCase()
+          .replace(/[áàä]/g,'a').replace(/[éèë]/g,'e')
+          .replace(/[íìï]/g,'i').replace(/[óòö]/g,'o').replace(/[úùü]/g,'u');
+      });
+      function colIdx(patterns) {
+        for (var pi=0; pi<patterns.length; pi++)
+          for (var ci=0; ci<hdrs.length; ci++)
+            if (hdrs[ci].includes(patterns[pi])) return ci;
+        return -1;
+      }
+      var iRef = colIdx(['referecia','referencia','ref.','codigo interno']);
+      var iUds = colIdx(['unidades','units','qty','cantidad']);
+      if (iRef < 0) { if(status) status.textContent = '❌ No se encontró columna Referencia'; return; }
+      if (iUds < 0) { if(status) status.textContent = '❌ No se encontró columna Unidades'; return; }
+
+      // Leer ptData actual
+      var ptData = {};
+      try { ptData = JSON.parse(localStorage.getItem('farmers_pt_data') || '{}'); } catch(e2) {}
+
+      // Construir mapa ref_prov → uds desde el Excel
+      // Cruzar con PRODUCTS por campo c (ref interna del proveedor)
+      var byC = {};
+      PRODUCTS.forEach(function(p){ if(p.c) byC[p.c.trim()] = p.r; });
+
+      var updated = 0, notFound = 0;
+      for (var ri = 1; ri < allRows.length; ri++) {
+        var row = allRows[ri];
+        var refProv = String(row[iRef] || '').trim();
+        var uds = parseInt(row[iUds]) || 0;
+        if (!refProv || !uds) continue;
+
+        // Buscar ref interna por código proveedor
+        var refInterna = byC[refProv] || null;
+        // Si no está por ref_prov, buscar directamente (algunos tienen ref interna como ref)
+        if (!refInterna) {
+          var direct = PRODUCTS.find(function(p){ return p.r === refProv; });
+          if (direct) refInterna = direct.r;
+        }
+
+        if (refInterna) {
+          ptData[refInterna] = ptData[refInterna] || {};
+          ptData[refInterna].exOrdenada = uds; // REEMPLAZAR — valor exacto del Excel
+          updated++;
+        } else {
+          notFound++;
+        }
+      }
+
+      // Guardar
+      localStorage.setItem('farmers_pt_data', JSON.stringify(ptData));
+      if (window.fbSavePT) {
+        try { window.fbSavePT(ptData); } catch(e3) {}
+      }
+
+      // Cerrar modal y mostrar resultado
+      var modal = document.getElementById('pt-reset-modal');
+      if (modal) modal.remove();
+      if (typeof showToast === 'function') {
+        showToast('✅ ' + updated + ' productos actualizados con cantidad ordenada exacta' +
+          (notFound > 0 ? ' · ' + notFound + ' refs no encontradas' : ''), 'success');
+      }
+      // Refrescar tabla PT
+      if (typeof ptRender === 'function') ptRender();
+
+    } catch(err) {
+      if (status) status.textContent = '❌ Error: ' + err.message;
+    }
+  };
+  reader.readAsArrayBuffer(file);
+}
+window.ptResetOrdenadaProcess = ptResetOrdenadaProcess;
+
 function ptImpAnalizarRows(rows) {
   var progBar = document.getElementById('pt-imp-prog-bar');
   var progTxt = document.getElementById('pt-imp-prog-txt');
@@ -11534,7 +11652,7 @@ function ptImpConfirmar() {
     // Actualizar PT datos extendidos
     ptData[ref] = ptData[ref] || {};
     if (row.costo_unit > 0) ptData[ref].costo = row.costo_unit;
-    if (row.uds > 0) ptData[ref].exOrdenada = (ptData[ref].exOrdenada||0) + row.uds;
+    if (row.uds > 0) ptData[ref].exOrdenada = row.uds; // REEMPLAZAR, no acumular
     if (row.largo || row.ancho || row.alto) {
       ptData[ref].medidas = ptData[ref].medidas || {};
       if (row.largo) ptData[ref].medidas.largo = row.largo;
