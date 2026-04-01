@@ -11103,14 +11103,33 @@ function ptImpProcesarArchivo(file) {
         var iBultos  = colIdx(['bultos','cajas','boxes']);
         var iUds     = colIdx(['unidades','units','qty','cantidad']);
         var iMedida  = colIdx(['medida','unidad de medida']);
-        var iNeto    = colIdx(['neto','p. neto','p.neto']);
+        var iNeto    = colIdx(['p. neto','p.neto','neto total','neto']);
         var iMarca   = colIdx(['marca','brand']);
         var iComp    = colIdx(['composicion','composici','composition','material']);
         var iLargo   = colIdx(['longitud','largo','length']);
         var iAncho   = colIdx(['ancho','width']);
         var iAlto    = colIdx(['altura','alto','height']);
         // Precio Venta = costo unitario para Farmers
-        var iCosto   = colIdx(['precio venta','precio_venta','unit price','sale price','precio']);
+        // Buscar por nombre, pero si no encuentra usar la última columna con datos numéricos
+        var iCosto   = colIdx(['precio venta','precio_venta','unit price','sale price']);
+        // Fallback: si no encontró por nombre, buscar la última columna numérica positiva
+        if (iCosto < 0) {
+          for (var fci = hdrs.length-1; fci >= 0; fci--) {
+            // Verificar que la columna tenga valores numéricos positivos en las primeras filas
+            var hasNumeric = false;
+            for (var tri=1; tri<=Math.min(5, allRows.length-1); tri++) {
+              var tv = parseFloat(allRows[tri][fci]);
+              if (!isNaN(tv) && tv > 0 && tv < 1000) { hasNumeric=true; break; }
+            }
+            if (hasNumeric && !hdrs[fci].includes('total') && !hdrs[fci].includes('neto') &&
+                !hdrs[fci].includes('bulto') && !hdrs[fci].includes('cub') &&
+                !hdrs[fci].includes('inner') && hdrs[fci] !== '') {
+              iCosto = fci; break;
+            }
+          }
+        }
+        console.log('[PT Import] Columnas detectadas:', {iRef,iDesc,iUds,iNeto,iMarca,iCosto,iLargo,iAncho,iAlto});
+        console.log('[PT Import] Headers:', hdrs);
 
         if (iRef < 0) { ptImpError('No se encontró columna de Referencia'); return; }
         // Si no hay columna de precio, se usará 0 (se puede editar después en la ficha)
