@@ -4610,6 +4610,14 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
     try { const d = await getDoc(doc(db,'data','hcl_facturas')); return d.exists() ? JSON.parse(d.data().v) : null; } catch(e) { return null; }
   };
 
+  // ── Productos extendidos (referencias nuevas importadas) ────────
+  window.fbSaveProductsExt = async (arr) => {
+    try { await setDoc(doc(db,'data','products_ext'), {v: JSON.stringify(arr)}); } catch(e) { console.warn('fbSaveProductsExt:',e); }
+  };
+  window.fbGetProductsExt = async () => {
+    try { const d = await getDoc(doc(db,'data','products_ext')); return d.exists() ? JSON.parse(d.data().v) : null; } catch(e) { return null; }
+  };
+
   window.fbSaveClients = async (v) => {
     try { await setDoc(doc(db,'data','clients'), {v: JSON.stringify(v)}); } catch(e) { console.warn('fbSaveClients:', e); }
   };
@@ -5010,6 +5018,36 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
 /* loadFromFirebase */
 async function loadFromFirebase() {
   try {
+    // ── Cargar productos extendidos (importados) ─────────────────
+    if (window.fbGetProductsExt) {
+      var ext = await window.fbGetProductsExt();
+      if (ext && ext.length) {
+        // Fusionar: agregar solo los que no existen aún en PRODUCTS
+        var existingRefs = new Set(PRODUCTS.map(function(p){ return p.r; }));
+        var added = 0;
+        ext.forEach(function(p) {
+          if (!existingRefs.has(p.r)) {
+            PRODUCTS.push(p);
+            added++;
+          }
+        });
+        if (added > 0 && typeof sortProducts === 'function') sortProducts();
+        localStorage.setItem('farmers_products_ext', JSON.stringify(ext));
+      } else {
+        // Intentar desde localStorage como fallback
+        try {
+          var lsExt = JSON.parse(localStorage.getItem('farmers_products_ext') || '[]');
+          if (lsExt.length) {
+            var existRefs2 = new Set(PRODUCTS.map(function(p){ return p.r; }));
+            var added2 = 0;
+            lsExt.forEach(function(p) {
+              if (!existRefs2.has(p.r)) { PRODUCTS.push(p); added2++; }
+            });
+            if (added2 > 0 && typeof sortProducts === 'function') sortProducts();
+          }
+        } catch(e2) {}
+      }
+    }
     if (window.fbGetInventory) {
       var inv = await window.fbGetInventory();
       if (inv) {
@@ -8780,6 +8818,11 @@ function _doConfirmImport(ajustarStock) {
             style="background:rgba(20,184,166,.2);border:1.5px solid rgba(20,184,166,.5);color:#5eead4;font-size:.72rem;font-weight:700;cursor:pointer;border-radius:8px;padding:6px 12px;letter-spacing:.5px;white-space:nowrap;transition:all .2s;">
             🔢 Cantidad: ON
           </button>
+          <button onclick="catToggleShowOrden()" id="cat-orden-btn"
+            title="Mostrar/ocultar mercancía ordenada (en camino)"
+            style="background:rgba(255,255,255,.06);border:1.5px solid rgba(255,255,255,.2);color:rgba(255,255,255,.5);font-size:.72rem;font-weight:700;cursor:pointer;border-radius:8px;padding:6px 12px;letter-spacing:.5px;white-space:nowrap;transition:all .2s;">
+            🚚 En Camino: OFF
+          </button>
           <button onclick="catDownloadPDF()" id="cat-pdf-btn"
             style="background:rgba(34,197,94,.2);border:1.5px solid rgba(34,197,94,.5);color:#86efac;font-size:.72rem;font-weight:700;cursor:pointer;border-radius:8px;padding:6px 12px;letter-spacing:.5px;white-space:nowrap;">
             📥 Catálogo PDF
@@ -10247,9 +10290,13 @@ function doRefSearch() {
   if(window._prodImgs && Object.keys(window._prodImgs).length>0){ _prodImgs=window._prodImgs; } else { try{ _prodImgs=JSON.parse(localStorage.getItem('farmers_product_images')||'{}'); if(Object.keys(_prodImgs).length>0) window._prodImgs=_prodImgs; }catch(e){} }
 
   var cards = [];
+  // Leer ptData UNA vez fuera del loop para exOrdenada (eficiencia)
+  var _ptDataCat = {};
+  try { _ptDataCat = JSON.parse(localStorage.getItem('farmers_pt_data') || '{}'); } catch(e2) {}
 
   results.forEach(function(p) {
     var stock      = parseInt((inv[p.r] !== undefined) ? inv[p.r] : (p.ex || 0)) || 0;
+    var exOrden    = (_ptDataCat[p.r] && _ptDataCat[p.r].exOrdenada) ? (parseInt(_ptDataCat[p.r].exOrdenada) || 0) : 0;
     var stockColor = stock > 10 ? '#16a34a' : stock > 0 ? '#d97706' : '#dc2626';
     var stockBg    = stock > 10 ? '#f0fdf4' : stock > 0 ? '#fffbeb' : '#fef2f2';
     var stockLabel = stock > 10 ? '✓ En stock' : stock > 0 ? '⚠ Bajo stock' : '✗ Agotado';
@@ -11448,6 +11495,7 @@ function ptImpConfirmar() {
   var ptData  = ptGetData();
   var inv     = typeof getInventory === 'function' ? getInventory() : {};
   var updated = 0, created = 0;
+  var newProductsCreated = []; // Track nuevos para persistir
 
   // ACTUALIZAR EXISTENTES
   d.existentes.forEach(function(row, i) {
@@ -11492,7 +11540,7 @@ function ptImpConfirmar() {
     }
 
     // Crear en PRODUCTS (sin precios de venta — se definirán con márgenes después)
-    PRODUCTS.push({
+    var newProd = {
       r:  refVal,
       b:  row.barcode || '',
       c:  row.ref_prov,
@@ -11504,7 +11552,9 @@ function ptImpConfirmar() {
       u:  0,
       bv: 0,
       t:  0,
-    });
+    };
+    PRODUCTS.push(newProd);
+    newProductsCreated.push(newProd);
 
     // Crear en PT datos extendidos
     ptData[refVal] = {
@@ -11528,6 +11578,22 @@ function ptImpConfirmar() {
 
   // Ordenar PRODUCTS alfanuméricamente después de agregar nuevos
   if (typeof sortProducts === 'function') sortProducts();
+
+  // Persistir productos nuevos en Firebase + localStorage para sobrevivir recargas
+  if (newProductsCreated.length > 0) {
+    try {
+      var existingExt = [];
+      try { existingExt = JSON.parse(localStorage.getItem('farmers_products_ext') || '[]'); } catch(e2) {}
+      var existExtRefs = new Set(existingExt.map(function(p){ return p.r; }));
+      newProductsCreated.forEach(function(p) {
+        if (!existExtRefs.has(p.r)) { existingExt.push(p); existExtRefs.add(p.r); }
+      });
+      localStorage.setItem('farmers_products_ext', JSON.stringify(existingExt));
+      if (window.fbSaveProductsExt) {
+        window.fbSaveProductsExt(existingExt).catch(function(e){ console.warn('fbSaveProductsExt:', e); });
+      }
+    } catch(eExt) { console.warn('Error guardando products_ext:', eExt); }
+  }
 
   ptCerrarImport();
   if(typeof showToast==='function') showToast(
