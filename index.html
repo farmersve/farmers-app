@@ -4429,7 +4429,7 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
 </style>
 <script type="module">
   import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
-  import { getFirestore, doc, setDoc, getDoc, deleteDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+  import { getFirestore, doc, setDoc, getDoc, deleteDoc, getDocs, collection, onSnapshot } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
   const app = initializeApp({apiKey:"AIzaSyC73pXz_txRknUZVvcDjjQuqCp7oaniWqk",authDomain:"farmers-app-70a3a.firebaseapp.com",projectId:"farmers-app-70a3a"});
   const db = getFirestore(app);
 
@@ -4453,43 +4453,43 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
 
   // ── Guardar imágenes en Firebase (chunks de 50 por documento) ──
   window.fbSaveImages = async (imgMap) => {
+    // Cada imagen se guarda en su propio documento: data/img/{ref}
+    // Sin límite de cantidad — escala a 1000+ imágenes sin problema
+    const keys = Object.keys(imgMap);
+    let saved = 0, errors = 0;
+    for (const ref of keys) {
+      try {
+        await setDoc(doc(db, 'img', ref), { v: imgMap[ref] });
+        saved++;
+      } catch(e) {
+        console.warn('fbSaveImages error en', ref, e);
+        errors++;
+      }
+    }
+    // Actualizar metadata
     try {
-      const keys = Object.keys(imgMap);
-      const CHUNK = 50;
-      const numChunks = Math.ceil(keys.length / CHUNK);
-      // Guardar número de chunks para saber cuántos leer
-      await setDoc(doc(db,'data','images_meta'), {chunks: numChunks, total: keys.length});
-      for (let i = 0; i < numChunks; i++) {
-        const chunkKeys = keys.slice(i * CHUNK, (i + 1) * CHUNK);
-        const chunkMap = {};
-        chunkKeys.forEach(k => { chunkMap[k] = imgMap[k]; });
-        await setDoc(doc(db,'data','images_'+i), {v: JSON.stringify(chunkMap)});
-      }
-      // Borrar chunks sobrantes de versiones anteriores (deleteDoc en lugar de vaciar)
-      for (let i = numChunks; i < numChunks + 10; i++) {
-        try { await deleteDoc(doc(db,'data','images_'+i)); } catch(e) {}
-      }
-    } catch(e) { console.warn('fbSaveImages:', e); }
+      await setDoc(doc(db,'data','images_meta'), { total: saved, system: 'per_ref' });
+    } catch(e) {}
+    console.log('fbSaveImages: guardadas', saved, '| errores:', errors);
   };
 
   // ── Leer imágenes desde Firebase (une todos los chunks) ──
   window.fbGetImages = async (onProgress) => {
+    // Lee todas las imágenes de la colección 'img' (1 doc por imagen)
     try {
-      const meta = await getDoc(doc(db,'data','images_meta'));
-      if (!meta.exists()) return null;
-      const numChunks = meta.data().chunks || 0;
-      const totalImgs = meta.data().total || 0;
-      if (numChunks === 0) return {};
+      const snap = await getDocs(collection(db, 'img'));
       const combined = {};
-      for (let i = 0; i < numChunks; i++) {
-        const d = await getDoc(doc(db,'data','images_'+i));
-        if (d.exists() && d.data().v) {
-          Object.assign(combined, JSON.parse(d.data().v));
-        }
-        if (onProgress) onProgress(i + 1, numChunks, Object.keys(combined).length, totalImgs);
-      }
-      return combined;
-    } catch(e) { return null; }
+      let loaded = 0;
+      snap.forEach(d => {
+        if (d.data().v) combined[d.id] = d.data().v;
+        loaded++;
+        if (onProgress) onProgress(loaded, snap.size, loaded, snap.size);
+      });
+      return Object.keys(combined).length > 0 ? combined : null;
+    } catch(e) {
+      console.warn('fbGetImages error:', e);
+      return null;
+    }
   };
 
   // ── onSnapshot inventario: siempre acepta cambios del servidor ──
