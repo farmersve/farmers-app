@@ -8972,6 +8972,7 @@ function _doConfirmImport(ajustarStock) {
           <button id="rsf-IN"    onclick="setRefStock('IN')"    style="border-radius:20px;padding:5px 12px;font-size:.72rem;font-weight:700;cursor:pointer;border:1.5px solid rgba(255,255,255,.2);background:rgba(22,163,74,.3);color:white;">✓ Con stock</button>
           <button id="rsf-LOW"   onclick="setRefStock('LOW')"   style="border-radius:20px;padding:5px 12px;font-size:.72rem;font-weight:700;cursor:pointer;border:1.5px solid rgba(255,255,255,.2);background:rgba(217,119,6,.3);color:white;">⚠ Bajo stock</button>
           <button id="rsf-OUT"   onclick="setRefStock('OUT')"   style="border-radius:20px;padding:5px 12px;font-size:.72rem;font-weight:700;cursor:pointer;border:1.5px solid rgba(255,255,255,.2);background:rgba(220,38,38,.3);color:white;">✗ Agotados</button>
+          <button id="rsf-ORD"   onclick="setRefStock('ORD')"   style="border-radius:20px;padding:5px 12px;font-size:.72rem;font-weight:700;cursor:pointer;border:1.5px solid rgba(255,255,255,.2);background:rgba(180,83,9,.3);color:#fde68a;">📦 Con Ordenada</button>
         </div>
         <!-- Moneda para modo cliente -->
         <div id="cat-moneda-sel" style="display:none;gap:6px;align-items:center;">
@@ -9524,17 +9525,17 @@ function updateRefBrandTabs() {
 }
 
 function updateRefStockButtons() {
-  ['ALL','IN','LOW','OUT'].forEach(function(f){
+  ['ALL','IN','LOW','OUT','ORD'].forEach(function(f){
     var btn = document.getElementById('rsf-' + f);
     if(!btn) return;
     var active = _refStockFilters.has(f);
-    var bgs = { ALL:'rgba(255,255,255,.9)', IN:'rgba(22,163,74,.9)', LOW:'rgba(217,119,6,.9)', OUT:'rgba(220,38,38,.9)' };
-    var cols = { ALL:'#1a2050', IN:'white', LOW:'white', OUT:'white' };
-    btn.style.background = active ? bgs[f] : bgs[f].replace('.9)','.15)');
-    btn.style.color = active ? cols[f] : 'rgba(255,255,255,.55)';
+    var bgs  = { ALL:'rgba(255,255,255,.9)', IN:'rgba(22,163,74,.9)', LOW:'rgba(217,119,6,.9)', OUT:'rgba(220,38,38,.9)', ORD:'rgba(180,83,9,.9)' };
+    var cols = { ALL:'#1a2050', IN:'white', LOW:'white', OUT:'white', ORD:'white' };
+    btn.style.background  = active ? bgs[f]  : bgs[f].replace('.9)','.15)');
+    btn.style.color       = active ? cols[f] : 'rgba(255,255,255,.55)';
     btn.style.borderColor = active ? 'white' : 'rgba(255,255,255,.2)';
-    btn.style.fontWeight = active ? '900' : '700';
-    btn.style.boxShadow = active ? '0 0 0 2px rgba(255,255,255,.35)' : 'none';
+    btn.style.fontWeight  = active ? '900' : '700';
+    btn.style.boxShadow   = active ? '0 0 0 2px rgba(255,255,255,.35)' : 'none';
   });
 }
 
@@ -10055,6 +10056,10 @@ function _catDownloadPDFWithImgs(_prodImgsLocal) {
         if (_refStockFilters.has('IN'))  return st > 5;           // Con stock: más de 5 (excluye bajo stock)
         if (_refStockFilters.has('LOW')) return st > 0 && st <= 5; // Bajo stock: 1 a 5
         if (_refStockFilters.has('OUT')) return st === 0;          // Agotados: exactamente 0
+        if (_refStockFilters.has('ORD')) {                         // Con ordenada: tiene exOrdenada > 0
+          var ptd = {}; try{ ptd=JSON.parse(localStorage.getItem('farmers_pt_data')||'{}'); }catch(e2){}
+          return !!(ptd[p.r] && ptd[p.r].exOrdenada > 0);
+        }
         return false;
       });
     }
@@ -10132,7 +10137,13 @@ function _catDownloadPDFWithImgs(_prodImgsLocal) {
             '</div>' +
           '</div>' +
           '<div class="stock-pill" style="background:' + stockBg + ';color:' + stockColor + ';">' + (_catShowQty ? stock + ' uds' : stockLabel) + '</div>' +
-          ((_catShowOrden && exOrden > 0) ? '<div style="background:#92400e;color:#fef3c7;border-radius:6px;padding:3px 9px;font-size:.65rem;font-weight:800;white-space:nowrap;flex-shrink:0;letter-spacing:.4px;border:1px solid #b45309;">📦 ' + exOrden + ' ORDENADA</div>' : '') +
+          ((_catShowOrden && exOrden > 0) ? '<div style="display:flex;align-items:center;gap:4px;background:rgba(180,83,9,.18);border:1px solid rgba(217,119,6,.4);border-radius:6px;padding:3px 8px;flex-shrink:0;">' +
+            '<span style="font-size:.6rem;">📦</span>' +
+            '<div>' +
+              '<div style="font-size:.52rem;color:#fbbf24;font-weight:700;letter-spacing:.8px;text-transform:uppercase;line-height:1;">Ordenada</div>' +
+              '<div style="font-family:Barlow Condensed,sans-serif;font-size:.85rem;font-weight:900;color:#fef3c7;line-height:1;">' + exOrden + ' uds</div>' +
+            '</div>' +
+          '</div>' : '') +
         '</div>' +
         '<div class="card-body">' +
           '<div class="prod-desc">' + (p.d || '') + '</div>' +
@@ -10482,7 +10493,12 @@ function doRefSearch() {
             (_catShowQty
               ? '<div style="font-weight:900;color:' + stockColor + ';font-size:1.05rem;letter-spacing:.5px;">' + stock + '<span style="font-size:.62rem;font-weight:700;margin-left:2px;">uds</span></div>'
               : '<div style="font-weight:700;color:' + stockColor + ';font-size:.7rem;">' + stockLabel + '</div>') +
-            (_catShowOrden && exOrden > 0 ? '<div style="background:#92400e;color:#fef3c7;border-radius:4px;padding:2px 6px;font-size:.6rem;font-weight:800;margin-top:4px;letter-spacing:.3px;text-align:center;">📦 ' + exOrden + ' ORDENADA</div>' : '') +
+            (_catShowOrden && exOrden > 0 ?
+              '<div style="margin-top:5px;padding-top:5px;border-top:1px dashed rgba(217,119,6,.3);display:flex;align-items:center;justify-content:space-between;">' +
+                '<span style="font-size:.5rem;color:#d97706;font-weight:700;text-transform:uppercase;letter-spacing:.8px;">📦 Ordenada</span>' +
+                '<span style="font-family:Barlow Condensed,sans-serif;font-size:.9rem;font-weight:900;color:#92400e;">' + exOrden + '</span>' +
+              '</div>'
+            : '') +
           '</div>' +
           '<div style="background:#f8f9ff;border-radius:6px;padding:5px 8px;">' +
             '<div style="color:#8892b0;font-size:.58rem;font-weight:700;text-transform:uppercase;letter-spacing:.8px;margin-bottom:2px;">Empaque</div>' +
@@ -10578,55 +10594,71 @@ function doRefSearch() {
   // ── Summary bar (oculto en modo cliente) ──
   if (!_catClientMode) {
     var summaryBar = document.createElement('div');
-    summaryBar.style.cssText = 'margin-bottom:16px;';
+    summaryBar.style.cssText = 'margin-bottom:16px;border-radius:14px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,.12);';
 
-    // Fila de KPIs principal
+    var marcaColores = { EXCALIBUR:'#1a2050', GENIAL:'#0d9488', MATRIX:'#b45309', LUMEN:'#b91c1c', MAXKILLER:'#7c3aed', VARIOS:'#475569' };
+    var brandColor = (_refBrandFilter !== 'ALL' && marcaColores[_refBrandFilter]) ? marcaColores[_refBrandFilter] : '#065f46';
+
+    // ── Fila KPIs ──────────────────────────────────────────────────
     var kpiRow = document.createElement('div');
-    kpiRow.style.cssText = 'background:linear-gradient(135deg,#065f46,#047857);border-radius:12px 12px '+ (_refBrandFilter==='ALL'?'0 0':'12px 12px') +';padding:14px 20px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;';
+    kpiRow.style.cssText = 'background:linear-gradient(135deg,' + brandColor + ' 0%,' + brandColor + 'cc 100%);padding:16px 22px;display:grid;grid-template-columns:1fr auto 1fr auto 1fr auto;align-items:center;gap:0;';
     kpiRow.innerHTML =
-      '<div style="display:flex;gap:28px;flex-wrap:wrap;">' +
-        '<div>' +
-          '<div style="font-size:.58rem;color:rgba(255,255,255,.65);font-weight:700;text-transform:uppercase;letter-spacing:1px;margin-bottom:3px;">💰 Capital USD Total</div>' +
-          '<div style="font-family:Barlow Condensed,sans-serif;font-size:1.6rem;font-weight:900;color:white;">$ ' + totalCapital.toFixed(2) + '</div>' +
-        '</div>' +
-        '<div style="border-left:1px solid rgba(255,255,255,.2);padding-left:24px;">' +
-          '<div style="font-size:.58rem;color:rgba(255,255,255,.65);font-weight:700;text-transform:uppercase;letter-spacing:1px;margin-bottom:3px;">📦 Unidades en stock</div>' +
-          '<div style="font-family:Barlow Condensed,sans-serif;font-size:1.6rem;font-weight:900;color:white;">' + totalUnits.toLocaleString('es-VE') + '</div>' +
-        '</div>' +
-        '<div style="border-left:1px solid rgba(255,255,255,.2);padding-left:24px;">' +
-          '<div style="font-size:.58rem;color:rgba(255,255,255,.65);font-weight:700;text-transform:uppercase;letter-spacing:1px;margin-bottom:3px;">✅ Refs. con stock</div>' +
-          '<div style="font-family:Barlow Condensed,sans-serif;font-size:1.6rem;font-weight:900;color:white;">' + totalProds + '<span style="font-size:.9rem;color:rgba(255,255,255,.5);"> / ' + results.length + '</span></div>' +
-        '</div>' +
+      // KPI 1 — Capital
+      '<div style="padding:0 20px 0 0;">' +
+        '<div style="font-size:.55rem;color:rgba(255,255,255,.55);font-weight:700;text-transform:uppercase;letter-spacing:1.5px;margin-bottom:4px;">Capital USD Total</div>' +
+        '<div style="font-family:Barlow Condensed,sans-serif;font-size:1.7rem;font-weight:900;color:white;line-height:1;">$ ' + totalCapital.toFixed(2) + '</div>' +
+        '<div style="font-size:.6rem;color:rgba(255,255,255,.4);margin-top:3px;">inventario valorizado</div>' +
       '</div>' +
-      '<div style="background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.2);border-radius:8px;padding:7px 16px;text-align:center;">' +
-        '<div style="font-size:.58rem;color:rgba(255,255,255,.6);font-weight:700;text-transform:uppercase;letter-spacing:1px;">Departamento</div>' +
-        '<div style="font-family:Barlow Condensed,sans-serif;font-size:1rem;font-weight:900;color:white;letter-spacing:1.5px;">' + (_refBrandFilter === 'ALL' ? 'TODOS' : _refBrandFilter) + '</div>' +
+      '<div style="width:1px;height:44px;background:rgba(255,255,255,.15);margin:0 20px;"></div>' +
+      // KPI 2 — Unidades
+      '<div style="padding:0;">' +
+        '<div style="font-size:.55rem;color:rgba(255,255,255,.55);font-weight:700;text-transform:uppercase;letter-spacing:1.5px;margin-bottom:4px;">Unidades en Stock</div>' +
+        '<div style="font-family:Barlow Condensed,sans-serif;font-size:1.7rem;font-weight:900;color:white;line-height:1;">' + totalUnits.toLocaleString('es-VE') + '</div>' +
+        '<div style="font-size:.6rem;color:rgba(255,255,255,.4);margin-top:3px;">unidades disponibles</div>' +
+      '</div>' +
+      '<div style="width:1px;height:44px;background:rgba(255,255,255,.15);margin:0 20px;"></div>' +
+      // KPI 3 — Refs
+      '<div style="padding:0;">' +
+        '<div style="font-size:.55rem;color:rgba(255,255,255,.55);font-weight:700;text-transform:uppercase;letter-spacing:1.5px;margin-bottom:4px;">Referencias con Stock</div>' +
+        '<div style="display:flex;align-items:baseline;gap:6px;">' +
+          '<div style="font-family:Barlow Condensed,sans-serif;font-size:1.7rem;font-weight:900;color:white;line-height:1;">' + totalProds + '</div>' +
+          '<div style="font-family:Barlow Condensed,sans-serif;font-size:1rem;font-weight:700;color:rgba(255,255,255,.4);">/ ' + results.length + '</div>' +
+        '</div>' +
+        '<div style="font-size:.6rem;color:rgba(255,255,255,.4);margin-top:3px;">' + (results.length - totalProds) + ' sin stock</div>' +
+      '</div>' +
+      // Badge departamento
+      '<div style="margin-left:24px;background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.18);border-radius:10px;padding:10px 18px;text-align:center;min-width:90px;">' +
+        '<div style="font-size:.5rem;color:rgba(255,255,255,.5);font-weight:700;text-transform:uppercase;letter-spacing:2px;margin-bottom:4px;">Filtro</div>' +
+        '<div style="font-family:Barlow Condensed,sans-serif;font-size:1rem;font-weight:900;color:white;letter-spacing:2px;">' + (_refBrandFilter === 'ALL' ? 'TODOS' : _refBrandFilter) + '</div>' +
       '</div>';
     summaryBar.appendChild(kpiRow);
 
-    // Capital por marca (solo cuando TODAS)
+    // ── Fila Capital por marca ─────────────────────────────────────
     if (_refBrandFilter === 'ALL' && Object.keys(capitalPorMarca).length > 0) {
       var marcaRow = document.createElement('div');
-      marcaRow.style.cssText = 'background:#fff;border:1.5px solid #e8ecf8;border-top:none;border-radius:0 0 12px 12px;padding:12px 20px;display:flex;flex-wrap:wrap;gap:10px;align-items:center;';
-      var marcaLabel = document.createElement('div');
-      marcaLabel.style.cssText = 'font-size:.6rem;font-weight:800;text-transform:uppercase;letter-spacing:1.5px;color:#94a3b8;white-space:nowrap;';
-      marcaLabel.textContent = 'Capital por marca:';
-      marcaRow.appendChild(marcaLabel);
-      var marcaColores = { EXCALIBUR:'#1a2050', GENIAL:'#0d9488', MATRIX:'#b45309', LUMEN:'#b91c1c', MAXKILLER:'#7c3aed', VARIOS:'#475569' };
+      marcaRow.style.cssText = 'background:#0f172a;padding:10px 22px;display:flex;flex-wrap:wrap;gap:6px;align-items:center;';
+      // Label
+      var lbl = document.createElement('span');
+      lbl.style.cssText = 'font-size:.55rem;font-weight:800;text-transform:uppercase;letter-spacing:2px;color:rgba(255,255,255,.25);white-space:nowrap;margin-right:6px;';
+      lbl.textContent = 'Capital por marca';
+      marcaRow.appendChild(lbl);
+
+      // Pills compactas
       Object.keys(capitalPorMarca).sort().forEach(function(br) {
         var cap = capitalPorMarca[br];
         if (cap <= 0) return;
-        var pill = document.createElement('div');
-        pill.style.cssText = 'display:flex;align-items:center;gap:7px;background:#f8faff;border:1.5px solid #e8ecf8;border-radius:8px;padding:5px 12px;cursor:pointer;transition:border-color .15s;';
-        pill.title = 'Filtrar por ' + br;
+        var col = marcaColores[br] || '#64748b';
+        var pill = document.createElement('button');
+        pill.style.cssText = 'display:flex;align-items:center;gap:6px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);border-radius:8px;padding:5px 12px;cursor:pointer;transition:all .15s;outline:none;';
+        pill.title = 'Ver solo ' + br;
         pill.onclick = function(){ setRefBrand(br); };
-        pill.onmouseenter = function(){ this.style.borderColor = marcaColores[br] || '#94a3b8'; };
-        pill.onmouseleave = function(){ this.style.borderColor = '#e8ecf8'; };
+        pill.onmouseenter = function(){ this.style.background='rgba(255,255,255,.1)'; this.style.borderColor=col; };
+        pill.onmouseleave = function(){ this.style.background='rgba(255,255,255,.05)'; this.style.borderColor='rgba(255,255,255,.1)'; };
         pill.innerHTML =
-          '<span style="width:8px;height:8px;border-radius:50%;background:' + (marcaColores[br]||'#94a3b8') + ';flex-shrink:0;"></span>' +
-          '<div>' +
-            '<div style="font-size:.6rem;font-weight:800;color:' + (marcaColores[br]||'#94a3b8') + ';text-transform:uppercase;letter-spacing:.8px;">' + br + '</div>' +
-            '<div style="font-family:Barlow Condensed,sans-serif;font-weight:900;font-size:.9rem;color:#1a2050;">$ ' + cap.toFixed(2) + '</div>' +
+          '<span style="width:7px;height:7px;border-radius:50%;background:' + col + ';flex-shrink:0;box-shadow:0 0 6px ' + col + '88;"></span>' +
+          '<div style="text-align:left;">' +
+            '<div style="font-size:.55rem;font-weight:800;color:' + col + ';text-transform:uppercase;letter-spacing:1px;line-height:1.2;">' + br + '</div>' +
+            '<div style="font-family:Barlow Condensed,sans-serif;font-weight:900;font-size:.88rem;color:white;line-height:1.2;">$ ' + cap.toFixed(0) + '</div>' +
           '</div>';
         marcaRow.appendChild(pill);
       });
