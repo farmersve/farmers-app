@@ -10413,10 +10413,6 @@ function doRefSearch() {
   // Load product images from localStorage
   var _prodImgs = {};
   if(window._prodImgs && Object.keys(window._prodImgs).length>0){ _prodImgs=window._prodImgs; } else { try{ _prodImgs=JSON.parse(localStorage.getItem('farmers_product_images')||'{}'); if(Object.keys(_prodImgs).length>0) window._prodImgs=_prodImgs; }catch(e){} }
-  // Precargar imágenes HQ en memoria
-  if(!window._prodImgsHQ || !Object.keys(window._prodImgsHQ).length){
-    try{ var _hqCache=JSON.parse(localStorage.getItem('farmers_product_images_hq')||'{}'); if(Object.keys(_hqCache).length>0) window._prodImgsHQ=_hqCache; }catch(e){}
-  }
 
   var cards = [];
   // Leer ptData UNA vez fuera del loop para exOrdenada (eficiencia)
@@ -14237,9 +14233,8 @@ window.handleUIFiles=function(files){
     var fnameUP=fname.toUpperCase();
     pl.textContent='('+(idx+1)+'/'+total+') '+fname;
 
-    compressImageHQ(file,function(b64hqFull){
     compressImage(file,function(b64display){
-    var _b64hqFull=b64hqFull; // HQ guardado en closure para usarlo al guardar
+    var _b64hqFull=b64display; // misma imagen usada para tarjeta y lightbox
 
       // ── PASO 1: Parseo directo del nombre ─────────────────────────────────
       // Formato esperado: "REFERENCIA - CODIGO" (separador " - ")
@@ -14308,7 +14303,6 @@ window.handleUIFiles=function(files){
         });
       }
     });   // end compressImage
-    });   // end compressImageHQ
   }
   processNext(0);
 };
@@ -14318,35 +14312,19 @@ function compressImage(file,cb){
   reader.onload=function(e){
     var img=new Image();
     img.onload=function(){
-      var MAX=220,w=img.width,h=img.height;
+      // 800px JPEG 0.88 — nítido en lightbox, compacto para Firebase
+      var MAX=800,w=img.width,h=img.height;
       if(w>h){if(w>MAX){h=Math.round(h*MAX/w);w=MAX;}}else{if(h>MAX){w=Math.round(w*MAX/h);h=MAX;}}
-      var c=document.createElement('canvas');
-      c.width=w;c.height=h;
-      c.getContext('2d').drawImage(img,0,0,w,h);
-      cb(c.toDataURL('image/jpeg',0.65));
+      var cv=document.createElement('canvas');
+      cv.width=w;cv.height=h;
+      cv.getContext('2d').drawImage(img,0,0,w,h);
+      cb(cv.toDataURL('image/jpeg',0.88));
     };
     img.src=e.target.result;
   };
   reader.readAsDataURL(file);
 }
 
-// Versión de alta calidad para el lightbox (max 1200px, JPEG 0.92)
-function compressImageHQ(file,cb){
-  var reader=new FileReader();
-  reader.onload=function(e){
-    var img=new Image();
-    img.onload=function(){
-      var MAX=1200,w=img.width,h=img.height;
-      if(w>h){if(w>MAX){h=Math.round(h*MAX/w);w=MAX;}}else{if(h>MAX){w=Math.round(w*MAX/h);h=MAX;}}
-      var cv=document.createElement('canvas');
-      cv.width=w;cv.height=h;
-      cv.getContext('2d').drawImage(img,0,0,w,h);
-      cb(cv.toDataURL('image/jpeg',0.92));
-    };
-    img.src=e.target.result;
-  };
-  reader.readAsDataURL(file);
-}
 
 function renderUIResults(){
   var st=document.getElementById('ui-stats');
@@ -14450,18 +14428,13 @@ window.confirmUploadImages=async function(){
     try{imgMap=JSON.parse(localStorage.getItem('farmers_product_images')||'{}');}catch(e){imgMap={};}
   }
 
-  // Cargar HQ existente
-  var imgMapHQ={};
-  try{ imgMapHQ=JSON.parse(localStorage.getItem('farmers_product_images_hq')||'{}'); }catch(e){}
 
   // Agregar nuevas imágenes (thumbnail para tarjeta, HQ para lightbox)
   _uiMatched.forEach(function(item){
     if(item.prod&&item.b64) imgMap[item.prod.r]=item.b64;
-    if(item.prod&&item.b64hq) imgMapHQ[item.prod.r]=item.b64hq;
   });
   _uiUnmatched.forEach(function(item){
     if(item.assignedRef&&item.b64) imgMap[item.assignedRef]=item.b64;
-    if(item.assignedRef&&item.b64hq) imgMapHQ[item.assignedRef]=item.b64hq;
   });
 
   var cnt=Object.keys(imgMap).length;
@@ -14475,10 +14448,8 @@ window.confirmUploadImages=async function(){
       await window.fbSaveImages(imgMap);
       // Actualizar memoria
       window._prodImgs=imgMap;
-      window._prodImgsHQ=imgMapHQ;
       // Guardar en localStorage como caché
       try{localStorage.setItem('farmers_product_images',JSON.stringify(imgMap));}catch(e){}
-      try{localStorage.setItem('farmers_product_images_hq',JSON.stringify(imgMapHQ));}catch(e){}
       msgEl.textContent='✅ '+cnt+' imágenes guardadas en Firebase ('+kb+'KB).';
       btn.textContent='✅ Guardado ('+cnt+') — Selecciona nuevo lote';
       btn.disabled=false;
@@ -14493,8 +14464,6 @@ window.confirmUploadImages=async function(){
       localStorage.removeItem('farmers_product_images');
       localStorage.setItem('farmers_product_images',JSON.stringify(imgMap));
       window._prodImgs=imgMap;
-      window._prodImgsHQ=imgMapHQ;
-      try{localStorage.setItem('farmers_product_images_hq',JSON.stringify(imgMapHQ));}catch(e){}
       msgEl.textContent='✅ '+cnt+' imágenes guardadas localmente ('+kb+'KB).';
       btn.textContent='✅ Guardado ('+cnt+') — Selecciona nuevo lote';
       btn.disabled=false;
@@ -15228,16 +15197,8 @@ window.msNuevoPedido = function() {
 function openImgLightbox(src, ref){
   var lb=document.getElementById('img-lightbox');
   var imgEl=document.getElementById('img-lightbox-img');
-  // Intentar cargar versión HQ si está disponible
-  var hqSrc = src;
-  if(ref){
-    var hqMap = window._prodImgsHQ || {};
-    if(!Object.keys(hqMap).length){
-      try{ hqMap = JSON.parse(localStorage.getItem('farmers_product_images_hq')||'{}'); window._prodImgsHQ=hqMap; }catch(e){}
-    }
-    if(hqMap[ref]) hqSrc = hqMap[ref];
-  }
-  imgEl.src = hqSrc;
+  // Una sola versión (800px JPEG 0.88) — nítida para tarjeta y lightbox
+  imgEl.src = src;
   lb.style.display='flex';
   document.body.style.overflow='hidden';
 }
