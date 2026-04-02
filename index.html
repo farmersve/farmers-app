@@ -4475,21 +4475,36 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
 
   // ── Leer imágenes desde Firebase (une todos los chunks) ──
   window.fbGetImages = async (onProgress) => {
-    // Lee todas las imágenes de la colección 'img' (1 doc por imagen)
+    const combined = {};
+    // ── Leer sistema NUEVO: colección 'img' (1 doc por imagen) ──
     try {
       const snap = await getDocs(collection(db, 'img'));
-      const combined = {};
       let loaded = 0;
       snap.forEach(d => {
         if (d.data().v) combined[d.id] = d.data().v;
         loaded++;
         if (onProgress) onProgress(loaded, snap.size, loaded, snap.size);
       });
-      return Object.keys(combined).length > 0 ? combined : null;
-    } catch(e) {
-      console.warn('fbGetImages error:', e);
-      return null;
-    }
+    } catch(e) { console.warn('fbGetImages (nuevo):', e); }
+
+    // ── Leer sistema ANTIGUO: chunks data/images_0..N (compatibilidad) ──
+    try {
+      const meta = await getDoc(doc(db,'data','images_meta'));
+      if (meta.exists() && meta.data().chunks) {
+        const numChunks = meta.data().chunks;
+        for (let i = 0; i < numChunks; i++) {
+          const d = await getDoc(doc(db,'data','images_'+i));
+          if (d.exists() && d.data().v) {
+            try {
+              const chunkData = JSON.parse(d.data().v);
+              Object.assign(combined, chunkData);
+            } catch(ep) {}
+          }
+        }
+      }
+    } catch(e) { console.warn('fbGetImages (legacy):', e); }
+
+    return Object.keys(combined).length > 0 ? combined : null;
   };
 
   // ── onSnapshot inventario: siempre acepta cambios del servidor ──
