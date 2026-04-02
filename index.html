@@ -4429,7 +4429,7 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
 </style>
 <script type="module">
   import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
-  import { getFirestore, doc, setDoc, getDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+  import { getFirestore, doc, setDoc, getDoc, deleteDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
   const app = initializeApp({apiKey:"AIzaSyC73pXz_txRknUZVvcDjjQuqCp7oaniWqk",authDomain:"farmers-app-70a3a.firebaseapp.com",projectId:"farmers-app-70a3a"});
   const db = getFirestore(app);
 
@@ -4465,9 +4465,9 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
         chunkKeys.forEach(k => { chunkMap[k] = imgMap[k]; });
         await setDoc(doc(db,'data','images_'+i), {v: JSON.stringify(chunkMap)});
       }
-      // Borrar chunks sobrantes de versiones anteriores
-      for (let i = numChunks; i < numChunks + 5; i++) {
-        try { await setDoc(doc(db,'data','images_'+i), {v:'{}'}); } catch(e) {}
+      // Borrar chunks sobrantes de versiones anteriores (deleteDoc en lugar de vaciar)
+      for (let i = numChunks; i < numChunks + 10; i++) {
+        try { await deleteDoc(doc(db,'data','images_'+i)); } catch(e) {}
       }
     } catch(e) { console.warn('fbSaveImages:', e); }
   };
@@ -14418,15 +14418,43 @@ function renderUIResults(){
 window.confirmUploadImages=async function(){
   var btn=document.getElementById('ui-confirm-btn');
   var msgEl=document.getElementById('ui-action-msg');
-  btn.disabled=true; btn.textContent='⏳ Guardando...';
+  btn.disabled=true; btn.textContent='⏳ Cargando base desde Firebase...';
 
-  // Cargar imágenes existentes (primero de memoria, luego localStorage)
+  // PASO 1: Cargar SIEMPRE desde Firebase primero para no perder imágenes anteriores
   var imgMap={};
-  if(window._prodImgs && Object.keys(window._prodImgs).length>0){
-    imgMap=Object.assign({},window._prodImgs);
-  } else {
-    try{imgMap=JSON.parse(localStorage.getItem('farmers_product_images')||'{}');}catch(e){imgMap={};}
+  try {
+    if(window.fbGetImages) {
+      msgEl.textContent='⏳ Descargando imágenes existentes desde Firebase...';
+      var fbImgs = await window.fbGetImages();
+      if(fbImgs && Object.keys(fbImgs).length > 0){
+        imgMap = fbImgs;
+        window._prodImgs = fbImgs; // actualizar memoria
+      } else {
+        // Firebase vacío o falla — usar memoria o localStorage como fallback
+        if(window._prodImgs && Object.keys(window._prodImgs).length>0){
+          imgMap=Object.assign({},window._prodImgs);
+        } else {
+          try{imgMap=JSON.parse(localStorage.getItem('farmers_product_images')||'{}');}catch(e){imgMap={};}
+        }
+      }
+    } else {
+      // Sin Firebase — usar memoria o localStorage
+      if(window._prodImgs && Object.keys(window._prodImgs).length>0){
+        imgMap=Object.assign({},window._prodImgs);
+      } else {
+        try{imgMap=JSON.parse(localStorage.getItem('farmers_product_images')||'{}');}catch(e){imgMap={};}
+      }
+    }
+  } catch(eFb){ 
+    console.warn('Error cargando Firebase, usando caché:', eFb);
+    if(window._prodImgs && Object.keys(window._prodImgs).length>0){
+      imgMap=Object.assign({},window._prodImgs);
+    } else {
+      try{imgMap=JSON.parse(localStorage.getItem('farmers_product_images')||'{}');}catch(e){imgMap={};}
+    }
   }
+
+  btn.textContent='⏳ Guardando...';
 
 
   // Agregar nuevas imágenes (thumbnail para tarjeta, HQ para lightbox)
