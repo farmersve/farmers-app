@@ -11869,88 +11869,87 @@ async function ptIAProcesarArchivo(file) {
 
   try {
     var isPDF = file.name.toLowerCase().endsWith('.pdf');
-    var contentParts = [];
 
     if (isPDF) {
-      // PDF → base64 → enviar como documento a Claude
+      // ── PDF: enviar completo con max_tokens alto ──────────────────
+      ptIASetStatus('⏳ Preparando PDF para la IA...', 'info');
       var b64 = await new Promise(function(res, rej) {
         var r = new FileReader();
         r.onload = function(){ res(r.result.split(',')[1]); };
         r.onerror = rej;
         r.readAsDataURL(file);
       });
-      contentParts = [
+      ptIASetStatus('🤖 Analizando PDF completo... (30-60 segundos)', 'info');
+      var rows = await ptIALlamarClaude([
         { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: b64 } },
-        { type: 'text', text: ptIABuildPrompt() }
-      ];
+        { type: 'text', text: ptIABuildPrompt(null) }
+      ], 8000);
+      ptIAMostrarPreview(rows);
+
     } else {
-      // Excel/CSV → convertir a texto tabular → enviar como texto
-      ptIASetStatus('⏳ Procesando Excel...', 'info');
-      var textContent = await new Promise(function(res, rej) {
+      // ── Excel/CSV: leer TODAS las filas sin truncar ───────────────
+      ptIASetStatus('⏳ Procesando Excel completo...', 'info');
+      var allRows = await new Promise(function(res, rej) {
         var r = new FileReader();
         r.onload = function(e) {
           try {
             var data;
             if (file.name.toLowerCase().endsWith('.csv')) {
-              data = e.target.result;
-              res(data.slice(0, 12000)); // primeras 12000 chars
+              var lines = e.target.result.split('\n');
+              var hdr = lines[0].split(',').map(function(h){ return h.trim().replace(/^"|"$/g,''); });
+              data = lines.slice(1).filter(function(l){ return l.trim(); }).map(function(l){
+                var vals = l.split(',').map(function(v){ return v.trim().replace(/^"|"$/g,''); });
+                var obj = {};
+                hdr.forEach(function(h,i){ obj[h] = vals[i]||''; });
+                return obj;
+              });
             } else {
               var wb = XLSX.read(e.target.result, { type: 'binary' });
               var ws = wb.Sheets[wb.SheetNames[0]];
-              var csv = XLSX.utils.sheet_to_csv(ws);
-              res(csv.slice(0, 12000));
+              data = XLSX.utils.sheet_to_json(ws, { defval: '' });
             }
+            res(data);
           } catch(err) { rej(err); }
         };
         r.onerror = rej;
         if (file.name.toLowerCase().endsWith('.csv')) r.readAsText(file, 'UTF-8');
         else r.readAsBinaryString(file);
       });
-      contentParts = [
-        { type: 'text', text: ptIABuildPrompt() + '\n\nCONTENIDO DEL ARCHIVO:\n' + textContent }
-      ];
+
+      if (!allRows || !allRows.length) throw new Error('El archivo no tiene datos');
+
+      // Convertir a CSV para enviar a Claude (más compacto)
+      var headers = Object.keys(allRows[0]);
+      var csvLines = [headers.join(',')];
+      allRows.forEach(function(row) {
+        csvLines.push(headers.map(function(h){ return String(row[h]||'').replace(/,/g,' '); }).join(','));
+      });
+      var fullCSV = csvLines.join('\n');
+
+      // ── Procesar en lotes de 150 filas ───────────────────────────
+      var BATCH = 150;
+      var headerLine = csvLines[0];
+      var dataLines  = csvLines.slice(1);
+      var totalLotes = Math.ceil(dataLines.length / BATCH);
+      var allResults = [];
+
+      for (var lote = 0; lote < totalLotes; lote++) {
+        var from = lote * BATCH;
+        var to   = Math.min(from + BATCH, dataLines.length);
+        ptIASetStatus(
+          '🤖 Procesando lote ' + (lote+1) + ' de ' + totalLotes +
+          ' (filas ' + (from+1) + '–' + to + ' de ' + dataLines.length + ')...',
+          'info'
+        );
+        var batchCSV = headerLine + '\n' + dataLines.slice(from, to).join('\n');
+        var batchRows = await ptIALlamarClaude([
+          { type: 'text', text: ptIABuildPrompt(lote, totalLotes) + '\n\nCONTENIDO (lote ' + (lote+1) + '/' + totalLotes + '):\n' + batchCSV }
+        ], 4000);
+        if (batchRows && batchRows.length) allResults = allResults.concat(batchRows);
+      }
+
+      ptIAMostrarPreview(allResults);
     }
-
-    ptIASetStatus('🤖 La IA está analizando el catálogo... (puede tardar 15-30 segundos)', 'info');
-
-    var resp = await fetch('https://farmers-proxy.farmersve.workers.dev/', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
-        max_tokens: 4000,
-        messages: [{ role: 'user', content: contentParts }]
-      })
-    });
-
-    var respText = await resp.text();
-    var data;
-    try { data = JSON.parse(respText); } catch(e) { throw new Error('Respuesta inválida del servidor'); }
-    if (!resp.ok || data.error) throw new Error(data.error ? data.error.message : 'Error del servidor');
-
-    var iaText = (data.content || []).map(function(b){ return b.text || ''; }).join('');
-
-    // Extraer JSON de la respuesta
-    var jsonMatch = iaText.match(/```json\n([\s\S]+?)\n```/) || iaText.match(/\[([\s\S]+)\]/);
-    var jsonStr = jsonMatch ? (jsonMatch[1] ? '[' + jsonMatch[1] + ']' : jsonMatch[0]) : iaText.trim();
-
-    // Limpiar y parsear
-    if (!jsonStr.startsWith('[')) {
-      var idx = jsonStr.indexOf('[');
-      if (idx >= 0) jsonStr = jsonStr.slice(idx);
-    }
-
-    var rows;
-    try { rows = JSON.parse(jsonStr); } catch(e) {
-      throw new Error('No se pudo interpretar la respuesta de la IA. Intenta con otro archivo.');
-    }
-
-    if (!Array.isArray(rows) || !rows.length) {
-      ptIASetStatus('⚠ La IA no encontró datos de productos en el archivo.', 'warn');
-      return;
-    }
-
-    ptIAMostrarPreview(rows);
 
   } catch(err) {
     ptIASetStatus('❌ Error: ' + err.message, 'error');
@@ -11960,43 +11959,85 @@ async function ptIAProcesarArchivo(file) {
 }
 window.ptIAProcesarArchivo = ptIAProcesarArchivo;
 
-function ptIABuildPrompt() {
-  // Obtener referencias existentes en el sistema
+async function ptIALlamarClaude(contentParts, maxTokens) {
+  var resp = await fetch('https://farmers-proxy.farmersve.workers.dev/', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: maxTokens || 4000,
+      messages: [{ role: 'user', content: contentParts }]
+    })
+  });
+  var respText = await resp.text();
+  var data;
+  try { data = JSON.parse(respText); } catch(e) { throw new Error('Respuesta inválida del servidor'); }
+  if (!resp.ok || data.error) throw new Error(data.error ? data.error.message : 'Error HTTP ' + resp.status);
+  var iaText = (data.content || []).map(function(b){ return b.text || ''; }).join('');
+  return ptIAExtraerJSON(iaText);
+}
+window.ptIALlamarClaude = ptIALlamarClaude;
+
+function ptIAExtraerJSON(text) {
+  // Limpiar respuesta y extraer array JSON
+  var clean = text.trim();
+  // Quitar bloques markdown si los hay
+  clean = clean.replace(/```json\s*/gi, '').replace(/```\s*/g, '');
+  // Buscar el array
+  var start = clean.indexOf('[');
+  var end   = clean.lastIndexOf(']');
+  if (start < 0 || end < 0) return [];
+  try {
+    return JSON.parse(clean.slice(start, end + 1));
+  } catch(e) {
+    // Intentar reparar JSON truncado
+    try {
+      var partial = clean.slice(start, end + 1);
+      // Cerrar objetos incompletos
+      var fixed = partial.replace(/,\s*$/, '') + ']';
+      return JSON.parse(fixed);
+    } catch(e2) { return []; }
+  }
+}
+window.ptIAExtraerJSON = ptIAExtraerJSON;
+
+function ptIABuildPrompt(loteNum, totalLotes) {
   var refs = PRODUCTS.map(function(p){ return p.r; }).join(', ');
+  var loteInfo = (loteNum !== null && totalLotes > 1)
+    ? 'Este es el lote ' + (loteNum+1) + ' de ' + totalLotes + ' del archivo. '
+    : '';
   return (
-    'Eres un asistente de importación de datos para un sistema de inventario venezolano. ' +
-    'Analiza el siguiente catálogo de proveedor y extrae la información de cada producto. ' +
+    'Eres un asistente de importación de inventario. ' + loteInfo +
+    'Analiza CADA FILA del archivo línea por línea sin omitir ninguna. ' +
     'Las referencias del sistema son: ' + refs + '. ' +
-    'Para cada producto que encuentres, busca e interpreta estos campos aunque estén en inglés, abreviados o en formatos no estándar: ' +
-    '- ref: la referencia/código del producto (busca coincidencia exacta con las referencias del sistema) ' +
-    '- peso_kg: el peso en kilogramos (puede venir como "Weight", "Peso", "KG", "G.W.", "N.W.", etc. — convierte a kg) ' +
-    '- vol_ft3: el volumen en pies cúbicos (puede venir como "Volume", "CBM", "CFT", "Cubic Feet", "Cubicaje", "ft3", "Vol.", etc. — ' +
-    'si viene en CBM (metros cúbicos) multiplica por 35.3147 para convertir a ft³; ' +
-    'si viene en cm³ divide entre 28316.85; ' +
-    'si viene ya en ft³ úsalo directamente) ' +
-    'Responde ÚNICAMENTE con un array JSON válido, sin texto adicional, sin markdown, sin explicaciones. ' +
-    'Formato: [{"ref":"EXC001","peso_kg":0.5,"vol_ft3":1.6014}, ...] ' +
-    'Solo incluye productos donde hayas encontrado al menos peso o volumen. ' +
-    'Si no puedes determinar un valor con certeza, usa null.'
+    'Para cada fila extrae:\n' +
+    '- ref: código/referencia del producto. Busca coincidencia exacta con las referencias del sistema. Si no hay coincidencia exacta, intenta eliminar espacios o guiones.\n' +
+    '- peso_kg: peso en kg. Acepta: Weight, Peso, KG, G.W. (gross weight), N.W. (net weight), LB (convierte a kg ÷2.205), gramos (÷1000).\n' +
+    '- vol_ft3: volumen en pies cúbicos. Acepta: Volume, CBM, CFT, Cubic, Volumen, Vol, ft3, ft³.\n' +
+    '  Conversiones: si está en CBM (m³) multiplica ×35.3147. Si en cm³ divide ÷28316.85. Si ya en ft³ úsalo directo.\n' +
+    'Responde SOLO con un array JSON válido, sin texto adicional:\n' +
+    '[{"ref":"EXC001","peso_kg":0.5,"vol_ft3":1.6014}, ...]\n' +
+    'Usa null si no encuentras el valor. Incluye solo filas con al menos un valor de peso o volumen.\n' +
+    'Es OBLIGATORIO procesar TODAS las filas del archivo sin excepción.'
   );
 }
 
 function ptIAMostrarPreview(rows) {
-  ptIASetStatus('✅ IA completó el análisis — revisa los resultados abajo', 'ok');
+  ptIASetStatus('✅ Análisis completado — revisa los resultados', 'ok');
 
-  // Cruzar con productos del sistema
-  var inv = typeof getInventory === 'function' ? getInventory() : {};
-  var pd  = ptGetData();
-  var valid = [], noMatch = 0;
+  var pd = ptGetData();
+  var valid = [], noMatch = 0, sinDatos = 0;
 
-  rows.forEach(function(r) {
-    if (!r.ref) return;
-    var ref = String(r.ref).trim().toUpperCase();
+  (rows || []).forEach(function(r) {
+    if (!r || !r.ref) return;
+    var ref = String(r.ref).trim().toUpperCase().replace(/\s+/g,'');
     var prod = PRODUCTS.find(function(p){ return p.r === ref; });
     if (!prod) { noMatch++; return; }
-    var peso  = (r.peso_kg  !== null && r.peso_kg  !== undefined) ? parseFloat(r.peso_kg)  : null;
-    var vol   = (r.vol_ft3  !== null && r.vol_ft3  !== undefined) ? parseFloat(r.vol_ft3)  : null;
-    if (peso === null && vol === null) return;
+    var peso = (r.peso_kg  != null && r.peso_kg  !== '') ? parseFloat(r.peso_kg)  : null;
+    var vol  = (r.vol_ft3  != null && r.vol_ft3  !== '') ? parseFloat(r.vol_ft3)  : null;
+    if ((peso === null || isNaN(peso)) && (vol === null || isNaN(vol))) { sinDatos++; return; }
+    if (isNaN(peso)) peso = null;
+    if (isNaN(vol))  vol  = null;
     valid.push({ ref: ref, d: prod.d, peso: peso, vol: vol });
   });
 
@@ -12005,39 +12046,50 @@ function ptIAMostrarPreview(rows) {
   prev.style.display = 'block';
 
   if (!valid.length) {
-    prev.innerHTML = '<div style="background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:12px;color:#92400e;font-size:.78rem;">' +
-      '⚠ No se encontraron referencias del sistema en el archivo. Verifica que el catálogo del proveedor use las mismas referencias.' +
-      (noMatch > 0 ? ' (' + noMatch + ' referencias no coinciden)' : '') + '</div>';
+    prev.innerHTML =
+      '<div style="background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:12px;color:#92400e;font-size:.78rem;">' +
+      '⚠ No se encontraron datos válidos. ' +
+      (noMatch > 0 ? noMatch + ' referencias no coinciden con el sistema. ' : '') +
+      'Verifica que el catálogo use las mismas referencias.</div>';
     return;
   }
 
-  var html = '<div style="background:#f0fdf4;border:1px solid #86efac;border-radius:8px;padding:10px 14px;margin-bottom:10px;font-size:.75rem;color:#166534;">' +
-    '✅ <b>' + valid.length + ' productos</b> con datos encontrados' +
-    (noMatch > 0 ? ' · <span style="color:#d97706;">⚠ ' + noMatch + ' sin coincidencia</span>' : '') +
-  '</div>' +
-  '<div style="max-height:280px;overflow-y:auto;border:1px solid #e5e7eb;border-radius:8px;margin-bottom:14px;">' +
-  '<table style="width:100%;border-collapse:collapse;font-size:.72rem;">' +
-  '<thead><tr style="background:#dc2626;color:white;position:sticky;top:0;">' +
-  '<th style="padding:7px 10px;text-align:left;">Referencia</th>' +
-  '<th style="padding:7px 10px;text-align:left;">Descripción</th>' +
-  '<th style="padding:7px 10px;text-align:center;">Peso (kg)</th>' +
-  '<th style="padding:7px 10px;text-align:center;">Vol. (ft³)</th>' +
-  '</tr></thead><tbody>';
+  var html =
+    '<div style="background:#f0fdf4;border:1px solid #86efac;border-radius:8px;padding:10px 14px;margin-bottom:10px;font-size:.75rem;color:#166534;">' +
+      '✅ <b>' + valid.length + ' productos</b> con datos encontrados' +
+      (noMatch  > 0 ? ' &nbsp;·&nbsp; <span style="color:#d97706;">⚠ ' + noMatch  + ' sin coincidencia</span>' : '') +
+      (sinDatos > 0 ? ' &nbsp;·&nbsp; <span style="color:#94a3b8;">' + sinDatos + ' sin peso/vol</span>' : '') +
+    '</div>' +
+    '<div style="max-height:320px;overflow-y:auto;border:1px solid #e5e7eb;border-radius:8px;margin-bottom:14px;">' +
+      '<table style="width:100%;border-collapse:collapse;font-size:.72rem;">' +
+        '<thead><tr style="background:#dc2626;color:white;position:sticky;top:0;">' +
+          '<th style="padding:7px 10px;text-align:left;white-space:nowrap;">#</th>' +
+          '<th style="padding:7px 10px;text-align:left;">Referencia</th>' +
+          '<th style="padding:7px 10px;text-align:left;">Descripción</th>' +
+          '<th style="padding:7px 10px;text-align:center;">Peso (kg)</th>' +
+          '<th style="padding:7px 10px;text-align:center;">Vol. ft³</th>' +
+        '</tr></thead><tbody>';
 
   valid.forEach(function(r, i) {
-    var bg = i%2===0?'white':'#fef2f2';
-    html += '<tr style="background:' + bg + ';border-bottom:1px solid #f3f4f6;">' +
-      '<td style="padding:5px 10px;font-weight:700;color:#dc2626;">' + r.ref + '</td>' +
-      '<td style="padding:5px 10px;color:#374151;font-size:.68rem;">' + r.d + '</td>' +
-      '<td style="padding:5px 10px;text-align:center;font-weight:700;color:#1d4ed8;">' + (r.peso !== null ? r.peso.toFixed(3) + ' kg' : '<span style="color:#cbd5e1;">—</span>') + '</td>' +
-      '<td style="padding:5px 10px;text-align:center;font-weight:700;color:#16a34a;">' + (r.vol !== null ? r.vol.toFixed(4) + ' ft³' : '<span style="color:#cbd5e1;">—</span>') + '</td>' +
-    '</tr>';
+    var bg = i%2===0 ? 'white' : '#fef2f2';
+    html +=
+      '<tr style="background:' + bg + ';border-bottom:1px solid #f3f4f6;">' +
+        '<td style="padding:5px 8px;color:#94a3b8;font-size:.65rem;">' + (i+1) + '</td>' +
+        '<td style="padding:5px 10px;font-weight:700;color:#dc2626;">' + r.ref + '</td>' +
+        '<td style="padding:5px 10px;color:#374151;font-size:.68rem;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + r.d + '</td>' +
+        '<td style="padding:5px 10px;text-align:center;font-weight:700;color:#1d4ed8;">' + (r.peso !== null ? r.peso.toFixed(3) + ' kg' : '<span style="color:#e2e8f0;">—</span>') + '</td>' +
+        '<td style="padding:5px 10px;text-align:center;font-weight:700;color:#16a34a;">' + (r.vol  !== null ? r.vol.toFixed(4)  + ' ft³' : '<span style="color:#e2e8f0;">—</span>') + '</td>' +
+      '</tr>';
   });
 
-  html += '</tbody></table></div>' +
-    '<div style="display:flex;justify-content:flex-end;gap:8px;">' +
-      '<button onclick="document.getElementById(\'pt-ia-overlay\').remove();" style="background:#f3f4f6;color:#374151;border:none;border-radius:8px;padding:8px 18px;cursor:pointer;font-weight:700;font-size:.8rem;">Cancelar</button>' +
-      '<button onclick="ptIAConfirmar();" style="background:linear-gradient(135deg,#dc2626,#991b1b);color:white;border:none;border-radius:8px;padding:8px 22px;cursor:pointer;font-weight:800;font-size:.82rem;">✅ Aplicar en Productos Terminados</button>' +
+  html +=
+      '</tbody></table></div>' +
+    '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">' +
+      '<div style="font-size:.7rem;color:#94a3b8;">' + valid.length + ' productos listos para actualizar</div>' +
+      '<div style="display:flex;gap:8px;">' +
+        '<button onclick="document.getElementById(\'pt-ia-overlay\').remove();" style="background:#f3f4f6;color:#374151;border:none;border-radius:8px;padding:8px 18px;cursor:pointer;font-weight:700;font-size:.8rem;">Cancelar</button>' +
+        '<button onclick="ptIAConfirmar();" style="background:linear-gradient(135deg,#dc2626,#991b1b);color:white;border:none;border-radius:8px;padding:8px 22px;cursor:pointer;font-weight:800;font-size:.82rem;">✅ Aplicar ' + valid.length + ' productos</button>' +
+      '</div>' +
     '</div>';
 
   prev.innerHTML = html;
@@ -12048,18 +12100,15 @@ window.ptIAMostrarPreview = ptIAMostrarPreview;
 function ptIAConfirmar() {
   var rows = window._ptIARows || [];
   if (!rows.length) return;
-
   var pd = ptGetData();
   var count = 0;
-
   rows.forEach(function(r) {
     pd[r.ref] = pd[r.ref] || {};
     pd[r.ref].medidas = pd[r.ref].medidas || {};
-    if (r.peso !== null) pd[r.ref].medidas.peso  = r.peso;
+    if (r.peso !== null) pd[r.ref].medidas.peso       = r.peso;
     if (r.vol  !== null) pd[r.ref].medidas.volDirecto = r.vol;
     count++;
   });
-
   ptSaveData(pd);
   var o = document.getElementById('pt-ia-overlay');
   if (o) o.remove();
@@ -12067,6 +12116,7 @@ function ptIAConfirmar() {
   if (typeof showToast === 'function') showToast('🤖 IA aplicó datos de ' + count + ' productos correctamente', 'success');
 }
 window.ptIAConfirmar = ptIAConfirmar;
+
 
 window.ptImportarDatosMaestro = ptImportarDatosMaestro;
 
