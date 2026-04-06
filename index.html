@@ -11071,6 +11071,7 @@ function doRefSearch() {
           '<button onclick="ptImportarPedido()" style="background:linear-gradient(135deg,#059669,#065f46);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:700;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;">📦 Importar Pedido Proveedor</button>' +
           '<button onclick="ptImportarMedidas()" style="background:linear-gradient(135deg,#1d4ed8,#1e40af);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:700;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;" title="Importar largo, ancho, alto y peso desde Excel">📐 Importar Medidas</button>' +
           '<button onclick="ptImportarDatosMaestro()" style="background:linear-gradient(135deg,#7c3aed,#6d28d9);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:700;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;" title="Importar y actualizar todos los campos desde Excel">📥 Importar Datos</button>' +
+          '<button onclick="ptImportarConIA()" style="background:linear-gradient(135deg,#dc2626,#b91c1c);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:700;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;" title="Usar IA para interpretar catálogo del proveedor (PDF o Excel)">🤖 IA Catálogo</button>' +
         '</div>' +
         '<div id="pt-stats" style="padding:8px 20px;background:#fff;border-bottom:1px solid #eef0f8;display:flex;gap:16px;font-size:.72rem;color:#5a6080;flex-wrap:wrap;"></div>' +
         '<div style="overflow-y:auto;max-height:calc(100vh - 260px);">' +
@@ -11789,6 +11790,284 @@ function ptImportarDatosMaestro() {
   dz.ondrop   = function(e){ e.preventDefault(); dz.style.background='#faf5ff'; dz.style.borderColor='#c4b5fd'; if(e.dataTransfer.files[0]) ptMaestroProcesar(e.dataTransfer.files[0]); };
   finp.onchange= function(){ if(this.files[0]) ptMaestroProcesar(this.files[0]); };
 }
+
+// ══════════════════════════════════════════════════════════════════
+// IMPORTAR CON IA — sube PDF o Excel del proveedor,
+// Claude interpreta el contenido y extrae peso y volumen (ft³)
+// ══════════════════════════════════════════════════════════════════
+function ptImportarConIA() {
+  if (document.getElementById('pt-ia-overlay')) return;
+
+  var ov = document.createElement('div');
+  ov.id = 'pt-ia-overlay';
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.82);z-index:99999;display:flex;align-items:flex-start;justify-content:center;padding:20px;overflow-y:auto;';
+
+  ov.innerHTML =
+    '<div style="background:white;border-radius:16px;width:min(860px,100%);margin:auto;box-shadow:0 24px 64px rgba(0,0,0,.5);overflow:hidden;">' +
+
+      // Header
+      '<div style="background:linear-gradient(135deg,#dc2626,#991b1b);color:white;padding:16px 22px;display:flex;justify-content:space-between;align-items:center;">' +
+        '<div>' +
+          '<div style="font-family:Barlow Condensed,sans-serif;font-weight:900;font-size:1.25rem;letter-spacing:1px;">🤖 IMPORTAR CATÁLOGO CON IA</div>' +
+          '<div style="font-size:.7rem;opacity:.75;margin-top:3px;">Sube el catálogo del proveedor — la IA identifica peso y volumen automáticamente</div>' +
+        '</div>' +
+        '<button onclick="document.getElementById(\'pt-ia-overlay\').remove();" style="background:rgba(255,255,255,.15);border:none;color:white;border-radius:8px;padding:6px 14px;cursor:pointer;font-size:.85rem;">✕</button>' +
+      '</div>' +
+
+      // Instrucciones
+      '<div style="padding:14px 22px;background:#fff5f5;border-bottom:1px solid #fecaca;">' +
+        '<div style="font-size:.78rem;font-weight:700;color:#dc2626;margin-bottom:6px;">📋 Cómo funciona:</div>' +
+        '<div style="font-size:.72rem;color:#7f1d1d;line-height:1.9;">' +
+          '1. Sube el catálogo del proveedor en <b>PDF o Excel (.xlsx/.xls/.csv)</b><br>' +
+          '2. La IA analiza el contenido e identifica: referencia, peso y volumen (aunque estén en inglés, abreviados o en formatos no estándar)<br>' +
+          '3. Ves un preview con lo que encontró — tú decides qué aplicar<br>' +
+          '4. Se actualiza automáticamente en Productos Terminados' +
+        '</div>' +
+      '</div>' +
+
+      // Drop zone
+      '<div style="padding:20px 22px;">' +
+        '<div id="pt-ia-dz" style="border:2px dashed #fca5a5;border-radius:10px;padding:30px;text-align:center;cursor:pointer;background:#fff5f5;transition:all .2s;">' +
+          '<div style="font-size:2.5rem;margin-bottom:8px;">📄</div>' +
+          '<div style="font-weight:700;color:#dc2626;font-size:.9rem;">Arrastra el catálogo del proveedor aquí</div>' +
+          '<div style="color:#94a3b8;font-size:.75rem;margin-top:4px;">PDF, Excel (.xlsx, .xls) o CSV — la IA interpreta el formato automáticamente</div>' +
+        '</div>' +
+        '<input type="file" id="pt-ia-file" accept=".pdf,.xlsx,.xls,.csv" style="display:none;">' +
+      '</div>' +
+
+      '<div id="pt-ia-status" style="padding:0 22px 4px;display:none;"></div>' +
+      '<div id="pt-ia-preview" style="padding:0 22px 20px;display:none;"></div>' +
+    '</div>';
+
+  document.body.appendChild(ov);
+  ov.onclick = function(e){ if(e.target===ov) ov.remove(); };
+
+  var dz   = document.getElementById('pt-ia-dz');
+  var finp = document.getElementById('pt-ia-file');
+
+  dz.onclick    = function(){ finp.click(); };
+  dz.ondragover = function(e){ e.preventDefault(); dz.style.background='#fee2e2'; dz.style.borderColor='#dc2626'; };
+  dz.ondragleave= function(){ dz.style.background='#fff5f5'; dz.style.borderColor='#fca5a5'; };
+  dz.ondrop     = function(e){ e.preventDefault(); dz.style.background='#fff5f5'; dz.style.borderColor='#fca5a5'; if(e.dataTransfer.files[0]) ptIAProcesarArchivo(e.dataTransfer.files[0]); };
+  finp.onchange = function(){ if(this.files[0]) ptIAProcesarArchivo(this.files[0]); };
+}
+window.ptImportarConIA = ptImportarConIA;
+
+function ptIASetStatus(msg, tipo) {
+  var el = document.getElementById('pt-ia-status');
+  if (!el) return;
+  var colores = { info:'#1d4ed8', ok:'#16a34a', error:'#dc2626', warn:'#d97706' };
+  var fondos  = { info:'#eff6ff', ok:'#f0fdf4', error:'#fef2f2', warn:'#fffbeb' };
+  el.style.display = 'block';
+  el.innerHTML = '<div style="background:' + (fondos[tipo]||fondos.info) + ';border-radius:8px;padding:10px 14px;font-size:.78rem;color:' + (colores[tipo]||colores.info) + ';font-weight:600;">' + msg + '</div>';
+}
+
+async function ptIAProcesarArchivo(file) {
+  var dz = document.getElementById('pt-ia-dz');
+  if (dz) { dz.style.opacity = '0.5'; dz.style.pointerEvents = 'none'; }
+  ptIASetStatus('⏳ Leyendo archivo...', 'info');
+
+  try {
+    var isPDF = file.name.toLowerCase().endsWith('.pdf');
+    var contentParts = [];
+
+    if (isPDF) {
+      // PDF → base64 → enviar como documento a Claude
+      var b64 = await new Promise(function(res, rej) {
+        var r = new FileReader();
+        r.onload = function(){ res(r.result.split(',')[1]); };
+        r.onerror = rej;
+        r.readAsDataURL(file);
+      });
+      contentParts = [
+        { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: b64 } },
+        { type: 'text', text: ptIABuildPrompt() }
+      ];
+    } else {
+      // Excel/CSV → convertir a texto tabular → enviar como texto
+      ptIASetStatus('⏳ Procesando Excel...', 'info');
+      var textContent = await new Promise(function(res, rej) {
+        var r = new FileReader();
+        r.onload = function(e) {
+          try {
+            var data;
+            if (file.name.toLowerCase().endsWith('.csv')) {
+              data = e.target.result;
+              res(data.slice(0, 12000)); // primeras 12000 chars
+            } else {
+              var wb = XLSX.read(e.target.result, { type: 'binary' });
+              var ws = wb.Sheets[wb.SheetNames[0]];
+              var csv = XLSX.utils.sheet_to_csv(ws);
+              res(csv.slice(0, 12000));
+            }
+          } catch(err) { rej(err); }
+        };
+        r.onerror = rej;
+        if (file.name.toLowerCase().endsWith('.csv')) r.readAsText(file, 'UTF-8');
+        else r.readAsBinaryString(file);
+      });
+      contentParts = [
+        { type: 'text', text: ptIABuildPrompt() + '\n\nCONTENIDO DEL ARCHIVO:\n' + textContent }
+      ];
+    }
+
+    ptIASetStatus('🤖 La IA está analizando el catálogo... (puede tardar 15-30 segundos)', 'info');
+
+    var resp = await fetch('https://farmers-proxy.farmersve.workers.dev/', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 4000,
+        messages: [{ role: 'user', content: contentParts }]
+      })
+    });
+
+    var respText = await resp.text();
+    var data;
+    try { data = JSON.parse(respText); } catch(e) { throw new Error('Respuesta inválida del servidor'); }
+    if (!resp.ok || data.error) throw new Error(data.error ? data.error.message : 'Error del servidor');
+
+    var iaText = (data.content || []).map(function(b){ return b.text || ''; }).join('');
+
+    // Extraer JSON de la respuesta
+    var jsonMatch = iaText.match(/```json\n([\s\S]+?)\n```/) || iaText.match(/\[([\s\S]+)\]/);
+    var jsonStr = jsonMatch ? (jsonMatch[1] ? '[' + jsonMatch[1] + ']' : jsonMatch[0]) : iaText.trim();
+
+    // Limpiar y parsear
+    if (!jsonStr.startsWith('[')) {
+      var idx = jsonStr.indexOf('[');
+      if (idx >= 0) jsonStr = jsonStr.slice(idx);
+    }
+
+    var rows;
+    try { rows = JSON.parse(jsonStr); } catch(e) {
+      throw new Error('No se pudo interpretar la respuesta de la IA. Intenta con otro archivo.');
+    }
+
+    if (!Array.isArray(rows) || !rows.length) {
+      ptIASetStatus('⚠ La IA no encontró datos de productos en el archivo.', 'warn');
+      return;
+    }
+
+    ptIAMostrarPreview(rows);
+
+  } catch(err) {
+    ptIASetStatus('❌ Error: ' + err.message, 'error');
+  } finally {
+    if (dz) { dz.style.opacity = '1'; dz.style.pointerEvents = 'auto'; }
+  }
+}
+window.ptIAProcesarArchivo = ptIAProcesarArchivo;
+
+function ptIABuildPrompt() {
+  // Obtener referencias existentes en el sistema
+  var refs = PRODUCTS.map(function(p){ return p.r; }).join(', ');
+  return (
+    'Eres un asistente de importación de datos para un sistema de inventario venezolano. ' +
+    'Analiza el siguiente catálogo de proveedor y extrae la información de cada producto. ' +
+    'Las referencias del sistema son: ' + refs + '. ' +
+    'Para cada producto que encuentres, busca e interpreta estos campos aunque estén en inglés, abreviados o en formatos no estándar: ' +
+    '- ref: la referencia/código del producto (busca coincidencia exacta con las referencias del sistema) ' +
+    '- peso_kg: el peso en kilogramos (puede venir como "Weight", "Peso", "KG", "G.W.", "N.W.", etc. — convierte a kg) ' +
+    '- vol_ft3: el volumen en pies cúbicos (puede venir como "Volume", "CBM", "CFT", "Cubic Feet", "Cubicaje", "ft3", "Vol.", etc. — ' +
+    'si viene en CBM (metros cúbicos) multiplica por 35.3147 para convertir a ft³; ' +
+    'si viene en cm³ divide entre 28316.85; ' +
+    'si viene ya en ft³ úsalo directamente) ' +
+    'Responde ÚNICAMENTE con un array JSON válido, sin texto adicional, sin markdown, sin explicaciones. ' +
+    'Formato: [{"ref":"EXC001","peso_kg":0.5,"vol_ft3":1.6014}, ...] ' +
+    'Solo incluye productos donde hayas encontrado al menos peso o volumen. ' +
+    'Si no puedes determinar un valor con certeza, usa null.'
+  );
+}
+
+function ptIAMostrarPreview(rows) {
+  ptIASetStatus('✅ IA completó el análisis — revisa los resultados abajo', 'ok');
+
+  // Cruzar con productos del sistema
+  var inv = typeof getInventory === 'function' ? getInventory() : {};
+  var pd  = ptGetData();
+  var valid = [], noMatch = 0;
+
+  rows.forEach(function(r) {
+    if (!r.ref) return;
+    var ref = String(r.ref).trim().toUpperCase();
+    var prod = PRODUCTS.find(function(p){ return p.r === ref; });
+    if (!prod) { noMatch++; return; }
+    var peso  = (r.peso_kg  !== null && r.peso_kg  !== undefined) ? parseFloat(r.peso_kg)  : null;
+    var vol   = (r.vol_ft3  !== null && r.vol_ft3  !== undefined) ? parseFloat(r.vol_ft3)  : null;
+    if (peso === null && vol === null) return;
+    valid.push({ ref: ref, d: prod.d, peso: peso, vol: vol });
+  });
+
+  var prev = document.getElementById('pt-ia-preview');
+  if (!prev) return;
+  prev.style.display = 'block';
+
+  if (!valid.length) {
+    prev.innerHTML = '<div style="background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:12px;color:#92400e;font-size:.78rem;">' +
+      '⚠ No se encontraron referencias del sistema en el archivo. Verifica que el catálogo del proveedor use las mismas referencias.' +
+      (noMatch > 0 ? ' (' + noMatch + ' referencias no coinciden)' : '') + '</div>';
+    return;
+  }
+
+  var html = '<div style="background:#f0fdf4;border:1px solid #86efac;border-radius:8px;padding:10px 14px;margin-bottom:10px;font-size:.75rem;color:#166534;">' +
+    '✅ <b>' + valid.length + ' productos</b> con datos encontrados' +
+    (noMatch > 0 ? ' · <span style="color:#d97706;">⚠ ' + noMatch + ' sin coincidencia</span>' : '') +
+  '</div>' +
+  '<div style="max-height:280px;overflow-y:auto;border:1px solid #e5e7eb;border-radius:8px;margin-bottom:14px;">' +
+  '<table style="width:100%;border-collapse:collapse;font-size:.72rem;">' +
+  '<thead><tr style="background:#dc2626;color:white;position:sticky;top:0;">' +
+  '<th style="padding:7px 10px;text-align:left;">Referencia</th>' +
+  '<th style="padding:7px 10px;text-align:left;">Descripción</th>' +
+  '<th style="padding:7px 10px;text-align:center;">Peso (kg)</th>' +
+  '<th style="padding:7px 10px;text-align:center;">Vol. (ft³)</th>' +
+  '</tr></thead><tbody>';
+
+  valid.forEach(function(r, i) {
+    var bg = i%2===0?'white':'#fef2f2';
+    html += '<tr style="background:' + bg + ';border-bottom:1px solid #f3f4f6;">' +
+      '<td style="padding:5px 10px;font-weight:700;color:#dc2626;">' + r.ref + '</td>' +
+      '<td style="padding:5px 10px;color:#374151;font-size:.68rem;">' + r.d + '</td>' +
+      '<td style="padding:5px 10px;text-align:center;font-weight:700;color:#1d4ed8;">' + (r.peso !== null ? r.peso.toFixed(3) + ' kg' : '<span style="color:#cbd5e1;">—</span>') + '</td>' +
+      '<td style="padding:5px 10px;text-align:center;font-weight:700;color:#16a34a;">' + (r.vol !== null ? r.vol.toFixed(4) + ' ft³' : '<span style="color:#cbd5e1;">—</span>') + '</td>' +
+    '</tr>';
+  });
+
+  html += '</tbody></table></div>' +
+    '<div style="display:flex;justify-content:flex-end;gap:8px;">' +
+      '<button onclick="document.getElementById(\'pt-ia-overlay\').remove();" style="background:#f3f4f6;color:#374151;border:none;border-radius:8px;padding:8px 18px;cursor:pointer;font-weight:700;font-size:.8rem;">Cancelar</button>' +
+      '<button onclick="ptIAConfirmar();" style="background:linear-gradient(135deg,#dc2626,#991b1b);color:white;border:none;border-radius:8px;padding:8px 22px;cursor:pointer;font-weight:800;font-size:.82rem;">✅ Aplicar en Productos Terminados</button>' +
+    '</div>';
+
+  prev.innerHTML = html;
+  window._ptIARows = valid;
+}
+window.ptIAMostrarPreview = ptIAMostrarPreview;
+
+function ptIAConfirmar() {
+  var rows = window._ptIARows || [];
+  if (!rows.length) return;
+
+  var pd = ptGetData();
+  var count = 0;
+
+  rows.forEach(function(r) {
+    pd[r.ref] = pd[r.ref] || {};
+    pd[r.ref].medidas = pd[r.ref].medidas || {};
+    if (r.peso !== null) pd[r.ref].medidas.peso  = r.peso;
+    if (r.vol  !== null) pd[r.ref].medidas.volDirecto = r.vol;
+    count++;
+  });
+
+  ptSaveData(pd);
+  var o = document.getElementById('pt-ia-overlay');
+  if (o) o.remove();
+  if (typeof ptRender === 'function') ptRender();
+  if (typeof showToast === 'function') showToast('🤖 IA aplicó datos de ' + count + ' productos correctamente', 'success');
+}
+window.ptIAConfirmar = ptIAConfirmar;
+
 window.ptImportarDatosMaestro = ptImportarDatosMaestro;
 
 function ptMaestroProcesar(file) {
