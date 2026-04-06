@@ -4110,7 +4110,8 @@ function showOrderModal() {
             const med = (ptDataOrder[p.r] && ptDataOrder[p.r].medidas) ? ptDataOrder[p.r].medidas : {};
             const l = parseFloat(med.largo)||0, a = parseFloat(med.ancho)||0, h = parseFloat(med.alto)||0;
             const peso = parseFloat(med.peso)||0;
-            const volUnit = (l && a && h) ? (l*a*h/28316.85) : 0;
+            const volDirOrd = parseFloat((ptDataOrder[p.r]&&ptDataOrder[p.r].medidas&&ptDataOrder[p.r].medidas.volDirecto)||0);
+            const volUnit = (l && a && h) ? (l*a*h/28316.85) : volDirOrd;
             const volTotal = volUnit * ord;
             const pesoTotal = peso * ord;
             if (!volUnit && !peso) return '<span style="color:#cbd5e1;">—</span>';
@@ -10372,7 +10373,15 @@ function _catDownloadPDFWithImgs(_prodImgsLocal) {
             var _pd = _ptDataPDF[p.r] || {};
             var _m = _pd.medidas || {};
             var _l = parseFloat(_m.largo)||0, _a = parseFloat(_m.ancho)||0, _h = parseFloat(_m.alto)||0;
-            if (!_l || !_a || !_h) return '';
+            var _vDirect = parseFloat((_m.volDirecto)||0);
+            if (!_l || !_a || !_h) {
+              if (!_vDirect) return '';
+              return '<div style="background:#eff6ff;border-radius:6px;padding:6px 10px;margin-bottom:5px;border:1px solid #bfdbfe;display:flex;align-items:center;justify-content:space-between;">'+
+                '<div><div style="color:#1d4ed8;font-size:.52rem;font-weight:700;text-transform:uppercase;letter-spacing:.8px;margin-bottom:2px;">📐 Vol. (ft³) por bulto</div>'+
+                '<div style="font-size:.55rem;color:#64748b;">Dato del proveedor</div></div>'+
+                '<div style="font-family:Barlow Condensed,sans-serif;font-weight:900;font-size:1.2rem;color:#1d4ed8;">' + _vDirect.toFixed(4) + ' ft³</div>'+
+              '</div>';
+            }
             var _v = (_l * _a * _h) / 28316.85;
             return '<div style="background:#eff6ff;border-bottom:1px solid #e2e8f0;padding:5px 12px;display:flex;align-items:center;justify-content:space-between;">' +
               '<div>' +
@@ -11060,6 +11069,8 @@ function doRefSearch() {
           '<button onclick="ptNuevoProducto()" style="background:#1B1F6B;color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:700;font-size:.8rem;white-space:nowrap;">+ Nuevo Producto</button>' +
           '<button onclick="ptResetOrdenada()" style="background:linear-gradient(135deg,#92400e,#b45309);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:700;font-size:.8rem;white-space:nowrap;">📦 Actualizar Ordenada</button>' +
           '<button onclick="ptImportarPedido()" style="background:linear-gradient(135deg,#059669,#065f46);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:700;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;">📦 Importar Pedido Proveedor</button>' +
+          '<button onclick="ptImportarMedidas()" style="background:linear-gradient(135deg,#1d4ed8,#1e40af);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:700;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;" title="Importar largo, ancho, alto y peso desde Excel">📐 Importar Medidas</button>' +
+          '<button onclick="ptImportarDatosMaestro()" style="background:linear-gradient(135deg,#7c3aed,#6d28d9);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:700;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;" title="Importar y actualizar todos los campos desde Excel">📥 Importar Datos</button>' +
         '</div>' +
         '<div id="pt-stats" style="padding:8px 20px;background:#fff;border-bottom:1px solid #eef0f8;display:flex;gap:16px;font-size:.72rem;color:#5a6080;flex-wrap:wrap;"></div>' +
         '<div style="overflow-y:auto;max-height:calc(100vh - 260px);">' +
@@ -11422,6 +11433,588 @@ function ptRender() {
     tbody.innerHTML = '<tr><td colspan="13" style="text-align:center;padding:40px;color:#94a3b8;">No se encontraron productos</td></tr>';
   }
 }
+
+// ══════════════════════════════════════════════════════════════════
+// IMPORTACIÓN MASIVA DE MEDIDAS (Largo / Ancho / Alto / Peso)
+// ══════════════════════════════════════════════════════════════════
+function ptImportarMedidas() {
+  if (document.getElementById('pt-medidas-overlay')) return;
+
+  var ov = document.createElement('div');
+  ov.id = 'pt-medidas-overlay';
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:99999;display:flex;align-items:flex-start;justify-content:center;padding:20px;overflow-y:auto;';
+
+  ov.innerHTML =
+    '<div style="background:white;border-radius:16px;width:min(860px,100%);margin:auto;box-shadow:0 24px 64px rgba(0,0,0,.5);overflow:hidden;">' +
+      '<div style="background:linear-gradient(135deg,#1d4ed8,#1e40af);color:white;padding:16px 22px;display:flex;justify-content:space-between;align-items:center;">' +
+        '<div>' +
+          '<div style="font-family:Barlow Condensed,sans-serif;font-weight:900;font-size:1.2rem;letter-spacing:1px;">📐 IMPORTAR MEDIDAS MASIVAMENTE</div>' +
+          '<div style="font-size:.7rem;opacity:.7;margin-top:3px;">Importa largo, ancho, alto y peso desde Excel para calcular el volumen ft³</div>' +
+        '</div>' +
+        '<button onclick="var o=document.getElementById(\'pt-medidas-overlay\');if(o)o.remove();" style="background:rgba(255,255,255,.15);border:none;color:white;border-radius:8px;padding:6px 12px;cursor:pointer;font-size:.8rem;">✕ Cerrar</button>' +
+      '</div>' +
+
+      // Instrucciones
+      '<div style="padding:16px 22px;background:#eff6ff;border-bottom:1px solid #bfdbfe;">' +
+        '<div style="font-size:.78rem;font-weight:700;color:#1d4ed8;margin-bottom:6px;">📋 Formato requerido del Excel:</div>' +
+        '<div style="font-size:.72rem;color:#1e40af;line-height:1.8;">' +
+          '• El archivo debe tener una columna con la <b>Referencia</b> del producto (ej: EXC001, LUM013)<br>' +
+          '• Columnas opcionales: <b>Largo</b>, <b>Ancho</b>, <b>Alto</b> (en cm) y <b>Peso</b> (en kg)<br>' +
+          '• Los nombres de columna se detectan automáticamente (largo/length, ancho/width, alto/height, peso/weight)<br>' +
+          '• Las referencias que no existan en el sistema serán ignoradas' +
+        '</div>' +
+        '<a id="pt-med-dl-template" href="#" onclick="ptMedidasDescargarPlantilla();return false;" style="display:inline-block;margin-top:8px;background:#1d4ed8;color:white;text-decoration:none;border-radius:6px;padding:5px 14px;font-size:.72rem;font-weight:700;">⬇ Descargar plantilla Excel</a>' +
+      '</div>' +
+
+      // Drop zone
+      '<div style="padding:20px 22px;">' +
+        '<div id="pt-med-dropzone" style="border:2px dashed #93c5fd;border-radius:10px;padding:32px;text-align:center;cursor:pointer;background:#f0f9ff;transition:all .2s;">' +
+          '<div style="font-size:2.5rem;margin-bottom:8px;">📊</div>' +
+          '<div style="font-weight:700;color:#1d4ed8;font-size:.9rem;">Arrastra tu archivo Excel aquí</div>' +
+          '<div style="color:#64748b;font-size:.75rem;margin-top:4px;">o haz clic para seleccionar (.xlsx, .xls, .csv)</div>' +
+        '</div>' +
+        '<input type="file" id="pt-med-file" accept=".xlsx,.xls,.csv" style="display:none" onchange="ptMedidasProcesarArchivo(this.files[0])">' +
+      '</div>' +
+
+      // Preview área
+      '<div id="pt-med-preview" style="padding:0 22px 16px;display:none;">' +
+        '<div id="pt-med-preview-inner"></div>' +
+        '<div style="display:flex;gap:10px;margin-top:14px;justify-content:flex-end;">' +
+          '<button id="pt-med-cancel-btn" style="padding:9px 20px;border-radius:8px;border:1.5px solid #e2e8f0;background:white;color:#64748b;cursor:pointer;font-weight:700;font-size:.8rem;">Cancelar</button>' +
+          '<button id="pt-med-confirm-btn" onclick="ptMedidasConfirmar()" style="padding:9px 20px;border-radius:8px;border:none;background:linear-gradient(135deg,#1d4ed8,#1e40af);color:white;cursor:pointer;font-weight:700;font-size:.8rem;">✅ Confirmar e importar</button>' +
+        '</div>' +
+      '</div>' +
+
+    '</div>';
+
+  document.body.appendChild(ov);
+  ov.onclick = function(e){ if(e.target===ov) ov.remove(); };
+  // Dropzone event listeners (evita conflictos de comillas en innerHTML)
+  var dz = document.getElementById('pt-med-dropzone');
+  if (dz) {
+    dz.onclick = function(){ document.getElementById('pt-med-file').click(); };
+    dz.ondragover = function(e){ e.preventDefault(); dz.style.background='#dbeafe'; };
+    dz.ondragleave = function(){ dz.style.background='#f0f9ff'; };
+    dz.ondrop = function(e){ e.preventDefault(); ptMedidasProcesarArchivo(e.dataTransfer.files[0]); };
+  }
+  var cancelBtn = document.getElementById('pt-med-cancel-btn');
+  if (cancelBtn) {
+    cancelBtn.onclick = function(){ document.getElementById('pt-med-preview').style.display='none'; };
+  }
+}
+window.ptImportarMedidas = ptImportarMedidas;
+
+// Descargar plantilla con las referencias actuales
+function ptMedidasDescargarPlantilla() {
+  var rows = [['Referencia','Largo (cm)','Ancho (cm)','Alto (cm)','Peso (kg)']];
+  var pd = ptGetData();
+  PRODUCTS.forEach(function(p){
+    var m = (pd[p.r] && pd[p.r].medidas) ? pd[p.r].medidas : {};
+    rows.push([p.r, m.largo||'', m.ancho||'', m.alto||'', m.peso||'']);
+  });
+  // Generar CSV
+  var csv = rows.map(function(r){ return r.map(function(v){ return '"'+String(v).replace(/"/g,'\\"')+ '"'; }).join(','); }).join('\n');
+  var blob = new Blob([csv], {type:'text/csv;charset=utf-8;'});
+  var a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'plantilla_medidas_farmers.csv';
+  a.click();
+}
+window.ptMedidasDescargarPlantilla = ptMedidasDescargarPlantilla;
+
+// Almacén temporal de datos procesados
+var _ptMedidasImport = [];
+
+function ptMedidasProcesarArchivo(file) {
+  if (!file) return;
+  var reader = new FileReader();
+  reader.onload = function(e) {
+    try {
+      var data;
+      if (file.name.endsWith('.csv')) {
+        // Parsear CSV
+        var text = e.target.result;
+        var lines = text.split(/\r?\n/).filter(function(l){ return l.trim(); });
+        var headers = lines[0].split(',').map(function(h){ return h.replace(/^"|"$/g,'').trim().toLowerCase(); });
+        data = lines.slice(1).map(function(line){
+          var vals = line.split(',').map(function(v){ return v.replace(/^"|"$/g,'').trim(); });
+          var obj = {};
+          headers.forEach(function(h,i){ obj[h] = vals[i]||''; });
+          return obj;
+        });
+      } else {
+        // XLSX
+        var wb = XLSX.read(e.target.result, {type:'binary'});
+        var ws = wb.Sheets[wb.SheetNames[0]];
+        data = XLSX.utils.sheet_to_json(ws, {defval:''});
+        // Normalizar headers a minúsculas
+        data = data.map(function(row){
+          var obj = {};
+          Object.keys(row).forEach(function(k){ obj[k.trim().toLowerCase()] = row[k]; });
+          return obj;
+        });
+      }
+
+      // Detectar columnas
+      function colIdx(arr, patterns) {
+        for (var i=0;i<arr.length;i++){
+          var h = arr[i].toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+          for (var j=0;j<patterns.length;j++){
+            if (h.indexOf(patterns[j])>=0) return arr[i];
+          }
+        }
+        return null;
+      }
+
+      var headers2 = data.length > 0 ? Object.keys(data[0]) : [];
+      var colRef    = colIdx(headers2, ['ref','codigo','reference','sku','referencia']);
+      var colLargo  = colIdx(headers2, ['largo','length','longitud','long']);
+      var colAncho  = colIdx(headers2, ['ancho','width','anch']);
+      var colAlto   = colIdx(headers2, ['alto','height','altura','alt']);
+      var colPeso   = colIdx(headers2, ['peso','weight','kg','pес']);
+      // Columna de volumen directo en ft³ (cuando el proveedor ya lo calculó)
+      var colVolFt3 = colIdx(headers2, ['volume','volumen','vol','ft3','ft³','cubic','cubicaje','cbm','cft']);
+
+      if (!colRef) {
+        showToast('No se encontró columna de Referencia en el archivo','error');
+        return;
+      }
+
+      var inv = typeof getInventory === 'function' ? getInventory() : {};
+      var pd = ptGetData();
+      _ptMedidasImport = [];
+      var sinMatch = 0;
+
+      data.forEach(function(row){
+        var ref = String(row[colRef]||'').trim().toUpperCase();
+        if (!ref) return;
+        var prod = PRODUCTS.find(function(p){ return p.r === ref; });
+        if (!prod) { sinMatch++; return; }
+
+        var largo = colLargo ? (parseFloat(row[colLargo])||0) : 0;
+        var ancho = colAncho ? (parseFloat(row[colAncho])||0) : 0;
+        var alto  = colAlto  ? (parseFloat(row[colAlto]) ||0) : 0;
+        var peso  = colPeso  ? (parseFloat(row[colPeso]) ||0) : 0;
+
+        // Volumen directo en ft³ — cuando el proveedor ya lo calculó
+        var volDirecto = colVolFt3 ? (parseFloat(row[colVolFt3])||0) : 0;
+
+        // Determinar el ft³ final:
+        // 1. Si hay largo+ancho+alto → calcular (más preciso)
+        // 2. Si hay volumen directo → usarlo tal cual
+        // 3. Si no hay nada → ignorar
+        var volFt3Calc = (largo && ancho && alto) ? ((largo*ancho*alto)/28316.85) : 0;
+        var volFt3Final = volFt3Calc ? volFt3Calc : volDirecto;
+        var volFt3Display = volFt3Final ? volFt3Final.toFixed(4) + ' ft³' : '—';
+        var fuenteVol = volFt3Calc ? 'calculado' : (volDirecto ? 'directo' : '');
+
+        // Solo incluir si hay al menos un valor útil
+        if (!largo && !ancho && !alto && !peso && !volDirecto) return;
+
+        var medAct = (pd[ref] && pd[ref].medidas) ? pd[ref].medidas : {};
+
+        _ptMedidasImport.push({
+          ref: ref,
+          d: prod.d,
+          largo: largo || medAct.largo || 0,
+          ancho: ancho || medAct.ancho || 0,
+          alto:  alto  || medAct.alto  || 0,
+          peso:  peso  || medAct.peso  || 0,
+          volDirecto: volDirecto || 0,
+          volFt3: volFt3Display,
+          fuenteVol: fuenteVol,
+          cambio: true
+        });
+      });
+
+      ptMedidasMostrarPreview(_ptMedidasImport, sinMatch, colLargo, colAncho, colAlto, colPeso, colVolFt3);
+
+    } catch(err) {
+      showToast('Error al leer el archivo: '+err.message, 'error');
+    }
+  };
+  if (file.name.endsWith('.csv')) {
+    reader.readAsText(file, 'UTF-8');
+  } else {
+    reader.readAsBinaryString(file);
+  }
+}
+window.ptMedidasProcesarArchivo = ptMedidasProcesarArchivo;
+
+function ptMedidasMostrarPreview(rows, sinMatch, cL, cA, cH, cP, cV) {
+  var prev = document.getElementById('pt-med-preview');
+  var inner = document.getElementById('pt-med-preview-inner');
+  if (!prev || !inner) return;
+
+  var html = '<div style="margin-bottom:10px;display:flex;gap:10px;flex-wrap:wrap;">' +
+    '<span style="background:#dcfce7;color:#15803d;border-radius:6px;padding:4px 10px;font-size:.72rem;font-weight:700;">✅ ' + rows.length + ' productos con medidas</span>' +
+    (sinMatch>0 ? '<span style="background:#fef9c3;color:#92400e;border-radius:6px;padding:4px 10px;font-size:.72rem;font-weight:700;">⚠ ' + sinMatch + ' referencias no encontradas</span>' : '') +
+    '<span style="background:#eff6ff;color:#1d4ed8;border-radius:6px;padding:4px 10px;font-size:.72rem;font-weight:700;">Columnas: ' +
+      [cL?'Largo':'', cA?'Ancho':'', cH?'Alto':'', cP?'Peso':'', cV?'Volumen ft³ directo':''].filter(Boolean).join(' · ') +
+    '</span>' +
+  '</div>';
+
+  if (rows.length === 0) {
+    html += '<div style="text-align:center;padding:20px;color:#94a3b8;">No se encontraron datos válidos para importar.</div>';
+    inner.innerHTML = html;
+    prev.style.display = 'block';
+    return;
+  }
+
+  html += '<div style="max-height:320px;overflow-y:auto;border-radius:8px;border:1px solid #e2e8f0;">' +
+    '<table style="width:100%;border-collapse:collapse;font-size:.72rem;">' +
+    '<thead><tr style="background:#1d4ed8;color:white;position:sticky;top:0;">' +
+      '<th style="padding:7px 10px;text-align:left;">Referencia</th>' +
+      '<th style="padding:7px 10px;text-align:left;">Descripción</th>' +
+      '<th style="padding:7px 10px;text-align:center;">Largo</th>' +
+      '<th style="padding:7px 10px;text-align:center;">Ancho</th>' +
+      '<th style="padding:7px 10px;text-align:center;">Alto</th>' +
+      '<th style="padding:7px 10px;text-align:center;">Peso</th>' +
+      '<th style="padding:7px 10px;text-align:center;">Vol. ft³</th>' +
+    '</tr></thead><tbody>';
+
+  rows.forEach(function(r, i){
+    var bg = i%2===0 ? '#fff' : '#f8f9ff';
+    var badge = r.fuenteVol==='directo' ? '<span style="background:#fef3c7;color:#92400e;border-radius:4px;padding:1px 5px;font-size:.6rem;font-weight:700;margin-left:4px;">directo</span>' : r.fuenteVol==='calculado' ? '<span style="background:#dcfce7;color:#15803d;border-radius:4px;padding:1px 5px;font-size:.6rem;font-weight:700;margin-left:4px;">calc.</span>' : '';
+    html += '<tr style="background:'+bg+';border-bottom:1px solid #f0f2f8;">' +
+      '<td style="padding:6px 10px;font-weight:700;color:#1d4ed8;">' + r.ref + '</td>' +
+      '<td style="padding:6px 10px;color:#1a2050;">' + (r.d||'').substring(0,35) + '</td>' +
+      '<td style="padding:6px 10px;text-align:center;">' + (r.largo||'—') + '</td>' +
+      '<td style="padding:6px 10px;text-align:center;">' + (r.ancho||'—') + '</td>' +
+      '<td style="padding:6px 10px;text-align:center;">' + (r.alto||'—') + '</td>' +
+      '<td style="padding:6px 10px;text-align:center;">' + (r.peso||'—') + '</td>' +
+      '<td style="padding:6px 10px;text-align:center;font-weight:700;color:#1d4ed8;">' + r.volFt3 + badge + '</td>' +
+    '</tr>';
+  });
+  html += '</tbody></table></div>';
+
+  inner.innerHTML = html;
+  prev.style.display = 'block';
+  document.getElementById('pt-med-confirm-btn').textContent = '✅ Confirmar e importar ' + rows.length + ' productos';
+}
+window.ptMedidasMostrarPreview = ptMedidasMostrarPreview;
+
+function ptMedidasConfirmar() {
+  if (!_ptMedidasImport || _ptMedidasImport.length === 0) return;
+  var pd = ptGetData();
+
+  _ptMedidasImport.forEach(function(r){
+    pd[r.ref] = pd[r.ref] || {};
+    pd[r.ref].medidas = {
+      largo: r.largo || 0,
+      ancho: r.ancho || 0,
+      alto:  r.alto  || 0,
+      peso:  r.peso  || 0,
+      volDirecto: r.volDirecto || 0,  // ft³ directo del proveedor
+    };
+  });
+
+  ptSaveData(pd);
+  if (typeof ptRender === 'function') ptRender();
+  if (typeof showToast === 'function') showToast('✅ Medidas de ' + _ptMedidasImport.length + ' productos importadas correctamente', 'success');
+  _ptMedidasImport = [];
+  var ov = document.getElementById('pt-medidas-overlay');
+  if (ov) ov.remove();
+}
+window.ptMedidasConfirmar = ptMedidasConfirmar;
+
+
+// ══════════════════════════════════════════════════════════════════
+// IMPORTAR DATOS MAESTRO — actualiza todos los campos de PT desde Excel
+// Campos: Referencia, Nombre, Marca, Depto, Costo, P.USD, P.BCV, P.TF,
+//         Actual(stock), Ordenada, Largo, Ancho, Alto, Peso, Volume/ft³
+// ══════════════════════════════════════════════════════════════════
+function ptImportarDatosMaestro() {
+  if (document.getElementById('pt-maestro-overlay')) return;
+
+  var ov = document.createElement('div');
+  ov.id = 'pt-maestro-overlay';
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.78);z-index:99999;display:flex;align-items:flex-start;justify-content:center;padding:20px;overflow-y:auto;';
+
+  ov.innerHTML =
+    '<div style="background:white;border-radius:16px;width:min(900px,100%);margin:auto;box-shadow:0 24px 64px rgba(0,0,0,.5);overflow:hidden;">' +
+      '<div style="background:linear-gradient(135deg,#7c3aed,#6d28d9);color:white;padding:16px 22px;display:flex;justify-content:space-between;align-items:center;">' +
+        '<div>' +
+          '<div style="font-family:Barlow Condensed,sans-serif;font-weight:900;font-size:1.2rem;letter-spacing:1px;">📥 IMPORTAR DATOS MAESTRO</div>' +
+          '<div style="font-size:.7rem;opacity:.75;margin-top:3px;">Actualiza masivamente: precios, stock, costos, medidas y volumen desde Excel</div>' +
+        '</div>' +
+        '<button onclick="document.getElementById(\'pt-maestro-overlay\').remove();" style="background:rgba(255,255,255,.15);border:none;color:white;border-radius:8px;padding:6px 14px;cursor:pointer;font-size:.85rem;">✕</button>' +
+      '</div>' +
+
+      // Instrucciones
+      '<div style="padding:14px 22px;background:#faf5ff;border-bottom:1px solid #e9d5ff;">' +
+        '<div style="font-size:.78rem;font-weight:700;color:#7c3aed;margin-bottom:8px;">📋 Columnas detectadas automáticamente:</div>' +
+        '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:4px;font-size:.7rem;color:#6d28d9;line-height:1.8;">' +
+          '<div><b>Referencia</b> — ref, sku, codigo, referencia</div>' +
+          '<div><b>Nombre</b> — nombre, name, descripcion, description</div>' +
+          '<div><b>Marca</b> — marca, brand</div>' +
+          '<div><b>Depto.</b> — depto, departamento, dept, category</div>' +
+          '<div><b>Costo $</b> — costo, cost, precio costo</div>' +
+          '<div><b>P. USD</b> — usd, precio usd, p.usd, price</div>' +
+          '<div><b>P. BCV</b> — bcv, precio bcv, p.bcv</div>' +
+          '<div><b>P. TF</b> — tf, tierra firme, p.tf</div>' +
+          '<div><b>Stock Actual</b> — actual, stock, existencia, qty, cantidad</div>' +
+          '<div><b>Ordenada</b> — ordenada, ordered, pedida</div>' +
+          '<div><b>Largo (cm)</b> — largo, length, longitud</div>' +
+          '<div><b>Ancho (cm)</b> — ancho, width</div>' +
+          '<div><b>Alto (cm)</b> — alto, height, altura</div>' +
+          '<div><b>Peso (kg)</b> — peso, weight</div>' +
+          '<div><b>Vol. ft³</b> — volume, volumen, vol, ft3, cubic</div>' +
+        '</div>' +
+        '<div style="margin-top:8px;font-size:.68rem;color:#94a3b8;">⚠ Solo se actualizan los campos que tengan columna en tu archivo. Los demás quedan intactos.</div>' +
+      '</div>' +
+
+      // Drop zone
+      '<div style="padding:20px 22px;">' +
+        '<div id="pt-maestro-dz" style="border:2px dashed #c4b5fd;border-radius:10px;padding:30px;text-align:center;cursor:pointer;background:#faf5ff;transition:all .2s;">' +
+          '<div style="font-size:2.5rem;margin-bottom:8px;">📊</div>' +
+          '<div style="font-weight:700;color:#7c3aed;font-size:.9rem;">Arrastra tu archivo Excel aquí</div>' +
+          '<div style="color:#94a3b8;font-size:.75rem;margin-top:4px;">o haz clic para seleccionar (.xlsx, .xls, .csv)</div>' +
+        '</div>' +
+        '<input type="file" id="pt-maestro-file" accept=".xlsx,.xls,.csv" style="display:none;">' +
+      '</div>' +
+
+      '<div id="pt-maestro-preview" style="padding:0 22px 20px;display:none;"></div>' +
+    '</div>';
+
+  document.body.appendChild(ov);
+  ov.onclick = function(e){ if(e.target===ov) ov.remove(); };
+
+  var dz   = document.getElementById('pt-maestro-dz');
+  var finp = document.getElementById('pt-maestro-file');
+
+  dz.onclick  = function(){ finp.click(); };
+  dz.ondragover = function(e){ e.preventDefault(); dz.style.background='#ede9fe'; dz.style.borderColor='#7c3aed'; };
+  dz.ondragleave= function(){ dz.style.background='#faf5ff'; dz.style.borderColor='#c4b5fd'; };
+  dz.ondrop   = function(e){ e.preventDefault(); dz.style.background='#faf5ff'; dz.style.borderColor='#c4b5fd'; if(e.dataTransfer.files[0]) ptMaestroProcesar(e.dataTransfer.files[0]); };
+  finp.onchange= function(){ if(this.files[0]) ptMaestroProcesar(this.files[0]); };
+}
+window.ptImportarDatosMaestro = ptImportarDatosMaestro;
+
+function ptMaestroProcesar(file) {
+  var reader = new FileReader();
+  reader.onload = function(e) {
+    try {
+      var data;
+      if (file.name.endsWith('.csv')) {
+        var lines = e.target.result.split('\n');
+        var hdr = lines[0].split(',').map(function(h){ return h.trim().replace(/^"|"$/g,''); });
+        data = lines.slice(1).filter(function(l){ return l.trim(); }).map(function(l){
+          var vals = l.split(',').map(function(v){ return v.trim().replace(/^"|"$/g,''); });
+          var obj = {};
+          hdr.forEach(function(h,i){ obj[h] = vals[i]||''; });
+          return obj;
+        });
+      } else {
+        var wb = XLSX.read(e.target.result, {type:'binary'});
+        var ws = wb.Sheets[wb.SheetNames[0]];
+        data = XLSX.utils.sheet_to_json(ws, {defval:''});
+      }
+
+      if (!data || !data.length) { if(typeof showToast==='function') showToast('Archivo vacío o sin datos','warning'); return; }
+
+      // Detección de columnas
+      function cIdx(patterns) {
+        var headers = Object.keys(data[0]);
+        for (var i=0;i<headers.length;i++) {
+          var h = headers[i].toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]/g,' ').trim();
+          for (var j=0;j<patterns.length;j++) {
+            if (h.indexOf(patterns[j]) >= 0) return headers[i];
+          }
+        }
+        return null;
+      }
+
+      var cols = {
+        ref:      cIdx(['ref','sku','codigo','referencia']),
+        nombre:   cIdx(['nombre','name','descripcion','description']),
+        marca:    cIdx(['marca','brand']),
+        depto:    cIdx(['depto','departamento','dept','category','categoria']),
+        costo:    cIdx(['costo','cost','precio costo']),
+        usd:      cIdx(['p usd','p. usd','precio usd','usd price','unit price','sale price']),
+        bcv:      cIdx(['p bcv','p. bcv','precio bcv','bcv']),
+        tf:       cIdx(['p tf','p. tf','tierra firme','tf']),
+        actual:   cIdx(['actual','stock','existencia','qty','cantidad','exist']),
+        ordenada: cIdx(['ordenada','ordered','pedida']),
+        largo:    cIdx(['largo','length','longitud']),
+        ancho:    cIdx(['ancho','width']),
+        alto:     cIdx(['alto','height','altura']),
+        peso:     cIdx(['peso','weight']),
+        vol:      cIdx(['volume','volumen','vol ','ft3','cubic','cbm','cft'])
+      };
+
+      if (!cols.ref) { if(typeof showToast==='function') showToast('No se encontró columna de Referencia','error'); return; }
+
+      var inv = typeof getInventory === 'function' ? getInventory() : {};
+      var pd  = ptGetData();
+      var rows = [];
+      var sinMatch = 0;
+
+      data.forEach(function(row) {
+        var ref = String(row[cols.ref]||'').trim().toUpperCase();
+        if (!ref) return;
+        var prod = PRODUCTS.find(function(p){ return p.r === ref; });
+        if (!prod) { sinMatch++; return; }
+
+        var item = { ref: ref, d: prod.d, br: prod.br, cambios: [] };
+
+        if (cols.nombre   && row[cols.nombre])   { item.nombre   = String(row[cols.nombre]).trim();            item.cambios.push('Nombre'); }
+        if (cols.marca    && row[cols.marca])     { item.marca    = String(row[cols.marca]).trim().toUpperCase(); item.cambios.push('Marca'); }
+        if (cols.depto    && row[cols.depto])     { item.depto    = String(row[cols.depto]).trim();             item.cambios.push('Depto'); }
+        if (cols.costo    && row[cols.costo]!=='') { item.costo   = parseFloat(row[cols.costo])||0;            item.cambios.push('Costo'); }
+        if (cols.usd      && row[cols.usd]!=='')  { item.usd     = parseFloat(row[cols.usd])||0;              item.cambios.push('P.USD'); }
+        if (cols.bcv      && row[cols.bcv]!=='')  { item.bcv     = parseFloat(row[cols.bcv])||0;              item.cambios.push('P.BCV'); }
+        if (cols.tf       && row[cols.tf]!=='')   { item.tf      = parseFloat(row[cols.tf])||0;               item.cambios.push('P.TF'); }
+        if (cols.actual   && row[cols.actual]!==''){ item.actual  = parseInt(row[cols.actual])||0;             item.cambios.push('Stock'); }
+        if (cols.ordenada && row[cols.ordenada]!==''){ item.ordenada = parseInt(row[cols.ordenada])||0;        item.cambios.push('Ordenada'); }
+
+        var l = cols.largo  ? (parseFloat(row[cols.largo])||0)  : 0;
+        var a = cols.ancho  ? (parseFloat(row[cols.ancho])||0)  : 0;
+        var h = cols.alto   ? (parseFloat(row[cols.alto])||0)   : 0;
+        var p = cols.peso   ? (parseFloat(row[cols.peso])||0)   : 0;
+        var v = cols.vol    ? (parseFloat(row[cols.vol])||0)    : 0;
+
+        if (l || a || h || p) {
+          item.largo = l; item.ancho = a; item.alto = h; item.peso = p;
+          item.cambios.push('Medidas');
+        }
+        if (v && !l && !a && !h) {
+          item.volDirecto = v;
+          item.cambios.push('Vol.ft³');
+        }
+
+        if (item.cambios.length > 0) rows.push(item);
+      });
+
+      ptMaestroMostrarPreview(rows, sinMatch, cols);
+
+    } catch(err) {
+      if(typeof showToast==='function') showToast('Error al leer el archivo: '+err.message,'error');
+    }
+  };
+  if (file.name.endsWith('.csv')) reader.readAsText(file,'UTF-8');
+  else reader.readAsBinaryString(file);
+}
+window.ptMaestroProcesar = ptMaestroProcesar;
+
+function ptMaestroMostrarPreview(rows, sinMatch, cols) {
+  var prev = document.getElementById('pt-maestro-preview');
+  if (!prev) return;
+  prev.style.display = 'block';
+
+  var colsDetectados = Object.entries(cols).filter(function(e){ return e[1]; }).map(function(e){ return e[0]; });
+
+  if (!rows.length) {
+    prev.innerHTML = '<div style="background:#fef2f2;border:1px solid #fca5a5;border-radius:8px;padding:12px;color:#dc2626;font-size:.8rem;">No se encontraron referencias válidas. Verifica que la columna Referencia coincida con las referencias del sistema.</div>';
+    return;
+  }
+
+  var html = '<div style="background:#f3f4f6;border-radius:8px;padding:10px 14px;margin-bottom:10px;font-size:.75rem;color:#374151;">' +
+    '✅ <b>' + rows.length + ' productos</b> listos para actualizar' +
+    (sinMatch > 0 ? ' · <span style="color:#d97706;">⚠ ' + sinMatch + ' referencias no encontradas</span>' : '') +
+    ' · Columnas: <b>' + colsDetectados.join(', ') + '</b>' +
+    '</div>' +
+    '<div style="max-height:260px;overflow-y:auto;border:1px solid #e5e7eb;border-radius:8px;margin-bottom:14px;">' +
+    '<table style="width:100%;border-collapse:collapse;font-size:.72rem;">' +
+    '<thead><tr style="background:#7c3aed;color:white;position:sticky;top:0;">' +
+    '<th style="padding:7px 10px;text-align:left;">Referencia</th>' +
+    '<th style="padding:7px 10px;text-align:left;">Descripción</th>' +
+    '<th style="padding:7px 10px;text-align:center;">Campos a actualizar</th>' +
+    '</tr></thead><tbody>';
+
+  rows.forEach(function(r, i) {
+    var bg = i%2===0?'white':'#faf5ff';
+    var volStr = '';
+    if (r.largo && r.ancho && r.alto) {
+      volStr = ' · ' + ((r.largo*r.ancho*r.alto)/28316.85).toFixed(4) + ' ft³';
+    } else if (r.volDirecto) {
+      volStr = ' · ' + r.volDirecto.toFixed(4) + ' ft³';
+    }
+    html += '<tr style="background:' + bg + ';border-bottom:1px solid #f3f4f6;">' +
+      '<td style="padding:5px 10px;font-weight:700;color:#7c3aed;">' + r.ref + '</td>' +
+      '<td style="padding:5px 10px;color:#374151;">' + r.d + '</td>' +
+      '<td style="padding:5px 10px;text-align:center;">' +
+        r.cambios.map(function(t){ return '<span style="background:#ede9fe;color:#6d28d9;border-radius:4px;padding:1px 6px;font-size:.65rem;font-weight:700;margin:1px;">' + t + '</span>'; }).join(' ') +
+        '<span style="font-size:.62rem;color:#94a3b8;">' + volStr + '</span>' +
+      '</td>' +
+    '</tr>';
+  });
+
+  html += '</tbody></table></div>' +
+    '<div style="display:flex;justify-content:flex-end;gap:8px;">' +
+      '<button onclick="document.getElementById(\'pt-maestro-overlay\').remove();" style="background:#f3f4f6;color:#374151;border:none;border-radius:8px;padding:8px 18px;cursor:pointer;font-weight:700;font-size:.8rem;">Cancelar</button>' +
+      '<button onclick="ptMaestroConfirmar();" style="background:linear-gradient(135deg,#7c3aed,#6d28d9);color:white;border:none;border-radius:8px;padding:8px 22px;cursor:pointer;font-weight:800;font-size:.82rem;">✅ Confirmar e Importar</button>' +
+    '</div>';
+
+  prev.innerHTML = html;
+  window._ptMaestroRows = rows;
+}
+window.ptMaestroMostrarPreview = ptMaestroMostrarPreview;
+
+function ptMaestroConfirmar() {
+  var rows = window._ptMaestroRows || [];
+  if (!rows.length) return;
+
+  var pd  = ptGetData();
+  var inv = typeof getInventory === 'function' ? getInventory() : {};
+  var invActual = JSON.parse(JSON.stringify(inv));
+  var updatedCount = 0;
+
+  rows.forEach(function(r) {
+    pd[r.ref] = pd[r.ref] || {};
+
+    if (r.nombre   !== undefined) pd[r.ref].nombreCorto = r.nombre;
+    if (r.depto    !== undefined) pd[r.ref].dept        = r.depto;
+    if (r.costo    !== undefined) pd[r.ref].costo       = r.costo;
+    if (r.ordenada !== undefined) pd[r.ref].exOrdenada  = r.ordenada;
+
+    if (r.largo !== undefined || r.ancho !== undefined || r.alto !== undefined || r.peso !== undefined) {
+      pd[r.ref].medidas = pd[r.ref].medidas || {};
+      if (r.largo) pd[r.ref].medidas.largo = r.largo;
+      if (r.ancho) pd[r.ref].medidas.ancho = r.ancho;
+      if (r.alto)  pd[r.ref].medidas.alto  = r.alto;
+      if (r.peso)  pd[r.ref].medidas.peso  = r.peso;
+    }
+    if (r.volDirecto) {
+      pd[r.ref].medidas = pd[r.ref].medidas || {};
+      pd[r.ref].medidas.volDirecto = r.volDirecto;
+    }
+
+    // Precios — actualizar en PRODUCTS
+    var prod = PRODUCTS.find(function(p){ return p.r === r.ref; });
+    if (prod) {
+      if (r.usd  !== undefined) prod.u  = r.usd;
+      if (r.bcv  !== undefined) prod.bv = r.bcv;
+      if (r.tf   !== undefined) prod.t  = r.tf;
+      if (r.marca !== undefined) prod.br = r.marca;
+    }
+
+    // Stock actual — actualizar inventario
+    if (r.actual !== undefined) {
+      invActual[r.ref] = r.actual;
+    }
+
+    updatedCount++;
+  });
+
+  // Guardar ptData
+  ptSaveData(pd);
+
+  // Guardar inventario si hubo cambios de stock
+  if (rows.some(function(r){ return r.actual !== undefined; })) {
+    if (typeof saveInventory === 'function') saveInventory(invActual);
+    else localStorage.setItem('farmers_inventory', JSON.stringify(invActual));
+  }
+
+  // Cerrar modal y refrescar tabla
+  var o = document.getElementById('pt-maestro-overlay');
+  if (o) o.remove();
+
+  if (typeof ptRender === 'function') ptRender();
+  if (typeof showToast === 'function') showToast('✅ ' + updatedCount + ' productos actualizados correctamente', 'success');
+}
+window.ptMaestroConfirmar = ptMaestroConfirmar;
+
 window.ptRender = ptRender;
 
 // ── Ficha de Producto (modal) ────────────────────────────────────────────────
