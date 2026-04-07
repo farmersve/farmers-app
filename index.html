@@ -10237,8 +10237,12 @@ function _catDownloadPDFWithImgs(_prodImgsLocal) {
         if (_refStockFilters.has('LOW') && st > 0 && st <= 10) return true; // Bajo stock: 1-10
         if (_refStockFilters.has('OUT') && st === 0)           return true; // Agotados: 0
         if (_refStockFilters.has('ORD')) {
-          var ptd = {}; try{ ptd=JSON.parse(localStorage.getItem('farmers_pt_data')||'{}'); }catch(e2){}
-          if (!!(ptd[p.r] && ptd[p.r].exOrdenada > 0)) return true;
+          // Usar variable global ptData (RAM) para máxima frescura, con fallback a localStorage
+          var _ptdOrd = window.ptData || {};
+          if (!Object.keys(_ptdOrd).length) {
+            try { _ptdOrd = JSON.parse(localStorage.getItem('farmers_pt_data')||'{}'); } catch(e2){}
+          }
+          if (!!((_ptdOrd[p.r] && _ptdOrd[p.r].exOrdenada > 0))) return true;
         }
         return false;
       });
@@ -11223,11 +11227,15 @@ function invSaveAll(){
 // Storage para datos extendidos de productos
 var PT_STORAGE_KEY = 'farmers_pt_data';
 
+// Inicializar window.ptData al arranque para que el filtro ORD funcione sin delays
+try { window.ptData = JSON.parse(localStorage.getItem(PT_STORAGE_KEY) || '{}'); } catch(e) { window.ptData = {}; }
+
 function ptGetData() {
   try { return JSON.parse(localStorage.getItem(PT_STORAGE_KEY) || '{}'); } catch(e) { return {}; }
 }
 function ptSaveData(data) {
   localStorage.setItem(PT_STORAGE_KEY, JSON.stringify(data));
+  window.ptData = data; // mantener RAM sincronizada
   if (window.fbSavePT) window.fbSavePT(data);
 }
 
@@ -12829,6 +12837,7 @@ function ptResetOrdenadaProcess(file) {
 
       // Guardar
       localStorage.setItem('farmers_pt_data', JSON.stringify(ptData));
+      window.ptData = ptData; // sincronizar RAM para filtro ORD
       if (window.fbSavePT) {
         try { window.fbSavePT(ptData); } catch(e3) {}
       }
