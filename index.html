@@ -15900,6 +15900,7 @@ window.confirmUploadImages=async function(){
     <span style="font-size:.65rem;color:#94a3b8;">ℹ️ Distribución proporcional · floor(stock × pide / total) · sobrante descartado · stock del sistema</span>
     <div style="display:flex;gap:8px;">
      <button onclick="msExportarExcel()" style="background:linear-gradient(135deg,#16a34a,#166534);color:white;border:none;border-radius:6px;padding:7px 18px;cursor:pointer;font-weight:700;font-size:.78rem;">💾 Exportar Excel</button>
+     <button onclick="msExportarPDF()" style="background:linear-gradient(135deg,#dc2626,#991b1b);color:white;border:none;border-radius:6px;padding:7px 18px;cursor:pointer;font-weight:700;font-size:.78rem;">📄 Exportar PDF</button>
      <button id="ms-btn-emitir" onclick="msEmitirPedido()" style="background:linear-gradient(135deg,#1a2050,#2d3a8c);color:white;border:none;border-radius:6px;padding:7px 18px;cursor:pointer;font-weight:700;font-size:.78rem;">📋 Emitir Pedido</button>
      <button onclick="msNuevoPedido()" style="background:white;border:2px solid #1a2050;color:#1a2050;border-radius:6px;padding:7px 16px;cursor:pointer;font-weight:700;font-size:.78rem;">↺ Nuevo Pedido</button>
     </div>
@@ -16243,9 +16244,9 @@ function msCalcularDistribucion(productos) {
 function msGetPrecio(ref) {
   var p = PRODUCTS.find(function(x){ return x.r===ref; });
   if(!p) return 0;
-  return parseFloat((MS.moneda==='USD'?p.u:MS.moneda==='BCV'?p.bv:p.t)||0);
+  return parseFloat(p.u||0);
 }
-function msCur() { return MS.moneda==='USD'?'$':'Bs'; }
+function msCur() { return '$'; }
 function msFmt(n) {
   if(!n||isNaN(n)||n===0) return '—';
   return n.toLocaleString('es-VE',{minimumFractionDigits:2,maximumFractionDigits:2});
@@ -16383,7 +16384,7 @@ function msRenderTbody(filas) {
   }
 
   var cur=msCur();
-  var hdrAcc=MS.moneda==='USD'?'#14b8a6':MS.moneda==='BCV'?'#f59e0b':'#8b5cf6';
+  var hdrAcc='#14b8a6';
   var bdr='border-right:1px solid #f0f4f8;';
   var bdr2='border-right:2px solid #e2e8f0;';
   var td=function(content,style){ return '<td style="padding:6px 10px;border-bottom:1px solid #f0f4f8;vertical-align:middle;'+style+'">'+content+'</td>'; };
@@ -16472,8 +16473,8 @@ function msRenderTfoot() {
 function msRenderTotalesBar() {
   var bar=document.getElementById('ms-totales-bar'); if(!bar) return;
   var cur=msCur(), grand=0;
-  var acc=MS.moneda==='USD'?'#14b8a6':MS.moneda==='BCV'?'#f59e0b':'#8b5cf6';
-  var html='<span style="font-size:.6rem;font-weight:700;color:#475569;letter-spacing:1.2px;text-transform:uppercase;flex-shrink:0;align-self:center;">'+MS.moneda+'&nbsp;/&nbsp;sucursal</span>';
+  var acc='#14b8a6';
+  var html='<span style="font-size:.6rem;font-weight:700;color:#475569;letter-spacing:1.2px;text-transform:uppercase;flex-shrink:0;align-self:center;">USD&nbsp;/&nbsp;sucursal</span>';
   MS.sucursales.forEach(function(s){
     var t=0; MS.data.forEach(function(p){ t+=msGetPrecio(p.r||p.ref)*(p.dist[s]||0); });
     grand+=t;
@@ -16630,6 +16631,155 @@ window.msExportarExcel = function() {
 };
 
 // ── Obtener precio por moneda explícita ───────────
+
+// ── Exportar PDF ──────────────────────────────────
+window.msExportarPDF = function() {
+  if(!MS.data.length){ showToast('No hay datos para exportar','warn'); return; }
+  var tasa = getTasaHoy()||0;
+  var tfSpr = (typeof TF_SPREAD!=='undefined')?TF_SPREAD:0;
+  var tasaTF = tasa>0?tasa*(1+tfSpr/100):0;
+  var numP = MS.numPedido || ('MS-'+new Date().toISOString().slice(0,10));
+  var fecha = MS.fechaEmision || new Date().toLocaleDateString('es-VE',{day:'2-digit',month:'2-digit',year:'numeric'});
+  var logoB64 = typeof FARMERS_LOGO_B64!=='undefined'?FARMERS_LOGO_B64:'';
+  var tasaBCVstr = tasa>0?tasa.toFixed(2)+' Bs/$':'—';
+  var tasaTFstr  = tasaTF>0?tasaTF.toFixed(2)+' Bs/$':'—';
+
+  // Totales globales
+  var grandUSD=0;
+  MS.data.forEach(function(p){
+    var pu=parseFloat(msGetPrecioByMoneda(p.ref,'USD'))||0;
+    MS.sucursales.forEach(function(s){ grandUSD+=pu*(p.dist[s]||0); });
+  });
+
+  // ── HOJA RESUMEN ──
+  var resumenFilas = MS.data.map(function(p){
+    var pu=parseFloat(msGetPrecioByMoneda(p.ref,'USD'))||0;
+    var td=0; MS.sucursales.forEach(function(s){ td+=p.dist[s]||0; });
+    var vusd=pu*td;
+    var sucCols = MS.sucursales.map(function(s){
+      var d=p.dist[s]||0;
+      return '<td style="text-align:center;padding:4px 6px;border:1px solid #e2e8f0;font-size:.66rem;">'+
+             (p.pedidos[s]||0)+'</td>'+
+             '<td style="text-align:center;padding:4px 6px;border:1px solid #e2e8f0;font-size:.66rem;font-weight:700;color:'+(d>0?'#16a34a':'#94a3b8')+';">'+
+             (d||'—')+'</td>';
+    }).join('');
+    return '<tr style="background:'+(MS.data.indexOf(p)%2===0?'#fff':'#f8fafc')+'">'
+      +'<td style="padding:4px 6px;border:1px solid #e2e8f0;font-family:monospace;font-size:.66rem;font-weight:700;color:#1a2050;">'+p.ref+'</td>'
+      +'<td style="padding:4px 6px;border:1px solid #e2e8f0;font-size:.66rem;max-width:160px;">'+p.desc+'</td>'
+      +'<td style="text-align:center;padding:4px 6px;border:1px solid #e2e8f0;font-size:.66rem;">'+p.stock+'</td>'
+      +'<td style="text-align:right;padding:4px 6px;border:1px solid #e2e8f0;font-size:.66rem;">$'+pu.toFixed(4)+'</td>'
+      +'<td style="text-align:center;padding:4px 6px;border:1px solid #e2e8f0;font-size:.66rem;">'+p.totalPedido+'</td>'
+      +'<td style="text-align:center;padding:4px 6px;border:1px solid #e2e8f0;font-size:.66rem;font-weight:700;">'+td+'</td>'
+      +'<td style="text-align:right;padding:4px 6px;border:1px solid #e2e8f0;font-size:.66rem;font-weight:700;color:#16a34a;">$'+vusd.toFixed(2)+'</td>'
+      +'<td style="text-align:center;padding:4px 6px;border:1px solid #e2e8f0;font-size:.62rem;"><span style="background:'+(p.estado==='completo'?'#dcfce7':p.estado==='parcial'?'#fef9c3':'#fee2e2')+';color:'+(p.estado==='completo'?'#16a34a':p.estado==='parcial'?'#d97706':'#dc2626')+';padding:2px 5px;border-radius:4px;">'+p.estado.toUpperCase()+'</span></td>'
+      +sucCols
+      +'</tr>';
+  }).join('');
+
+  var sucHeaders = MS.sucursales.map(function(s){
+    return '<th colspan="2" style="padding:5px 6px;text-align:center;background:#334155;font-size:.6rem;">'+s+'</th>';
+  }).join('');
+  var sucSubHeaders = MS.sucursales.map(function(){
+    return '<th style="padding:4px 6px;text-align:center;background:#475569;font-size:.58rem;">PIDE</th>'+
+           '<th style="padding:4px 6px;text-align:center;background:#475569;font-size:.58rem;">DESP</th>';
+  }).join('');
+
+  // ── HOJAS POR SUCURSAL ──
+  var seccionesSuc = MS.sucursales.map(function(suc){
+    var tvUSD=0;
+    var filas = MS.data.filter(function(p){ return (p.pedidos[suc]||0)>0||(p.dist[suc]||0)>0; })
+    .map(function(p,i){
+      var pu=parseFloat(msGetPrecioByMoneda(p.ref,'USD'))||0;
+      var pide=p.pedidos[suc]||0, desp=p.dist[suc]||0;
+      var vu=pu*desp; tvUSD+=vu;
+      return '<tr style="background:'+(i%2===0?'#fff':'#f8fafc')+'">'
+        +'<td style="padding:4px 8px;border:1px solid #e2e8f0;font-family:monospace;font-size:.68rem;font-weight:700;color:#1a2050;">'+p.ref+'</td>'
+        +'<td style="padding:4px 8px;border:1px solid #e2e8f0;font-size:.68rem;">'+p.desc+'</td>'
+        +'<td style="text-align:center;padding:4px 8px;border:1px solid #e2e8f0;font-size:.68rem;">'+p.stock+'</td>'
+        +'<td style="text-align:center;padding:4px 8px;border:1px solid #e2e8f0;font-size:.68rem;font-weight:700;color:#1a2050;">'+pide+'</td>'
+        +'<td style="text-align:center;padding:4px 8px;border:1px solid #e2e8f0;font-size:.68rem;font-weight:700;color:'+(desp>=pide?'#16a34a':desp>0?'#d97706':'#dc2626')+';">'+desp+'</td>'
+        +'<td style="text-align:center;padding:4px 8px;border:1px solid #e2e8f0;font-size:.68rem;color:#64748b;">'+(pide-desp||'—')+'</td>'
+        +'<td style="text-align:right;padding:4px 8px;border:1px solid #e2e8f0;font-size:.68rem;">$'+pu.toFixed(4)+'</td>'
+        +'<td style="text-align:right;padding:4px 8px;border:1px solid #e2e8f0;font-size:.68rem;font-weight:700;color:#16a34a;">$'+vu.toFixed(2)+'</td>'
+        +'</tr>';
+    }).join('');
+    if(!filas) return '';
+    return '<div style="page-break-before:always;padding:10px 0;">'
+      +'<div style="background:#1a2050;color:white;padding:8px 14px;border-radius:6px 6px 0 0;font-weight:800;font-size:.85rem;">SUCURSAL: '+suc+'</div>'
+      +'<table style="width:100%;border-collapse:collapse;">'
+      +'<thead><tr style="background:#1a2050;color:white;">'
+      +'<th style="padding:5px 8px;text-align:left;font-size:.65rem;">REF</th>'
+      +'<th style="padding:5px 8px;text-align:left;font-size:.65rem;">DESCRIPCIÓN</th>'
+      +'<th style="padding:5px 8px;text-align:center;font-size:.65rem;">STOCK</th>'
+      +'<th style="padding:5px 8px;text-align:center;font-size:.65rem;">PIDE</th>'
+      +'<th style="padding:5px 8px;text-align:center;font-size:.65rem;">DESP</th>'
+      +'<th style="padding:5px 8px;text-align:center;font-size:.65rem;">DIFER</th>'
+      +'<th style="padding:5px 8px;text-align:right;font-size:.65rem;">P.USD</th>'
+      +'<th style="padding:5px 8px;text-align:right;font-size:.65rem;">VENTA USD</th>'
+      +'</tr></thead><tbody>'+filas+'</tbody>'
+      +'<tfoot><tr style="background:#0f172a;color:white;">'
+      +'<td colspan="7" style="padding:6px 8px;text-align:right;font-size:.7rem;font-weight:700;">TOTAL VENTA USD:</td>'
+      +'<td style="padding:6px 8px;text-align:right;font-size:.8rem;font-weight:900;color:#4ade80;">$'+tvUSD.toFixed(2)+'</td>'
+      +'</tr></tfoot></table></div>';
+  }).join('');
+
+  var html = '<!DOCTYPE html><html><head><meta charset="UTF-8">'
+    +'<style>'
+    +'@page{size:A4 landscape;margin:8mm 8mm;}'
+    +'body{font-family:Arial,sans-serif;margin:0;padding:0;}'
+    +'print-color-adjust:exact;-webkit-print-color-adjust:exact;'
+    +'</style></head><body>'
+    +'<div style="padding:8px;">'
+    // Header
+    +'<div style="display:flex;justify-content:space-between;align-items:center;border-bottom:3px solid #1a2050;padding-bottom:8px;margin-bottom:10px;">'
+    +(logoB64?'<img src="'+logoB64+'" style="height:48px;border-radius:6px;">':'<div style="font-weight:900;font-size:1.2rem;color:#1a2050;">FARMERS C.A.</div>')
+    +'<div style="text-align:center;">'
+    +'<div style="font-size:1rem;font-weight:900;color:#1a2050;">PEDIDO MULTI-SUCURSAL</div>'
+    +'<div style="font-size:.75rem;color:#64748b;">N° '+numP+' · '+fecha+'</div>'
+    +'</div>'
+    +'<div style="text-align:right;font-size:.72rem;color:#64748b;">'
+    +'<div>Sucursales: '+MS.sucursales.length+'</div>'
+    +'<div>BCV: '+tasaBCVstr+'</div>'
+    +'<div>TF: '+tasaTFstr+'</div>'
+    +'</div></div>'
+    // Tabla resumen
+    +'<table style="width:100%;border-collapse:collapse;margin-bottom:8px;">'
+    +'<thead>'
+    +'<tr style="background:#1a2050;color:white;">'
+    +'<th style="padding:5px 6px;text-align:left;font-size:.65rem;">REF</th>'
+    +'<th style="padding:5px 6px;text-align:left;font-size:.65rem;">DESCRIPCIÓN</th>'
+    +'<th style="padding:5px 6px;text-align:center;font-size:.65rem;">STOCK</th>'
+    +'<th style="padding:5px 6px;text-align:right;font-size:.65rem;">P.USD</th>'
+    +'<th style="padding:5px 6px;text-align:center;font-size:.65rem;">T.PEDIDO</th>'
+    +'<th style="padding:5px 6px;text-align:center;font-size:.65rem;">T.DESP</th>'
+    +'<th style="padding:5px 6px;text-align:right;font-size:.65rem;">VENTA USD</th>'
+    +'<th style="padding:5px 6px;text-align:center;font-size:.65rem;">ESTADO</th>'
+    +sucHeaders
+    +'</tr>'
+    +'<tr style="background:#334155;color:#e2e8f0;">'
+    +'<th colspan="8"></th>'+sucSubHeaders
+    +'</tr>'
+    +'</thead><tbody>'+resumenFilas+'</tbody>'
+    +'<tfoot><tr style="background:#0f172a;color:white;">'
+    +'<td colspan="6" style="padding:6px 8px;text-align:right;font-weight:800;font-size:.72rem;">TOTAL GENERAL USD:</td>'
+    +'<td style="padding:6px 8px;text-align:right;font-weight:900;font-size:.85rem;color:#4ade80;">$'+grandUSD.toFixed(2)+'</td>'
+    +'<td colspan="'+(MS.sucursales.length*2+1)+'"></td>'
+    +'</tr></tfoot></table>'
+    // Secciones por sucursal
+    +seccionesSuc
+    // Botones
+    +'<div style="text-align:center;margin-top:16px;">'
+    +'<button onclick="window.print()" style="background:#1a2050;color:white;border:none;border-radius:8px;padding:10px 28px;cursor:pointer;font-size:.9rem;font-weight:700;margin-right:10px;">🖨️ Imprimir / PDF</button>'
+    +'<button onclick="window.close()" style="background:#f1f5f9;color:#475569;border:1px solid #cbd5e1;border-radius:8px;padding:10px 20px;cursor:pointer;font-size:.9rem;">Cerrar</button>'
+    +'</div>'
+    +'</div></body></html>';
+
+  var w = window.open('','_blank','width=1100,height=900');
+  if(w){ w.document.write(html); w.document.close(); }
+  else showToast('Permite ventanas emergentes para el PDF','warn');
+  showToast('📄 PDF generado','success');
+};
+
 function msGetPrecioByMoneda(ref, moneda) {
   var p = PRODUCTS.find(function(x){ return x.r===ref; });
   if(!p) return 0;
