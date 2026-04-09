@@ -15925,10 +15925,7 @@ var MS = {
   data: [],        // [{ref, desc, stock, pedidos:{SUC:qty,...}, dist:{SUC:qty,...}, estado, enSistema}]
   sucursales: [],  // nombres de sucursales
   colMap: {},      // mapeado de columnas
-  moneda: 'USD',   // moneda activa: USD | BCV | TF
-  fase: 'borrador',// borrador | emitido | confirmado
-  numPedido: null, // número de pedido al emitir
-  fechaEmision: null
+  moneda: 'USD'    // moneda activa: USD | BCV | TF
 };
 
 window.openMultiSucursal = function() {
@@ -16244,9 +16241,9 @@ function msCalcularDistribucion(productos) {
 function msGetPrecio(ref) {
   var p = PRODUCTS.find(function(x){ return x.r===ref; });
   if(!p) return 0;
-  return parseFloat((MS.moneda==='BCV'?p.bv:MS.moneda==='TF'?p.t:p.u)||0);
+  return parseFloat((MS.moneda==='USD'?p.u:MS.moneda==='BCV'?p.bv:p.t)||0);
 }
-function msCur() { return '$'; }
+function msCur() { return MS.moneda==='USD'?'$':'Bs'; }
 function msFmt(n) {
   if(!n||isNaN(n)||n===0) return '—';
   return n.toLocaleString('es-VE',{minimumFractionDigits:2,maximumFractionDigits:2});
@@ -16384,7 +16381,7 @@ function msRenderTbody(filas) {
   }
 
   var cur=msCur();
-  var hdrAcc='#14b8a6';
+  var hdrAcc=MS.moneda==='USD'?'#14b8a6':MS.moneda==='BCV'?'#f59e0b':'#8b5cf6';
   var bdr='border-right:1px solid #f0f4f8;';
   var bdr2='border-right:2px solid #e2e8f0;';
   var td=function(content,style){ return '<td style="padding:6px 10px;border-bottom:1px solid #f0f4f8;vertical-align:middle;'+style+'">'+content+'</td>'; };
@@ -16473,8 +16470,8 @@ function msRenderTfoot() {
 function msRenderTotalesBar() {
   var bar=document.getElementById('ms-totales-bar'); if(!bar) return;
   var cur=msCur(), grand=0;
-  var acc='#14b8a6';
-  var html='<span style="font-size:.6rem;font-weight:700;color:#475569;letter-spacing:1.2px;text-transform:uppercase;flex-shrink:0;align-self:center;">'+MS.moneda+'&nbsp;$/&nbsp;sucursal</span>';
+  var acc=MS.moneda==='USD'?'#14b8a6':MS.moneda==='BCV'?'#f59e0b':'#8b5cf6';
+  var html='<span style="font-size:.6rem;font-weight:700;color:#475569;letter-spacing:1.2px;text-transform:uppercase;flex-shrink:0;align-self:center;">'+MS.moneda+'&nbsp;/&nbsp;sucursal</span>';
   MS.sucursales.forEach(function(s){
     var t=0; MS.data.forEach(function(p){ t+=msGetPrecio(p.r||p.ref)*(p.dist[s]||0); });
     grand+=t;
@@ -16494,597 +16491,154 @@ function msRenderTotalesBar() {
 // ── Filtrar ──────────────────────────────────────
 window.msFilterTabla = function() { msRenderTbody(msGetFiltradas()); };
 
-// ── Helpers Excel ─────────────────────────────────
-function msApplyExcelStyle(ws, rows) {
-  var NAVY='1B1F6B', ORANGE='F47B3E', GREEN='15803D', AMBER='92400E';
-  var range = XLSX.utils.decode_range(ws['!ref']);
-  // Calcular offset de filas de meta (cabecera empresa)
-  var dataStart = rows._dataStart || 0;
-  for(var R=range.s.r; R<=range.e.r; R++) {
-    for(var C=range.s.c; C<=range.e.c; C++) {
-      var addr = XLSX.utils.encode_cell({r:R,c:C});
-      if(!ws[addr]) ws[addr]={t:'z',v:''};
-      var cell = ws[addr];
-      cell.s = cell.s || {};
-      cell.s.border = {
-        top:{style:'thin',color:{rgb:'CCCCCC'}},
-        bottom:{style:'thin',color:{rgb:'CCCCCC'}},
-        left:{style:'thin',color:{rgb:'CCCCCC'}},
-        right:{style:'thin',color:{rgb:'CCCCCC'}}
-      };
-      cell.s.alignment = {horizontal:'center', vertical:'center', wrapText:true};
-    }
-  }
-}
-
 // ── Exportar Excel ───────────────────────────────
 window.msExportarExcel = function() {
   if(!MS.data.length) return;
-  var wb = XLSX.utils.book_new();
-  var tasa = getTasaHoy()||0;
-  var tfSpr = (typeof TF_SPREAD!=='undefined')?TF_SPREAD:0;
-  var tasaTF = tasa>0?tasa*(1+tfSpr/100):0;
-  var fecha = MS.fechaEmision||new Date().toLocaleDateString('es-VE',{day:'2-digit',month:'2-digit',year:'numeric'});
-  var numP = MS.numPedido||('MS-'+Date.now());
-  var tasaBCVstr = tasa>0?tasa.toFixed(2)+' Bs/$':'—';
-  var tasaTFstr  = tasaTF>0?tasaTF.toFixed(2)+' Bs/$':'—';
-  var monedaActiva = MS.moneda||'USD'; // USD | BCV | TF
+  var moneda=MS.moneda||'USD';
+  var monLabel=moneda==='BCV'?'BCV $':moneda==='TF'?'TF $':'USD $';
+  var fecha=MS.fechaEmision||new Date().toLocaleDateString('es-VE',{day:'2-digit',month:'2-digit',year:'numeric'});
+  var numP=MS.numPedido||('MS-'+Date.now());
+  var tasa=getTasaHoy()||0;
+  var tfSpr=(typeof TF_SPREAD!=='undefined')?TF_SPREAD:0;
+  var tasaTF=tasa>0?tasa*(1+tfSpr/100):0;
+  var tasaBCVstr=tasa>0?tasa.toFixed(2)+' Bs/$':'—';
+  var tasaTFstr=tasaTF>0?tasaTF.toFixed(2)+' Bs/$':'—';
+  var wb=XLSX.utils.book_new();
 
-  // Estilos reutilizables
-  var NAVY='1B1F6B', ORANGE='F47B3E', WHITE='FFFFFF', GRAY='F0F4FF', DKGRAY='334155';
-  var borderThin = {style:'thin',color:{rgb:'CCCCCC'}};
-  var borderAll  = {top:borderThin,bottom:borderThin,left:borderThin,right:borderThin};
-  var borderBold = {style:'medium',color:{rgb:NAVY}};
-  var borderHdr  = {top:{style:'medium',color:{rgb:NAVY}},bottom:{style:'medium',color:{rgb:NAVY}},left:borderThin,right:borderThin};
+  // ── Estilos ──
+  var NAVY='1B1F6B',WHITE='FFFFFF',LIGHT='EFF6FF',GRAY='F1F5F9',GREEN='F0FDF4',DGREEN='166534';
+  var bn=function(c){return {style:'thin',color:{rgb:c||'CCCCCC'}};};
+  var bd=function(c){return {top:bn(c),bottom:bn(c),left:bn(c),right:bn(c)};};
+  var sHdr={font:{bold:true,color:{rgb:WHITE},name:'Arial',sz:9},fill:{fgColor:{rgb:NAVY}},alignment:{horizontal:'center',vertical:'center',wrapText:true},border:bd('334155')};
+  var sMeta={font:{sz:8,name:'Arial'},fill:{fgColor:{rgb:GRAY}},alignment:{horizontal:'left',vertical:'center'},border:bd()};
+  var sTit={font:{bold:true,color:{rgb:WHITE},name:'Arial',sz:11},fill:{fgColor:{rgb:NAVY}},alignment:{horizontal:'left',vertical:'center'},border:bd('1B1F6B')};
+  var sTot={font:{bold:true,color:{rgb:'4ADE80'},name:'Arial',sz:10},fill:{fgColor:{rgb:'0F172A'}},alignment:{horizontal:'right',vertical:'center'},border:bd('334155'),numFmt:'"$"#,##0.00'};
+  var sNum=function(bg){return {font:{name:'Arial',sz:9},fill:{fgColor:{rgb:bg||WHITE}},alignment:{horizontal:'right',vertical:'center'},border:bd(),numFmt:'"$"#,##0.0000'};};
+  var sVta=function(bg){return {font:{bold:true,color:{rgb:DGREEN},name:'Arial',sz:9},fill:{fgColor:{rgb:bg||GREEN}},alignment:{horizontal:'right',vertical:'center'},border:bd(),numFmt:'"$"#,##0.00'};};
+  var sCtr=function(bg){return {font:{name:'Arial',sz:9},fill:{fgColor:{rgb:bg||WHITE}},alignment:{horizontal:'center',vertical:'center'},border:bd()};};
+  var sLeft=function(bg){return {font:{name:'Arial',sz:9},fill:{fgColor:{rgb:bg||WHITE}},alignment:{horizontal:'left',vertical:'center'},border:bd()};};
+  var sBold=function(bg){return {font:{bold:true,color:{rgb:NAVY},name:'Arial',sz:9},fill:{fgColor:{rgb:bg||WHITE}},alignment:{horizontal:'center',vertical:'center'},border:bd()};};
 
-  function cellStyle(bgHex, fgHex, bold, center, numFmt) {
-    return {
-      fill:{patternType:'solid',fgColor:{rgb:bgHex||WHITE}},
-      font:{bold:!!bold,color:{rgb:fgHex||'000000'},name:'Arial',sz:9},
-      alignment:{horizontal:center?'center':'left',vertical:'center',wrapText:false},
-      border:borderAll,
-      numFmt:numFmt||'General'
-    };
+  function sc(ws,r,c,v,s){
+    var a=XLSX.utils.encode_cell({r:r,c:c});
+    var t='s'; if(typeof v==='number')t='n'; else if(!v&&v!==0){t='z';v='';}
+    ws[a]={t:t,v:v,s:s};
+    var rng=XLSX.utils.decode_range(ws['!ref']||'A1:A1');
+    if(r<rng.s.r)rng.s.r=r; if(c<rng.s.c)rng.s.c=c;
+    if(r>rng.e.r)rng.e.r=r; if(c>rng.e.c)rng.e.c=c;
+    ws['!ref']=XLSX.utils.encode_range(rng);
   }
 
-  function applyStyles(ws, data, rowOffset) {
-    var range = XLSX.utils.decode_range(ws['!ref']);
-    var nRows = data.length;
-    // Fila 0 = título empresa
-    var r0 = rowOffset||0;
-    for(var R=range.s.r; R<=range.e.r; R++) {
-      for(var C=range.s.c; C<=range.e.c; C++) {
-        var addr = XLSX.utils.encode_cell({r:R,c:C});
-        if(!ws[addr]) { ws[addr]={t:'z',v:''}; }
-        var absR = R - range.s.r;
-        var isTitle  = absR===0;
-        var isMeta   = absR>=1 && absR<=2;
-        var isBlank  = absR===3;
-        var isHeader = absR===4;
-        var isTotal  = absR===(nRows-1+r0) || (ws[addr].v && String(ws[addr].v).indexOf('TOTAL')===0);
-        var isData   = !isTitle&&!isMeta&&!isBlank&&!isHeader&&!isTotal;
-        var isNumCol = C>=2;
-        var isEven   = absR%2===0;
-
-        if(isTitle) {
-          ws[addr].s={fill:{patternType:'solid',fgColor:{rgb:NAVY}},font:{bold:true,color:{rgb:WHITE},name:'Arial',sz:12},alignment:{horizontal:'center',vertical:'center'},border:borderAll};
-        } else if(isMeta) {
-          ws[addr].s={fill:{patternType:'solid',fgColor:{rgb:'EEF0FB'}},font:{bold:C===0||C===3||C===6||C===8,color:{rgb:NAVY},name:'Arial',sz:9},alignment:{horizontal:'left',vertical:'center'},border:borderAll};
-        } else if(isBlank) {
-          ws[addr].s={fill:{patternType:'solid',fgColor:{rgb:WHITE}},border:borderAll};
-        } else if(isHeader) {
-          ws[addr].s={fill:{patternType:'solid',fgColor:{rgb:NAVY}},font:{bold:true,color:{rgb:WHITE},name:'Arial',sz:9},alignment:{horizontal:'center',vertical:'center',wrapText:true},border:borderHdr};
-        } else if(isTotal) {
-          ws[addr].s={fill:{patternType:'solid',fgColor:{rgb:'0F172A'}},font:{bold:true,color:{rgb:'4ADE80'},name:'Arial',sz:10},alignment:{horizontal:C>=2?'right':'left',vertical:'center'},border:borderAll,numFmt:C>=6?'"$"#,##0.00':'General'};
-        } else if(isData) {
-          var bg = isEven?'FFFFFF':'F8FAFC';
-          var numFmt = C>=6&&C<=10?'"$"#,##0.00':'General';
-          ws[addr].s={fill:{patternType:'solid',fgColor:{rgb:bg}},font:{color:{rgb:C===0?NAVY:'374151'},name:'Arial',sz:9,bold:C===0},alignment:{horizontal:C>=2?'center':'left',vertical:'center'},border:borderAll,numFmt:numFmt};
+  function mkSheet(rows,cols,metaLen,totIdx,isSuc){
+    var ws={'!ref':'A1:A1'};
+    rows.forEach(function(row,R){
+      row.forEach(function(val,C){
+        var alt=(R-(metaLen))%2===0?WHITE:LIGHT;
+        var s;
+        if(R===0)s=sTit;
+        else if(R<metaLen-1)s=sMeta;
+        else if(R===metaLen-1)s={font:{sz:6},fill:{fgColor:{rgb:WHITE}},border:{}};
+        else if(R===metaLen)s=sHdr;
+        else if(R===totIdx)s=sTot;
+        else if(isSuc){
+          if(C===0)s=sBold(alt);
+          else if(C===1)s=sLeft(alt);
+          else if(C>=2&&C<=5)s=sCtr(alt);
+          else if(C>=6&&C<=8)s=sNum(alt);
+          else s=sVta(alt);
+        } else {
+          if(C===0)s=sBold(alt);
+          else if(C===1)s=sLeft(alt);
+          else if(C===2||C===6||C===7)s=sCtr(alt);
+          else if(C>=3&&C<=5)s=sNum(alt);
+          else if(C>=8&&C<=10)s=sVta(alt);
+          else s=sCtr(alt);
         }
-      }
-    }
+        sc(ws,R,C,val,s);
+      });
+    });
+    ws['!cols']=cols;
+    return ws;
   }
 
-  // ── HOJA RESUMEN (moneda activa) ──────────────
-  var symb = '$'; // siempre $
-  var monLabel = monedaActiva+' '+symb;
+  // Precios
+  function pu(ref){return parseFloat(msGetPrecioByMoneda(ref,'USD'))||0;}
+  function pb(ref){return parseFloat(msGetPrecioByMoneda(ref,'BCV'))||0;}
+  function pt(ref){return parseFloat(msGetPrecioByMoneda(ref,'TF'))||0;}
+  function pm(ref){return moneda==='BCV'?pb(ref):moneda==='TF'?pt(ref):pu(ref);}
 
-  var metaRows=[
-    [' FARMERS C.A. — PEDIDO MULTI-SUCURSAL ('+monedaActiva+')'],
-    ['N° Pedido:',numP,'Fecha:',fecha,'Tasa BCV:',tasaBCVstr,'Tasa TF:',tasaTFstr],
+  // ── HOJA RESUMEN ──
+  var meta=[
+    [' FARMERS C.A. — PEDIDO MULTI-SUCURSAL — '+monLabel],
+    ['N° Pedido:',numP,'Fecha:',fecha,'Moneda:',monLabel,'Tasa BCV:',tasaBCVstr,'Tasa TF:',tasaTFstr],
     ['Sucursales:',MS.sucursales.join(' | ')],
     []
   ];
-
-  var hRes=['REFERENCIA','DESCRIPCIÓN','STOCK',
-            'P.'+monedaActiva+' ($)','T.PEDIDO','T.DESPACHO',
-            'VENTA '+monedaActiva+' $','ESTADO'];
-  MS.sucursales.forEach(function(s){
-    hRes.push('PIDE\n'+s); hRes.push('RESP\n'+s); hRes.push(monedaActiva+' $\n'+s);
-  });
-
-  var resRows=[hRes], totV=0;
+  var hRes=['REFERENCIA','DESCRIPCIÓN','STOCK','P.USD $','P.BCV $','P.TF $','T.PEDIDO','T.DESP','VENTA USD $','VENTA BCV $','VENTA TF $','ESTADO'];
+  MS.sucursales.forEach(function(s){hRes.push('PIDE\n'+s);hRes.push('DESP\n'+s);hRes.push('VENTA '+monLabel+'\n'+s);});
+  var dRows=[hRes],totU=0,totB=0,totT=0;
   MS.data.forEach(function(p){
-    var pr = parseFloat(msGetPrecioByMoneda(p.ref, monedaActiva))||0;
-    var td=0; MS.sucursales.forEach(function(s){ td+=p.dist[s]||0; });
-    var vt = pr*td; totV+=vt;
-    var row=[p.ref, p.desc, p.stock,
-             pr?+pr.toFixed(4):0,
-             p.totalPedido, td,
-             vt?+vt.toFixed(2):0,
+    var u=pu(p.ref),b=pb(p.ref),t=pt(p.ref),td=0;
+    MS.sucursales.forEach(function(s){td+=p.dist[s]||0;});
+    var vu=u*td,vb=b*td,vt=t*td;
+    totU+=vu;totB+=vb;totT+=vt;
+    var row=[p.ref,p.desc,p.stock,
+             u?+u.toFixed(4):'',b?+b.toFixed(4):'',t?+t.toFixed(4):'',
+             p.totalPedido,td,
+             vu?+vu.toFixed(2):'',vb?+vb.toFixed(2):'',vt?+vt.toFixed(2):'',
              p.estado.toUpperCase()];
     MS.sucursales.forEach(function(s){
-      var pide=p.pedidos[s]||0, desp=p.dist[s]||0;
-      row.push(pide); row.push(desp); row.push(pr&&desp?+(pr*desp).toFixed(2):0);
+      var pide=p.pedidos[s]||0,desp=p.dist[s]||0,vm=pm(p.ref)*desp;
+      row.push(pide);row.push(desp);row.push(vm?+vm.toFixed(2):'');
     });
-    resRows.push(row);
+    dRows.push(row);
   });
-  var totRow=['','','','','','TOTALES:',+totV.toFixed(2),''];
+  var totRow=['','','','','','','TOTALES','',+totU.toFixed(2),+totB.toFixed(2),+totT.toFixed(2),''];
   MS.sucursales.forEach(function(s){
-    var ts=0; MS.data.forEach(function(p){ var pr=parseFloat(msGetPrecioByMoneda(p.ref,monedaActiva))||0; ts+=pr*(p.dist[s]||0); });
-    totRow.push('','',+ts.toFixed(2));
+    var tv=0;MS.data.forEach(function(p){tv+=pm(p.ref)*(p.dist[s]||0);});
+    totRow.push('');totRow.push('');totRow.push(+tv.toFixed(2));
   });
-  resRows.push(totRow);
+  dRows.push(totRow);
+  var allRes=meta.concat(dRows);
+  var cRes=[{wch:12},{wch:34},{wch:7},{wch:11},{wch:11},{wch:11},{wch:8},{wch:8},{wch:13},{wch:13},{wch:13},{wch:10}];
+  MS.sucursales.forEach(function(){cRes.push({wch:7},{wch:7},{wch:13});});
+  var wsRes=mkSheet(allRes,cRes,meta.length,allRes.length-1,false);
+  wsRes['!rows']=[{hpt:26},{hpt:14},{hpt:14},{hpt:4},{hpt:30}];
+  XLSX.utils.book_append_sheet(wb,wsRes,'RESUMEN '+monLabel.replace(' ',''));
 
-  var allRes = metaRows.concat(resRows);
-  var wsRes = XLSX.utils.aoa_to_sheet(allRes);
-  var nColsRes = 8 + MS.sucursales.length*3;
-  var colsRes=[{wch:12},{wch:38},{wch:7},{wch:12},{wch:9},{wch:9},{wch:14},{wch:11}];
-  MS.sucursales.forEach(function(){ colsRes.push({wch:7},{wch:7},{wch:13}); });
-  wsRes['!cols']=colsRes;
-  wsRes['!rows']=[{hpt:26},{hpt:15},{hpt:15},{hpt:4},{hpt:30}];
-  // Merge título
-  wsRes['!merges']=[{s:{r:0,c:0},e:{r:0,c:nColsRes-1}}];
-  applyStyles(wsRes, allRes, 0);
-  XLSX.utils.book_append_sheet(wb, wsRes, 'RESUMEN '+monedaActiva);
-
-  // ── HOJA POR SUCURSAL ─────────────────────────
+  // ── HOJA POR SUCURSAL ──
   MS.sucursales.forEach(function(suc){
     var metaSuc=[
-      [' FARMERS C.A. — DESPACHO: '+suc+' ('+monedaActiva+')'],
-      ['N° Pedido:',numP,'Fecha:',fecha,'Tasa BCV:',tasaBCVstr,'Tasa TF:',tasaTFstr],
+      [' FARMERS C.A. — DESPACHO: '+suc+' ('+monLabel+')'],
+      ['N° Pedido:',numP,'Fecha:',fecha,'Moneda:',monLabel,'Tasa BCV:',tasaBCVstr,'Tasa TF:',tasaTFstr],
       []
     ];
-    var hSuc=['REFERENCIA','DESCRIPCIÓN','STOCK',
-              'PEDIDO','DESPACHO','DIFERENCIA',
-              'P.'+monedaActiva+' ($)','VENTA '+monedaActiva+' $'];
-    var sdRows=[hSuc], tv=0;
+    var hSuc=['REFERENCIA','DESCRIPCIÓN','STOCK','PEDIDO','DESPACHO','DIFERENCIA','P.USD $','P.BCV $','P.TF $','VENTA USD $','VENTA BCV $','VENTA TF $'];
+    var sdRows=[hSuc],tvu=0,tvb=0,tvt=0;
     MS.data.forEach(function(p){
-      var pide=p.pedidos[suc]||0, desp=p.dist[suc]||0;
-      if(!pide&&!desp) return;
-      var pr=parseFloat(msGetPrecioByMoneda(p.ref,monedaActiva))||0;
-      var vt=pr*desp; tv+=vt;
+      var pide=p.pedidos[suc]||0,desp=p.dist[suc]||0;
+      if(!pide&&!desp)return;
+      var u=pu(p.ref),b=pb(p.ref),t=pt(p.ref);
+      var vu=u*desp,vb=b*desp,vt=t*desp;
+      tvu+=vu;tvb+=vb;tvt+=vt;
       sdRows.push([p.ref,p.desc,p.stock,pide,desp,pide-desp,
-                   pr?+pr.toFixed(4):0, vt?+vt.toFixed(2):0]);
+                   u?+u.toFixed(4):'',b?+b.toFixed(4):'',t?+t.toFixed(4):'',
+                   vu?+vu.toFixed(2):'',vb?+vb.toFixed(2):'',vt?+vt.toFixed(2):'']);
     });
-    sdRows.push(['','','','','','TOTALES:','',+tv.toFixed(2)]);
-
+    sdRows.push(['','','','','','','TOTALES:','','',+tvu.toFixed(2),+tvb.toFixed(2),+tvt.toFixed(2)]);
     if(sdRows.length>2){
       var allSuc=metaSuc.concat(sdRows);
-      var wsSuc=XLSX.utils.aoa_to_sheet(allSuc);
-      wsSuc['!cols']=[{wch:12},{wch:40},{wch:7},{wch:8},{wch:9},{wch:10},{wch:14},{wch:15}];
-      wsSuc['!rows']=[{hpt:26},{hpt:15},{hpt:4},{hpt:30}];
-      wsSuc['!merges']=[{s:{r:0,c:0},e:{r:0,c:7}}];
-      applyStyles(wsSuc, allSuc, 0);
+      var cSuc=[{wch:12},{wch:32},{wch:7},{wch:7},{wch:8},{wch:9},{wch:11},{wch:11},{wch:11},{wch:13},{wch:13},{wch:13}];
+      var wsSuc=mkSheet(allSuc,cSuc,metaSuc.length,allSuc.length-1,true);
+      wsSuc['!rows']=[{hpt:26},{hpt:14},{hpt:4},{hpt:30}];
       var shName=suc.substring(0,28).replace(/[:\\/?*\[\]]/g,'_');
-      XLSX.utils.book_append_sheet(wb, wsSuc, shName);
+      XLSX.utils.book_append_sheet(wb,wsSuc,shName);
     }
   });
 
-  var fname='Farmers_'+monedaActiva+'_'+numP+'_'+fecha.replace(/\//g,'-')+'.xlsx';
-  XLSX.writeFile(wb, fname);
-  showToast('✅ Excel descargado en '+monedaActiva+' $','success');
-};
-
-// ── Obtener precio por moneda explícita ───────────
-
-// ── Exportar PDF ──────────────────────────────────
-window.msExportarPDF = function() {
-  if(!MS.data.length){ showToast('No hay datos para exportar','warn'); return; }
-  var tasa = getTasaHoy()||0;
-  var tfSpr = (typeof TF_SPREAD!=='undefined')?TF_SPREAD:0;
-  var tasaTF = tasa>0?tasa*(1+tfSpr/100):0;
-  var numP = MS.numPedido || ('MS-'+new Date().toISOString().slice(0,10));
-  var fecha = MS.fechaEmision || new Date().toLocaleDateString('es-VE',{day:'2-digit',month:'2-digit',year:'numeric'});
-  var logoB64 = typeof FARMERS_LOGO_B64!=='undefined'?FARMERS_LOGO_B64:'';
-  var tasaBCVstr = tasa>0?tasa.toFixed(2)+' Bs/$':'—';
-  var tasaTFstr  = tasaTF>0?tasaTF.toFixed(2)+' Bs/$':'—';
-
-  // Totales globales
-  var grandUSD=0;
-  MS.data.forEach(function(p){
-    var pu=parseFloat(msGetPrecioByMoneda(p.ref,'USD'))||0;
-    MS.sucursales.forEach(function(s){ grandUSD+=pu*(p.dist[s]||0); });
-  });
-
-  // ── HOJA RESUMEN ──
-  var resumenFilas = MS.data.map(function(p){
-    var pu=parseFloat(msGetPrecioByMoneda(p.ref,'USD'))||0;
-    var td=0; MS.sucursales.forEach(function(s){ td+=p.dist[s]||0; });
-    var vusd=pu*td;
-    var sucCols = MS.sucursales.map(function(s){
-      var d=p.dist[s]||0;
-      return '<td style="text-align:center;padding:4px 6px;border:1px solid #e2e8f0;font-size:.66rem;">'+
-             (p.pedidos[s]||0)+'</td>'+
-             '<td style="text-align:center;padding:4px 6px;border:1px solid #e2e8f0;font-size:.66rem;font-weight:700;color:'+(d>0?'#16a34a':'#94a3b8')+';">'+
-             (d||'—')+'</td>';
-    }).join('');
-    return '<tr style="background:'+(MS.data.indexOf(p)%2===0?'#fff':'#f8fafc')+'">'
-      +'<td style="padding:4px 6px;border:1px solid #e2e8f0;font-family:monospace;font-size:.66rem;font-weight:700;color:#1a2050;">'+p.ref+'</td>'
-      +'<td style="padding:4px 6px;border:1px solid #e2e8f0;font-size:.66rem;max-width:160px;">'+p.desc+'</td>'
-      +'<td style="text-align:center;padding:4px 6px;border:1px solid #e2e8f0;font-size:.66rem;">'+p.stock+'</td>'
-      +'<td style="text-align:right;padding:4px 6px;border:1px solid #e2e8f0;font-size:.66rem;">$'+pu.toFixed(4)+'</td>'
-      +'<td style="text-align:center;padding:4px 6px;border:1px solid #e2e8f0;font-size:.66rem;">'+p.totalPedido+'</td>'
-      +'<td style="text-align:center;padding:4px 6px;border:1px solid #e2e8f0;font-size:.66rem;font-weight:700;">'+td+'</td>'
-      +'<td style="text-align:right;padding:4px 6px;border:1px solid #e2e8f0;font-size:.66rem;font-weight:700;color:#16a34a;">$'+vusd.toFixed(2)+'</td>'
-      +'<td style="text-align:center;padding:4px 6px;border:1px solid #e2e8f0;font-size:.62rem;"><span style="background:'+(p.estado==='completo'?'#dcfce7':p.estado==='parcial'?'#fef9c3':'#fee2e2')+';color:'+(p.estado==='completo'?'#16a34a':p.estado==='parcial'?'#d97706':'#dc2626')+';padding:2px 5px;border-radius:4px;">'+p.estado.toUpperCase()+'</span></td>'
-      +sucCols
-      +'</tr>';
-  }).join('');
-
-  var sucHeaders = MS.sucursales.map(function(s){
-    return '<th colspan="2" style="padding:5px 6px;text-align:center;background:#334155;font-size:.6rem;">'+s+'</th>';
-  }).join('');
-  var sucSubHeaders = MS.sucursales.map(function(){
-    return '<th style="padding:4px 6px;text-align:center;background:#475569;font-size:.58rem;">PIDE</th>'+
-           '<th style="padding:4px 6px;text-align:center;background:#475569;font-size:.58rem;">DESP</th>';
-  }).join('');
-
-  // ── HOJAS POR SUCURSAL ──
-  var seccionesSuc = MS.sucursales.map(function(suc){
-    var tvUSD=0;
-    var filas = MS.data.filter(function(p){ return (p.pedidos[suc]||0)>0||(p.dist[suc]||0)>0; })
-    .map(function(p,i){
-      var pu=parseFloat(msGetPrecioByMoneda(p.ref,'USD'))||0;
-      var pide=p.pedidos[suc]||0, desp=p.dist[suc]||0;
-      var vu=pu*desp; tvUSD+=vu;
-      return '<tr style="background:'+(i%2===0?'#fff':'#f8fafc')+'">'
-        +'<td style="padding:4px 8px;border:1px solid #e2e8f0;font-family:monospace;font-size:.68rem;font-weight:700;color:#1a2050;">'+p.ref+'</td>'
-        +'<td style="padding:4px 8px;border:1px solid #e2e8f0;font-size:.68rem;">'+p.desc+'</td>'
-        +'<td style="text-align:center;padding:4px 8px;border:1px solid #e2e8f0;font-size:.68rem;">'+p.stock+'</td>'
-        +'<td style="text-align:center;padding:4px 8px;border:1px solid #e2e8f0;font-size:.68rem;font-weight:700;color:#1a2050;">'+pide+'</td>'
-        +'<td style="text-align:center;padding:4px 8px;border:1px solid #e2e8f0;font-size:.68rem;font-weight:700;color:'+(desp>=pide?'#16a34a':desp>0?'#d97706':'#dc2626')+';">'+desp+'</td>'
-        +'<td style="text-align:center;padding:4px 8px;border:1px solid #e2e8f0;font-size:.68rem;color:#64748b;">'+(pide-desp||'—')+'</td>'
-        +'<td style="text-align:right;padding:4px 8px;border:1px solid #e2e8f0;font-size:.68rem;">$'+pu.toFixed(4)+'</td>'
-        +'<td style="text-align:right;padding:4px 8px;border:1px solid #e2e8f0;font-size:.68rem;font-weight:700;color:#16a34a;">$'+vu.toFixed(2)+'</td>'
-        +'</tr>';
-    }).join('');
-    if(!filas) return '';
-    return '<div style="page-break-before:always;padding:10px 0;">'
-      +'<div style="background:#1a2050;color:white;padding:8px 14px;border-radius:6px 6px 0 0;font-weight:800;font-size:.85rem;">SUCURSAL: '+suc+'</div>'
-      +'<table style="width:100%;border-collapse:collapse;">'
-      +'<thead><tr style="background:#1a2050;color:white;">'
-      +'<th style="padding:5px 8px;text-align:left;font-size:.65rem;">REF</th>'
-      +'<th style="padding:5px 8px;text-align:left;font-size:.65rem;">DESCRIPCIÓN</th>'
-      +'<th style="padding:5px 8px;text-align:center;font-size:.65rem;">STOCK</th>'
-      +'<th style="padding:5px 8px;text-align:center;font-size:.65rem;">PIDE</th>'
-      +'<th style="padding:5px 8px;text-align:center;font-size:.65rem;">DESP</th>'
-      +'<th style="padding:5px 8px;text-align:center;font-size:.65rem;">DIFER</th>'
-      +'<th style="padding:5px 8px;text-align:right;font-size:.65rem;">P.USD</th>'
-      +'<th style="padding:5px 8px;text-align:right;font-size:.65rem;">VENTA USD</th>'
-      +'</tr></thead><tbody>'+filas+'</tbody>'
-      +'<tfoot><tr style="background:#0f172a;color:white;">'
-      +'<td colspan="7" style="padding:6px 8px;text-align:right;font-size:.7rem;font-weight:700;">TOTAL VENTA USD:</td>'
-      +'<td style="padding:6px 8px;text-align:right;font-size:.8rem;font-weight:900;color:#4ade80;">$'+tvUSD.toFixed(2)+'</td>'
-      +'</tr></tfoot></table></div>';
-  }).join('');
-
-  var html = '<!DOCTYPE html><html><head><meta charset="UTF-8">'
-    +'<style>'
-    +'@page{size:A4 landscape;margin:8mm 8mm;}'
-    +'body{font-family:Arial,sans-serif;margin:0;padding:0;}'
-    +'print-color-adjust:exact;-webkit-print-color-adjust:exact;'
-    +'</style></head><body>'
-    +'<div style="padding:8px;">'
-    // Header
-    +'<div style="display:flex;justify-content:space-between;align-items:center;border-bottom:3px solid #1a2050;padding-bottom:8px;margin-bottom:10px;">'
-    +(logoB64?'<img src="'+logoB64+'" style="height:48px;border-radius:6px;">':'<div style="font-weight:900;font-size:1.2rem;color:#1a2050;">FARMERS C.A.</div>')
-    +'<div style="text-align:center;">'
-    +'<div style="font-size:1rem;font-weight:900;color:#1a2050;">PEDIDO MULTI-SUCURSAL</div>'
-    +'<div style="font-size:.75rem;color:#64748b;">N° '+numP+' · '+fecha+'</div>'
-    +'</div>'
-    +'<div style="text-align:right;font-size:.72rem;color:#64748b;">'
-    +'<div>Sucursales: '+MS.sucursales.length+'</div>'
-    +'<div>BCV: '+tasaBCVstr+'</div>'
-    +'<div>TF: '+tasaTFstr+'</div>'
-    +'</div></div>'
-    // Tabla resumen
-    +'<table style="width:100%;border-collapse:collapse;margin-bottom:8px;">'
-    +'<thead>'
-    +'<tr style="background:#1a2050;color:white;">'
-    +'<th style="padding:5px 6px;text-align:left;font-size:.65rem;">REF</th>'
-    +'<th style="padding:5px 6px;text-align:left;font-size:.65rem;">DESCRIPCIÓN</th>'
-    +'<th style="padding:5px 6px;text-align:center;font-size:.65rem;">STOCK</th>'
-    +'<th style="padding:5px 6px;text-align:right;font-size:.65rem;">P.USD</th>'
-    +'<th style="padding:5px 6px;text-align:center;font-size:.65rem;">T.PEDIDO</th>'
-    +'<th style="padding:5px 6px;text-align:center;font-size:.65rem;">T.DESP</th>'
-    +'<th style="padding:5px 6px;text-align:right;font-size:.65rem;">VENTA USD</th>'
-    +'<th style="padding:5px 6px;text-align:center;font-size:.65rem;">ESTADO</th>'
-    +sucHeaders
-    +'</tr>'
-    +'<tr style="background:#334155;color:#e2e8f0;">'
-    +'<th colspan="8"></th>'+sucSubHeaders
-    +'</tr>'
-    +'</thead><tbody>'+resumenFilas+'</tbody>'
-    +'<tfoot><tr style="background:#0f172a;color:white;">'
-    +'<td colspan="6" style="padding:6px 8px;text-align:right;font-weight:800;font-size:.72rem;">TOTAL GENERAL USD:</td>'
-    +'<td style="padding:6px 8px;text-align:right;font-weight:900;font-size:.85rem;color:#4ade80;">$'+grandUSD.toFixed(2)+'</td>'
-    +'<td colspan="'+(MS.sucursales.length*2+1)+'"></td>'
-    +'</tr></tfoot></table>'
-    // Secciones por sucursal
-    +seccionesSuc
-    // Botones
-    +'<div style="text-align:center;margin-top:16px;">'
-    +'<button onclick="window.print()" style="background:#1a2050;color:white;border:none;border-radius:8px;padding:10px 28px;cursor:pointer;font-size:.9rem;font-weight:700;margin-right:10px;">🖨️ Imprimir / PDF</button>'
-    +'<button onclick="window.close()" style="background:#f1f5f9;color:#475569;border:1px solid #cbd5e1;border-radius:8px;padding:10px 20px;cursor:pointer;font-size:.9rem;">Cerrar</button>'
-    +'</div>'
-    +'</div></body></html>';
-
-  var w = window.open('','_blank','width=1100,height=900');
-  if(w){ w.document.write(html); w.document.close(); }
-  else showToast('Permite ventanas emergentes para el PDF','warn');
-  showToast('📄 PDF generado','success');
-};
-
-function msGetPrecioByMoneda(ref, moneda) {
-  var p = PRODUCTS.find(function(x){ return x.r===ref; });
-  if(!p) return 0;
-  return parseFloat((moneda==='USD'?p.u:moneda==='BCV'?p.bv:p.t)||0);
-}
-
-// ── Emitir Pedido (fase 1 → reserva inventario) ──
-window.msEmitirPedido = function() {
-  if(!MS.data.length){ showToast('No hay datos de pedido','warn'); return; }
-  if(MS.fase==='emitido'||MS.fase==='confirmado'){
-    showToast('El pedido ya fue emitido','warn'); return;
-  }
-
-  // Generar número de pedido
-  var now = new Date();
-  var numP = 'MS-'+now.getFullYear().toString().slice(-2)+
-             String(now.getMonth()+1).padStart(2,'0')+
-             String(now.getDate()).padStart(2,'0')+'-'+
-             String(now.getHours()).padStart(2,'0')+
-             String(now.getMinutes()).padStart(2,'0');
-  MS.numPedido = numP;
-  MS.fechaEmision = now.toLocaleDateString('es-VE',{day:'2-digit',month:'2-digit',year:'numeric'});
-  MS.fase = 'emitido';
-
-  // Reservar en localStorage (no descarga aún)
-  var reservas = {};
-  MS.data.forEach(function(p){
-    var totalDesp=0;
-    MS.sucursales.forEach(function(s){ totalDesp+=p.dist[s]||0; });
-    if(totalDesp>0) reservas[p.ref] = totalDesp;
-  });
-  try { localStorage.setItem('ms_reserva_'+numP, JSON.stringify({reservas:reservas,fecha:MS.fechaEmision,sucursales:MS.sucursales})); } catch(e){}
-
-  // Actualizar UI
-  var btn = document.getElementById('ms-btn-emitir');
-  if(btn){
-    btn.textContent='✅ Pedido Emitido #'+numP;
-    btn.style.background='linear-gradient(135deg,#059669,#065f46)';
-    btn.onclick=null;
-  }
-
-  // Mostrar overlay de confirmación
-  msShowConfirmOverlay(numP);
-};
-
-// ── Overlay de confirmación post-emisión ─────────
-function msShowConfirmOverlay(numP) {
-  var tasa = getTasaHoy()||0;
-  var tfSpr = (typeof TF_SPREAD!=='undefined')?TF_SPREAD:0;
-  var tasaTF = tasa>0?tasa*(1+tfSpr/100):0;
-  var totalUSD=0;
-  MS.data.forEach(function(p){
-    var pu=parseFloat(msGetPrecioByMoneda(p.ref,'USD'))||0;
-    MS.sucursales.forEach(function(s){ totalUSD+=pu*(p.dist[s]||0); });
-  });
-  var totalBCV = tasa>0?(totalUSD*tasa):0;
-  var totalTF  = tasaTF>0?(totalUSD*tasaTF):0;
-
-  var existing = document.getElementById('ms-confirm-overlay');
-  if(existing) existing.remove();
-
-  var ov = document.createElement('div');
-  ov.id = 'ms-confirm-overlay';
-  ov.style.cssText='position:fixed;inset:0;z-index:99100;background:rgba(0,0,0,.65);display:flex;align-items:center;justify-content:center;';
-  ov.innerHTML='<div style="background:white;border-radius:16px;padding:32px 36px;max-width:480px;width:90%;box-shadow:0 24px 60px rgba(0,0,0,.4);text-align:center;">'
-    +'<div style="font-size:2.2rem;margin-bottom:8px;">📋</div>'
-    +'<div style="font-size:1.15rem;font-weight:800;color:#1a2050;margin-bottom:4px;">Pedido emitido: '+numP+'</div>'
-    +'<div style="font-size:.8rem;color:#64748b;margin-bottom:16px;">'+MS.fechaEmision+' · '+MS.sucursales.length+' sucursal(es)</div>'
-    +'<div style="background:#f8fafc;border-radius:10px;padding:12px;margin-bottom:20px;display:flex;justify-content:space-around;">'
-    +'<div><div style="font-size:.68rem;color:#94a3b8;font-weight:700;">TOTAL USD</div><div style="font-size:1.1rem;font-weight:800;color:#1a2050;">$'+totalUSD.toFixed(2)+'</div></div>'
-    +(tasa>0?'<div><div style="font-size:.68rem;color:#94a3b8;font-weight:700;">TOTAL BCV</div><div style="font-size:1.1rem;font-weight:800;color:#f59e0b;">Bs '+totalBCV.toFixed(2)+'</div></div>':'')
-    +(tasaTF>0?'<div><div style="font-size:.68rem;color:#94a3b8;font-weight:700;">TOTAL TF</div><div style="font-size:1.1rem;font-weight:800;color:#8b5cf6;">Bs '+totalTF.toFixed(2)+'</div></div>':'')
-    +'</div>'
-    +'<div style="font-size:.75rem;color:#64748b;background:#fffbeb;border:1px solid #fbbf24;border-radius:8px;padding:8px 12px;margin-bottom:20px;">⚠️ El inventario está <strong>reservado</strong> pero no descontado. Confírmalo para descontarlo oficialmente.</div>'
-    +'<div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap;">'
-    +'<button onclick="msExportarExcel();document.getElementById(\'ms-confirm-overlay\').remove();" style="background:#16a34a;color:white;border:none;border-radius:8px;padding:10px 18px;cursor:pointer;font-weight:700;font-size:.82rem;">💾 Exportar Excel</button>'
-    +'<button onclick="msConfirmarPedido(\''+numP+'\')" style="background:linear-gradient(135deg,#1a2050,#2d3a8c);color:white;border:none;border-radius:8px;padding:10px 18px;cursor:pointer;font-weight:700;font-size:.82rem;">✅ Confirmar y Descontar</button>'
-    +'<button onclick="document.getElementById(\'ms-confirm-overlay\').remove();" style="background:#f1f5f9;color:#475569;border:none;border-radius:8px;padding:10px 16px;cursor:pointer;font-weight:700;font-size:.82rem;">Cerrar</button>'
-    +'</div>'
-    +'</div>';
-  document.body.appendChild(ov);
-}
-
-// ── Confirmar Pedido (descarga inventario) ───────
-window.msConfirmarPedido = function(numP) {
-  if(MS.fase==='confirmado'){ showToast('Pedido ya confirmado','warn'); return; }
-  MS.fase='confirmado';
-
-  // 1. Descontar de firebase inventory
-  var inv = getInventory ? getInventory() : {};
-  var updates={};
-  MS.data.forEach(function(p){
-    var totalDesp=0;
-    MS.sucursales.forEach(function(s){ totalDesp+=p.dist[s]||0; });
-    if(totalDesp<=0) return;
-    var stock = parseInt(inv[p.ref])||0;
-    updates[p.ref] = Math.max(0, stock-totalDesp);
-  });
-
-  // Guardar en firebase
-  if(typeof firebase!=='undefined'&&firebase.database){
-    var db=firebase.database();
-    Object.keys(updates).forEach(function(ref){
-      db.ref('farmers_inv/'+ref).set(updates[ref]).catch(function(){});
-    });
-  }
-
-  // 2. Descontar de PT localStorage
-  try{
-    var ptRaw=localStorage.getItem('farmers_pt_data');
-    if(ptRaw){
-      var ptArr=JSON.parse(ptRaw);
-      MS.data.forEach(function(p){
-        var totalDesp=0;
-        MS.sucursales.forEach(function(s){ totalDesp+=p.dist[s]||0; });
-        if(totalDesp<=0) return;
-        var pt=ptArr.find(function(x){ return x.r===p.ref; });
-        if(pt){
-          pt.ex=Math.max(0,(parseInt(pt.ex)||0)-totalDesp);
-          pt.et=Math.max(0,(parseInt(pt.et)||0)-totalDesp);
-        }
-      });
-      localStorage.setItem('farmers_pt_data',JSON.stringify(ptArr));
-      if(window.ptData) window.ptData=ptArr;
-    }
-  }catch(e){}
-
-  // 3. Limpiar reserva
-  try{ localStorage.removeItem('ms_reserva_'+(numP||MS.numPedido)); }catch(e){}
-
-  // 4. Cerrar overlay y mostrar opciones
-  var ov=document.getElementById('ms-confirm-overlay');
-  if(ov) ov.remove();
-
-  msShowPedidoConfirmado(numP||MS.numPedido);
-};
-
-// ── Modal pedido confirmado ───────────────────────
-function msShowPedidoConfirmado(numP) {
-  var existing=document.getElementById('ms-done-overlay');
-  if(existing) existing.remove();
-
-  var tasa=getTasaHoy()||0;
-  var tfSpr=(typeof TF_SPREAD!=='undefined')?TF_SPREAD:0;
-  var tasaTF=tasa>0?tasa*(1+tfSpr/100):0;
-  var totalUSD=0;
-  MS.data.forEach(function(p){
-    var pu=parseFloat(msGetPrecioByMoneda(p.ref,'USD'))||0;
-    MS.sucursales.forEach(function(s){ totalUSD+=pu*(p.dist[s]||0); });
-  });
-
-  var ov=document.createElement('div');
-  ov.id='ms-done-overlay';
-  ov.style.cssText='position:fixed;inset:0;z-index:99100;background:rgba(0,0,0,.65);display:flex;align-items:center;justify-content:center;';
-  ov.innerHTML='<div style="background:white;border-radius:16px;padding:32px 36px;max-width:460px;width:90%;box-shadow:0 24px 60px rgba(0,0,0,.4);text-align:center;">'
-    +'<div style="font-size:2.5rem;margin-bottom:8px;">✅</div>'
-    +'<div style="font-size:1.2rem;font-weight:800;color:#059669;margin-bottom:4px;">¡Pedido confirmado!</div>'
-    +'<div style="font-size:.85rem;color:#475569;margin-bottom:6px;">'+numP+' · '+MS.fechaEmision+'</div>'
-    +'<div style="font-size:.8rem;color:#64748b;background:#f0fdf4;border-radius:8px;padding:8px 12px;margin-bottom:20px;">El inventario fue descontado correctamente del sistema y módulo PT.</div>'
-    +'<div style="font-size:1.1rem;font-weight:800;color:#1a2050;margin-bottom:20px;">Total: $'+totalUSD.toFixed(2)+' USD</div>'
-    +'<div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap;">'
-    +'<button onclick="msExportarExcel();document.getElementById(\'ms-done-overlay\').remove();" style="background:#16a34a;color:white;border:none;border-radius:8px;padding:10px 18px;cursor:pointer;font-weight:700;font-size:.82rem;">💾 Excel</button>'
-    +'<button onclick="msGenerarFacturaPDF()" style="background:linear-gradient(135deg,#1a2050,#2d3a8c);color:white;border:none;border-radius:8px;padding:10px 18px;cursor:pointer;font-weight:700;font-size:.82rem;">🧾 Emitir Factura PDF</button>'
-    +'<button onclick="document.getElementById(\'ms-done-overlay\').remove();" style="background:#f1f5f9;color:#475569;border:none;border-radius:8px;padding:10px 16px;cursor:pointer;font-weight:700;font-size:.82rem;">Cerrar</button>'
-    +'</div>'
-    +'</div>';
-  document.body.appendChild(ov);
-}
-
-// ── Generar Factura PDF (formato CXC) ─────────────
-window.msGenerarFacturaPDF = function() {
-  var ov=document.getElementById('ms-done-overlay');
-  if(ov) ov.remove();
-
-  var tasa=getTasaHoy()||0;
-  var tfSpr=(typeof TF_SPREAD!=='undefined')?TF_SPREAD:0;
-  var tasaTF=tasa>0?tasa*(1+tfSpr/100):0;
-  var numP=MS.numPedido||'MS-?';
-  var fecha=MS.fechaEmision||new Date().toLocaleDateString('es-VE');
-
-  // Construir líneas de factura agrupadas por sucursal
-  var lineas=[];
-  MS.sucursales.forEach(function(suc){
-    MS.data.forEach(function(p){
-      var desp=p.dist[suc]||0;
-      if(!desp) return;
-      var pu=parseFloat(msGetPrecioByMoneda(p.ref,'USD'))||0;
-      lineas.push({ref:p.ref,desc:p.desc+' ['+suc+']',qty:desp,precio:pu,sub:+(pu*desp).toFixed(2)});
-    });
-  });
-
-  var totalUSD=lineas.reduce(function(a,l){return a+l.sub;},0);
-  var totalBCV=tasa>0?totalUSD*tasa:0;
-
-  // Construir HTML de factura estilo CXC
-  var logoB64=typeof FARMERS_LOGO_B64!=='undefined'?FARMERS_LOGO_B64:'';
-  var tasaStr=tasa>0?'BCV: '+tasa.toFixed(2)+' Bs/$ | TF: '+tasaTF.toFixed(2)+' Bs/$':'—';
-
-  var filasHtml=lineas.map(function(l,i){
-    return '<tr style="background:'+(i%2===0?'#f8fafc':'#fff')+';">'
-      +'<td style="padding:5px 8px;border:1px solid #e2e8f0;font-size:.72rem;">'+l.ref+'</td>'
-      +'<td style="padding:5px 8px;border:1px solid #e2e8f0;font-size:.72rem;">'+l.desc+'</td>'
-      +'<td style="padding:5px 8px;border:1px solid #e2e8f0;text-align:center;font-size:.72rem;">'+l.qty+'</td>'
-      +'<td style="padding:5px 8px;border:1px solid #e2e8f0;text-align:right;font-size:.72rem;">$'+l.precio.toFixed(4)+'</td>'
-      +'<td style="padding:5px 8px;border:1px solid #e2e8f0;text-align:right;font-size:.72rem;font-weight:700;">$'+l.sub.toFixed(2)+'</td>'
-      +'</tr>';
-  }).join('');
-
-  var html='<!DOCTYPE html><html><head><meta charset="UTF-8">'
-    +'<style>@page{size:A4 portrait;margin:8mm 8mm;}body{font-family:Arial,sans-serif;margin:0;padding:0;}'
-    +'print-color-adjust:exact;-webkit-print-color-adjust:exact;</style></head><body>'
-    +'<div style="max-width:740px;margin:0 auto;padding:10px;">'
-    // Header
-    +'<div style="display:flex;justify-content:space-between;align-items:center;border-bottom:3px solid #1a2050;padding-bottom:10px;margin-bottom:12px;">'
-    +(logoB64?'<img src="'+logoB64+'" style="height:56px;border-radius:6px;">':'<div style="font-weight:900;font-size:1.3rem;color:#1a2050;">FARMERS C.A.</div>')
-    +'<div style="text-align:right;">'
-    +'<div style="font-size:1.1rem;font-weight:900;color:#1a2050;">FACTURA / DESPACHO</div>'
-    +'<div style="font-size:.8rem;color:#64748b;">N° '+numP+'</div>'
-    +'<div style="font-size:.8rem;color:#64748b;">Fecha: '+fecha+'</div>'
-    +'</div></div>'
-    // Datos
-    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px;font-size:.78rem;">'
-    +'<div style="background:#f8fafc;border-radius:6px;padding:8px;">'
-    +'<div style="font-weight:700;color:#1a2050;margin-bottom:4px;">FARMERS C.A.</div>'
-    +'<div>RIF: J-XXXXXXXXX</div>'
-    +'<div>Tel: 0412-044 5797</div>'
-    +'<div>farmersve@gmail.com</div>'
-    +'</div>'
-    +'<div style="background:#f8fafc;border-radius:6px;padding:8px;">'
-    +'<div style="font-weight:700;color:#1a2050;margin-bottom:4px;">DISTRIBUCIÓN MULTI-SUCURSAL</div>'
-    +'<div>Sucursales: '+MS.sucursales.join(', ')+'</div>'
-    +'<div>Tasa: '+tasaStr+'</div>'
-    +'</div></div>'
-    // Tabla
-    +'<table style="width:100%;border-collapse:collapse;margin-bottom:12px;">'
-    +'<thead><tr style="background:#1a2050;color:white;">'
-    +'<th style="padding:7px 8px;text-align:left;font-size:.72rem;border:1px solid #1a2050;">REF</th>'
-    +'<th style="padding:7px 8px;text-align:left;font-size:.72rem;border:1px solid #1a2050;">DESCRIPCIÓN</th>'
-    +'<th style="padding:7px 8px;text-align:center;font-size:.72rem;border:1px solid #1a2050;">CANT</th>'
-    +'<th style="padding:7px 8px;text-align:right;font-size:.72rem;border:1px solid #1a2050;">P.UNIT $</th>'
-    +'<th style="padding:7px 8px;text-align:right;font-size:.72rem;border:1px solid #1a2050;">SUBTOTAL $</th>'
-    +'</tr></thead><tbody>'+filasHtml+'</tbody></table>'
-    // Totales
-    +'<div style="display:flex;justify-content:flex-end;margin-bottom:16px;">'
-    +'<div style="background:#1a2050;color:white;border-radius:8px;padding:10px 20px;text-align:right;">'
-    +'<div style="font-size:.72rem;opacity:.8;">TOTAL USD</div>'
-    +'<div style="font-size:1.4rem;font-weight:900;">$'+totalUSD.toFixed(2)+'</div>'
-    +(totalBCV>0?'<div style="font-size:.78rem;opacity:.85;">Bs '+totalBCV.toFixed(2)+' (BCV)</div>':'')
-    +'</div></div>'
-    +'<div style="text-align:center;margin-top:16px;">'
-    +'<button onclick="window.print()" style="background:#1a2050;color:white;border:none;border-radius:8px;padding:10px 28px;cursor:pointer;font-size:.9rem;font-weight:700;margin-right:10px;">🖨️ Imprimir / PDF</button>'
-    +'<button onclick="window.close()" style="background:#f1f5f9;color:#475569;border:1px solid #cbd5e1;border-radius:8px;padding:10px 20px;cursor:pointer;font-size:.9rem;">Cerrar</button>'
-    +'</div>'
-    +'</div></body></html>';
-
-  var w=window.open('','_blank','width=860,height=900');
-  if(w){ w.document.write(html); w.document.close(); }
-  else showToast('Permite ventanas emergentes para la factura','warn');
-  showToast('🧾 Factura generada: '+numP,'success');
+  var fname='Farmers_'+monLabel.replace(' ','_')+'_'+numP+'_'+fecha.replace(/\//g,'-')+'.xlsx';
+  XLSX.writeFile(wb,fname);
+  showToast('✅ Excel descargado — '+monLabel,'success');
 };
 
 // ── Nuevo pedido ─────────────────────────────────
@@ -17094,8 +16648,285 @@ window.msNuevoPedido = function() {
   var fi=document.getElementById('ms-file-input'); if(fi) fi.value='';
   document.getElementById('ms-upload-status').textContent='';
   var btn=document.getElementById('ms-btn-emitir');
-  if(btn){ btn.textContent='📋 Emitir Pedido'; btn.style.background='linear-gradient(135deg,#1a2050,#2d3a8c)'; btn.onclick=function(){msEmitirPedido();}; }
+  if(btn){btn.textContent='📋 Emitir Pedido';btn.style.background='linear-gradient(135deg,#1a2050,#2d3a8c)';btn.onclick=function(){msEmitirPedido();};}
   msShowStep(1);
+};
+
+// ── Helpers de precio por moneda ─────────────────
+function msGetPrecioByMoneda(ref,moneda){
+  var p=PRODUCTS.find(function(x){return x.r===ref;});
+  if(!p)return 0;
+  return parseFloat((moneda==='BCV'?p.bv:moneda==='TF'?p.t:p.u)||0);
+}
+
+// ── Emitir Pedido ────────────────────────────────
+window.msEmitirPedido = function(){
+  if(!MS.data.length){showToast('No hay datos de pedido','warn');return;}
+  if(MS.fase==='emitido'||MS.fase==='confirmado'){showToast('Pedido ya emitido','warn');return;}
+  var now=new Date();
+  MS.numPedido='MS-'+now.getFullYear().toString().slice(-2)+String(now.getMonth()+1).padStart(2,'0')+String(now.getDate()).padStart(2,'0')+'-'+String(now.getHours()).padStart(2,'0')+String(now.getMinutes()).padStart(2,'0');
+  MS.fechaEmision=now.toLocaleDateString('es-VE',{day:'2-digit',month:'2-digit',year:'numeric'});
+  MS.fase='emitido';
+  var reservas={};
+  MS.data.forEach(function(p){var td=0;MS.sucursales.forEach(function(s){td+=p.dist[s]||0;});if(td>0)reservas[p.ref]=td;});
+  try{localStorage.setItem('ms_reserva_'+MS.numPedido,JSON.stringify({reservas:reservas,fecha:MS.fechaEmision,sucursales:MS.sucursales}));}catch(e){}
+  var btn=document.getElementById('ms-btn-emitir');
+  if(btn){btn.textContent='✅ Emitido #'+MS.numPedido;btn.style.background='linear-gradient(135deg,#059669,#065f46)';btn.onclick=null;}
+  msShowConfirmOverlay(MS.numPedido);
+};
+
+// ── Overlay confirmación ─────────────────────────
+function msShowConfirmOverlay(numP){
+  var tasa=getTasaHoy()||0,tfSpr=(typeof TF_SPREAD!=='undefined')?TF_SPREAD:0,tasaTF=tasa>0?tasa*(1+tfSpr/100):0;
+  var totalUSD=0;
+  MS.data.forEach(function(p){var u=parseFloat(msGetPrecioByMoneda(p.ref,'USD'))||0;MS.sucursales.forEach(function(s){totalUSD+=u*(p.dist[s]||0);});});
+  var totalBCV=tasa>0?totalUSD*tasa:0;
+  var ex=document.getElementById('ms-confirm-overlay');if(ex)ex.remove();
+  var ov=document.createElement('div');ov.id='ms-confirm-overlay';
+  ov.style.cssText='position:fixed;inset:0;z-index:99100;background:rgba(0,0,0,.65);display:flex;align-items:center;justify-content:center;';
+  ov.innerHTML='<div style="background:white;border-radius:16px;padding:32px 36px;max-width:480px;width:90%;box-shadow:0 24px 60px rgba(0,0,0,.4);text-align:center;">'
+    +'<div style="font-size:2rem;margin-bottom:8px;">📋</div>'
+    +'<div style="font-size:1.1rem;font-weight:800;color:#1a2050;margin-bottom:4px;">Pedido emitido: '+numP+'</div>'
+    +'<div style="font-size:.8rem;color:#64748b;margin-bottom:16px;">'+MS.fechaEmision+' · '+MS.sucursales.length+' sucursal(es)</div>'
+    +'<div style="background:#f8fafc;border-radius:10px;padding:12px;margin-bottom:20px;display:flex;justify-content:space-around;">'
+    +'<div><div style="font-size:.68rem;color:#94a3b8;font-weight:700;">USD</div><div style="font-size:1.1rem;font-weight:800;color:#1a2050;">$'+totalUSD.toFixed(2)+'</div></div>'
+    +(totalBCV>0?'<div><div style="font-size:.68rem;color:#94a3b8;font-weight:700;">BCV</div><div style="font-size:1.1rem;font-weight:800;color:#f59e0b;">Bs '+totalBCV.toFixed(2)+'</div></div>':'')
+    +'</div>'
+    +'<div style="font-size:.75rem;color:#64748b;background:#fffbeb;border:1px solid #fbbf24;border-radius:8px;padding:8px 12px;margin-bottom:20px;">⚠️ Inventario <strong>reservado</strong>. Confirma para descontarlo.</div>'
+    +'<div style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap;">'
+    +'<button onclick="msExportarExcel();document.getElementById(\'ms-confirm-overlay\').remove();" style="background:#16a34a;color:white;border:none;border-radius:8px;padding:9px 16px;cursor:pointer;font-weight:700;font-size:.78rem;">💾 Excel</button>'
+    +'<button onclick="msExportarPDF();document.getElementById(\'ms-confirm-overlay\').remove();" style="background:#dc2626;color:white;border:none;border-radius:8px;padding:9px 16px;cursor:pointer;font-weight:700;font-size:.78rem;">📄 PDF</button>'
+    +'<button onclick="msConfirmarPedido(\''+numP+'\')" style="background:linear-gradient(135deg,#1a2050,#2d3a8c);color:white;border:none;border-radius:8px;padding:9px 16px;cursor:pointer;font-weight:700;font-size:.78rem;">✅ Confirmar</button>'
+    +'<button onclick="document.getElementById(\'ms-confirm-overlay\').remove();" style="background:#f1f5f9;color:#475569;border:none;border-radius:8px;padding:9px 14px;cursor:pointer;font-weight:700;font-size:.78rem;">Cerrar</button>'
+    +'</div></div>';
+  document.body.appendChild(ov);
+}
+
+// ── Confirmar Pedido ─────────────────────────────
+window.msConfirmarPedido = function(numP){
+  if(MS.fase==='confirmado'){showToast('Pedido ya confirmado','warn');return;}
+  MS.fase='confirmado';
+  var inv=getInventory?getInventory():{};
+  if(typeof firebase!=='undefined'&&firebase.database){
+    var db=firebase.database();
+    MS.data.forEach(function(p){
+      var td=0;MS.sucursales.forEach(function(s){td+=p.dist[s]||0;});
+      if(td>0){var st=Math.max(0,(parseInt(inv[p.ref])||0)-td);db.ref('farmers_inv/'+p.ref).set(st).catch(function(){});}
+    });
+  }
+  try{
+    var ptRaw=localStorage.getItem('farmers_pt_data');
+    if(ptRaw){
+      var ptArr=JSON.parse(ptRaw);
+      MS.data.forEach(function(p){
+        var td=0;MS.sucursales.forEach(function(s){td+=p.dist[s]||0;});
+        if(td<=0)return;
+        var pt=ptArr.find(function(x){return x.r===p.ref;});
+        if(pt){pt.ex=Math.max(0,(parseInt(pt.ex)||0)-td);pt.et=Math.max(0,(parseInt(pt.et)||0)-td);}
+      });
+      localStorage.setItem('farmers_pt_data',JSON.stringify(ptArr));
+      if(window.ptData)window.ptData=ptArr;
+    }
+  }catch(e){}
+  try{localStorage.removeItem('ms_reserva_'+(numP||MS.numPedido));}catch(e){}
+  var ov=document.getElementById('ms-confirm-overlay');if(ov)ov.remove();
+  msShowPedidoConfirmado(numP||MS.numPedido);
+};
+
+// ── Modal pedido confirmado ───────────────────────
+function msShowPedidoConfirmado(numP){
+  var ex=document.getElementById('ms-done-overlay');if(ex)ex.remove();
+  var totalUSD=0;
+  MS.data.forEach(function(p){var u=parseFloat(msGetPrecioByMoneda(p.ref,'USD'))||0;MS.sucursales.forEach(function(s){totalUSD+=u*(p.dist[s]||0);});});
+  var ov=document.createElement('div');ov.id='ms-done-overlay';
+  ov.style.cssText='position:fixed;inset:0;z-index:99100;background:rgba(0,0,0,.65);display:flex;align-items:center;justify-content:center;';
+  ov.innerHTML='<div style="background:white;border-radius:16px;padding:32px 36px;max-width:460px;width:90%;box-shadow:0 24px 60px rgba(0,0,0,.4);text-align:center;">'
+    +'<div style="font-size:2.5rem;margin-bottom:8px;">✅</div>'
+    +'<div style="font-size:1.15rem;font-weight:800;color:#059669;margin-bottom:4px;">¡Pedido confirmado!</div>'
+    +'<div style="font-size:.82rem;color:#475569;margin-bottom:6px;">'+numP+' · '+MS.fechaEmision+'</div>'
+    +'<div style="font-size:.78rem;color:#64748b;background:#f0fdf4;border-radius:8px;padding:8px 12px;margin-bottom:16px;">Inventario descontado de Firebase y módulo PT.</div>'
+    +'<div style="font-size:1.2rem;font-weight:800;color:#1a2050;margin-bottom:20px;">$'+totalUSD.toFixed(2)+' USD</div>'
+    +'<div style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap;">'
+    +'<button onclick="msExportarExcel();document.getElementById(\'ms-done-overlay\').remove();" style="background:#16a34a;color:white;border:none;border-radius:8px;padding:9px 16px;cursor:pointer;font-weight:700;font-size:.78rem;">💾 Excel</button>'
+    +'<button onclick="msExportarPDF();document.getElementById(\'ms-done-overlay\').remove();" style="background:#dc2626;color:white;border:none;border-radius:8px;padding:9px 16px;cursor:pointer;font-weight:700;font-size:.78rem;">📄 PDF</button>'
+    +'<button onclick="msGenerarFacturaPDF()" style="background:linear-gradient(135deg,#1a2050,#2d3a8c);color:white;border:none;border-radius:8px;padding:9px 16px;cursor:pointer;font-weight:700;font-size:.78rem;">🧾 Factura</button>'
+    +'<button onclick="document.getElementById(\'ms-done-overlay\').remove();" style="background:#f1f5f9;color:#475569;border:none;border-radius:8px;padding:9px 14px;cursor:pointer;font-weight:700;font-size:.78rem;">Cerrar</button>'
+    +'</div></div>';
+  document.body.appendChild(ov);
+}
+
+// ── Generar Factura PDF ───────────────────────────
+window.msGenerarFacturaPDF = function(){
+  var ov=document.getElementById('ms-done-overlay');if(ov)ov.remove();
+  var tasa=getTasaHoy()||0,tfSpr=(typeof TF_SPREAD!=='undefined')?TF_SPREAD:0,tasaTF=tasa>0?tasa*(1+tfSpr/100):0;
+  var numP=MS.numPedido||'MS-?',fecha=MS.fechaEmision||new Date().toLocaleDateString('es-VE');
+  var logoB64=typeof FARMERS_LOGO_B64!=='undefined'?FARMERS_LOGO_B64:'';
+  var lineas=[];
+  MS.sucursales.forEach(function(suc){
+    MS.data.forEach(function(p){
+      var desp=p.dist[suc]||0;if(!desp)return;
+      var u=parseFloat(msGetPrecioByMoneda(p.ref,'USD'))||0;
+      lineas.push({ref:p.ref,desc:p.desc+' ['+suc+']',qty:desp,precio:u,sub:+(u*desp).toFixed(2)});
+    });
+  });
+  var totalUSD=lineas.reduce(function(a,l){return a+l.sub;},0);
+  var totalBCV=tasa>0?totalUSD*tasa:0;
+  var filasHtml=lineas.map(function(l,i){
+    return '<tr style="background:'+(i%2===0?'#f8fafc':'#fff')+'">'
+      +'<td style="padding:4px 8px;border:1px solid #e2e8f0;font-size:.7rem;">'+l.ref+'</td>'
+      +'<td style="padding:4px 8px;border:1px solid #e2e8f0;font-size:.7rem;">'+l.desc+'</td>'
+      +'<td style="padding:4px 8px;border:1px solid #e2e8f0;text-align:center;font-size:.7rem;">'+l.qty+'</td>'
+      +'<td style="padding:4px 8px;border:1px solid #e2e8f0;text-align:right;font-size:.7rem;">$'+l.precio.toFixed(4)+'</td>'
+      +'<td style="padding:4px 8px;border:1px solid #e2e8f0;text-align:right;font-size:.7rem;font-weight:700;">$'+l.sub.toFixed(2)+'</td>'
+      +'</tr>';
+  }).join('');
+  var html='<!DOCTYPE html><html><head><meta charset="UTF-8"><style>@page{size:A4 portrait;margin:8mm;}body{font-family:Arial,sans-serif;margin:0;}print-color-adjust:exact;-webkit-print-color-adjust:exact;</style></head><body>'
+    +'<div style="max-width:740px;margin:0 auto;padding:10px;">'
+    +'<div style="display:flex;justify-content:space-between;align-items:center;border-bottom:3px solid #1a2050;padding-bottom:8px;margin-bottom:12px;">'
+    +(logoB64?'<img src="'+logoB64+'" style="height:52px;border-radius:6px;">':'<div style="font-weight:900;font-size:1.2rem;color:#1a2050;">FARMERS C.A.</div>')
+    +'<div style="text-align:right;"><div style="font-size:1rem;font-weight:900;color:#1a2050;">PEDIDO / DESPACHO</div>'
+    +'<div style="font-size:.78rem;color:#64748b;">N° '+numP+' · '+fecha+'</div></div></div>'
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px;font-size:.76rem;">'
+    +'<div style="background:#f8fafc;border-radius:6px;padding:8px;"><div style="font-weight:700;color:#1a2050;margin-bottom:3px;">FARMERS C.A.</div>'
+    +'<div>Tel: 0412-044 5797 · farmersve@gmail.com</div></div>'
+    +'<div style="background:#f8fafc;border-radius:6px;padding:8px;"><div style="font-weight:700;color:#1a2050;margin-bottom:3px;">DISTRIBUCIÓN MULTI-SUCURSAL</div>'
+    +'<div>Sucursales: '+MS.sucursales.join(', ')+'</div>'
+    +(tasa>0?'<div>Tasa BCV: '+tasa.toFixed(2)+' Bs/$</div>':'')+'</div></div>'
+    +'<table style="width:100%;border-collapse:collapse;margin-bottom:12px;">'
+    +'<thead><tr style="background:#1a2050;color:white;">'
+    +'<th style="padding:6px 8px;text-align:left;font-size:.7rem;">REF</th>'
+    +'<th style="padding:6px 8px;text-align:left;font-size:.7rem;">DESCRIPCIÓN</th>'
+    +'<th style="padding:6px 8px;text-align:center;font-size:.7rem;">CANT</th>'
+    +'<th style="padding:6px 8px;text-align:right;font-size:.7rem;">P.UNIT $</th>'
+    +'<th style="padding:6px 8px;text-align:right;font-size:.7rem;">SUBTOTAL $</th>'
+    +'</tr></thead><tbody>'+filasHtml+'</tbody></table>'
+    +'<div style="display:flex;justify-content:flex-end;margin-bottom:16px;">'
+    +'<div style="background:#1a2050;color:white;border-radius:8px;padding:10px 20px;text-align:right;">'
+    +'<div style="font-size:.7rem;opacity:.8;">TOTAL USD</div>'
+    +'<div style="font-size:1.4rem;font-weight:900;">$'+totalUSD.toFixed(2)+'</div>'
+    +(totalBCV>0?'<div style="font-size:.76rem;opacity:.85;">Bs '+totalBCV.toFixed(2)+' (BCV)</div>':'')
+    +'</div></div>'
+    +'<div style="text-align:center;">'
+    +'<button onclick="window.print()" style="background:#1a2050;color:white;border:none;border-radius:8px;padding:10px 24px;cursor:pointer;font-size:.9rem;font-weight:700;margin-right:8px;">🖨️ Imprimir / PDF</button>'
+    +'<button onclick="window.close()" style="background:#f1f5f9;color:#475569;border:1px solid #cbd5e1;border-radius:8px;padding:10px 18px;cursor:pointer;font-size:.9rem;">Cerrar</button>'
+    +'</div></div></body></html>';
+  var w=window.open('','_blank','width=860,height=900');
+  if(w){w.document.write(html);w.document.close();}
+  else showToast('Permite ventanas emergentes','warn');
+  showToast('🧾 Factura generada: '+numP,'success');
+};
+
+// ── Exportar PDF del pedido ───────────────────────
+window.msExportarPDF = function(){
+  if(!MS.data.length){showToast('No hay datos para exportar','warn');return;}
+  var moneda=MS.moneda||'USD';
+  var monLabel=moneda==='BCV'?'BCV $':moneda==='TF'?'TF $':'USD $';
+  var tasa=getTasaHoy()||0,tfSpr=(typeof TF_SPREAD!=='undefined')?TF_SPREAD:0,tasaTF=tasa>0?tasa*(1+tfSpr/100):0;
+  var numP=MS.numPedido||('MS-'+new Date().toISOString().slice(0,10));
+  var fecha=MS.fechaEmision||new Date().toLocaleDateString('es-VE',{day:'2-digit',month:'2-digit',year:'numeric'});
+  var logoB64=typeof FARMERS_LOGO_B64!=='undefined'?FARMERS_LOGO_B64:'';
+  var tasaBCVstr=tasa>0?tasa.toFixed(2)+' Bs/$':'—';
+  var tasaTFstr=tasaTF>0?tasaTF.toFixed(2)+' Bs/$':'—';
+  var grandTotal=0;
+  MS.data.forEach(function(p){var pr=parseFloat(msGetPrecioByMoneda(p.ref,moneda))||0;MS.sucursales.forEach(function(s){grandTotal+=pr*(p.dist[s]||0);});});
+
+  function pmRef(ref){return moneda==='BCV'?msGetPrecioByMoneda(ref,'BCV'):moneda==='TF'?msGetPrecioByMoneda(ref,'TF'):msGetPrecioByMoneda(ref,'USD');}
+
+  var resFilas=MS.data.map(function(p,i){
+    var pr=parseFloat(pmRef(p.ref))||0,td=0;
+    MS.sucursales.forEach(function(s){td+=p.dist[s]||0;});
+    var vm=pr*td;
+    var sucCols=MS.sucursales.map(function(s){
+      var d=p.dist[s]||0;
+      return '<td style="text-align:center;padding:3px 5px;border:1px solid #e2e8f0;font-size:.63rem;">'+(p.pedidos[s]||0)+'</td>'
+            +'<td style="text-align:center;padding:3px 5px;border:1px solid #e2e8f0;font-size:.63rem;font-weight:700;color:'+(d>0?'#16a34a':'#94a3b8')+'">'+(d||'—')+'</td>';
+    }).join('');
+    return '<tr style="background:'+(i%2===0?'#fff':'#f8fafc')+'">'
+      +'<td style="padding:3px 6px;border:1px solid #e2e8f0;font-family:monospace;font-size:.64rem;font-weight:700;color:#1a2050;">'+p.ref+'</td>'
+      +'<td style="padding:3px 6px;border:1px solid #e2e8f0;font-size:.64rem;">'+p.desc+'</td>'
+      +'<td style="text-align:center;padding:3px 5px;border:1px solid #e2e8f0;font-size:.64rem;">'+p.stock+'</td>'
+      +'<td style="text-align:right;padding:3px 5px;border:1px solid #e2e8f0;font-size:.64rem;">$'+pr.toFixed(4)+'</td>'
+      +'<td style="text-align:center;padding:3px 5px;border:1px solid #e2e8f0;font-size:.64rem;">'+p.totalPedido+'</td>'
+      +'<td style="text-align:center;padding:3px 5px;border:1px solid #e2e8f0;font-size:.64rem;font-weight:700;">'+td+'</td>'
+      +'<td style="text-align:right;padding:3px 5px;border:1px solid #e2e8f0;font-size:.64rem;font-weight:700;color:#16a34a;">$'+vm.toFixed(2)+'</td>'
+      +'<td style="text-align:center;padding:3px 5px;border:1px solid #e2e8f0;font-size:.62rem;"><span style="background:'+(p.estado==='completo'?'#dcfce7':p.estado==='parcial'?'#fef9c3':'#fee2e2')+';color:'+(p.estado==='completo'?'#16a34a':p.estado==='parcial'?'#d97706':'#dc2626')+';padding:1px 4px;border-radius:3px;font-size:.58rem;">'+p.estado.toUpperCase()+'</span></td>'
+      +sucCols+'</tr>';
+  }).join('');
+
+  var sucH=MS.sucursales.map(function(s){return '<th colspan="2" style="padding:4px;text-align:center;background:#334155;font-size:.58rem;">'+s+'</th>';}).join('');
+  var sucSH=MS.sucursales.map(function(){return '<th style="padding:3px;text-align:center;background:#475569;font-size:.56rem;">P</th><th style="padding:3px;text-align:center;background:#475569;font-size:.56rem;">D</th>';}).join('');
+
+  var secsSuc=MS.sucursales.map(function(suc){
+    var tvu=0;
+    var filas=MS.data.filter(function(p){return (p.pedidos[suc]||0)>0||(p.dist[suc]||0)>0;}).map(function(p,i){
+      var u=parseFloat(pmRef(p.ref))||0;
+      var pide=p.pedidos[suc]||0,desp=p.dist[suc]||0,vu=u*desp;tvu+=vu;
+      return '<tr style="background:'+(i%2===0?'#fff':'#f8fafc')+'">'
+        +'<td style="padding:4px 8px;border:1px solid #e2e8f0;font-family:monospace;font-size:.68rem;font-weight:700;color:#1a2050;">'+p.ref+'</td>'
+        +'<td style="padding:4px 8px;border:1px solid #e2e8f0;font-size:.68rem;">'+p.desc+'</td>'
+        +'<td style="text-align:center;padding:4px;border:1px solid #e2e8f0;font-size:.68rem;">'+p.stock+'</td>'
+        +'<td style="text-align:center;padding:4px;border:1px solid #e2e8f0;font-size:.68rem;font-weight:700;">'+pide+'</td>'
+        +'<td style="text-align:center;padding:4px;border:1px solid #e2e8f0;font-size:.68rem;font-weight:700;color:'+(desp>=pide?'#16a34a':desp>0?'#d97706':'#dc2626')+';">'+desp+'</td>'
+        +'<td style="text-align:center;padding:4px;border:1px solid #e2e8f0;font-size:.68rem;color:#64748b;">'+(pide-desp||'—')+'</td>'
+        +'<td style="text-align:right;padding:4px 8px;border:1px solid #e2e8f0;font-size:.68rem;">$'+u.toFixed(4)+'</td>'
+        +'<td style="text-align:right;padding:4px 8px;border:1px solid #e2e8f0;font-size:.68rem;font-weight:700;color:#16a34a;">$'+vu.toFixed(2)+'</td>'
+        +'</tr>';
+    }).join('');
+    if(!filas)return '';
+    return '<div style="page-break-before:always;padding:8px 0;">'
+      +'<div style="background:#1a2050;color:white;padding:7px 12px;border-radius:5px 5px 0 0;font-weight:800;font-size:.82rem;">SUCURSAL: '+suc+'</div>'
+      +'<table style="width:100%;border-collapse:collapse;">'
+      +'<thead><tr style="background:#1a2050;color:white;">'
+      +'<th style="padding:5px 8px;text-align:left;font-size:.64rem;">REF</th>'
+      +'<th style="padding:5px 8px;text-align:left;font-size:.64rem;">DESCRIPCIÓN</th>'
+      +'<th style="padding:5px;text-align:center;font-size:.64rem;">STOCK</th>'
+      +'<th style="padding:5px;text-align:center;font-size:.64rem;">PIDE</th>'
+      +'<th style="padding:5px;text-align:center;font-size:.64rem;">DESP</th>'
+      +'<th style="padding:5px;text-align:center;font-size:.64rem;">DIFER</th>'
+      +'<th style="padding:5px 8px;text-align:right;font-size:.64rem;">P.'+monLabel+'</th>'
+      +'<th style="padding:5px 8px;text-align:right;font-size:.64rem;">VENTA '+monLabel+'</th>'
+      +'</tr></thead><tbody>'+filas+'</tbody>'
+      +'<tfoot><tr style="background:#0f172a;color:white;">'
+      +'<td colspan="7" style="padding:5px 8px;text-align:right;font-size:.7rem;font-weight:700;">TOTAL '+monLabel+':</td>'
+      +'<td style="padding:5px 8px;text-align:right;font-size:.78rem;font-weight:900;color:#4ade80;">$'+tvu.toFixed(2)+'</td>'
+      +'</tr></tfoot></table></div>';
+  }).join('');
+
+  var html='<!DOCTYPE html><html><head><meta charset="UTF-8">'
+    +'<style>@page{size:A4 landscape;margin:7mm;}body{font-family:Arial,sans-serif;margin:0;}print-color-adjust:exact;-webkit-print-color-adjust:exact;</style></head><body>'
+    +'<div style="padding:6px;">'
+    +'<div style="display:flex;justify-content:space-between;align-items:center;border-bottom:3px solid #1a2050;padding-bottom:7px;margin-bottom:8px;">'
+    +(logoB64?'<img src="'+logoB64+'" style="height:44px;border-radius:5px;">':'<div style="font-weight:900;font-size:1.1rem;color:#1a2050;">FARMERS C.A.</div>')
+    +'<div style="text-align:center;"><div style="font-size:.95rem;font-weight:900;color:#1a2050;">PEDIDO MULTI-SUCURSAL — '+monLabel+'</div>'
+    +'<div style="font-size:.72rem;color:#64748b;">N° '+numP+' · '+fecha+' · '+MS.sucursales.length+' sucursal(es)</div></div>'
+    +'<div style="text-align:right;font-size:.7rem;color:#64748b;"><div>BCV: '+tasaBCVstr+'</div><div>TF: '+tasaTFstr+'</div></div></div>'
+    +'<table style="width:100%;border-collapse:collapse;margin-bottom:6px;">'
+    +'<thead><tr style="background:#1a2050;color:white;">'
+    +'<th style="padding:4px 6px;text-align:left;font-size:.62rem;">REF</th>'
+    +'<th style="padding:4px 6px;text-align:left;font-size:.62rem;">DESCRIPCIÓN</th>'
+    +'<th style="padding:4px;text-align:center;font-size:.62rem;">STOCK</th>'
+    +'<th style="padding:4px;text-align:right;font-size:.62rem;">P.'+monLabel+'</th>'
+    +'<th style="padding:4px;text-align:center;font-size:.62rem;">T.PED</th>'
+    +'<th style="padding:4px;text-align:center;font-size:.62rem;">T.DESP</th>'
+    +'<th style="padding:4px;text-align:right;font-size:.62rem;">VENTA '+monLabel+'</th>'
+    +'<th style="padding:4px;text-align:center;font-size:.62rem;">ESTADO</th>'
+    +sucH+'</tr>'
+    +'<tr style="background:#334155;color:#e2e8f0;"><th colspan="8"></th>'+sucSH+'</tr>'
+    +'</thead><tbody>'+resFilas+'</tbody>'
+    +'<tfoot><tr style="background:#0f172a;color:white;">'
+    +'<td colspan="6" style="padding:5px 8px;text-align:right;font-weight:800;font-size:.7rem;">TOTAL GENERAL '+monLabel+':</td>'
+    +'<td style="padding:5px 8px;text-align:right;font-weight:900;font-size:.82rem;color:#4ade80;">$'+grandTotal.toFixed(2)+'</td>'
+    +'<td colspan="'+(MS.sucursales.length*2+1)+'"></td>'
+    +'</tr></tfoot></table>'
+    +secsSuc
+    +'<div style="text-align:center;margin-top:12px;">'
+    +'<button onclick="window.print()" style="background:#1a2050;color:white;border:none;border-radius:8px;padding:9px 24px;cursor:pointer;font-size:.88rem;font-weight:700;margin-right:8px;">🖨️ Imprimir / PDF</button>'
+    +'<button onclick="window.close()" style="background:#f1f5f9;color:#475569;border:1px solid #cbd5e1;border-radius:8px;padding:9px 18px;cursor:pointer;font-size:.88rem;">Cerrar</button>'
+    +'</div></div></body></html>';
+  var w=window.open('','_blank','width=1100,height=900');
+  if(w){w.document.write(html);w.document.close();}
+  else showToast('Permite ventanas emergentes','warn');
+  showToast('📄 PDF generado','success');
 };
 
 </script>
