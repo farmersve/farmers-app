@@ -17030,52 +17030,131 @@ window.msAbrirOverlayConfirmado = function(numP, sel, hayPendientes){
 window.msAbrirEtiquetas = function() {
   var ex=document.getElementById('ms-etiquetas-overlay');if(ex)ex.remove();
 
-  // Construir inputs de cajas por sucursal
-  var sucInputs = MS.sucursales.map(function(suc) {
+  var ov=document.createElement('div');
+  ov.id='ms-etiquetas-overlay';
+  ov.style.cssText='position:fixed;inset:0;z-index:99200;background:rgba(0,0,0,.7);display:flex;align-items:center;justify-content:center;';
+
+  var box=document.createElement('div');
+  box.style.cssText='background:white;border-radius:16px;padding:28px 32px;max-width:540px;width:92%;max-height:90vh;overflow-y:auto;';
+
+  // Header
+  var hdr=document.createElement('div');
+  hdr.style.cssText='display:flex;align-items:center;gap:10px;margin-bottom:16px;';
+  hdr.innerHTML='<div style="width:38px;height:38px;border-radius:10px;background:#7c3aed;display:flex;align-items:center;justify-content:center;font-size:1.1rem;">&#127991;&#65039;</div>'
+    +'<div><div style="font-size:1rem;font-weight:800;color:#1a2050;">Etiquetas de despacho</div>'
+    +'<div style="font-size:.75rem;color:#64748b;">'+MS.numPedido+' &middot; '+MS.fechaEmision+'</div></div>';
+  box.appendChild(hdr);
+
+  var desc=document.createElement('div');
+  desc.style.cssText='font-size:.78rem;color:#475569;margin-bottom:14px;';
+  desc.textContent='Verifica los datos de cada sucursal y ajusta si es necesario:';
+  box.appendChild(desc);
+
+  // Card por sucursal
+  MS.sucursales.forEach(function(suc){
     var totalRef=0, totalUnd=0;
     MS.data.forEach(function(p){
       var d=p.dist[suc]||0;
       if(d>0){totalRef++;totalUnd+=d;}
     });
-    return '<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid #f1f5f9;">'
-      +'<div style="flex:1;">'
-      +'<div style="font-weight:700;font-size:.82rem;color:#1a2050;">'+suc+'</div>'
-      +'<div style="font-size:.7rem;color:#94a3b8;">'+totalRef+' refs · '+totalUnd+' uds</div>'
-      +'</div>'
-      +'<div style="display:flex;align-items:center;gap:6px;">'
-      +'<span style="font-size:.72rem;color:#64748b;">Cajas:</span>'
-      +'<input type="number" min="1" max="99" value="1" id="cajas-'+suc.replace(/\s+/g,'_')+'" '
-      +'style="width:56px;padding:5px 8px;border:1.5px solid #cbd5e1;border-radius:6px;font-size:.85rem;font-weight:700;text-align:center;color:#1a2050;">'
-      +'</div>'
-      +'</div>';
-  }).join('');
 
-  var ov=document.createElement('div');
-  ov.id='ms-etiquetas-overlay';
-  ov.style.cssText='position:fixed;inset:0;z-index:99200;background:rgba(0,0,0,.7);display:flex;align-items:center;justify-content:center;';
-  ov.innerHTML='<div style="background:white;border-radius:16px;padding:28px 32px;max-width:500px;width:92%;box-shadow:0 24px 60px rgba(0,0,0,.4);max-height:90vh;overflow-y:auto;">'
-    +'<div style="display:flex;align-items:center;gap:10px;margin-bottom:20px;">'
-    +'<div style="width:38px;height:38px;border-radius:10px;background:#7c3aed;display:flex;align-items:center;justify-content:center;font-size:1.1rem;">🏷️</div>'
-    +'<div>'
-    +'<div style="font-size:1rem;font-weight:800;color:#1a2050;">Etiquetas de despacho</div>'
-    +'<div style="font-size:.75rem;color:#64748b;">'+MS.numPedido+' · '+MS.fechaEmision+'</div>'
-    +'</div>'
-    +'</div>'
-    +'<div style="font-size:.78rem;color:#475569;margin-bottom:14px;">Indica cuántas cajas vas a despachar por sucursal:</div>'
-    +sucInputs
-    +'<div style="margin-top:16px;padding:10px 14px;background:#f5f3ff;border-radius:8px;border:1px solid #ddd6fe;">'
-    +'<div style="font-size:.72rem;color:#5b21b6;font-weight:700;">📋 Información en cada etiqueta</div>'
-    +'<div style="font-size:.68rem;color:#6d28d9;margin-top:3px;">Logo · N° Pedido · Sucursal · Caja X de Y · Fecha · Dirección · QR</div>'
-    +'</div>'
-    +'<div style="display:flex;gap:10px;margin-top:20px;justify-content:flex-end;">'
-    +'<button onclick="document.getElementById(\'ms-etiquetas-overlay\').remove();" '
-    +'style="background:#f1f5f9;color:#475569;border:none;border-radius:8px;padding:10px 18px;cursor:pointer;font-weight:700;font-size:.82rem;">Cancelar</button>'
-    +'<button onclick="msGenerarEtiquetasPDF()" '
-    +'style="background:linear-gradient(135deg,#7c3aed,#5b21b6);color:white;border:none;border-radius:8px;padding:10px 22px;cursor:pointer;font-weight:700;font-size:.82rem;">🖨️ Generar e Imprimir</button>'
-    +'</div>'
-    +'</div>';
+    // Buscar en CLIENTS
+    var clienteData=(typeof CLIENTS!=='undefined'?CLIENTS:[]).find(function(cl){
+      var n=(cl.nombre||'').toUpperCase().replace(/[^A-Z0-9]/g,' ').trim();
+      var s=suc.toUpperCase().replace(/[^A-Z0-9]/g,' ').trim();
+      return n.split(' ').some(function(w){return w.length>3&&s.includes(w);})
+        ||s.split(' ').some(function(w){return w.length>3&&n.includes(w);});
+    })||{};
+
+    var rifVal=clienteData.rif||'';
+    var rsVal=(clienteData.nombre||'').toUpperCase();
+    var idKey=suc.replace(/\W/g,'_');
+
+    var card=document.createElement('div');
+    card.style.cssText='border:1.5px solid #e2e8f0;border-radius:10px;padding:12px 14px;margin-bottom:12px;';
+
+    // Nombre sucursal + refs
+    var sucTit=document.createElement('div');
+    sucTit.style.cssText='display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;';
+    sucTit.innerHTML='<div style="font-weight:800;font-size:.9rem;color:#1a2050;">'+suc+'</div>'
+      +'<div style="font-size:.7rem;color:#94a3b8;">'+totalRef+' refs &middot; '+totalUnd+' uds</div>';
+    card.appendChild(sucTit);
+
+    // Grid de campos
+    var grid=document.createElement('div');
+    grid.style.cssText='display:grid;grid-template-columns:1fr 1fr 80px;gap:8px;';
+
+    // Razón Social
+    var rsWrap=document.createElement('div');
+    rsWrap.innerHTML='<div style="font-size:.65rem;font-weight:700;color:#94a3b8;margin-bottom:3px;">RAZ&Oacute;N SOCIAL</div>';
+    var rsInput=document.createElement('input');
+    rsInput.type='text';
+    rsInput.id='rs-'+idKey;
+    rsInput.value=rsVal;
+    rsInput.placeholder='Razón social del cliente';
+    rsInput.style.cssText='width:100%;padding:6px 8px;border:1.5px solid #e2e8f0;border-radius:6px;font-size:.75rem;color:#1a2050;font-weight:600;box-sizing:border-box;';
+    rsWrap.appendChild(rsInput);
+    grid.appendChild(rsWrap);
+
+    // RIF
+    var rifWrap=document.createElement('div');
+    rifWrap.innerHTML='<div style="font-size:.65rem;font-weight:700;color:#94a3b8;margin-bottom:3px;">RIF</div>';
+    var rifInput=document.createElement('input');
+    rifInput.type='text';
+    rifInput.id='rif-'+idKey;
+    rifInput.value=rifVal;
+    rifInput.placeholder='J-XXXXXXXXX';
+    rifInput.style.cssText='width:100%;padding:6px 8px;border:1.5px solid '+(rifVal?'#e2e8f0':'#fca5a5')+';border-radius:6px;font-size:.75rem;color:#1a2050;font-weight:600;box-sizing:border-box;';
+    // Resaltar si está vacío
+    if(!rifVal) rifInput.style.background='#fff5f5';
+    rifWrap.appendChild(rifInput);
+    grid.appendChild(rifWrap);
+
+    // Cajas
+    var cajasWrap=document.createElement('div');
+    cajasWrap.innerHTML='<div style="font-size:.65rem;font-weight:700;color:#94a3b8;margin-bottom:3px;">CAJAS</div>';
+    var cajasInput=document.createElement('input');
+    cajasInput.type='number';
+    cajasInput.id='cajas-'+idKey;
+    cajasInput.min=1; cajasInput.max=99; cajasInput.value=1;
+    cajasInput.style.cssText='width:100%;padding:6px 8px;border:1.5px solid #e2e8f0;border-radius:6px;font-size:.85rem;font-weight:700;text-align:center;color:#1a2050;box-sizing:border-box;';
+    cajasWrap.appendChild(cajasInput);
+    grid.appendChild(cajasWrap);
+
+    card.appendChild(grid);
+
+    // Aviso si no hay RIF
+    if(!rifVal){
+      var warn=document.createElement('div');
+      warn.style.cssText='font-size:.68rem;color:#dc2626;margin-top:6px;';
+      warn.textContent='RIF no encontrado en base de datos — ingresalo manualmente.';
+      card.appendChild(warn);
+    }
+
+    box.appendChild(card);
+  });
+
+  // Botones
+  var footer=document.createElement('div');
+  footer.style.cssText='display:flex;gap:10px;margin-top:20px;justify-content:flex-end;';
+
+  var btnC=document.createElement('button');
+  btnC.textContent='Cancelar';
+  btnC.style.cssText='background:#f1f5f9;color:#475569;border:none;border-radius:8px;padding:10px 18px;cursor:pointer;font-weight:700;font-size:.82rem;';
+  btnC.onclick=function(){ov.remove();};
+
+  var btnG=document.createElement('button');
+  btnG.textContent='Generar e Imprimir';
+  btnG.style.cssText='background:#7c3aed;color:white;border:none;border-radius:8px;padding:10px 22px;cursor:pointer;font-weight:700;font-size:.82rem;';
+  btnG.onclick=function(){msGenerarEtiquetasPDF();};
+
+  footer.appendChild(btnC);
+  footer.appendChild(btnG);
+  box.appendChild(footer);
+  ov.appendChild(box);
   document.body.appendChild(ov);
 };
+
 
 window.msGenerarEtiquetasPDF = function() {
   var logoB64=typeof FARMERS_LOGO_B64!=='undefined'?FARMERS_LOGO_B64:'';
@@ -17109,14 +17188,19 @@ window.msGenerarEtiquetasPDF = function() {
       totalVol+=volUnd*d;
       totalPeso+=pesoUnd*d;
     });
+    // Leer valores del formulario (editados manualmente si aplica)
+    var idKey=suc.replace(/\W/g,'_');
+    var rifInput=document.getElementById('rif-'+idKey);
+    var rsInput=document.getElementById('rs-'+idKey);
+    var rifCliente=(rifInput&&rifInput.value.trim())||'S/RIF';
+    var razonSocial=((rsInput&&rsInput.value.trim())||suc).toUpperCase();
+    // Dirección desde CLIENTS como fallback
     var clienteData=(typeof CLIENTS!=='undefined'?CLIENTS:[]).find(function(cl){
       var n=(cl.nombre||'').toUpperCase().replace(/[^A-Z0-9]/g,' ').trim();
       var s=suc.toUpperCase().replace(/[^A-Z0-9]/g,' ').trim();
       return n.split(' ').some(function(w){return w.length>3&&s.includes(w);})||s.split(' ').some(function(w){return w.length>3&&n.includes(w);});
     })||{};
-    var rifCliente=clienteData.rif||'S/RIF';
-    var razonSocial=(clienteData.nombre||suc).toUpperCase();
-    var dirCliente=(clienteData.direccion||'').toUpperCase()||'VER DATOS DE CLIENTE';
+    var dirCliente=(clienteData.direccion||'').toUpperCase()||'MARGARITA, NUEVA ESPARTA';
     for(var i=1;i<=numCajas;i++){
       etiquetas.push({suc:suc,caja:i,total:numCajas,refs:totalRef,uds:totalUnd,vol:totalVol,peso:totalPeso,numP:numP,fecha:fecha,rif:rifCliente,rs:razonSocial,dir:dirCliente});
     }
@@ -17125,8 +17209,18 @@ window.msGenerarEtiquetasPDF = function() {
   if(!etiquetas.length){showToast('No hay etiquetas para generar','warn');return;}
 
   // QR via API gratuita (no requiere librería externa)
-  function qrUrl(text){
-    return 'https://api.qrserver.com/v1/create-qr-code/?size=150x150&data='+encodeURIComponent(text);
+  // QR con datos completos de la etiqueta via API externa
+  function qrUrl(e){
+    var data=[
+      'FARMERS C.A.',
+      'PEDIDO: '+e.numP,
+      'FECHA: '+e.fecha,
+      'DESTINATARIO: '+e.suc.toUpperCase(),
+      'RAZON SOCIAL: '+e.rs,
+      'RIF: '+e.rif,
+      'CAJA: '+e.caja+' DE '+e.total
+    ].join(' | ');
+    return 'https://api.qrserver.com/v1/create-qr-code/?size=200x200&qzone=1&data='+encodeURIComponent(data);
   }
 
   // Construir HTML — 8 etiquetas por página (2 cols x 4 filas)
@@ -17196,7 +17290,7 @@ window.msGenerarEtiquetasPDF = function() {
         +'</div>'
         +'</div>'
         +'</div>'
-        +'<div class="etq-qr"><img src="'+qrUrl(e.numP+' | '+e.suc+' | Caja '+e.caja+'/'+e.total)+'" alt="QR"><span class="etq-qr-label">ESCANEAR</span></div>'
+        +'<div class="etq-qr"><img src="'+qrUrl(e)+'" alt="QR"><span class="etq-qr-label">ESCANEAR</span></div>'
         +'</div>'
         +'<div class="etq-footer">'
         +'<span class="etq-dir">MARGARITA, NUEVA ESPARTA · FARMERSVE@GMAIL.COM</span>'
