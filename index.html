@@ -16315,7 +16315,7 @@ function msRenderThead() {
   var thead=document.getElementById('ms-thead'); if(!thead) return;
   var cur=msCur();
   // Colores encabezado por moneda
-  var hdrAcc = MS.moneda==='USD'?'#14b8a6':MS.moneda==='BCV'?'#f59e0b':'#8b5cf6';
+  var hdrAcc='#14b8a6';
 
   // Fila 1 – columnas fijas + grupos de sucursal
   var TH = function(content,extra,rowspan,colspan){
@@ -16384,7 +16384,7 @@ function msRenderTbody(filas) {
   }
 
   var cur=msCur();
-  var hdrAcc=MS.moneda==='USD'?'#14b8a6':MS.moneda==='BCV'?'#f59e0b':'#8b5cf6';
+  var hdrAcc='#14b8a6';
   var bdr='border-right:1px solid #f0f4f8;';
   var bdr2='border-right:2px solid #e2e8f0;';
   var td=function(content,style){ return '<td style="padding:6px 10px;border-bottom:1px solid #f0f4f8;vertical-align:middle;'+style+'">'+content+'</td>'; };
@@ -16472,9 +16472,10 @@ function msRenderTfoot() {
 // ── Totales por sucursal (barra oscura) ──────────
 function msRenderTotalesBar() {
   var bar=document.getElementById('ms-totales-bar'); if(!bar) return;
-  var cur=msCur(), grand=0;
-  var acc=MS.moneda==='USD'?'#14b8a6':MS.moneda==='BCV'?'#f59e0b':'#8b5cf6';
-  var html='<span style="font-size:.6rem;font-weight:700;color:#475569;letter-spacing:1.2px;text-transform:uppercase;flex-shrink:0;align-self:center;">'+MS.moneda+'&nbsp;/&nbsp;sucursal</span>';
+  var cur='$', grand=0;
+  var monLabel=MS.moneda==='BCV'?'BCV $':MS.moneda==='TF'?'TF $':'USD $';
+  var acc='#14b8a6';
+  var html='<span style="font-size:.6rem;font-weight:700;color:#475569;letter-spacing:1.2px;text-transform:uppercase;flex-shrink:0;align-self:center;">'+monLabel+'&nbsp;/&nbsp;sucursal</span>';
   MS.sucursales.forEach(function(s){
     var t=0; MS.data.forEach(function(p){ t+=msGetPrecio(p.r||p.ref)*(p.dist[s]||0); });
     grand+=t;
@@ -16547,14 +16548,15 @@ window.msExportarExcel = function() {
           if(C===0)s=sBold(alt);
           else if(C===1)s=sLeft(alt);
           else if(C>=2&&C<=5)s=sCtr(alt);
-          else if(C>=6&&C<=8)s=sNum(alt);
-          else s=sVta(alt);
+          else if(C===6)s=sNum(alt);
+          else if(C===7)s=sVta(alt);
+          else s=sCtr(alt);
         } else {
           if(C===0)s=sBold(alt);
           else if(C===1)s=sLeft(alt);
-          else if(C===2||C===6||C===7)s=sCtr(alt);
-          else if(C>=3&&C<=5)s=sNum(alt);
-          else if(C>=8&&C<=10)s=sVta(alt);
+          else if(C===2||C===4||C===5||C===7)s=sCtr(alt);
+          else if(C===3)s=sNum(alt);
+          else if(C===6)s=sVta(alt);
           else s=sCtr(alt);
         }
         sc(ws,R,C,val,s);
@@ -16577,33 +16579,33 @@ window.msExportarExcel = function() {
     ['Sucursales:',MS.sucursales.join(' | ')],
     []
   ];
-  var hRes=['REFERENCIA','DESCRIPCIÓN','STOCK','P.USD $','P.BCV $','P.TF $','T.PEDIDO','T.DESP','VENTA USD $','VENTA BCV $','VENTA TF $','ESTADO'];
+  // Solo columna de precio y venta de la moneda seleccionada
+  var hRes=['REFERENCIA','DESCRIPCIÓN','STOCK','P.'+monLabel,'T.PEDIDO','T.DESP','VENTA '+monLabel,'ESTADO'];
   MS.sucursales.forEach(function(s){hRes.push('PIDE\n'+s);hRes.push('DESP\n'+s);hRes.push('VENTA '+monLabel+'\n'+s);});
-  var dRows=[hRes],totU=0,totB=0,totT=0;
+  var dRows=[hRes],totM=0;
   MS.data.forEach(function(p){
-    var u=pu(p.ref),b=pb(p.ref),t=pt(p.ref),td=0;
+    var pr=pm(p.ref),td=0;
     MS.sucursales.forEach(function(s){td+=p.dist[s]||0;});
-    var vu=u*td,vb=b*td,vt=t*td;
-    totU+=vu;totB+=vb;totT+=vt;
+    var vm=pr*td; totM+=vm;
     var row=[p.ref,p.desc,p.stock,
-             u?+u.toFixed(4):'',b?+b.toFixed(4):'',t?+t.toFixed(4):'',
+             pr?+pr.toFixed(4):'',
              p.totalPedido,td,
-             vu?+vu.toFixed(2):'',vb?+vb.toFixed(2):'',vt?+vt.toFixed(2):'',
+             vm?+vm.toFixed(2):'',
              p.estado.toUpperCase()];
     MS.sucursales.forEach(function(s){
-      var pide=p.pedidos[s]||0,desp=p.dist[s]||0,vm=pm(p.ref)*desp;
-      row.push(pide);row.push(desp);row.push(vm?+vm.toFixed(2):'');
+      var pide=p.pedidos[s]||0,desp=p.dist[s]||0,vs=pm(p.ref)*desp;
+      row.push(pide);row.push(desp);row.push(vs?+vs.toFixed(2):'');
     });
     dRows.push(row);
   });
-  var totRow=['','','','','','','TOTALES','',+totU.toFixed(2),+totB.toFixed(2),+totT.toFixed(2),''];
+  var totRow=['','','','','TOTALES','',+totM.toFixed(2),''];
   MS.sucursales.forEach(function(s){
     var tv=0;MS.data.forEach(function(p){tv+=pm(p.ref)*(p.dist[s]||0);});
     totRow.push('');totRow.push('');totRow.push(+tv.toFixed(2));
   });
   dRows.push(totRow);
   var allRes=meta.concat(dRows);
-  var cRes=[{wch:12},{wch:34},{wch:7},{wch:11},{wch:11},{wch:11},{wch:8},{wch:8},{wch:13},{wch:13},{wch:13},{wch:10}];
+  var cRes=[{wch:12},{wch:36},{wch:7},{wch:12},{wch:9},{wch:9},{wch:14},{wch:11}];
   MS.sucursales.forEach(function(){cRes.push({wch:7},{wch:7},{wch:13});});
   var wsRes=mkSheet(allRes,cRes,meta.length,allRes.length-1,false);
   wsRes['!rows']=[{hpt:26},{hpt:14},{hpt:14},{hpt:4},{hpt:30}];
@@ -16616,22 +16618,20 @@ window.msExportarExcel = function() {
       ['N° Pedido:',numP,'Fecha:',fecha,'Moneda:',monLabel,'Tasa BCV:',tasaBCVstr,'Tasa TF:',tasaTFstr],
       []
     ];
-    var hSuc=['REFERENCIA','DESCRIPCIÓN','STOCK','PEDIDO','DESPACHO','DIFERENCIA','P.USD $','P.BCV $','P.TF $','VENTA USD $','VENTA BCV $','VENTA TF $'];
-    var sdRows=[hSuc],tvu=0,tvb=0,tvt=0;
+    // Solo columna de precio y venta de la moneda seleccionada
+    var hSuc=['REFERENCIA','DESCRIPCIÓN','STOCK','PEDIDO','DESPACHO','DIFERENCIA','P.'+monLabel,'VENTA '+monLabel];
+    var sdRows=[hSuc],tvM=0;
     MS.data.forEach(function(p){
       var pide=p.pedidos[suc]||0,desp=p.dist[suc]||0;
       if(!pide&&!desp)return;
-      var u=pu(p.ref),b=pb(p.ref),t=pt(p.ref);
-      var vu=u*desp,vb=b*desp,vt=t*desp;
-      tvu+=vu;tvb+=vb;tvt+=vt;
+      var pr=pm(p.ref),vm=pr*desp; tvM+=vm;
       sdRows.push([p.ref,p.desc,p.stock,pide,desp,pide-desp,
-                   u?+u.toFixed(4):'',b?+b.toFixed(4):'',t?+t.toFixed(4):'',
-                   vu?+vu.toFixed(2):'',vb?+vb.toFixed(2):'',vt?+vt.toFixed(2):'']);
+                   pr?+pr.toFixed(4):'',vm?+vm.toFixed(2):'']);
     });
-    sdRows.push(['','','','','','','TOTALES:','','',+tvu.toFixed(2),+tvb.toFixed(2),+tvt.toFixed(2)]);
+    sdRows.push(['','','','','','','TOTAL '+monLabel+':',+tvM.toFixed(2)]);
     if(sdRows.length>2){
       var allSuc=metaSuc.concat(sdRows);
-      var cSuc=[{wch:12},{wch:32},{wch:7},{wch:7},{wch:8},{wch:9},{wch:11},{wch:11},{wch:11},{wch:13},{wch:13},{wch:13}];
+      var cSuc=[{wch:12},{wch:36},{wch:7},{wch:7},{wch:8},{wch:9},{wch:12},{wch:14}];
       var wsSuc=mkSheet(allSuc,cSuc,metaSuc.length,allSuc.length-1,true);
       wsSuc['!rows']=[{hpt:26},{hpt:14},{hpt:4},{hpt:30}];
       var shName=suc.substring(0,28).replace(/[:\\/?*\[\]]/g,'_');
