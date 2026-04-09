@@ -16521,113 +16521,159 @@ function msApplyExcelStyle(ws, rows) {
 window.msExportarExcel = function() {
   if(!MS.data.length) return;
   var wb = XLSX.utils.book_new();
-  var tasa = getTasaHoy() || 0;
-  var tfSpr = (typeof TF_SPREAD !== 'undefined') ? TF_SPREAD : 0;
-  var tasaTF = tasa > 0 ? tasa * (1 + tfSpr/100) : 0;
-  var fecha = MS.fechaEmision || new Date().toLocaleDateString('es-VE',{day:'2-digit',month:'2-digit',year:'numeric'});
-  var numP = MS.numPedido || ('MS-'+Date.now());
-  var tasaBCVstr = tasa>0 ? tasa.toFixed(2)+' Bs/$' : '—';
-  var tasaTFstr  = tasaTF>0 ? tasaTF.toFixed(2)+' Bs/$' : '—';
+  var tasa = getTasaHoy()||0;
+  var tfSpr = (typeof TF_SPREAD!=='undefined')?TF_SPREAD:0;
+  var tasaTF = tasa>0?tasa*(1+tfSpr/100):0;
+  var fecha = MS.fechaEmision||new Date().toLocaleDateString('es-VE',{day:'2-digit',month:'2-digit',year:'numeric'});
+  var numP = MS.numPedido||('MS-'+Date.now());
+  var tasaBCVstr = tasa>0?tasa.toFixed(2)+' Bs/$':'—';
+  var tasaTFstr  = tasaTF>0?tasaTF.toFixed(2)+' Bs/$':'—';
+  var monedaActiva = MS.moneda||'USD'; // USD | BCV | TF
 
-  // ── HOJA RESUMEN ──────────────────────────────
-  var metaRows = [
-    [' FARMERS C.A. — PEDIDO MULTI-SUCURSAL','','','','','','','','','',''],
-    ['N° Pedido:',numP,'','Fecha:',fecha,'','Tasa BCV:',tasaBCVstr,'','Tasa TF:',tasaTFstr],
-    ['Sucursales:',MS.sucursales.join(' | '),'','','','','','','','',''],
+  // Estilos reutilizables
+  var NAVY='1B1F6B', ORANGE='F47B3E', WHITE='FFFFFF', GRAY='F0F4FF', DKGRAY='334155';
+  var borderThin = {style:'thin',color:{rgb:'CCCCCC'}};
+  var borderAll  = {top:borderThin,bottom:borderThin,left:borderThin,right:borderThin};
+  var borderBold = {style:'medium',color:{rgb:NAVY}};
+  var borderHdr  = {top:{style:'medium',color:{rgb:NAVY}},bottom:{style:'medium',color:{rgb:NAVY}},left:borderThin,right:borderThin};
+
+  function cellStyle(bgHex, fgHex, bold, center, numFmt) {
+    return {
+      fill:{patternType:'solid',fgColor:{rgb:bgHex||WHITE}},
+      font:{bold:!!bold,color:{rgb:fgHex||'000000'},name:'Arial',sz:9},
+      alignment:{horizontal:center?'center':'left',vertical:'center',wrapText:false},
+      border:borderAll,
+      numFmt:numFmt||'General'
+    };
+  }
+
+  function applyStyles(ws, data, rowOffset) {
+    var range = XLSX.utils.decode_range(ws['!ref']);
+    var nRows = data.length;
+    // Fila 0 = título empresa
+    var r0 = rowOffset||0;
+    for(var R=range.s.r; R<=range.e.r; R++) {
+      for(var C=range.s.c; C<=range.e.c; C++) {
+        var addr = XLSX.utils.encode_cell({r:R,c:C});
+        if(!ws[addr]) { ws[addr]={t:'z',v:''}; }
+        var absR = R - range.s.r;
+        var isTitle  = absR===0;
+        var isMeta   = absR>=1 && absR<=2;
+        var isBlank  = absR===3;
+        var isHeader = absR===4;
+        var isTotal  = absR===(nRows-1+r0) || (ws[addr].v && String(ws[addr].v).indexOf('TOTAL')===0);
+        var isData   = !isTitle&&!isMeta&&!isBlank&&!isHeader&&!isTotal;
+        var isNumCol = C>=2;
+        var isEven   = absR%2===0;
+
+        if(isTitle) {
+          ws[addr].s={fill:{patternType:'solid',fgColor:{rgb:NAVY}},font:{bold:true,color:{rgb:WHITE},name:'Arial',sz:12},alignment:{horizontal:'center',vertical:'center'},border:borderAll};
+        } else if(isMeta) {
+          ws[addr].s={fill:{patternType:'solid',fgColor:{rgb:'EEF0FB'}},font:{bold:C===0||C===3||C===6||C===8,color:{rgb:NAVY},name:'Arial',sz:9},alignment:{horizontal:'left',vertical:'center'},border:borderAll};
+        } else if(isBlank) {
+          ws[addr].s={fill:{patternType:'solid',fgColor:{rgb:WHITE}},border:borderAll};
+        } else if(isHeader) {
+          ws[addr].s={fill:{patternType:'solid',fgColor:{rgb:NAVY}},font:{bold:true,color:{rgb:WHITE},name:'Arial',sz:9},alignment:{horizontal:'center',vertical:'center',wrapText:true},border:borderHdr};
+        } else if(isTotal) {
+          ws[addr].s={fill:{patternType:'solid',fgColor:{rgb:'0F172A'}},font:{bold:true,color:{rgb:'4ADE80'},name:'Arial',sz:10},alignment:{horizontal:C>=2?'right':'left',vertical:'center'},border:borderAll,numFmt:C>=6?'"$"#,##0.00':'General'};
+        } else if(isData) {
+          var bg = isEven?'FFFFFF':'F8FAFC';
+          var numFmt = C>=6&&C<=10?'"$"#,##0.00':'General';
+          ws[addr].s={fill:{patternType:'solid',fgColor:{rgb:bg}},font:{color:{rgb:C===0?NAVY:'374151'},name:'Arial',sz:9,bold:C===0},alignment:{horizontal:C>=2?'center':'left',vertical:'center'},border:borderAll,numFmt:numFmt};
+        }
+      }
+    }
+  }
+
+  // ── HOJA RESUMEN (moneda activa) ──────────────
+  var symb = '$'; // siempre $
+  var monLabel = monedaActiva+' '+symb;
+
+  var metaRows=[
+    [' FARMERS C.A. — PEDIDO MULTI-SUCURSAL ('+monedaActiva+')'],
+    ['N° Pedido:',numP,'Fecha:',fecha,'Tasa BCV:',tasaBCVstr,'Tasa TF:',tasaTFstr],
+    ['Sucursales:',MS.sucursales.join(' | ')],
     []
   ];
 
-  var hRes = ['REFERENCIA','DESCRIPCIÓN','STOCK',
-              'P.USD ($)','P.BCV ($)','P.TF ($)',
-              'TOTAL PEDIDO','TOT.DESPACHO',
-              'VENTA USD $','VENTA BCV Bs','VENTA TF Bs','ESTADO'];
+  var hRes=['REFERENCIA','DESCRIPCIÓN','STOCK',
+            'P.'+monedaActiva+' ($)','T.PEDIDO','T.DESPACHO',
+            'VENTA '+monedaActiva+' $','ESTADO'];
   MS.sucursales.forEach(function(s){
-    hRes.push('PIDE '+s); hRes.push('DESP '+s);
-    hRes.push('USD '+s); hRes.push('BCV Bs '+s);
+    hRes.push('PIDE\n'+s); hRes.push('RESP\n'+s); hRes.push(monedaActiva+' $\n'+s);
   });
 
-  var resRows = [hRes];
-  var totUSD=0,totBCV=0,totTF=0;
-
+  var resRows=[hRes], totV=0;
   MS.data.forEach(function(p){
-    var pu = parseFloat(msGetPrecioByMoneda(p.ref,'USD'))||0;
-    var pb = parseFloat(msGetPrecioByMoneda(p.ref,'BCV'))||0;
-    var pt = parseFloat(msGetPrecioByMoneda(p.ref,'TF'))||0;
-    var td=0;
-    MS.sucursales.forEach(function(s){ td+=p.dist[s]||0; });
-    var vusd=pu*td, vbcv=tasa>0?pu*td*tasa:pb*td, vtf=tasaTF>0?pu*td*tasaTF:pt*td;
-    totUSD+=vusd; totBCV+=vbcv; totTF+=vtf;
-    var row=[p.ref,p.desc,p.stock,
-             pu?+pu.toFixed(4):'', pb?+pb.toFixed(4):'', pt?+pt.toFixed(4):'',
+    var pr = parseFloat(msGetPrecioByMoneda(p.ref, monedaActiva))||0;
+    var td=0; MS.sucursales.forEach(function(s){ td+=p.dist[s]||0; });
+    var vt = pr*td; totV+=vt;
+    var row=[p.ref, p.desc, p.stock,
+             pr?+pr.toFixed(4):0,
              p.totalPedido, td,
-             vusd?+vusd.toFixed(2):'', vbcv?+vbcv.toFixed(2):'', vtf?+vtf.toFixed(2):'',
+             vt?+vt.toFixed(2):0,
              p.estado.toUpperCase()];
     MS.sucursales.forEach(function(s){
       var pide=p.pedidos[s]||0, desp=p.dist[s]||0;
-      var su=pu*desp, sbcv=tasa>0?pu*desp*tasa:pb*desp;
-      row.push(pide); row.push(desp);
-      row.push(su?+su.toFixed(2):''); row.push(sbcv?+sbcv.toFixed(2):'');
+      row.push(pide); row.push(desp); row.push(pr&&desp?+(pr*desp).toFixed(2):0);
     });
     resRows.push(row);
   });
-
-  var totRow=['','','','','','','TOTALES','','',
-              +totUSD.toFixed(2),+totBCV.toFixed(2),+totTF.toFixed(2)];
-  MS.sucursales.forEach(function(){ totRow.push('','','',''); });
+  var totRow=['','','','','','TOTALES:',+totV.toFixed(2),''];
+  MS.sucursales.forEach(function(s){
+    var ts=0; MS.data.forEach(function(p){ var pr=parseFloat(msGetPrecioByMoneda(p.ref,monedaActiva))||0; ts+=pr*(p.dist[s]||0); });
+    totRow.push('','',+ts.toFixed(2));
+  });
   resRows.push(totRow);
 
-  var allResumen = metaRows.concat(resRows);
-  var wsRes = XLSX.utils.aoa_to_sheet(allResumen);
-
-  // Anchos columnas resumen
-  var colsRes=[{wch:12},{wch:40},{wch:8},{wch:11},{wch:11},{wch:11},{wch:12},{wch:12},{wch:13},{wch:14},{wch:14},{wch:12}];
-  MS.sucursales.forEach(function(){ colsRes.push({wch:9},{wch:9},{wch:13},{wch:14}); });
+  var allRes = metaRows.concat(resRows);
+  var wsRes = XLSX.utils.aoa_to_sheet(allRes);
+  var nColsRes = 8 + MS.sucursales.length*3;
+  var colsRes=[{wch:12},{wch:38},{wch:7},{wch:12},{wch:9},{wch:9},{wch:14},{wch:11}];
+  MS.sucursales.forEach(function(){ colsRes.push({wch:7},{wch:7},{wch:13}); });
   wsRes['!cols']=colsRes;
-  wsRes['!rows']=[{hpt:22},{hpt:16},{hpt:16},{hpt:6},{hpt:18}];
-
-  XLSX.utils.book_append_sheet(wb, wsRes, 'RESUMEN USD');
+  wsRes['!rows']=[{hpt:26},{hpt:15},{hpt:15},{hpt:4},{hpt:30}];
+  // Merge título
+  wsRes['!merges']=[{s:{r:0,c:0},e:{r:0,c:nColsRes-1}}];
+  applyStyles(wsRes, allRes, 0);
+  XLSX.utils.book_append_sheet(wb, wsRes, 'RESUMEN '+monedaActiva);
 
   // ── HOJA POR SUCURSAL ─────────────────────────
   MS.sucursales.forEach(function(suc){
-    var metaSuc = [
-      [' FARMERS C.A. — DESPACHO: '+suc,'','','','','','','','',''],
-      ['N° Pedido:',numP,'','Fecha:',fecha,'','Tasa BCV:',tasaBCVstr,'','Tasa TF:',tasaTFstr],
+    var metaSuc=[
+      [' FARMERS C.A. — DESPACHO: '+suc+' ('+monedaActiva+')'],
+      ['N° Pedido:',numP,'Fecha:',fecha,'Tasa BCV:',tasaBCVstr,'Tasa TF:',tasaTFstr],
       []
     ];
     var hSuc=['REFERENCIA','DESCRIPCIÓN','STOCK',
               'PEDIDO','DESPACHO','DIFERENCIA',
-              'P.USD ($)','P.BCV ($)','P.TF ($)',
-              'VENTA USD $','VENTA BCV Bs','VENTA TF Bs'];
-    var sdRows=[hSuc];
-    var tvu=0,tvb=0,tvt=0;
+              'P.'+monedaActiva+' ($)','VENTA '+monedaActiva+' $'];
+    var sdRows=[hSuc], tv=0;
     MS.data.forEach(function(p){
       var pide=p.pedidos[suc]||0, desp=p.dist[suc]||0;
       if(!pide&&!desp) return;
-      var pu=parseFloat(msGetPrecioByMoneda(p.ref,'USD'))||0;
-      var pb=parseFloat(msGetPrecioByMoneda(p.ref,'BCV'))||0;
-      var pt=parseFloat(msGetPrecioByMoneda(p.ref,'TF'))||0;
-      var vu=pu*desp, vb=tasa>0?pu*desp*tasa:pb*desp, vt=tasaTF>0?pu*desp*tasaTF:pt*desp;
-      tvu+=vu; tvb+=vb; tvt+=vt;
+      var pr=parseFloat(msGetPrecioByMoneda(p.ref,monedaActiva))||0;
+      var vt=pr*desp; tv+=vt;
       sdRows.push([p.ref,p.desc,p.stock,pide,desp,pide-desp,
-                   pu?+pu.toFixed(4):'', pb?+pb.toFixed(4):'', pt?+pt.toFixed(4):'',
-                   vu?+vu.toFixed(2):'', vb?+vb.toFixed(2):'', vt?+vt.toFixed(2):'']);
+                   pr?+pr.toFixed(4):0, vt?+vt.toFixed(2):0]);
     });
-    sdRows.push(['','','','','','','TOTALES:','','',
-                 +tvu.toFixed(2),+tvb.toFixed(2),+tvt.toFixed(2)]);
+    sdRows.push(['','','','','','TOTALES:','',+tv.toFixed(2)]);
 
     if(sdRows.length>2){
-      var allSuc = metaSuc.concat(sdRows);
-      var wsSuc = XLSX.utils.aoa_to_sheet(allSuc);
-      wsSuc['!cols']=[{wch:12},{wch:38},{wch:8},{wch:8},{wch:9},{wch:10},{wch:11},{wch:11},{wch:11},{wch:13},{wch:14},{wch:14}];
-      wsSuc['!rows']=[{hpt:22},{hpt:16},{hpt:6},{hpt:18}];
-      var shName = suc.substring(0,28).replace(/[:\\/?*\[\]]/g,'_');
+      var allSuc=metaSuc.concat(sdRows);
+      var wsSuc=XLSX.utils.aoa_to_sheet(allSuc);
+      wsSuc['!cols']=[{wch:12},{wch:40},{wch:7},{wch:8},{wch:9},{wch:10},{wch:14},{wch:15}];
+      wsSuc['!rows']=[{hpt:26},{hpt:15},{hpt:4},{hpt:30}];
+      wsSuc['!merges']=[{s:{r:0,c:0},e:{r:0,c:7}}];
+      applyStyles(wsSuc, allSuc, 0);
+      var shName=suc.substring(0,28).replace(/[:\\/?*\[\]]/g,'_');
       XLSX.utils.book_append_sheet(wb, wsSuc, shName);
     }
   });
 
-  var fname = 'Farmers_MS_'+numP+'_'+fecha.replace(/\//g,'-')+'.xlsx';
+  var fname='Farmers_'+monedaActiva+'_'+numP+'_'+fecha.replace(/\//g,'-')+'.xlsx';
   XLSX.writeFile(wb, fname);
-  showToast('✅ Excel descargado — USD + BCV + TF', 'success');
+  showToast('✅ Excel descargado en '+monedaActiva+' $','success');
 };
 
 // ── Obtener precio por moneda explícita ───────────
