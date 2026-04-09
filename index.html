@@ -16755,6 +16755,7 @@ function msShowPedidoConfirmado(numP){
     +'<button onclick="msExportarExcel();document.getElementById(\'ms-done-overlay\').remove();" style="background:#16a34a;color:white;border:none;border-radius:8px;padding:9px 16px;cursor:pointer;font-weight:700;font-size:.78rem;">💾 Excel</button>'
     +'<button onclick="msExportarPDF();document.getElementById(\'ms-done-overlay\').remove();" style="background:#dc2626;color:white;border:none;border-radius:8px;padding:9px 16px;cursor:pointer;font-weight:700;font-size:.78rem;">📄 PDF</button>'
     +'<button onclick="msGenerarFacturaPDF()" style="background:linear-gradient(135deg,#1a2050,#2d3a8c);color:white;border:none;border-radius:8px;padding:9px 16px;cursor:pointer;font-weight:700;font-size:.78rem;">🧾 Factura</button>'
+    +'<button onclick="msAbrirEtiquetas()" style="background:linear-gradient(135deg,#7c3aed,#5b21b6);color:white;border:none;border-radius:8px;padding:9px 16px;cursor:pointer;font-weight:700;font-size:.78rem;">🏷️ Etiquetas</button>'
     +'<button onclick="document.getElementById(\'ms-done-overlay\').remove();" style="background:#f1f5f9;color:#475569;border:none;border-radius:8px;padding:9px 14px;cursor:pointer;font-weight:700;font-size:.78rem;">Cerrar</button>'
     +'</div></div>';
   document.body.appendChild(ov);
@@ -16820,6 +16821,201 @@ window.msGenerarFacturaPDF = function(){
   else showToast('Permite ventanas emergentes','warn');
   showToast('🧾 Factura generada: '+numP,'success');
 };
+
+
+// ── Módulo Etiquetas de Despacho ─────────────────
+window.msAbrirEtiquetas = function() {
+  var ex=document.getElementById('ms-etiquetas-overlay');if(ex)ex.remove();
+
+  // Construir inputs de cajas por sucursal
+  var sucInputs = MS.sucursales.map(function(suc) {
+    var totalRef=0, totalUnd=0;
+    MS.data.forEach(function(p){
+      var d=p.dist[suc]||0;
+      if(d>0){totalRef++;totalUnd+=d;}
+    });
+    return '<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid #f1f5f9;">'
+      +'<div style="flex:1;">'
+      +'<div style="font-weight:700;font-size:.82rem;color:#1a2050;">'+suc+'</div>'
+      +'<div style="font-size:.7rem;color:#94a3b8;">'+totalRef+' refs · '+totalUnd+' uds</div>'
+      +'</div>'
+      +'<div style="display:flex;align-items:center;gap:6px;">'
+      +'<span style="font-size:.72rem;color:#64748b;">Cajas:</span>'
+      +'<input type="number" min="1" max="99" value="1" id="cajas-'+suc.replace(/\s+/g,'_')+'" '
+      +'style="width:56px;padding:5px 8px;border:1.5px solid #cbd5e1;border-radius:6px;font-size:.85rem;font-weight:700;text-align:center;color:#1a2050;">'
+      +'</div>'
+      +'</div>';
+  }).join('');
+
+  var ov=document.createElement('div');
+  ov.id='ms-etiquetas-overlay';
+  ov.style.cssText='position:fixed;inset:0;z-index:99200;background:rgba(0,0,0,.7);display:flex;align-items:center;justify-content:center;';
+  ov.innerHTML='<div style="background:white;border-radius:16px;padding:28px 32px;max-width:500px;width:92%;box-shadow:0 24px 60px rgba(0,0,0,.4);max-height:90vh;overflow-y:auto;">'
+    +'<div style="display:flex;align-items:center;gap:10px;margin-bottom:20px;">'
+    +'<div style="width:38px;height:38px;border-radius:10px;background:#7c3aed;display:flex;align-items:center;justify-content:center;font-size:1.1rem;">🏷️</div>'
+    +'<div>'
+    +'<div style="font-size:1rem;font-weight:800;color:#1a2050;">Etiquetas de despacho</div>'
+    +'<div style="font-size:.75rem;color:#64748b;">'+MS.numPedido+' · '+MS.fechaEmision+'</div>'
+    +'</div>'
+    +'</div>'
+    +'<div style="font-size:.78rem;color:#475569;margin-bottom:14px;">Indica cuántas cajas vas a despachar por sucursal:</div>'
+    +sucInputs
+    +'<div style="margin-top:16px;padding:10px 14px;background:#f5f3ff;border-radius:8px;border:1px solid #ddd6fe;">'
+    +'<div style="font-size:.72rem;color:#5b21b6;font-weight:700;">📋 Información en cada etiqueta</div>'
+    +'<div style="font-size:.68rem;color:#6d28d9;margin-top:3px;">Logo · N° Pedido · Sucursal · Caja X de Y · Fecha · Dirección · QR</div>'
+    +'</div>'
+    +'<div style="display:flex;gap:10px;margin-top:20px;justify-content:flex-end;">'
+    +'<button onclick="document.getElementById(\'ms-etiquetas-overlay\').remove();" '
+    +'style="background:#f1f5f9;color:#475569;border:none;border-radius:8px;padding:10px 18px;cursor:pointer;font-weight:700;font-size:.82rem;">Cancelar</button>'
+    +'<button onclick="msGenerarEtiquetasPDF()" '
+    +'style="background:linear-gradient(135deg,#7c3aed,#5b21b6);color:white;border:none;border-radius:8px;padding:10px 22px;cursor:pointer;font-weight:700;font-size:.82rem;">🖨️ Generar e Imprimir</button>'
+    +'</div>'
+    +'</div>';
+  document.body.appendChild(ov);
+};
+
+window.msGenerarEtiquetasPDF = function() {
+  var logoB64=typeof FARMERS_LOGO_B64!=='undefined'?FARMERS_LOGO_B64:'';
+  var numP=MS.numPedido||'MS-?';
+  var fecha=MS.fechaEmision||new Date().toLocaleDateString('es-VE');
+
+  // Recolectar cajas por sucursal
+  var etiquetas=[];
+  MS.sucursales.forEach(function(suc) {
+    var idKey=suc.replace(/\s+/g,'_');
+    var inp=document.getElementById('cajas-'+idKey);
+    var numCajas=inp?parseInt(inp.value)||1:1;
+    var totalRef=0,totalUnd=0,totalVol=0,totalPeso=0;
+    var ptD={};
+    try{var ptRaw=localStorage.getItem('farmers_pt_data');if(ptRaw){var ptArr=JSON.parse(ptRaw);ptArr.forEach(function(x){ptD[x.r]=x;});}}catch(e){}
+    MS.data.forEach(function(p){
+      var d=p.dist[suc]||0;if(!d)return;
+      totalRef++;totalUnd+=d;
+      var med=(ptD[p.ref]&&ptD[p.ref].medidas)?ptD[p.ref].medidas:{};
+      var vd=parseFloat(med.volDirecto)||0;
+      var l=parseFloat(med.largo)||0,a=parseFloat(med.ancho)||0,h=parseFloat(med.alto)||0;
+      var vol=vd>0?vd:(l&&a&&h?(l*a*h/28316.85):0);
+      totalVol+=vol*d;
+      totalPeso+=(parseFloat(med.peso)||0)*d;
+    });
+    var clienteData=(typeof CLIENTS!=='undefined'?CLIENTS:[]).find(function(cl){
+      var n=(cl.nombre||'').toUpperCase().replace(/[^A-Z0-9]/g,' ').trim();
+      var s=suc.toUpperCase().replace(/[^A-Z0-9]/g,' ').trim();
+      return n.split(' ').some(function(w){return w.length>3&&s.includes(w);})||s.split(' ').some(function(w){return w.length>3&&n.includes(w);});
+    })||{};
+    var rifCliente=clienteData.rif||'S/RIF';
+    var razonSocial=(clienteData.nombre||suc).toUpperCase();
+    var dirCliente=(clienteData.direccion||'').toUpperCase()||'VER DATOS DE CLIENTE';
+    for(var i=1;i<=numCajas;i++){
+      etiquetas.push({suc:suc,caja:i,total:numCajas,refs:totalRef,uds:totalUnd,vol:totalVol,peso:totalPeso,numP:numP,fecha:fecha,rif:rifCliente,rs:razonSocial,dir:dirCliente});
+    }
+  });
+
+  if(!etiquetas.length){showToast('No hay etiquetas para generar','warn');return;}
+
+  // QR via API gratuita (no requiere librería externa)
+  function qrUrl(text){
+    return 'https://api.qrserver.com/v1/create-qr-code/?size=150x150&data='+encodeURIComponent(text);
+  }
+
+  // Construir HTML — 8 etiquetas por página (2 cols x 4 filas)
+  var estilos='<style>'
+    +'@page{size:A4 portrait;margin:8mm;}'
+    +'*{box-sizing:border-box;margin:0;padding:0;text-transform:uppercase;}'
+    +'body{font-family:Arial,sans-serif;background:white;}'
+    +'print-color-adjust:exact;-webkit-print-color-adjust:exact;'
+    +'.grid{display:grid;grid-template-columns:1fr 1fr;gap:7mm;}'
+    +'.etq{border:2.5px solid #1a2050;border-radius:7px;padding:7px;height:auto;display:flex;flex-direction:column;overflow:hidden;page-break-inside:avoid;}'
+    +'.etq-hdr{background:#1a2050;color:white;padding:5px 10px;border-radius:4px;display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;flex-shrink:0;}'
+    +'.etq-logo{height:22px;}'
+    +'.etq-pedido{font-size:8px;font-weight:900;letter-spacing:1px;color:rgba(255,255,255,.9);background:rgba(255,255,255,.15);border-radius:3px;padding:2px 6px;}'
+    +'.etq-body{display:flex;flex:1;gap:8px;min-height:0;}'
+    +'.etq-info{flex:1;display:flex;flex-direction:column;justify-content:space-between;}'
+    +'.etq-empresa{font-size:7.5px;font-weight:700;color:#F47B3E;letter-spacing:.8px;border-bottom:1px solid #f1f5f9;padding-bottom:3px;margin-bottom:3px;}'
+    +'.etq-dest-lbl{font-size:8px;font-weight:700;color:#94a3b8;letter-spacing:.8px;margin-bottom:2px;}'
+    +'.etq-suc{font-size:14px;font-weight:900;color:#1a2050;line-height:1.1;margin-bottom:2px;}'
+    +'.etq-rs{font-size:9px;font-weight:700;color:#1a2050;letter-spacing:.2px;margin-bottom:2px;line-height:1.3;}'
+    +'.etq-rif{font-size:9px;font-weight:700;color:#475569;letter-spacing:.3px;margin-bottom:6px;}'
+    +'.etq-caja{background:#1a2050;color:white;display:inline-block;padding:3px 10px;border-radius:3px;font-size:11px;font-weight:900;letter-spacing:.8px;margin-bottom:6px;padding:5px 14px;}'
+    +'.etq-meta{display:flex;flex-direction:column;gap:2px;}'
+    +'.etq-fecha{font-size:9px;color:#475569;font-weight:700;}'
+    +'.etq-detalle{font-size:7.5px;color:#64748b;font-weight:700;}'
+    +'.etq-qr{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;flex-shrink:0;}'
+    +'.etq-qr img{width:95px;height:95px;border:2px solid #1a2050;border-radius:5px;image-rendering:pixelated;}'
+    +'.etq-totales{display:flex;flex-wrap:wrap;gap:2px;align-items:center;margin-top:2px;}'
+    +'.etq-tot-item{font-size:8.5px;font-weight:900;color:#1a2050;text-transform:uppercase;letter-spacing:.3px;}'
+    +'.etq-tot-sep{font-size:7px;color:#94a3b8;font-weight:700;}'
+    +'.etq-qr-label{font-size:7px;color:#94a3b8;letter-spacing:.8px;font-weight:700;}'
+    +'.etq-footer{border-top:1.5px solid #1a2050;padding-top:4px;margin-top:4px;display:flex;justify-content:space-between;align-items:center;flex-shrink:0;}'
+    +'.etq-dir{font-size:7px;color:#475569;font-weight:700;}'
+    +'.etq-tel{font-size:8.5px;color:#1a2050;font-weight:900;letter-spacing:.3px;}'
+    +'.noprint{display:block;text-align:center;padding:16px;}'
+    +'@media print{.noprint{display:none!important;}body{margin:0;}@page{size:A4 portrait;margin:8mm;}}'
+    +'</style>';
+
+  // Agrupar en páginas de 8
+  var paginas=[];
+  for(var i=0;i<etiquetas.length;i+=8){
+    paginas.push(etiquetas.slice(i,i+8));
+  }
+
+  var paginasHtml=paginas.map(function(pag,pi){
+    var items=pag.map(function(e){
+      return '<div class="etq">'
+        +'<div class="etq-hdr">'
+        +(logoB64?'<img class="etq-logo" src="'+logoB64+'" alt="Farmers">':'<span style="font-size:10px;font-weight:900;letter-spacing:1.5px;">FARMERS C.A.</span>')
+        +'<span class="etq-pedido">N° '+e.numP+'</span>'
+        +'</div>'
+        +'<div class="etq-body">'
+        +'<div class="etq-info">'
+        +'<div class="etq-empresa">REMITENTE: FARMERS C.A. · RIF J-XXXXXXXXX</div>'
+        +'<div class="etq-dest-lbl">DESTINATARIO:</div>'
+        +'<div class="etq-suc">'+e.suc.toUpperCase()+'</div>'
+        +'<div class="etq-rs">'+e.rs+'</div>'
+        +'<div class="etq-rif">RIF: '+e.rif+'</div>'
+        +'<div class="etq-caja">CAJA '+e.caja+' DE '+e.total+'</div>'
+        +'<div class="etq-meta">'
+        +'<div class="etq-fecha">FECHA DESPACHO: '+e.fecha+'</div>'
+        +'<div class="etq-totales">'
+        +'<span class="etq-tot-item">'+e.refs+' REF</span>'
+        +'<span class="etq-tot-sep">·</span>'
+        +'<span class="etq-tot-item">'+e.uds.toLocaleString()+' UDS</span>'
+        +(e.vol>0?'<span class="etq-tot-sep">·</span><span class="etq-tot-item">'+e.vol.toFixed(2)+' FT³</span>':'')
+        +(e.peso>0?'<span class="etq-tot-sep">·</span><span class="etq-tot-item">'+e.peso.toFixed(1)+' KG</span>':'')
+        +'</div>'
+        +'</div>'
+        +'</div>'
+        +'<div class="etq-qr"><img src="'+qrUrl(e.numP+' | '+e.suc+' | Caja '+e.caja+'/'+e.total)+'" alt="QR"><span class="etq-qr-label">ESCANEAR</span></div>'
+        +'</div>'
+        +'<div class="etq-footer">'
+        +'<span class="etq-dir">MARGARITA, NUEVA ESPARTA · FARMERSVE@GMAIL.COM</span>'
+        +'<span class="etq-tel">0412-044 5797</span>'
+        +'</div>'
+        +'</div>';
+    }).join('');
+    var pageBreak=pi>0?'style="page-break-before:always;margin-top:0;"':'';
+    return '<div class="grid" '+pageBreak+'>'+items+'</div>';
+  }).join('');
+
+  var html='<!DOCTYPE html><html><head><meta charset="UTF-8">'+estilos+'</head><body>'
+    +'<div class="noprint" style="margin-bottom:12px;">'
+    +'<button onclick="window.print()" style="background:#1a2050;color:white;border:none;border-radius:8px;padding:10px 28px;cursor:pointer;font-size:.9rem;font-weight:700;margin-right:8px;">🖨️ Imprimir etiquetas ('+etiquetas.length+')</button>'
+    +'<button onclick="window.close()" style="background:#f1f5f9;color:#475569;border:1px solid #cbd5e1;border-radius:8px;padding:10px 18px;cursor:pointer;font-size:.9rem;">Cerrar</button>'
+    +'<span style="margin-left:16px;font-size:.8rem;color:#64748b;">'+etiquetas.length+' etiquetas · '+paginas.length+' página(s) · 8 por página</span>'
+    +'</div>'
+    +paginasHtml
+    +'</body></html>';
+
+  // Cerrar overlay
+  var ov=document.getElementById('ms-etiquetas-overlay');if(ov)ov.remove();
+  var done=document.getElementById('ms-done-overlay');if(done)done.remove();
+
+  var w=window.open('','_blank','width=900,height=950');
+  if(w){w.document.write(html);w.document.close();}
+  else showToast('Permite ventanas emergentes para las etiquetas','warn');
+  showToast('🏷️ '+etiquetas.length+' etiquetas generadas','success');
+};
+
 
 // ── Exportar PDF del pedido ───────────────────────
 window.msExportarPDF = function(){
