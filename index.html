@@ -10237,12 +10237,15 @@ function _catDownloadPDFWithImgs(_prodImgsLocal) {
         if (_refStockFilters.has('LOW') && st > 0 && st <= 10) return true; // Bajo stock: 1-10
         if (_refStockFilters.has('OUT') && st === 0)           return true; // Agotados: 0
         if (_refStockFilters.has('ORD')) {
-          // Usar variable global ptData (RAM) para máxima frescura, con fallback a localStorage
+          // Fuente 1: ptData.exOrdenada (seteado manualmente via Actualizar Ordenada)
           var _ptdOrd = window.ptData || {};
           if (!Object.keys(_ptdOrd).length) {
             try { _ptdOrd = JSON.parse(localStorage.getItem('farmers_pt_data')||'{}'); } catch(e2){}
           }
-          if (!!((_ptdOrd[p.r] && _ptdOrd[p.r].exOrdenada > 0))) return true;
+          if (_ptdOrd[p.r] && _ptdOrd[p.r].exOrdenada > 0) return true;
+          // Fuente 2: p.et (existencias totales del sistema) > stock actual → hay merma en camino
+          var _etOrd = parseInt(p.et) || 0;
+          if (_etOrd > st) return true;
         }
         return false;
       });
@@ -15825,7 +15828,7 @@ window.confirmUploadImages=async function(){
    </div>
    <label style="display:inline-flex;align-items:center;gap:10px;background:linear-gradient(135deg,#0d4f4f,#14b8a6);color:white;padding:12px 28px;border-radius:10px;cursor:pointer;font-weight:700;font-size:.95rem;box-shadow:0 4px 15px rgba(20,184,166,.4);">
     &#128196; Seleccionar Excel o PDF
-    <input type="file" id="ms-file-input" accept=".xlsx,.xls,.pdf" style="display:none;" onchange="msParsearArchivo(this)">
+    <input type="file" id="ms-file-input" accept=".xlsx,.xls,.pdf" multiple style="display:none;" onchange="msParsearArchivo(this)">
    </label>
    <div id="ms-upload-status" style="margin-top:16px;font-size:.82rem;color:#6b7280;"></div>
   </div>
@@ -15951,8 +15954,9 @@ function msSetProgress(pct, msg) {
 // ── Parsear Excel ────────────────────────────────
 // ── Entrada unificada Excel + PDF ────────────────
 window.msParsearArchivo = function(input) {
-  var file = input.files[0];
-  if(!file) return;
+  var files = Array.from(input.files || []);
+  if(!files.length) return;
+  var file = files[0];
   var ext = file.name.split('.').pop().toLowerCase();
   msShowStep(2);
   msSetProgress(5, 'Leyendo archivo...');
@@ -16082,9 +16086,15 @@ async function msAnalizarConIA(rows, pdfBase64, input) {
     if(pdfBase64) {
       // ── PDF: una sola llamada con documento ──
       var prompt =
-        'Analiza este pedido multi-sucursal y extrae todos los productos.\n' +
-        'RESPONDE SOLO JSON sin markdown:\n' +
-        '{"sucursales":["HIPER","MXM.J",...],"productos":[{"ref":"EXC001","desc":"...","stock":288,"pedidos":{"HIPER":15,"MXM.J":4,...}}]}';
+        'Este es un PDF de pedido multi-sucursal de Inversiones Oriente (cliente mayorista venezolano).\n' +
+        'El documento contiene una tabla con filas de productos y columnas por sucursal con cantidades pedidas.\n' +
+        'Cada fila tiene: código/referencia del producto, descripción, y cantidades por sucursal.\n' +
+        'Las sucursales pueden llamarse: HIPER, MXM, MAXI, MERCAMAX, ORIENTE, o similares.\n' +
+        'Los códigos de producto son como: EXC001, GEN045, LUM011, MAT030, MAXK006, etc.\n\n' +
+        'TAREA: Extrae TODOS los productos con sus cantidades por sucursal.\n' +
+        'RESPONDE ÚNICAMENTE con JSON válido, sin texto adicional, sin markdown, sin explicaciones:\n' +
+        '{"sucursales":["SUCURSAL1","SUCURSAL2"],"productos":[{"ref":"EXC001","desc":"DESCRIPCION","stock":0,"pedidos":{"SUCURSAL1":15,"SUCURSAL2":4}}]}\n' +
+        'IMPORTANTE: Incluye TODOS los productos aunque algunas cantidades sean 0. No omitas ninguna fila.';
       var messages = [{
         role: 'user',
         content: [
@@ -16095,14 +16105,31 @@ async function msAnalizarConIA(rows, pdfBase64, input) {
       msSetProgress(50, 'Analizando PDF con IA...');
       var respPDF = await fetch('https://farmers-proxy.farmersve.workers.dev/', {
         method: 'POST', headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({ model:'claude-sonnet-4-20250514', max_tokens:8000, messages: messages })
+        body: JSON.stringify({
+          model:'claude-sonnet-4-20250514',
+          max_tokens:8000,
+          messages: messages,
+          betas: ['pdfs-2024-09-25']
+        })
       });
-      if(!respPDF.ok) throw new Error('HTTP ' + respPDF.status);
+      if(!respPDF.ok) {
+        var errTxt = await respPDF.text();
+        throw new Error('HTTP ' + respPDF.status + ': ' + errTxt.substring(0,200));
+      }
       var dataPDF = await respPDF.json();
-      if(dataPDF.error) throw new Error(dataPDF.error.message || 'Error API');
-      var textoPDF = ((dataPDF.content && dataPDF.content[0]) ? dataPDF.content[0].text : '').replace(/```json[\s\S]*?```|```/g,'').trim();
+      if(dataPDF.error) throw new Error(dataPDF.error.message || JSON.stringify(dataPDF.error));
+      var textoPDF = '';
+      if(dataPDF.content && Array.isArray(dataPDF.content)) {
+        for(var ci=0; ci<dataPDF.content.length; ci++) {
+          if(dataPDF.content[ci].type === 'text') { textoPDF = dataPDF.content[ci].text; break; }
+        }
+      }
+      textoPDF = textoPDF.replace(/```json[\s\S]*?```|```/g,'').trim();
+      if(!textoPDF) throw new Error('La IA no devolvió texto. Respuesta: ' + JSON.stringify(dataPDF).substring(0,200));
       var parsedPDF = msRepararJSON(textoPDF);
-      if(!parsedPDF || !parsedPDF.productos) throw new Error('La IA no devolvió productos del PDF.');
+      if(!parsedPDF || !parsedPDF.productos || !parsedPDF.productos.length) {
+        throw new Error('La IA no reconoció productos. Respuesta IA: ' + textoPDF.substring(0,300));
+      }
       sucursales = parsedPDF.sucursales || [];
       // Normalizar formato PDF al mismo que Excel
       parsedPDF.productos.forEach(function(p){
