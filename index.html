@@ -16249,9 +16249,9 @@ function msGetPrecio(ref) {
 function msCur() { return MS.moneda==='USD'?'$':'Bs'; }
 function msFmt(n) {
   if(!n||isNaN(n)||n===0) return '—';
-  return n.toLocaleString('es-VE',{minimumFractionDigits:2,maximumFractionDigits:2});
+  return parseFloat(n).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g,',');
 }
-function msFmtN(n) { return (n||0).toLocaleString('es-VE'); }
+function msFmtN(n) { return (parseInt(n)||0).toLocaleString('en-US'); }
 
 // ── Moneda ───────────────────────────────────────
 window.msSelectMoneda = function(m) {
@@ -16426,7 +16426,7 @@ function msRenderTbody(filas) {
     // SUCURSALES
     MS.sucursales.forEach(function(s){
       var pide=p.pedidos[s]||0, desp=p.dist[s]||0;
-      var vs=pr>0&&desp>0?msFmt(pr*desp):'—';
+      var vs=pr>0&&desp>0?('$ '+msFmt(pr*desp)):'—';
       var dc=desp===0&&pide>0?'#dc2626':(desp<pide?'#d97706':'#16a34a');
       var db=desp===0&&pide>0?'#fff1f2':(desp<pide?'#fffbeb':'#f0fdf4');
       html+=td(msFmtN(pide), 'text-align:center;color:#9ca3af;font-size:.7rem;border-left:2px solid #e2e8f0;');
@@ -16463,7 +16463,7 @@ function msRenderTfoot() {
     var td_s=0,ts=0; MS.data.forEach(function(p){ var d=p.dist[s]||0; td_s+=d; ts+=msGetPrecio(p.ref)*d; });
     html+='<td style="'+base+'text-align:center;color:#64748b;font-size:.65rem;border-left:2px solid #334155;white-space:nowrap;">'+msFmtN(td_s)+' u</td>';
     html+='<td style="'+base+'text-align:center;color:#fbbf24;">'+msFmtN(td_s)+'</td>';
-    html+='<td style="'+base+'text-align:right;padding:9px 8px;color:#4ade80;background:#052e16;font-size:.68rem;border-right:2px solid #134e2f;white-space:nowrap;">'+cur+' '+msFmt(ts)+'</td>';
+    html+='<td style="'+base+'text-align:right;padding:9px 8px;color:#4ade80;background:#052e16;font-size:.68rem;border-right:2px solid #134e2f;white-space:nowrap;">$ '+msFmt(ts)+'</td>';
   });
   html+='</tr>';
   tf.innerHTML=html;
@@ -16580,14 +16580,15 @@ window.msExportarExcel = function() {
     []
   ];
   // Solo columna de precio y venta de la moneda seleccionada
-  var hRes=['REFERENCIA','DESCRIPCIÓN','STOCK','P.'+monLabel,'T.PEDIDO','T.DESP','VENTA '+monLabel,'ESTADO'];
+  var hRes=['REFERENCIA','DESCRIPCIÓN','CÓD.BARRA','CÓDIGO','STOCK','P.'+monLabel,'T.PEDIDO','T.DESP','VENTA '+monLabel,'ESTADO'];
   MS.sucursales.forEach(function(s){hRes.push('PIDE\n'+s);hRes.push('DESP\n'+s);hRes.push('VENTA '+monLabel+'\n'+s);});
   var dRows=[hRes],totM=0;
   MS.data.forEach(function(p){
     var pr=pm(p.ref),td=0;
     MS.sucursales.forEach(function(s){td+=p.dist[s]||0;});
     var vm=pr*td; totM+=vm;
-    var row=[p.ref,p.desc,p.stock,
+    var pb2=PRODUCTS.find(function(x){return x.r===p.ref;})||{};
+    var row=[p.ref,p.desc,pb2.b||'',pb2.c||'',p.stock,
              pr?+pr.toFixed(4):'',
              p.totalPedido,td,
              vm?+vm.toFixed(2):'',
@@ -16598,14 +16599,14 @@ window.msExportarExcel = function() {
     });
     dRows.push(row);
   });
-  var totRow=['','','','','TOTALES','',+totM.toFixed(2),''];
+  var totRow=['','','','','','TOTALES','',+totM.toFixed(2),''];
   MS.sucursales.forEach(function(s){
     var tv=0;MS.data.forEach(function(p){tv+=pm(p.ref)*(p.dist[s]||0);});
     totRow.push('');totRow.push('');totRow.push(+tv.toFixed(2));
   });
   dRows.push(totRow);
   var allRes=meta.concat(dRows);
-  var cRes=[{wch:12},{wch:36},{wch:7},{wch:12},{wch:9},{wch:9},{wch:14},{wch:11}];
+  var cRes=[{wch:12},{wch:32},{wch:14},{wch:14},{wch:7},{wch:12},{wch:9},{wch:9},{wch:14},{wch:11}];
   MS.sucursales.forEach(function(){cRes.push({wch:7},{wch:7},{wch:13});});
   var wsRes=mkSheet(allRes,cRes,meta.length,allRes.length-1,false);
   wsRes['!rows']=[{hpt:26},{hpt:14},{hpt:14},{hpt:4},{hpt:30}];
@@ -16619,19 +16620,20 @@ window.msExportarExcel = function() {
       []
     ];
     // Solo columna de precio y venta de la moneda seleccionada
-    var hSuc=['REFERENCIA','DESCRIPCIÓN','STOCK','PEDIDO','DESPACHO','DIFERENCIA','P.'+monLabel,'VENTA '+monLabel];
+    var hSuc=['REFERENCIA','DESCRIPCIÓN','CÓD.BARRA','CÓDIGO','STOCK','PEDIDO','DESPACHO','DIFERENCIA','P.'+monLabel,'VENTA '+monLabel];
     var sdRows=[hSuc],tvM=0;
     MS.data.forEach(function(p){
       var pide=p.pedidos[suc]||0,desp=p.dist[suc]||0;
       if(!pide&&!desp)return;
       var pr=pm(p.ref),vm=pr*desp; tvM+=vm;
-      sdRows.push([p.ref,p.desc,p.stock,pide,desp,pide-desp,
+      var pbs=PRODUCTS.find(function(x){return x.r===p.ref;})||{};
+      sdRows.push([p.ref,p.desc,pbs.b||'',pbs.c||'',p.stock,pide,desp,pide-desp,
                    pr?+pr.toFixed(4):'',vm?+vm.toFixed(2):'']);
     });
-    sdRows.push(['','','','','','','TOTAL '+monLabel+':',+tvM.toFixed(2)]);
+    sdRows.push(['','','','','','','','','TOTAL '+monLabel+':',+tvM.toFixed(2)]);
     if(sdRows.length>2){
       var allSuc=metaSuc.concat(sdRows);
-      var cSuc=[{wch:12},{wch:36},{wch:7},{wch:7},{wch:8},{wch:9},{wch:12},{wch:14}];
+      var cSuc=[{wch:12},{wch:30},{wch:14},{wch:14},{wch:7},{wch:7},{wch:8},{wch:9},{wch:12},{wch:14}];
       var wsSuc=mkSheet(allSuc,cSuc,metaSuc.length,allSuc.length-1,true);
       wsSuc['!rows']=[{hpt:26},{hpt:14},{hpt:4},{hpt:30}];
       var shName=suc.substring(0,28).replace(/[:\\/?*\[\]]/g,'_');
@@ -16844,9 +16846,12 @@ window.msExportarPDF = function(){
       return '<td style="text-align:center;padding:3px 5px;border:1px solid #e2e8f0;font-size:.63rem;">'+(p.pedidos[s]||0)+'</td>'
             +'<td style="text-align:center;padding:3px 5px;border:1px solid #e2e8f0;font-size:.63rem;font-weight:700;color:'+(d>0?'#16a34a':'#94a3b8')+'">'+(d||'—')+'</td>';
     }).join('');
+    var pbc=PRODUCTS.find(function(x){return x.r===p.ref;})||{};
     return '<tr style="background:'+(i%2===0?'#fff':'#f8fafc')+'">'
       +'<td style="padding:3px 6px;border:1px solid #e2e8f0;font-family:monospace;font-size:.64rem;font-weight:700;color:#1a2050;">'+p.ref+'</td>'
       +'<td style="padding:3px 6px;border:1px solid #e2e8f0;font-size:.64rem;">'+p.desc+'</td>'
+      +'<td style="text-align:center;padding:3px 5px;border:1px solid #e2e8f0;font-size:.62rem;color:#475569;">'+(pbc.b||'—')+'</td>'
+      +'<td style="text-align:center;padding:3px 5px;border:1px solid #e2e8f0;font-size:.62rem;color:#475569;">'+(pbc.c||'—')+'</td>'
       +'<td style="text-align:center;padding:3px 5px;border:1px solid #e2e8f0;font-size:.64rem;">'+p.stock+'</td>'
       +'<td style="text-align:right;padding:3px 5px;border:1px solid #e2e8f0;font-size:.64rem;">$'+pr.toFixed(4)+'</td>'
       +'<td style="text-align:center;padding:3px 5px;border:1px solid #e2e8f0;font-size:.64rem;">'+p.totalPedido+'</td>'
@@ -16864,9 +16869,12 @@ window.msExportarPDF = function(){
     var filas=MS.data.filter(function(p){return (p.pedidos[suc]||0)>0||(p.dist[suc]||0)>0;}).map(function(p,i){
       var u=parseFloat(pmRef(p.ref))||0;
       var pide=p.pedidos[suc]||0,desp=p.dist[suc]||0,vu=u*desp;tvu+=vu;
+      var pbcs=PRODUCTS.find(function(x){return x.r===p.ref;})||{};
       return '<tr style="background:'+(i%2===0?'#fff':'#f8fafc')+'">'
         +'<td style="padding:4px 8px;border:1px solid #e2e8f0;font-family:monospace;font-size:.68rem;font-weight:700;color:#1a2050;">'+p.ref+'</td>'
         +'<td style="padding:4px 8px;border:1px solid #e2e8f0;font-size:.68rem;">'+p.desc+'</td>'
+        +'<td style="text-align:center;padding:4px;border:1px solid #e2e8f0;font-size:.62rem;color:#475569;">'+(pbcs.b||'—')+'</td>'
+        +'<td style="text-align:center;padding:4px;border:1px solid #e2e8f0;font-size:.62rem;color:#475569;">'+(pbcs.c||'—')+'</td>'
         +'<td style="text-align:center;padding:4px;border:1px solid #e2e8f0;font-size:.68rem;">'+p.stock+'</td>'
         +'<td style="text-align:center;padding:4px;border:1px solid #e2e8f0;font-size:.68rem;font-weight:700;">'+pide+'</td>'
         +'<td style="text-align:center;padding:4px;border:1px solid #e2e8f0;font-size:.68rem;font-weight:700;color:'+(desp>=pide?'#16a34a':desp>0?'#d97706':'#dc2626')+';">'+desp+'</td>'
@@ -16882,6 +16890,8 @@ window.msExportarPDF = function(){
       +'<thead><tr style="background:#1a2050;color:white;">'
       +'<th style="padding:5px 8px;text-align:left;font-size:.64rem;">REF</th>'
       +'<th style="padding:5px 8px;text-align:left;font-size:.64rem;">DESCRIPCIÓN</th>'
+      +'<th style="padding:5px;text-align:center;font-size:.64rem;">CÓD.BARRA</th>'
+      +'<th style="padding:5px;text-align:center;font-size:.64rem;">CÓDIGO</th>'
       +'<th style="padding:5px;text-align:center;font-size:.64rem;">STOCK</th>'
       +'<th style="padding:5px;text-align:center;font-size:.64rem;">PIDE</th>'
       +'<th style="padding:5px;text-align:center;font-size:.64rem;">DESP</th>'
@@ -16890,7 +16900,7 @@ window.msExportarPDF = function(){
       +'<th style="padding:5px 8px;text-align:right;font-size:.64rem;">VENTA '+monLabel+'</th>'
       +'</tr></thead><tbody>'+filas+'</tbody>'
       +'<tfoot><tr style="background:#0f172a;color:white;">'
-      +'<td colspan="7" style="padding:5px 8px;text-align:right;font-size:.7rem;font-weight:700;">TOTAL '+monLabel+':</td>'
+      +'<td colspan="9" style="padding:5px 8px;text-align:right;font-size:.7rem;font-weight:700;">TOTAL '+monLabel+':</td>'
       +'<td style="padding:5px 8px;text-align:right;font-size:.78rem;font-weight:900;color:#4ade80;">$'+tvu.toFixed(2)+'</td>'
       +'</tr></tfoot></table></div>';
   }).join('');
@@ -16907,6 +16917,8 @@ window.msExportarPDF = function(){
     +'<thead><tr style="background:#1a2050;color:white;">'
     +'<th style="padding:4px 6px;text-align:left;font-size:.62rem;">REF</th>'
     +'<th style="padding:4px 6px;text-align:left;font-size:.62rem;">DESCRIPCIÓN</th>'
+    +'<th style="padding:4px;text-align:center;font-size:.62rem;">CÓD.BARRA</th>'
+    +'<th style="padding:4px;text-align:center;font-size:.62rem;">CÓDIGO</th>'
     +'<th style="padding:4px;text-align:center;font-size:.62rem;">STOCK</th>'
     +'<th style="padding:4px;text-align:right;font-size:.62rem;">P.'+monLabel+'</th>'
     +'<th style="padding:4px;text-align:center;font-size:.62rem;">T.PED</th>'
@@ -16919,7 +16931,7 @@ window.msExportarPDF = function(){
     +'<tfoot><tr style="background:#0f172a;color:white;">'
     +'<td colspan="6" style="padding:5px 8px;text-align:right;font-weight:800;font-size:.7rem;">TOTAL GENERAL '+monLabel+':</td>'
     +'<td style="padding:5px 8px;text-align:right;font-weight:900;font-size:.82rem;color:#4ade80;">$'+grandTotal.toFixed(2)+'</td>'
-    +'<td colspan="'+(MS.sucursales.length*2+1)+'"></td>'
+    +'<td colspan="'+(MS.sucursales.length*2+3)+'"></td>'
     +'</tr></tfoot></table>'
     +secsSuc
     +'<div style="text-align:center;margin-top:12px;">'
