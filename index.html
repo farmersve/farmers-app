@@ -16704,12 +16704,13 @@ window.msAbrirSelectorDespacho = function(){
   // Cards por sucursal
   MS.sucursales.forEach(function(suc){
     var totalRef=0,totalUnd=0,totalUSD=0;
+    var monedaModal = MS.moneda || 'USD';
     MS.data.forEach(function(p){
       var d=p.dist[suc]||0;
       if(!d) return;
       totalRef++;
       totalUnd+=d;
-      totalUSD+=msGetPrecioByMoneda(p.ref,'USD')*d;
+      totalUSD+=msGetPrecioByMoneda(p.ref, monedaModal)*d;
     });
     var est=MS.sucursalesEstado[suc]||'pendiente';
     var yaEmitida=(est==='emitido'||est==='confirmado');
@@ -16727,11 +16728,12 @@ window.msAbrirSelectorDespacho = function(){
     chk.style.cssText='width:16px;height:16px;accent-color:#1a2050;cursor:pointer;flex-shrink:0;';
     card.appendChild(chk);
 
+    var monedaSimbolo = monedaModal==='BCV'?'BCV $':monedaModal==='TF'?'TF $':'$';
     var info=document.createElement('div');
     info.style.flex='1';
     var badge=yaEmitida?'<span style="font-size:.62rem;background:#dcfce7;color:#166534;border-radius:4px;padding:1px 5px;font-weight:700;margin-left:5px;">YA EMITIDA</span>':'';
     info.innerHTML='<div style="font-weight:800;font-size:.85rem;color:#1a2050;">'+suc+badge+'</div>'
-      +'<div style="font-size:.72rem;color:#64748b;">'+totalRef+' refs · '+totalUnd+' uds · $'+totalUSD.toFixed(2)+'</div>';
+      +'<div style="font-size:.72rem;color:#64748b;">'+totalRef+' refs · '+totalUnd+' uds · '+monedaSimbolo+totalUSD.toFixed(2)+'</div>';
     card.appendChild(info);
     box.appendChild(card);
   });
@@ -17035,7 +17037,7 @@ window.msAbrirEtiquetas = function() {
   ov.style.cssText='position:fixed;inset:0;z-index:99200;background:rgba(0,0,0,.7);display:flex;align-items:center;justify-content:center;';
 
   var box=document.createElement('div');
-  box.style.cssText='background:white;border-radius:16px;padding:28px 32px;max-width:540px;width:92%;max-height:90vh;overflow-y:auto;';
+  box.style.cssText='background:white;border-radius:16px;padding:28px 32px;max-width:560px;width:92%;max-height:90vh;overflow-y:auto;';
 
   // Header
   var hdr=document.createElement('div');
@@ -17047,10 +17049,83 @@ window.msAbrirEtiquetas = function() {
 
   var desc=document.createElement('div');
   desc.style.cssText='font-size:.78rem;color:#475569;margin-bottom:14px;';
-  desc.textContent='Verifica los datos de cada sucursal y ajusta si es necesario:';
+  desc.textContent='Haz clic en RAZÓN SOCIAL para buscar en el directorio de clientes:';
   box.appendChild(desc);
 
-  // Card por sucursal
+  // ── Helper: abrir selector de cliente ────────────
+  function abrirSelectorCliente(idKey, onSelect) {
+    var exSel=document.getElementById('ms-cl-sel-'+idKey);
+    if(exSel){exSel.remove();return;}
+
+    var clientes=typeof CLIENTS!=='undefined'?CLIENTS:[];
+    var sel=document.createElement('div');
+    sel.id='ms-cl-sel-'+idKey;
+    sel.style.cssText='position:absolute;left:0;right:0;top:100%;z-index:99900;background:white;'
+      +'border:1.5px solid #7c3aed;border-radius:10px;box-shadow:0 8px 32px rgba(0,0,0,.18);'
+      +'max-height:260px;display:flex;flex-direction:column;margin-top:2px;';
+
+    // Búsqueda
+    var searchWrap=document.createElement('div');
+    searchWrap.style.cssText='padding:8px 10px;border-bottom:1px solid #f1f5f9;flex-shrink:0;';
+    var searchInput=document.createElement('input');
+    searchInput.type='text';
+    searchInput.placeholder='Buscar por nombre o RIF...';
+    searchInput.style.cssText='width:100%;padding:6px 10px;border:1.5px solid #e2e8f0;border-radius:6px;font-size:.78rem;color:#1a2050;box-sizing:border-box;outline:none;';
+    searchWrap.appendChild(searchInput);
+    sel.appendChild(searchWrap);
+
+    // Lista
+    var lista=document.createElement('div');
+    lista.style.cssText='overflow-y:auto;flex:1;';
+
+    function renderLista(filtro) {
+      lista.innerHTML='';
+      var q=(filtro||'').toUpperCase().trim();
+      var filtrados=clientes.filter(function(cl){
+        if(!q) return true;
+        return (cl.nombre||'').toUpperCase().includes(q)||(cl.rif||'').toUpperCase().includes(q);
+      });
+      if(!filtrados.length){
+        var empty=document.createElement('div');
+        empty.style.cssText='padding:14px;text-align:center;font-size:.75rem;color:#94a3b8;';
+        empty.textContent='Sin resultados';
+        lista.appendChild(empty);
+        return;
+      }
+      filtrados.forEach(function(cl){
+        var item=document.createElement('div');
+        item.style.cssText='padding:9px 12px;cursor:pointer;border-bottom:1px solid #f8fafc;'
+          +'display:flex;flex-direction:column;gap:2px;transition:background .1s;';
+        item.innerHTML='<div style="font-weight:700;font-size:.78rem;color:#1a2050;">'+(cl.nombre||'')+'</div>'
+          +'<div style="font-size:.68rem;color:#64748b;">'+(cl.rif||'S/RIF')
+          +(cl.tel?' &nbsp;·&nbsp; '+cl.tel:'')+'</div>';
+        item.onmouseover=function(){this.style.background='#f5f3ff';};
+        item.onmouseout=function(){this.style.background='';};
+        item.onclick=function(){
+          onSelect(cl);
+          sel.remove();
+        };
+        lista.appendChild(item);
+      });
+    }
+
+    renderLista('');
+    sel.appendChild(lista);
+
+    searchInput.oninput=function(){renderLista(this.value);};
+    searchInput.onkeydown=function(e){if(e.key==='Escape')sel.remove();};
+
+    // Cerrar al click fuera
+    setTimeout(function(){
+      document.addEventListener('mousedown',function fn(e){
+        if(!sel.contains(e.target)){sel.remove();document.removeEventListener('mousedown',fn);}
+      });
+    },100);
+
+    return sel;
+  }
+
+  // ── Card por sucursal ─────────────────────────────
   MS.sucursales.forEach(function(suc){
     var totalRef=0, totalUnd=0;
     MS.data.forEach(function(p){
@@ -17058,7 +17133,7 @@ window.msAbrirEtiquetas = function() {
       if(d>0){totalRef++;totalUnd+=d;}
     });
 
-    // Buscar en CLIENTS
+    // Auto-match en CLIENTS
     var clienteData=(typeof CLIENTS!=='undefined'?CLIENTS:[]).find(function(cl){
       var n=(cl.nombre||'').toUpperCase().replace(/[^A-Z0-9]/g,' ').trim();
       var s=suc.toUpperCase().replace(/[^A-Z0-9]/g,' ').trim();
@@ -17073,30 +17148,56 @@ window.msAbrirEtiquetas = function() {
     var card=document.createElement('div');
     card.style.cssText='border:1.5px solid #e2e8f0;border-radius:10px;padding:12px 14px;margin-bottom:12px;';
 
-    // Nombre sucursal + refs
+    // Título sucursal
     var sucTit=document.createElement('div');
     sucTit.style.cssText='display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;';
     sucTit.innerHTML='<div style="font-weight:800;font-size:.9rem;color:#1a2050;">'+suc+'</div>'
       +'<div style="font-size:.7rem;color:#94a3b8;">'+totalRef+' refs &middot; '+totalUnd+' uds</div>';
     card.appendChild(sucTit);
 
-    // Grid de campos
+    // Grid
     var grid=document.createElement('div');
     grid.style.cssText='display:grid;grid-template-columns:1fr 1fr 80px;gap:8px;';
 
-    // Razón Social
+    // ── Razón Social con selector ─────────────────
     var rsWrap=document.createElement('div');
+    rsWrap.style.position='relative';
     rsWrap.innerHTML='<div style="font-size:.65rem;font-weight:700;color:#94a3b8;margin-bottom:3px;">RAZ&Oacute;N SOCIAL</div>';
+
     var rsInput=document.createElement('input');
     rsInput.type='text';
     rsInput.id='rs-'+idKey;
     rsInput.value=rsVal;
-    rsInput.placeholder='Razón social del cliente';
-    rsInput.style.cssText='width:100%;padding:6px 8px;border:1.5px solid #e2e8f0;border-radius:6px;font-size:.75rem;color:#1a2050;font-weight:600;box-sizing:border-box;';
+    rsInput.placeholder='Haz clic para buscar...';
+    rsInput.readOnly=true;
+    rsInput.style.cssText='width:100%;padding:6px 8px;border:1.5px solid '+(rsVal?'#7c3aed':'#fca5a5')+';'
+      +'border-radius:6px;font-size:.75rem;color:#1a2050;font-weight:600;box-sizing:border-box;'
+      +'cursor:pointer;background:'+(rsVal?'#faf7ff':'#fff5f5')+';';
+
+    // Ícono lupa
+    var lupaSpan=document.createElement('span');
+    lupaSpan.textContent='🔍';
+    lupaSpan.style.cssText='position:absolute;right:8px;top:50%;transform:translateY(-2px);font-size:.7rem;pointer-events:none;';
+
+    function abrirSelector(){
+      var s=abrirSelectorCliente(idKey,function(cl){
+        rsInput.value=(cl.nombre||'').toUpperCase();
+        rifInput.value=cl.rif||'';
+        rsInput.style.borderColor='#7c3aed';
+        rsInput.style.background='#faf7ff';
+        rifInput.style.borderColor='#7c3aed';
+        rifInput.style.background='#faf7ff';
+        if(warnEl) warnEl.style.display='none';
+      });
+      if(s) rsWrap.appendChild(s);
+    }
+
+    rsInput.onclick=abrirSelector;
     rsWrap.appendChild(rsInput);
+    rsWrap.appendChild(lupaSpan);
     grid.appendChild(rsWrap);
 
-    // RIF
+    // ── RIF ──────────────────────────────────────
     var rifWrap=document.createElement('div');
     rifWrap.innerHTML='<div style="font-size:.65rem;font-weight:700;color:#94a3b8;margin-bottom:3px;">RIF</div>';
     var rifInput=document.createElement('input');
@@ -17104,13 +17205,13 @@ window.msAbrirEtiquetas = function() {
     rifInput.id='rif-'+idKey;
     rifInput.value=rifVal;
     rifInput.placeholder='J-XXXXXXXXX';
-    rifInput.style.cssText='width:100%;padding:6px 8px;border:1.5px solid '+(rifVal?'#e2e8f0':'#fca5a5')+';border-radius:6px;font-size:.75rem;color:#1a2050;font-weight:600;box-sizing:border-box;';
-    // Resaltar si está vacío
-    if(!rifVal) rifInput.style.background='#fff5f5';
+    rifInput.style.cssText='width:100%;padding:6px 8px;border:1.5px solid '+(rifVal?'#e2e8f0':'#fca5a5')+';'
+      +'border-radius:6px;font-size:.75rem;color:#1a2050;font-weight:600;box-sizing:border-box;'
+      +'background:'+(rifVal?'white':'#fff5f5')+';';
     rifWrap.appendChild(rifInput);
     grid.appendChild(rifWrap);
 
-    // Cajas
+    // ── Cajas ─────────────────────────────────────
     var cajasWrap=document.createElement('div');
     cajasWrap.innerHTML='<div style="font-size:.65rem;font-weight:700;color:#94a3b8;margin-bottom:3px;">CAJAS</div>';
     var cajasInput=document.createElement('input');
@@ -17123,12 +17224,13 @@ window.msAbrirEtiquetas = function() {
 
     card.appendChild(grid);
 
-    // Aviso si no hay RIF
-    if(!rifVal){
-      var warn=document.createElement('div');
-      warn.style.cssText='font-size:.68rem;color:#dc2626;margin-top:6px;';
-      warn.textContent='RIF no encontrado en base de datos — ingresalo manualmente.';
-      card.appendChild(warn);
+    // Aviso RIF/RS vacío
+    var warnEl=null;
+    if(!rifVal||!rsVal){
+      warnEl=document.createElement('div');
+      warnEl.style.cssText='font-size:.68rem;color:#7c3aed;margin-top:6px;display:flex;align-items:center;gap:4px;';
+      warnEl.innerHTML='<span>👆</span><span>Haz clic en RAZ&Oacute;N SOCIAL para seleccionar el cliente del directorio</span>';
+      card.appendChild(warnEl);
     }
 
     box.appendChild(card);
@@ -17154,7 +17256,6 @@ window.msAbrirEtiquetas = function() {
   ov.appendChild(box);
   document.body.appendChild(ov);
 };
-
 
 window.msGenerarEtiquetasPDF = function() {
   var logoB64=typeof FARMERS_LOGO_B64!=='undefined'?FARMERS_LOGO_B64:'';
