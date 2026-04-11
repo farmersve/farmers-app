@@ -16044,38 +16044,124 @@ function msRowsToText(rows) {
 
 // ── PASO 1: detectar estructura del Excel ────────
 async function msDetectarEstructura(rows) {
-  var muestra = msRowsToText(rows.slice(0, 5));
+  var muestra = msRowsToText(rows.slice(0, 6));
   var prompt =
     'Eres experto en pedidos de distribución. Analiza estas primeras filas de un Excel:\n\n' +
     muestra + '\n\n' +
     'Identifica exactamente:\n' +
     '1. El índice (0-based) de la columna REFERENCIA de producto\n' +
-    '2. El índice de la columna INVENTARIO/STOCK\n' +
+    '2. El índice de la columna INVENTARIO/STOCK (puede llamarse INV, STOCK, EXIST, SALDO)\n' +
     '3. El índice de la columna DESCRIPCIÓN (o -1 si no existe)\n' +
-    '4. La fila índice (0-based) que tiene los encabezados\n' +
-    '5. Los nombres limpios de sucursales (sin prefijo PED/PEDIDO) en orden de columna\n\n' +
+    '4. La fila índice (0-based) que contiene los encabezados de columna\n' +
+    '5. Para cada sucursal: su nombre limpio (sin prefijo PED/PEDIDO/CANT) y su índice de columna exacto\n\n' +
+    'CRÍTICO: sucursalesCols debe tener exactamente un índice por sucursal, en el mismo orden.\n' +
     'RESPONDE SOLO JSON sin markdown:\n' +
-    '{"refCol":2,"invCol":4,"descCol":1,"headerRow":1,"sucursales":["HIPER","MXM.J","MXM.G",...]}';
-  var texto = await msCallProxy([{role:'user', content: prompt}], 800);
-  return JSON.parse(texto);
+    '{"refCol":0,"invCol":1,"descCol":2,"headerRow":1,' +
+    '"sucursales":["MXM.CLA","MXM.JORGE","MXM.ECC","AZ.AB"],' +
+    '"sucursalesCols":[4,5,6,7]}\n' +
+    'Asegúrate que sucursales.length === sucursalesCols.length.';
+  var texto = await msCallProxy([{role:'user', content: prompt}], 1000);
+  var parsed = JSON.parse(texto);
+
+  // ── VERIFICACIÓN ESTRICTA contra el encabezado real del Excel ──────────────
+  // La IA puede equivocarse en los índices. Verificamos contra la fila real.
+  var headerRow = rows[parsed.headerRow] || rows[0] || [];
+  var totalCols = headerRow.length;
+
+  // 1. Verificar refCol — debe contener texto tipo referencia en la primera fila de datos
+  var dataRow0 = rows[(parsed.headerRow||0) + 1] || [];
+  var refVal = String(dataRow0[parsed.refCol]||'').trim();
+  if(!/^[A-Z]{2,6}\d{1,4}$/i.test(refVal)) {
+    // Buscar en todas las columnas la que tenga un valor tipo EXC001/MAT001
+    for(var ci=0; ci<dataRow0.length; ci++){
+      if(/^[A-Z]{2,6}\d{1,4}$/i.test(String(dataRow0[ci]||'').trim())){
+        parsed.refCol = ci; break;
+      }
+    }
+  }
+
+  // 2. Verificar y corregir sucursalesCols buscando los nombres en la fila de encabezado
+  if(parsed.sucursales && parsed.sucursales.length > 0) {
+    var sucColsVerificadas = parsed.sucursales.map(function(nombre, idx) {
+      // Índice que dijo la IA
+      var colIA = (parsed.sucursalesCols && parsed.sucursalesCols[idx] != null)
+                  ? parsed.sucursalesCols[idx] : -1;
+
+      // Verificar: el encabezado en esa columna debe contener el nombre de la sucursal
+      var encIA = String(headerRow[colIA]||'').toUpperCase().replace(/[^A-Z0-9.]/g,'');
+      var nomBusc = nombre.toUpperCase().replace(/[^A-Z0-9.]/g,'');
+      if(colIA >= 0 && colIA < totalCols && encIA.includes(nomBusc)) {
+        return colIA; // IA acertó
+      }
+
+      // IA no acertó — buscar el nombre en toda la fila de encabezado
+      for(var ci2=0; ci2<headerRow.length; ci2++){
+        var h = String(headerRow[ci2]||'').toUpperCase().replace(/[^A-Z0-9.]/g,'');
+        if(h.includes(nomBusc) || nomBusc.includes(h.substring(0,4))){
+          return ci2;
+        }
+      }
+
+      // No encontrado — lanzar error para no procesar con columna incorrecta
+      throw new Error(
+        'No se encontró la columna de sucursal "' + nombre + '" en el encabezado del Excel. ' +
+        'Encabezados disponibles: ' + headerRow.map(function(h,i){return i+'='+h;}).join(', ')
+      );
+    });
+    parsed.sucursalesCols = sucColsVerificadas;
+  }
+
+  // 3. Validación final — debe haber al menos una sucursal con columna válida
+  if(!parsed.sucursalesCols || parsed.sucursalesCols.length === 0) {
+    throw new Error('No se pudieron identificar las columnas de sucursales en el Excel.');
+  }
+  if(parsed.sucursalesCols.length !== (parsed.sucursales||[]).length) {
+    throw new Error('Número de sucursales (' + (parsed.sucursales||[]).length +
+      ') no coincide con columnas encontradas (' + parsed.sucursalesCols.length + ').');
+  }
+
+  return parsed;
 }
 
-// ── PASO 2: extraer productos de un lote ─────────
+// ── PASO 2: extraer productos DIRECTO del Excel (sin IA) ────
+// Las cantidades se leen célula a célula — cero interpretación, cero errores.
+function msExtraerLoteDirecto(rows, estructura) {
+  var resultados = [];
+  var refCol  = estructura.refCol;
+  var invCol  = estructura.invCol;
+  var descCol = estructura.descCol;
+  var sucCols = estructura.sucursalesCols; // array de índices de columna por sucursal
+
+  rows.forEach(function(row) {
+    if(!row) return;
+    var ref = String(row[refCol]||'').trim();
+    if(ref.length < 2) return; // fila vacía o sin referencia válida
+
+    var stock = parseInt(row[invCol])||0;
+    var desc  = descCol >= 0 ? String(row[descCol]||'').trim() : '';
+
+    // Leer cantidad de cada sucursal DIRECTAMENTE de la celda correspondiente
+    var q = sucCols.map(function(col){
+      if(col < 0 || col >= row.length) return 0;
+      var val = row[col];
+      if(val === null || val === undefined || val === '') return 0;
+      var n = parseInt(val);
+      return (isNaN(n) || n < 0) ? 0 : n;
+    });
+
+    resultados.push({ r: ref, d: desc, s: stock, q: q });
+  });
+  return resultados;
+}
+
+// msExtraerLote — wrapper que usa lectura directa
 async function msExtraerLote(rows, estructura) {
-  var sJSON = JSON.stringify(estructura.sucursales);
-  var tablaTexto = msRowsToText(rows);
-  var prompt =
-    'Tienes este lote de filas de un Excel de pedidos (col ' + estructura.refCol + '=ref, col ' +
-    estructura.invCol + '=stock, col ' + estructura.descCol + '=desc).\n' +
-    'Sucursales en orden de columna de pedido: ' + sJSON + '\n\n' +
-    tablaTexto + '\n\n' +
-    'Extrae TODOS los productos con referencia válida (ej: EXC001, MAT015, LUM034).\n' +
-    'RESPONDE SOLO JSON sin markdown, sin texto extra:\n' +
-    '{"p":[{"r":"EXC001","d":"DESC","s":288,"q":[15,4,0,6,6,0,6,4,8,15,6,4,6,0,6]}]}\n' +
-    'Donde "q" es array de cantidades en el mismo orden que las sucursales.';
-  var texto = await msCallProxy([{role:'user', content: prompt}], 4000);
-  var parsed = msRepararJSON(texto);
-  return (parsed && parsed.p) ? parsed.p : [];
+  // Si tenemos índices de columna de sucursales: leer directo (exacto, sin IA)
+  if(estructura.sucursalesCols && estructura.sucursalesCols.length > 0) {
+    return msExtraerLoteDirecto(rows, estructura);
+  }
+  // Fallback: no debería llegar aquí si msDetectarEstructura funcionó bien
+  return [];
 }
 
 // ── ORQUESTADOR PRINCIPAL ─────────────────────────
@@ -16152,28 +16238,49 @@ async function msAnalizarConIA(rows, pdfBase64, input) {
       });
       if(!dataRows.length) throw new Error('No se encontraron filas de productos.');
 
-      // Procesar en lotes de 40
-      var LOTE = 40;
-      var totalLotes = Math.ceil(dataRows.length / LOTE);
-      for(var i=0; i<dataRows.length; i+=LOTE) {
-        var loteNum = Math.floor(i/LOTE) + 1;
-        msSetProgress(35 + Math.floor(55 * (loteNum-1) / totalLotes),
-          'Procesando productos ' + (i+1) + '–' + Math.min(i+LOTE, dataRows.length) + ' de ' + dataRows.length + '...');
-        var lote = dataRows.slice(i, i+LOTE);
-        var items = await msExtraerLote(lote, estructura);
-        todosProductos = todosProductos.concat(items);
-      }
+      // Lectura DIRECTA del Excel — célula a célula, sin IA, sin lotes, sin errores
+      msSetProgress(70, 'Leyendo ' + dataRows.length + ' productos directamente del Excel...');
+      var items = await msExtraerLote(dataRows, estructura);
+      todosProductos = todosProductos.concat(items);
     }
 
     if(!todosProductos.length) throw new Error('No se encontraron productos en el archivo.');
 
     // Convertir formato compacto {r,d,s,q} al formato estándar {ref,desc,stock,pedidos}
     MS.sucursales = sucursales;
-    var productosNorm = todosProductos.map(function(p){
+    var productosRaw = todosProductos.map(function(p){
       var pedidos = {};
       sucursales.forEach(function(s, idx){ pedidos[s] = parseInt((p.q||[])[idx]) || 0; });
       return { ref: String(p.r||'').trim(), desc: String(p.d||'').trim(), stock: parseInt(p.s)||0, pedidos: pedidos };
     }).filter(function(p){ return p.ref.length >= 2; });
+
+    // ── DEDUPLICAR por referencia ──────────────────────────────
+    // La IA procesa en lotes y puede repetir productos en bordes de lote.
+    // Si una ref aparece más de una vez, tomamos la primera ocurrencia
+    // (la que tenga más sucursales con cantidad > 0) — NUNCA acumulamos cantidades.
+    var refVisto = {};
+    var productosNorm = [];
+    productosRaw.forEach(function(p){
+      if(!p.ref) return;
+      if(refVisto[p.ref]){
+        // Ya existe — verificar si esta ocurrencia tiene más datos útiles
+        var existing = refVisto[p.ref];
+        var existingTotal = sucursales.reduce(function(s,x){ return s+(existing.pedidos[x]||0); },0);
+        var thisTotal     = sucursales.reduce(function(s,x){ return s+(p.pedidos[x]||0); },0);
+        // Quedarse con la que tenga más cantidades (más completa)
+        if(thisTotal > existingTotal){
+          // Reemplazar: quitar la anterior y poner esta
+          var idx2 = productosNorm.indexOf(existing);
+          if(idx2 >= 0) productosNorm.splice(idx2, 1);
+          refVisto[p.ref] = p;
+          productosNorm.push(p);
+        }
+        // Si la existente tiene más o igual datos — ignorar duplicado silenciosamente
+        return;
+      }
+      refVisto[p.ref] = p;
+      productosNorm.push(p);
+    });
 
     msSetProgress(95, 'Calculando distribución proporcional...');
     msCalcularDistribucion(productosNorm);
