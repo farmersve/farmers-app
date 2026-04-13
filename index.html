@@ -17186,13 +17186,10 @@ window.msEmitirSeleccionadas = function(ov){
       btn.textContent='✅ Emitido #'+MS.numPedido;
       btn.style.background='#059669';
       btn.style.cursor='pointer';
-      // Siempre permite volver al overlay — para confirmar, exportar o ver el resumen
+      btn.style.opacity='1';
+      btn.disabled=false;
       btn.onclick=function(){
-        var confirmadas=MS.sucursales.filter(function(s){
-          return (MS.sucursalesEstado||{})[s]==='confirmado'||(MS.sucursalesEstado||{})[s]==='emitido';
-        });
-        var sel=confirmadas.length?confirmadas:MS.sucursales.slice();
-        msAbrirOverlayConfirmado(MS.numPedido, sel, false);
+        msAbrirOverlayConfirmado(MS.numPedido, MS.sucursales.slice(), false);
       };
     }
   }
@@ -17429,12 +17426,23 @@ window.msConfirmarSeleccionadas = function(numP, sel, hayPendientes, ovEmision){
 // ── Overlay de pedido confirmado ──────────────────
 window.msAbrirOverlayConfirmado = function(numP, sel, hayPendientes){
   var ex=document.getElementById('ms-done-overlay');if(ex)ex.remove();
-  var totalUSD=0;
+
+  // Usar msGetPrecio — misma función que la tabla y la barra inferior
+  // Respeta MS.moneda (USD$/BCV$/TF$) — siempre en $
+  var total=0;
   MS.data.forEach(function(p){
-    var u=parseFloat(msGetPrecioByMoneda(p.ref,'USD'))||0;
-    sel.forEach(function(s){var pide=p.pedidos[s]||0;if(pide>0) totalUSD+=u*Math.min(p.dist[s]||0,pide);});
+    var precio=msGetPrecio(p.ref);
+    sel.forEach(function(s){var pide=p.pedidos[s]||0;if(pide>0) total+=precio*Math.min(p.dist[s]||0,pide);});
   });
+  var monedaLabel={USD:'USD $',BCV:'BCV $',TF:'TF $'}[MS.moneda||'USD']||'USD $';
   var numPend=hayPendientes?MS.sucursales.filter(function(s){return MS.sucursalesEstado[s]==='pendiente';}).length:0;
+
+  // Resumen de sucursales despachadas
+  var resumenSucs = sel.map(function(s){
+    var t=0;
+    MS.data.forEach(function(p){var pide=p.pedidos[s]||0;if(pide>0) t+=msGetPrecio(p.ref)*Math.min(p.dist[s]||0,pide);});
+    return s + ' — $ ' + t.toFixed(2);
+  }).join('<br>');
 
   var ov=document.createElement('div');
   ov.id='ms-done-overlay';
@@ -17466,14 +17474,20 @@ window.msAbrirOverlayConfirmado = function(numP, sel, hayPendientes){
   }
 
   var inv=document.createElement('div');
-  inv.style.cssText='font-size:.78rem;color:#64748b;background:#f0fdf4;border-radius:8px;padding:8px 12px;margin-bottom:10px;';
-  inv.textContent='Inventario descontado de Firebase y modulo PT.';
+  inv.style.cssText='font-size:.72rem;color:#064e3b;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:8px 12px;margin-bottom:10px;line-height:1.7;';
+  inv.innerHTML='✅ <strong>Inventario descontado</strong> · ✅ <strong>Ventas registradas</strong> · ✅ <strong>CXC generadas</strong>';
   box.appendChild(inv);
 
-  var total=document.createElement('div');
-  total.style.cssText='font-size:1.15rem;font-weight:800;color:#1a2050;margin-bottom:18px;';
-  total.textContent='$'+totalUSD.toFixed(2)+' USD';
-  box.appendChild(total);
+  // Resumen por sucursal
+  var sucResumen=document.createElement('div');
+  sucResumen.style.cssText='background:#f8fafc;border-radius:8px;padding:10px 14px;margin-bottom:10px;text-align:left;font-size:.75rem;color:#374151;line-height:1.8;border:1px solid #e2e8f0;';
+  sucResumen.innerHTML='<div style="font-size:.62rem;font-weight:800;color:#94a3b8;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px;">Sucursales despachadas</div>'+resumenSucs;
+  box.appendChild(sucResumen);
+
+  var totalDiv=document.createElement('div');
+  totalDiv.style.cssText='font-size:1.2rem;font-weight:900;color:#1a2050;margin-bottom:18px;';
+  totalDiv.textContent=monedaLabel+' $ '+total.toFixed(2);
+  box.appendChild(totalDiv);
 
   var row=document.createElement('div');
   row.style.cssText='display:flex;gap:8px;justify-content:center;flex-wrap:wrap;';
@@ -17750,7 +17764,8 @@ window.msGenerarEtiquetasPDF = function() {
     var ptD={};
     try{var ptRaw=localStorage.getItem('farmers_pt_data');if(ptRaw){var ptArr=JSON.parse(ptRaw);ptArr.forEach(function(x){ptD[x.r]=x;});}}catch(e){}
     MS.data.forEach(function(p){
-      var d=p.dist[suc]||0;if(!d)return;
+      var pide=p.pedidos[suc]||0; if(!pide)return;
+      var d=Math.min(p.dist[suc]||0,pide); if(!d)return;
       totalRef++;totalUnd+=d;
       var med=(ptD[p.ref]&&ptD[p.ref].medidas)?ptD[p.ref].medidas:{};
       var vd=parseFloat(med.volDirecto)||0;
@@ -30325,6 +30340,98 @@ function ncReconciliarSaldos() {
   showToast('✅ ' + fixes.length + ' saldo(s) corregido(s) y sincronizados con Firebase.', 'success');
 }
 window.ncReconciliarSaldos = ncReconciliarSaldos;
+
+// ═══════════════════════════════════════════════════════
+// CORRECTOR DE CLIENTES EN VENTAS MS
+// ═══════════════════════════════════════════════════════
+window.msCorregirClientes = async function() {
+  // Mapa de corrección: sucursal del Excel → cliente real
+  var mapa = {
+    'MxM.CLA':        { nombre: 'INVERSIONES BARCELONA ORIENTE 20.22, CA.', rif: '' },
+    'MXM JORGE COLL': { nombre: 'INVERSIONES BARCELONA ORIENTE 20.22, CA.', rif: '' },
+    'MXM.ECC':        { nombre: 'INVERSIONES BARCELONA ORIENTE 20.23, C.A.', rif: '' },
+    'AZ.AB':          { nombre: 'INVERSIONES BARCELONA ORIENTE 20.23, C.A.', rif: '' }
+  };
+
+  var clDB = typeof getClientsDB==='function' ? getClientsDB() : [];
+
+  // Enriquecer con datos reales del directorio
+  Object.keys(mapa).forEach(function(suc) {
+    var nombre = mapa[suc].nombre;
+    var cl = clDB.find(function(c){ return (c.nombre||'').toUpperCase().includes(nombre.split(',')[0].toUpperCase()); });
+    if(cl) {
+      mapa[suc].rif       = cl.rif || '';
+      mapa[suc].clienteId = cl.id  || '';
+      mapa[suc].correo    = cl.correo || '';
+    }
+  });
+
+  // Corregir en localStorage
+  var corregidos = 0;
+  if(typeof getSales==='function' && typeof saveSales==='function') {
+    var sales = getSales();
+    sales.forEach(function(s) {
+      if(s.fuente !== 'ms_confirmado') return;
+      var fix = mapa[s.sucursal];
+      if(!fix) return;
+      s.cliente    = fix.nombre;
+      s.rif        = fix.rif || s.rif;
+      s.clienteId  = fix.clienteId || s.clienteId;
+      s.correo     = fix.correo || s.correo;
+      corregidos++;
+    });
+    saveSales(sales);
+  }
+
+  // Corregir en Firebase
+  var corregidosFB = 0;
+  try {
+    var { getDocs, collection, query, where, updateDoc, doc } =
+      await import('https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js');
+    var { getFirestore } = await import('https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js');
+    var db2 = getFirestore();
+    var q = query(collection(db2,'farmers_sales'), where('fuente','==','ms_confirmado'));
+    var snap = await getDocs(q);
+    for(var docSnap of snap.docs) {
+      var data = docSnap.data();
+      var fix2 = mapa[data.sucursal];
+      if(!fix2) continue;
+      await updateDoc(doc(db2,'farmers_sales',docSnap.id), {
+        cliente:   fix2.nombre,
+        rif:       fix2.rif || data.rif || '',
+        clienteId: fix2.clienteId || data.clienteId || '',
+        correo:    fix2.correo || data.correo || ''
+      });
+      corregidosFB++;
+    }
+  } catch(e) {
+    // Usar método alternativo con db global
+    try {
+      if(typeof db !== 'undefined' && db.collection) {
+        var snap2 = await db.collection('farmers_sales').where('fuente','==','ms_confirmado').get();
+        for(var d2 of snap2.docs) {
+          var fix3 = mapa[d2.data().sucursal];
+          if(!fix3) continue;
+          await d2.ref.update({
+            cliente:   fix3.nombre,
+            rif:       fix3.rif || '',
+            clienteId: fix3.clienteId || '',
+            correo:    fix3.correo || ''
+          });
+          corregidosFB++;
+        }
+      }
+    } catch(e2) { console.warn('Firebase update:', e2.message); }
+  }
+
+  // Refrescar UI
+  if(typeof renderHistorial==='function') renderHistorial();
+  if(typeof cxcUpdateBadge==='function') cxcUpdateBadge();
+
+  showToast('✅ Corregidos: '+corregidos+' en local, '+corregidosFB+' en Firebase', 'success');
+  return { local: corregidos, firebase: corregidosFB };
+};
+
 </script>
 </body>
 </html>
