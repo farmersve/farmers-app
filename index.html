@@ -16080,32 +16080,58 @@ async function msDetectarEstructura(rows) {
     }
   }
 
-  // 2. Verificar y corregir sucursalesCols buscando los nombres en la fila de encabezado
+  // 2. Verificar sucursalesCols contra el encabezado REAL del Excel
+  // Columnas ya asignadas — para evitar que dos sucursales apunten a la misma columna
   if(parsed.sucursales && parsed.sucursales.length > 0) {
+    var colsUsadas = {};
     var sucColsVerificadas = parsed.sucursales.map(function(nombre, idx) {
-      // Índice que dijo la IA
       var colIA = (parsed.sucursalesCols && parsed.sucursalesCols[idx] != null)
-                  ? parsed.sucursalesCols[idx] : -1;
-
-      // Verificar: el encabezado en esa columna debe contener el nombre de la sucursal
-      var encIA = String(headerRow[colIA]||'').toUpperCase().replace(/[^A-Z0-9.]/g,'');
+                  ? parseInt(parsed.sucursalesCols[idx]) : -1;
       var nomBusc = nombre.toUpperCase().replace(/[^A-Z0-9.]/g,'');
-      if(colIA >= 0 && colIA < totalCols && encIA.includes(nomBusc)) {
-        return colIA; // IA acertó
+
+      // PASO 1 — ¿La IA dio un índice válido y su encabezado contiene el nombre completo?
+      if(colIA >= 0 && colIA < totalCols) {
+        var encIA = String(headerRow[colIA]||'').toUpperCase().replace(/[^A-Z0-9.]/g,'');
+        if(encIA === nomBusc || encIA.includes(nomBusc)) {
+          colsUsadas[colIA] = nombre;
+          return colIA;
+        }
       }
 
-      // IA no acertó — buscar el nombre en toda la fila de encabezado
+      // PASO 2 — Buscar coincidencia exacta en todo el encabezado
       for(var ci2=0; ci2<headerRow.length; ci2++){
+        if(colsUsadas[ci2]) continue; // columna ya asignada a otra sucursal
         var h = String(headerRow[ci2]||'').toUpperCase().replace(/[^A-Z0-9.]/g,'');
-        if(h.includes(nomBusc) || nomBusc.includes(h.substring(0,4))){
+        if(h === nomBusc || h.includes(nomBusc)) {
+          colsUsadas[ci2] = nombre;
           return ci2;
         }
       }
 
-      // No encontrado — lanzar error para no procesar con columna incorrecta
+      // PASO 3 — Coincidencia parcial estricta (mínimo 4 caracteres en común)
+      for(var ci3=0; ci3<headerRow.length; ci3++){
+        if(colsUsadas[ci3]) continue;
+        var h2 = String(headerRow[ci3]||'').toUpperCase().replace(/[^A-Z0-9.]/g,'');
+        var minLen = Math.min(nomBusc.length, h2.length);
+        if(minLen >= 4 && (h2.startsWith(nomBusc.substring(0,4)) || nomBusc.startsWith(h2.substring(0,4)))) {
+          // Solo aceptar si no hay ambigüedad — verificar que ninguna otra columna también matchea
+          var otrasMatch = 0;
+          for(var ci4=0; ci4<headerRow.length; ci4++){
+            if(ci4===ci3 || colsUsadas[ci4]) continue;
+            var h3 = String(headerRow[ci4]||'').toUpperCase().replace(/[^A-Z0-9.]/g,'');
+            if(h3.startsWith(nomBusc.substring(0,4)) || nomBusc.startsWith(h3.substring(0,4))) otrasMatch++;
+          }
+          if(otrasMatch === 0) { // solo hay una — seguro asignar
+            colsUsadas[ci3] = nombre;
+            return ci3;
+          }
+        }
+      }
+
+      // No encontrado — error claro, no procesar con columna incorrecta
       throw new Error(
-        'No se encontró la columna de sucursal "' + nombre + '" en el encabezado del Excel. ' +
-        'Encabezados disponibles: ' + headerRow.map(function(h,i){return i+'='+h;}).join(', ')
+        'Columna de sucursal "' + nombre + '" no encontrada en encabezado del Excel. ' +
+        'Encabezados: ' + headerRow.map(function(h,i){return i+'='+h;}).join(' | ')
       );
     });
     parsed.sucursalesCols = sucColsVerificadas;
@@ -16513,7 +16539,7 @@ function msRenderTbody(filas) {
     var alt=idx%2===0?'#ffffff':'#fafbff';
     var E=ESTADO[p.estado]||ESTADO.sinpedido;
     var pr=msGetPrecio(p.ref);
-    var desp_total=0; MS.sucursales.forEach(function(s){ desp_total+=(p.dist[s]||0); });
+    var desp_total=0; MS.sucursales.forEach(function(s){ var _p=p.pedidos[s]||0; if(_p>0) desp_total+=Math.min(p.dist[s]||0,_p); });
     var venta_total=pr*desp_total;
     var sc=p.stock===0?'#dc2626':(p.stock<p.totalPedido?'#d97706':'#16a34a');
     var sisBadge=p.enSistema===false?'<span title="No en sistema" style="background:#fef9c3;color:#92400e;border:1px solid #fde68a;border-radius:2px;font-size:.5rem;font-weight:900;padding:0 3px;margin-left:3px;vertical-align:middle;">!SIS</span>':'';
@@ -16537,7 +16563,7 @@ function msRenderTbody(filas) {
 
     // SUCURSALES
     MS.sucursales.forEach(function(s){
-      var pide=p.pedidos[s]||0, desp=p.dist[s]||0;
+      var pide=p.pedidos[s]||0, desp=pide>0?Math.min(p.dist[s]||0,pide):0;
       var vs=pr>0&&desp>0?('$ '+msFmt(pr*desp)):'—';
       var dc=desp===0&&pide>0?'#dc2626':(desp<pide?'#d97706':'#16a34a');
       var db=desp===0&&pide>0?'#fff1f2':(desp<pide?'#fffbeb':'#f0fdf4');
@@ -16559,7 +16585,7 @@ function msRenderTfoot() {
   var grandTotal=0, totalDesp_g=0, totalPed_g=0;
   MS.data.forEach(function(p){
     totalPed_g+=p.totalPedido;
-    MS.sucursales.forEach(function(s){ var d=p.dist[s]||0; totalDesp_g+=d; grandTotal+=msGetPrecio(p.ref)*d; });
+    MS.sucursales.forEach(function(s){ var _p=p.pedidos[s]||0; var d=_p>0?Math.min(p.dist[s]||0,_p):0; totalDesp_g+=d; grandTotal+=msGetPrecio(p.ref)*d; });
   });
 
   var base='padding:9px 10px;font-size:.7rem;font-weight:800;border-top:2px solid #334155;';
@@ -16572,7 +16598,7 @@ function msRenderTfoot() {
   html+='<td style="'+base+'text-align:center;border-right:2px solid #334155;"></td>';
 
   MS.sucursales.forEach(function(s){
-    var td_s=0,ts=0; MS.data.forEach(function(p){ var d=p.dist[s]||0; td_s+=d; ts+=msGetPrecio(p.ref)*d; });
+    var td_s=0,ts=0; MS.data.forEach(function(p){ var _p=p.pedidos[s]||0; var d=_p>0?Math.min(p.dist[s]||0,_p):0; td_s+=d; ts+=msGetPrecio(p.ref)*d; });
     html+='<td style="'+base+'text-align:center;color:#64748b;font-size:.65rem;border-left:2px solid #334155;white-space:nowrap;">'+msFmtN(td_s)+' u</td>';
     html+='<td style="'+base+'text-align:center;color:#fbbf24;">'+msFmtN(td_s)+'</td>';
     html+='<td style="'+base+'text-align:right;padding:9px 8px;color:#4ade80;background:#052e16;font-size:.68rem;border-right:2px solid #134e2f;white-space:nowrap;">$ '+msFmt(ts)+'</td>';
@@ -16589,7 +16615,7 @@ function msRenderTotalesBar() {
   var acc='#14b8a6';
   var html='<span style="font-size:.6rem;font-weight:700;color:#475569;letter-spacing:1.2px;text-transform:uppercase;flex-shrink:0;align-self:center;">'+monLabel+'&nbsp;/&nbsp;sucursal</span>';
   MS.sucursales.forEach(function(s){
-    var t=0; MS.data.forEach(function(p){ t+=msGetPrecio(p.r||p.ref)*(p.dist[s]||0); });
+    var t=0; MS.data.forEach(function(p){ var _p=p.pedidos[s]||0; t+=msGetPrecio(p.r||p.ref)*(_p>0?Math.min(p.dist[s]||0,_p):0); });
     grand+=t;
     html+='<div style="background:#1e293b;border-radius:5px;padding:5px 12px;flex-shrink:0;min-width:88px;text-align:center;">'+
       '<div style="font-size:.57rem;color:#475569;font-weight:700;text-transform:uppercase;letter-spacing:.4px;line-height:1.3;">'+s+'</div>'+
@@ -16720,7 +16746,7 @@ window.msExportarExcel = function() {
   });
   var totRow=['','','','','','TOTALES','',+totM.toFixed(2),''];
   MS.sucursales.forEach(function(s){
-    var tv=0;MS.data.forEach(function(p){tv+=pm(p.ref)*(p.dist[s]||0);});
+    var tv=0;MS.data.forEach(function(p){var _p=p.pedidos[s]||0;tv+=pm(p.ref)*(_p>0?Math.min(p.dist[s]||0,_p):0);});
     totRow.push('');totRow.push('');totRow.push(+tv.toFixed(2));
   });
   dRows.push(totRow);
@@ -16742,9 +16768,10 @@ window.msExportarExcel = function() {
     var hSuc=['REFERENCIA','DESCRIPCIÓN','CÓD.BARRA','CÓDIGO','STOCK','PEDIDO','DESPACHO','DIFERENCIA','P.'+monLabel,'VENTA '+monLabel];
     var sdRows=[hSuc],tvM=0;
     MS.data.forEach(function(p){
-      var pide=p.pedidos[suc]||0,desp=p.dist[suc]||0;
+      var pide=p.pedidos[suc]||0;
       // SOLO incluir si la sucursal pidió el producto — nunca despachar lo que no fue pedido
       if(!pide)return;
+      var desp=Math.min(p.dist[suc]||0,pide);
       var pr=pm(p.ref),vm=pr*desp; tvM+=vm;
       var pbs=PRODUCTS.find(function(x){return x.r===p.ref;})||{};
       sdRows.push([p.ref,p.desc,pbs.b||'',pbs.c||'',p.stock,pide,desp,pide-desp,
@@ -16827,7 +16854,8 @@ window.msAbrirSelectorDespacho = function(){
     var totalRef=0,totalUnd=0,totalUSD=0;
     var monedaModal = MS.moneda || 'USD';
     MS.data.forEach(function(p){
-      var d=p.dist[suc]||0;
+      var _pide=p.pedidos[suc]||0;
+      var d=_pide>0?Math.min(p.dist[suc]||0,_pide):0;
       if(!d) return;
       totalRef++;
       totalUnd+=d;
@@ -16915,7 +16943,7 @@ window.msEmitirSeleccionadas = function(ov){
   var reservas={};
   MS.data.forEach(function(p){
     var td=0;
-    sel.forEach(function(s){td+=p.dist[s]||0;});
+    sel.forEach(function(s){var _p=p.pedidos[s]||0; if(_p>0) td+=Math.min(p.dist[s]||0,_p);});
     if(td>0) reservas[p.ref]=td;
   });
   try{localStorage.setItem('ms_reserva_'+MS.numPedido,JSON.stringify({reservas:reservas,fecha:MS.fechaEmision,sucursales:sel}));}catch(e){}
@@ -16941,11 +16969,28 @@ window.msEmitirSeleccionadas = function(ov){
 window.msAbrirOverlayEmision = function(sel, hayPendientes){
   var ex=document.getElementById('ms-em-ov');if(ex)ex.remove();
   var tasa=getTasaHoy()||0;
-  var totalUSD=0;
+
+  // Total SOLO de las sucursales seleccionadas ahora
+  var totalSelUSD=0;
   MS.data.forEach(function(p){
     var u=parseFloat(msGetPrecioByMoneda(p.ref,'USD'))||0;
-    sel.forEach(function(s){totalUSD+=u*(p.dist[s]||0);});
+    sel.forEach(function(s){
+      var pide=p.pedidos[s]||0;
+      if(pide>0) totalSelUSD+=u*Math.min(p.dist[s]||0,pide);
+    });
   });
+
+  // Total GENERAL de todo el pedido (todas las sucursales)
+  var totalGeneralUSD=0;
+  MS.data.forEach(function(p){
+    var u=parseFloat(msGetPrecioByMoneda(p.ref,'USD'))||0;
+    MS.sucursales.forEach(function(s){
+      var pide=p.pedidos[s]||0;
+      if(pide>0) totalGeneralUSD+=u*Math.min(p.dist[s]||0,pide);
+    });
+  });
+
+  var totalUSD=totalSelUSD; // compatibilidad con código existente
   var totalBCV=tasa>0?totalUSD*tasa:0;
   var numPend=hayPendientes?MS.sucursales.filter(function(s){return MS.sucursalesEstado[s]==='pendiente';}).length:0;
 
@@ -16978,17 +17023,38 @@ window.msAbrirOverlayEmision = function(sel, hayPendientes){
     box.appendChild(avisoP);
   }
 
+  // ── Bloque de totales — diferencia entre "estas sucursales" y "total pedido" ──
   var totales=document.createElement('div');
-  totales.style.cssText='background:#f8fafc;border-radius:10px;padding:12px;margin-bottom:12px;display:flex;justify-content:space-around;';
-  totales.innerHTML='<div><div style="font-size:.68rem;color:#94a3b8;font-weight:700;">USD</div>'
-    +'<div style="font-size:1.1rem;font-weight:800;color:#1a2050;">$'+totalUSD.toFixed(2)+'</div></div>'
-    +(totalBCV>0?'<div><div style="font-size:.68rem;color:#94a3b8;font-weight:700;">BCV</div>'
-    +'<div style="font-size:1.1rem;font-weight:800;color:#f59e0b;">Bs '+totalBCV.toFixed(2)+'</div></div>':'');
+  totales.style.cssText='background:#f8fafc;border-radius:10px;padding:12px;margin-bottom:12px;';
+
+  var esParcial = hayPendientes && Math.abs(totalSelUSD - totalGeneralUSD) > 0.01;
+  if(esParcial){
+    // Mostrar ambos: estas sucursales vs total completo
+    totales.innerHTML=
+      '<div style="font-size:.62rem;font-weight:800;color:#94a3b8;letter-spacing:.8px;text-transform:uppercase;margin-bottom:8px;">Resumen de esta emisión</div>'+
+      '<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid #e2e8f0;">'+
+        '<div style="font-size:.75rem;color:#475569;">Estas '+sel.length+' sucursal(es)</div>'+
+        '<div style="font-size:1rem;font-weight:800;color:#1a2050;">$ '+totalSelUSD.toFixed(2)+'</div>'+
+      '</div>'+
+      '<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;">'+
+        '<div style="font-size:.75rem;color:#475569;">Total general del pedido</div>'+
+        '<div style="font-size:1rem;font-weight:800;color:#059669;">$ '+totalGeneralUSD.toFixed(2)+'</div>'+
+      '</div>'+
+      (totalBCV>0?'<div style="font-size:.72rem;color:#92400e;margin-top:4px;">BCV: Bs '+totalBCV.toFixed(2)+'</div>':'');
+  } else {
+    // Emisión completa — mostrar total único
+    totales.innerHTML=
+      '<div style="display:flex;justify-content:space-around;">'+
+        '<div><div style="font-size:.68rem;color:#94a3b8;font-weight:700;">TOTAL USD</div>'+
+        '<div style="font-size:1.2rem;font-weight:800;color:#1a2050;">$ '+totalSelUSD.toFixed(2)+'</div></div>'+
+        (totalBCV>0?'<div><div style="font-size:.68rem;color:#94a3b8;font-weight:700;">BCV</div>'+
+        '<div style="font-size:1.2rem;font-weight:800;color:#f59e0b;">Bs '+totalBCV.toFixed(2)+'</div></div>':'')+'</div>';
+  }
   box.appendChild(totales);
 
   var aviso=document.createElement('div');
   aviso.style.cssText='font-size:.75rem;color:#64748b;background:#fffbeb;border:1px solid #fbbf24;border-radius:8px;padding:8px 12px;margin-bottom:18px;';
-  aviso.textContent='Inventario reservado. Confirma para descontarlo.';
+  aviso.textContent='Inventario reservado. Confirma para descontar estas '+(esParcial?sel.length:MS.sucursales.length)+' sucursal(es).';
   box.appendChild(aviso);
 
   // Botones
@@ -17022,23 +17088,24 @@ window.msAbrirOverlayEmision = function(sel, hayPendientes){
 window.msConfirmarSeleccionadas = function(numP, sel, hayPendientes, ovEmision){
   if(ovEmision) ovEmision.remove();
 
-  var inv=getInventory?getInventory():{};
-  if(typeof firebase!=='undefined'&&firebase.database){
-    var db=firebase.database();
-    MS.data.forEach(function(p){
-      var td=0;
-      // BLINDAJE: solo contar despacho de sucursales que efectivamente pidieron
-      sel.forEach(function(s){
-        var pide=p.pedidos[s]||0;
-        var desp=p.dist[s]||0;
-        if(pide>0) td+=Math.min(desp,pide); // nunca descontar más de lo pedido
-      });
-      if(td>0){
-        var st=Math.max(0,(parseInt(inv[p.ref])||0)-td);
-        db.ref('farmers_inv/'+p.ref).set(st).catch(function(){});
-      }
+  // Descontar inventario — igual que confirmOrder() del sistema normal
+  var inv = typeof getInventory==='function' ? getInventory() : {};
+  MS.data.forEach(function(p){
+    var td=0;
+    sel.forEach(function(s){
+      var pide=p.pedidos[s]||0;
+      var desp=p.dist[s]||0;
+      if(pide>0) td+=Math.min(desp,pide);
     });
-  }
+    if(!td) return;
+    inv[p.ref] = Math.max(0,(parseInt(inv[p.ref])||0)-td);
+    // Actualizar PRODUCTS en memoria también
+    var prod = PRODUCTS.find(function(x){return x.r===p.ref;});
+    if(prod) prod.ex = inv[p.ref];
+  });
+  // saveInventory = localStorage + Firebase en una sola llamada (igual que pedido normal)
+  if(typeof saveInventory==='function') saveInventory(inv);
+  if(typeof syncInventoryToProducts==='function') syncInventoryToProducts();
   try{
     var ptRaw=localStorage.getItem('farmers_pt_data');
     if(ptRaw){
@@ -17073,6 +17140,104 @@ window.msConfirmarSeleccionadas = function(numP, sel, hayPendientes, ovEmision){
 
   try{localStorage.removeItem('ms_reserva_'+(numP||MS.numPedido));}catch(e){}
 
+  // ══════════════════════════════════════════════════════════
+  // REGISTRO AUTOMÁTICO EN VENTAS + CXC — igual que pedido normal
+  // Se ejecuta aquí, al confirmar, sin pasos adicionales
+  // ══════════════════════════════════════════════════════════
+  var now      = new Date();
+  var dateStr  = now.toLocaleDateString('es-VE',{day:'2-digit',month:'2-digit',year:'numeric'});
+  var timeStr  = now.toLocaleTimeString('es-VE',{hour:'2-digit',minute:'2-digit'});
+  var tasa     = getTasaHoy()||0;
+  var tfSpr    = (typeof TF_SPREAD!=='undefined')?TF_SPREAD:0;
+  var tasaTF   = tasa>0?tasa*(1+tfSpr/100):0;
+  var moneda   = MS.moneda||'USD';
+  var clDB     = typeof getClientsDB==='function'?getClientsDB():[];
+
+  sel.forEach(function(suc){
+    // Items de esta sucursal — solo productos que pidió y se despacharon
+    var itemsSuc=[];
+    MS.data.forEach(function(p){
+      var pide=p.pedidos[suc]||0; if(!pide) return;
+      var desp=Math.min(p.dist[suc]||0,pide); if(!desp) return;
+      var prod=PRODUCTS.find(function(x){return x.r===p.ref;})||{};
+      var precio=parseFloat(msGetPrecioByMoneda(p.ref,moneda))||0;
+      var invActual=(function(){try{return parseInt(JSON.parse(localStorage.getItem('farmers_inv')||'{}')[p.ref])||0;}catch(e){return 0;}})();
+      itemsSuc.push({
+        r:p.ref, d:p.desc||(prod.d||''), br:prod.br||'', e:prod.e||'',
+        precio:precio, orden:desp,
+        total:precio*desp,
+        ex_antes:invActual+desp,  // ya descontado — restauramos para registro histórico
+        ex_despues:invActual
+      });
+    });
+    if(!itemsSuc.length) return;
+
+    // Buscar cliente en BD por nombre de sucursal
+    var clMatch=clDB.find(function(cl){
+      var n=(cl.nombre||'').toUpperCase().replace(/[^A-Z0-9]/g,' ').trim();
+      var s=suc.toUpperCase().replace(/[^A-Z0-9]/g,' ').trim();
+      return n.split(' ').some(function(w){return w.length>3&&s.includes(w);})||
+             s.split(' ').some(function(w){return w.length>3&&n.includes(w);});
+    });
+    var clienteNombre = clMatch?(clMatch.nombre):suc;
+    var clienteRif    = clMatch?(clMatch.rif||'S/RIF'):'S/RIF';
+    var clienteId     = clMatch?(clMatch.id||''):'';
+    var correo        = clMatch?(clMatch.correo||''):'';
+    var diasCred      = parseInt((clMatch&&clMatch.diasCredito)||'30')||30;
+
+    var grandTotal = itemsSuc.reduce(function(s,i){return s+i.total;},0);
+    var grandUnits = itemsSuc.reduce(function(s,i){return s+i.orden;},0);
+    var totalBs    = tasa>0&&moneda==='BCV'?grandTotal*tasa
+                   :tasa>0&&moneda==='TF'?grandTotal*tasaTF
+                   :tasa>0?grandTotal*tasa:null;
+
+    var saleId = Date.now()+Math.floor(Math.random()*9999);
+    var sale={
+      id:         saleId,
+      fecha:      dateStr,
+      hora:       timeStr,
+      numpedido:  (MS.numPedido||'MS')+'-'+suc.replace(/[^A-Z0-9]/gi,'').substring(0,8).toUpperCase(),
+      cliente:    clienteNombre,
+      rif:        clienteRif,
+      vendedor:   'OGK',
+      sucursal:   suc,
+      moneda:     moneda,
+      monedaLabel:{USD:'USD Efectivo/Transferencia',BCV:'Bolívares BCV',TF:'Bolívares Tierra Firme'}[moneda]||moneda,
+      tasa:       tasa,
+      tasaFecha:  typeof getTasaFechaKey==='function'?getTasaFechaKey():'',
+      items:      itemsSuc,
+      total:      grandTotal,
+      units:      grandUnits,
+      totalBs:    totalBs,
+      clienteId:  clienteId,
+      correo:     correo,
+      credito:    diasCred,
+      tipoPrecio: moneda,
+      fuente:     'ms_confirmado',
+      msNumPedido:MS.numPedido||''
+    };
+
+    // Guardar en farmers_sales (verificar duplicado)
+    if(typeof getSales==='function'&&typeof saveSales==='function'){
+      var sales=getSales();
+      var yaExiste=sales.some(function(s){
+        return s.msNumPedido===MS.numPedido&&s.sucursal===suc&&s.fuente==='ms_confirmado';
+      });
+      if(!yaExiste){
+        sales.unshift(sale);
+        saveSales(sales);
+      }
+    }
+
+    // Crear factura CXC automáticamente
+    if(typeof cxcCrearDesdePedido==='function') cxcCrearDesdePedido(sale);
+  });
+
+  MS.formalizado=true; // ya está registrado — evitar doble registro desde Formalizar
+  if(typeof cxcUpdateBadge==='function') cxcUpdateBadge();
+  if(typeof renderHistorial==='function') renderHistorial();
+  // ══ FIN REGISTRO AUTOMÁTICO ═══════════════════════════════
+
   var quedanPendientes=MS.sucursales.some(function(s){
     return MS.sucursalesEstado[s]==='pendiente';
   });
@@ -17082,10 +17247,14 @@ window.msConfirmarSeleccionadas = function(numP, sel, hayPendientes, ovEmision){
 // ── Overlay de pedido confirmado ──────────────────
 window.msAbrirOverlayConfirmado = function(numP, sel, hayPendientes){
   var ex=document.getElementById('ms-done-overlay');if(ex)ex.remove();
+  // Total de las sucursales confirmadas — con blindaje pide>0
   var totalUSD=0;
   MS.data.forEach(function(p){
     var u=parseFloat(msGetPrecioByMoneda(p.ref,'USD'))||0;
-    sel.forEach(function(s){totalUSD+=u*(p.dist[s]||0);});
+    sel.forEach(function(s){
+      var pide=p.pedidos[s]||0;
+      if(pide>0) totalUSD+=u*Math.min(p.dist[s]||0,pide);
+    });
   });
   var numPend=hayPendientes?MS.sucursales.filter(function(s){return MS.sucursalesEstado[s]==='pendiente';}).length:0;
 
@@ -17119,9 +17288,8 @@ window.msAbrirOverlayConfirmado = function(numP, sel, hayPendientes){
   }
 
   var inv=document.createElement('div');
-  inv.style.cssText='font-size:.78rem;color:#64748b;background:#f0fdf4;border-radius:8px;padding:8px 12px;margin-bottom:10px;';
-  inv.textContent='Inventario descontado de Firebase y modulo PT.';
-  box.appendChild(inv);
+  inv.style.cssText='font-size:.78rem;color:#064e3b;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:10px 14px;margin-bottom:10px;line-height:1.7;';
+  inv.innerHTML='✅ <strong>Inventario descontado</strong> de Firebase y módulo PT.<br>'    +'✅ <strong>Venta registrada</strong> en historial por cada sucursal.<br>'    +'✅ <strong>Factura CXC generada</strong> automáticamente con días de crédito del cliente.';  box.appendChild(inv);
 
   var total=document.createElement('div');
   total.style.cssText='font-size:1.15rem;font-weight:800;color:#1a2050;margin-bottom:18px;';
@@ -17147,15 +17315,6 @@ window.msAbrirOverlayConfirmado = function(numP, sel, hayPendientes){
   if(hayPendientes){
     row.appendChild(mkBtn('Emitir pendientes','#d97706',function(){ov.remove();msAbrirSelectorDespacho();}));
   }
-
-  // ── Botón Formalizar Venta — conecta con todo el sistema ──
-  var btnF=document.createElement('button');
-  btnF.id='ms-btn-formalizar';
-  btnF.textContent = MS.formalizado ? '✅ Formalizado' : '💼 Formalizar Venta';
-  btnF.disabled = MS.formalizado||false;
-  btnF.style.cssText='background:'+(MS.formalizado?'#059669':'linear-gradient(135deg,#059669,#047857)')+';color:white;border:none;border-radius:8px;padding:9px 18px;cursor:'+(MS.formalizado?'default':'pointer')+';font-weight:800;font-size:.78rem;opacity:'+(MS.formalizado?'.7':'1')+';';
-  btnF.onclick=function(){ if(!MS.formalizado) msAbrirFormalizarVenta(); };
-  row.appendChild(btnF);
 
   var btnC=document.createElement('button');
   btnC.textContent='Cerrar';
@@ -17767,7 +17926,8 @@ window.msAbrirEtiquetas = function() {
   MS.sucursales.forEach(function(suc){
     var totalRef=0, totalUnd=0;
     MS.data.forEach(function(p){
-      var d=p.dist[suc]||0;
+      var _p=p.pedidos[suc]||0;
+      var d=_p>0?Math.min(p.dist[suc]||0,_p):0;
       if(d>0){totalRef++;totalUnd+=d;}
     });
 
@@ -17910,7 +18070,8 @@ window.msGenerarEtiquetasPDF = function() {
     var ptD={};
     try{var ptRaw=localStorage.getItem('farmers_pt_data');if(ptRaw){var ptArr=JSON.parse(ptRaw);ptArr.forEach(function(x){ptD[x.r]=x;});}}catch(e){}
     MS.data.forEach(function(p){
-      var d=p.dist[suc]||0;if(!d)return;
+      var _pe=p.pedidos[suc]||0;
+      var d=_pe>0?Math.min(p.dist[suc]||0,_pe):0;if(!d)return;
       totalRef++;totalUnd+=d;
       var med=(ptD[p.ref]&&ptD[p.ref].medidas)?ptD[p.ref].medidas:{};
       var vd=parseFloat(med.volDirecto)||0;
