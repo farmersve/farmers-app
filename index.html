@@ -2931,6 +2931,11 @@ tbody td { padding: 8px 10px; vertical-align: middle; }
           style="color:var(--red);border-color:var(--red);">
           🗑 Limpiar Todo
         </button>
+        <button class="btn btn-sm" onclick="msCorregirClientes()"
+          style="background:linear-gradient(135deg,#d97706,#b45309);color:white;font-size:.7rem;"
+          title="Corregir nombres de clientes en pedidos MS">
+          🔧 Corregir Clientes MS
+        </button>
       </div>
     </div>
 
@@ -30345,88 +30350,115 @@ window.ncReconciliarSaldos = ncReconciliarSaldos;
 // CORRECTOR DE CLIENTES EN VENTAS MS
 // ═══════════════════════════════════════════════════════
 window.msCorregirClientes = async function() {
-  // Mapa de corrección: sucursal del Excel → cliente real
-  var mapa = {
-    'MxM.CLA':        { nombre: 'INVERSIONES BARCELONA ORIENTE 20.22, CA.', rif: '' },
-    'MXM JORGE COLL': { nombre: 'INVERSIONES BARCELONA ORIENTE 20.22, CA.', rif: '' },
-    'MXM.ECC':        { nombre: 'INVERSIONES BARCELONA ORIENTE 20.23, C.A.', rif: '' },
-    'AZ.AB':          { nombre: 'INVERSIONES BARCELONA ORIENTE 20.23, C.A.', rif: '' }
+  // Mapa exacto: nombre de sucursal del Excel → cliente real del directorio
+  var MAPA = {
+    'MxM.CLA':        'INVERSIONES BARCELONA ORIENTE 20.22, CA.',
+    'MXM JORGE COLL': 'INVERSIONES BARCELONA ORIENTE 20.22, CA.',
+    'MXM.ECC':        'INVERSIONES BARCELONA ORIENTE 20.23, C.A.',
+    'AZ.AB':          'INVERSIONES BARCELONA ORIENTE 20.23, C.A.'
   };
 
+  // Enriquecer con RIF e ID del directorio real
   var clDB = typeof getClientsDB==='function' ? getClientsDB() : [];
-
-  // Enriquecer con datos reales del directorio
-  Object.keys(mapa).forEach(function(suc) {
-    var nombre = mapa[suc].nombre;
-    var cl = clDB.find(function(c){ return (c.nombre||'').toUpperCase().includes(nombre.split(',')[0].toUpperCase()); });
-    if(cl) {
-      mapa[suc].rif       = cl.rif || '';
-      mapa[suc].clienteId = cl.id  || '';
-      mapa[suc].correo    = cl.correo || '';
-    }
+  var mapaCompleto = {};
+  Object.keys(MAPA).forEach(function(suc) {
+    var nombreBuscado = MAPA[suc].toUpperCase();
+    var cl = clDB.find(function(x){
+      return (x.nombre||'').toUpperCase().indexOf(nombreBuscado.substring(0,25)) >= 0;
+    });
+    mapaCompleto[suc] = {
+      nombre:    MAPA[suc],
+      rif:       cl ? (cl.rif||'') : '',
+      clienteId: cl ? (cl.id||cl.clienteId||'') : '',
+      correo:    cl ? (cl.correo||'') : ''
+    };
   });
 
-  // Corregir en localStorage
-  var corregidos = 0;
+  var corregidos = 0, corregidosCXC = 0, corregidosFB = 0;
+
+  // ── 1. Corregir farmers_sales en localStorage ──
   if(typeof getSales==='function' && typeof saveSales==='function') {
     var sales = getSales();
     sales.forEach(function(s) {
-      if(s.fuente !== 'ms_confirmado') return;
-      var fix = mapa[s.sucursal];
+      var fix = mapaCompleto[s.sucursal] || mapaCompleto[s.cliente];
       if(!fix) return;
       s.cliente    = fix.nombre;
-      s.rif        = fix.rif || s.rif;
-      s.clienteId  = fix.clienteId || s.clienteId;
-      s.correo     = fix.correo || s.correo;
+      s.rif        = fix.rif       || s.rif       || '';
+      s.clienteId  = fix.clienteId || s.clienteId || '';
+      s.correo     = fix.correo    || s.correo     || '';
       corregidos++;
     });
     saveSales(sales);
   }
 
-  // Corregir en Firebase
-  var corregidosFB = 0;
+  // ── 2. Corregir CXC en localStorage ──
   try {
-    var { getDocs, collection, query, where, updateDoc, doc } =
-      await import('https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js');
-    var { getFirestore } = await import('https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js');
-    var db2 = getFirestore();
-    var q = query(collection(db2,'farmers_sales'), where('fuente','==','ms_confirmado'));
-    var snap = await getDocs(q);
-    for(var docSnap of snap.docs) {
-      var data = docSnap.data();
-      var fix2 = mapa[data.sucursal];
-      if(!fix2) continue;
-      await updateDoc(doc(db2,'farmers_sales',docSnap.id), {
-        cliente:   fix2.nombre,
-        rif:       fix2.rif || data.rif || '',
-        clienteId: fix2.clienteId || data.clienteId || '',
-        correo:    fix2.correo || data.correo || ''
+    var rawCXC = localStorage.getItem('farmers_cxc_v7');
+    if(rawCXC) {
+      var cxcArr = JSON.parse(rawCXC);
+      cxcArr.forEach(function(f) {
+        var fix = mapaCompleto[f.sucursal] || mapaCompleto[f.cliente];
+        if(!fix) return;
+        f.cliente    = fix.nombre;
+        f.rif        = fix.rif       || f.rif       || '';
+        f.clienteId  = fix.clienteId || f.clienteId || '';
+        corregidosCXC++;
       });
-      corregidosFB++;
+      localStorage.setItem('farmers_cxc_v7', JSON.stringify(cxcArr));
     }
-  } catch(e) {
-    // Usar método alternativo con db global
-    try {
-      if(typeof db !== 'undefined' && db.collection) {
-        var snap2 = await db.collection('farmers_sales').where('fuente','==','ms_confirmado').get();
-        for(var d2 of snap2.docs) {
-          var fix3 = mapa[d2.data().sucursal];
-          if(!fix3) continue;
-          await d2.ref.update({
-            cliente:   fix3.nombre,
-            rif:       fix3.rif || '',
-            clienteId: fix3.clienteId || '',
-            correo:    fix3.correo || ''
+  } catch(e) { console.warn('CXC local:', e); }
+
+  // ── 3. Corregir en Firebase usando el db ya inicializado ──
+  try {
+    // Intentar con la instancia global de Firestore ya cargada en la app
+    var fireDb = null;
+    if(typeof window._fireDb !== 'undefined') fireDb = window._fireDb;
+    else if(typeof getFirestoreDB === 'function') fireDb = getFirestoreDB();
+
+    if(fireDb) {
+      // farmers_sales
+      var snapSales = await fireDb.collection('farmers_sales').get();
+      for(var dSale of snapSales.docs) {
+        var dData = dSale.data();
+        var fix4 = mapaCompleto[dData.sucursal] || mapaCompleto[dData.cliente];
+        if(!fix4) continue;
+        await dSale.ref.update({
+          cliente:   fix4.nombre,
+          rif:       fix4.rif       || dData.rif       || '',
+          clienteId: fix4.clienteId || dData.clienteId || '',
+          correo:    fix4.correo    || dData.correo     || ''
+        });
+        corregidosFB++;
+      }
+      // farmers_cxc
+      try {
+        var snapCXC = await fireDb.collection('farmers_cxc').get();
+        for(var dCXC of snapCXC.docs) {
+          var cData = dCXC.data();
+          var fix5 = mapaCompleto[cData.sucursal] || mapaCompleto[cData.cliente];
+          if(!fix5) continue;
+          await dCXC.ref.update({
+            cliente:   fix5.nombre,
+            rif:       fix5.rif       || cData.rif       || '',
+            clienteId: fix5.clienteId || cData.clienteId || ''
           });
           corregidosFB++;
         }
-      }
-    } catch(e2) { console.warn('Firebase update:', e2.message); }
-  }
+      } catch(eCXC) { console.warn('CXC Firebase:', eCXC); }
+    }
+  } catch(eFB) { console.warn('Firebase:', eFB.message); }
 
-  // Refrescar UI
+  // ── 4. Sincronizar todo a Firebase con la función normal del sistema ──
+  if(typeof syncToFirebase==='function') { try { syncToFirebase(); } catch(e){} }
+
+  // ── 5. Refrescar UI ──
   if(typeof renderHistorial==='function') renderHistorial();
+  if(typeof cxcRender==='function') cxcRender();
   if(typeof cxcUpdateBadge==='function') cxcUpdateBadge();
+
+  var msg = 'Ventas: '+corregidos+' · CXC: '+corregidosCXC+' · Firebase: '+corregidosFB;
+  alert('✅ Corrección completada\n\n' + msg + '\n\nRecarga la página para ver los cambios.');
+  return { ventas: corregidos, cxc: corregidosCXC, firebase: corregidosFB };
 
   showToast('✅ Corregidos: '+corregidos+' en local, '+corregidosFB+' en Firebase', 'success');
   return { local: corregidos, firebase: corregidosFB };
