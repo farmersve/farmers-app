@@ -17082,16 +17082,73 @@ window.msAbrirSelectorDespacho = function(){
   aviso.textContent='Solo se descuenta inventario de las sucursales seleccionadas.';
   box.appendChild(aviso);
 
+  // ── SELECTOR DE CLIENTE por sucursal ──────────────────────────────
+  var clDB = typeof getClientsDB==='function' ? getClientsDB() : [];
+  var clOpts = clDB.map(function(cl){
+    return '<option value="'+cl.id+'">'+cl.nombre+(cl.rif?' ('+cl.rif+')':'')+'</option>';
+  }).join('');
+
+  var lblCliente = document.createElement('div');
+  lblCliente.style.cssText = 'font-size:.72rem;font-weight:800;color:#1a2050;text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px;';
+  lblCliente.textContent = '1. Asigna el cliente del directorio a cada sucursal';
+  box.appendChild(lblCliente);
+
+  // Inicializar mapa de clientes si no existe
+  if(!MS.clientesPorSucursal) MS.clientesPorSucursal = {};
+
+  MS.sucursales.forEach(function(suc){
+    var idKey = suc.replace(/[^A-Z0-9]/gi,'_');
+    var rowCl = document.createElement('div');
+    rowCl.style.cssText = 'display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid #f1f5f9;';
+
+    var lbl = document.createElement('div');
+    lbl.style.cssText = 'font-size:.78rem;font-weight:700;color:#1a2050;min-width:130px;';
+    lbl.textContent = suc;
+    rowCl.appendChild(lbl);
+
+    var sel2 = document.createElement('select');
+    sel2.id = 'ms-cl-'+idKey;
+    sel2.style.cssText = 'flex:1;padding:5px 8px;border:1.5px solid #e2e8f0;border-radius:6px;font-size:.75rem;color:#1a2050;';
+    sel2.innerHTML = '<option value="">-- Selecciona cliente --</option>' + clOpts;
+
+    // Pre-seleccionar si ya fue asignado antes o intentar match automático
+    var preId = MS.clientesPorSucursal[suc] || '';
+    if(!preId) {
+      // Intentar match automático por nombre
+      var sucNorm = suc.toUpperCase().replace(/[^A-Z0-9]/g,' ').trim();
+      var autoMatch = clDB.find(function(cl){
+        var clNorm = (cl.nombre||'').toUpperCase().replace(/[^A-Z0-9]/g,' ').trim();
+        return clNorm.split(' ').some(function(w){ return w.length>3 && sucNorm.includes(w); }) ||
+               sucNorm.split(' ').some(function(w){ return w.length>3 && clNorm.includes(w); });
+      });
+      if(autoMatch) preId = autoMatch.id;
+    }
+    if(preId) sel2.value = preId;
+
+    sel2.onchange = function(){ MS.clientesPorSucursal[suc] = sel2.value; };
+    rowCl.appendChild(sel2);
+    box.appendChild(rowCl);
+  });
+
+  var sep = document.createElement('div');
+  sep.style.cssText = 'height:1px;background:#e2e8f0;margin:14px 0;';
+  box.appendChild(sep);
+
+  var lblSucs = document.createElement('div');
+  lblSucs.style.cssText = 'font-size:.72rem;font-weight:800;color:#1a2050;text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px;';
+  lblSucs.textContent = '2. Selecciona las sucursales a despachar ahora';
+  box.appendChild(lblSucs);
+
   // Cards por sucursal
   MS.sucursales.forEach(function(suc){
     var totalRef=0,totalUnd=0,totalUSD=0;
     var monedaModal = MS.moneda || 'USD';
     MS.data.forEach(function(p){
-      var d=p.dist[suc]||0;
-      if(!d) return;
+      var pide=p.pedidos[suc]||0; if(!pide)return;
+      var d=Math.min(p.dist[suc]||0,pide); if(!d)return;
       totalRef++;
       totalUnd+=d;
-      totalUSD+=msGetPrecioByMoneda(p.ref, monedaModal)*d;
+      totalUSD+=msGetPrecio(p.ref)*d;
     });
     var est=MS.sucursalesEstado[suc]||'pendiente';
     var yaEmitida=(est==='emitido'||est==='confirmado');
@@ -17109,12 +17166,12 @@ window.msAbrirSelectorDespacho = function(){
     chk.style.cssText='width:16px;height:16px;accent-color:#1a2050;cursor:pointer;flex-shrink:0;';
     card.appendChild(chk);
 
-    var monedaSimbolo = monedaModal==='BCV'?'BCV $':monedaModal==='TF'?'TF $':'$';
+    var monedaSimbolo={USD:'USD $',BCV:'BCV $',TF:'TF $'}[monedaModal]||'$';
     var info=document.createElement('div');
     info.style.flex='1';
-    var badge=yaEmitida?'<span style="font-size:.62rem;background:#dcfce7;color:#166534;border-radius:4px;padding:1px 5px;font-weight:700;margin-left:5px;">YA EMITIDA</span>':'';
-    info.innerHTML='<div style="font-weight:800;font-size:.85rem;color:#1a2050;">'+suc+badge+'</div>'
-      +'<div style="font-size:.72rem;color:#64748b;">'+totalRef+' refs · '+totalUnd+' uds · '+monedaSimbolo+totalUSD.toFixed(2)+'</div>';
+    var badgeEm=yaEmitida?'<span style="font-size:.62rem;background:#dcfce7;color:#166534;border-radius:4px;padding:1px 5px;font-weight:700;margin-left:5px;">YA EMITIDA</span>':'';
+    info.innerHTML='<div style="font-weight:800;font-size:.85rem;color:#1a2050;">'+suc+badgeEm+'</div>'
+      +'<div style="font-size:.72rem;color:#64748b;">'+totalRef+' refs · '+totalUnd+' uds · '+monedaSimbolo+' '+totalUSD.toFixed(2)+'</div>';
     card.appendChild(info);
     box.appendChild(card);
   });
@@ -17377,7 +17434,7 @@ window.msConfirmarSeleccionadas = function(numP, sel, hayPendientes, ovEmision){
       var pide=p.pedidos[suc]||0; if(!pide) return;
       var desp=Math.min(p.dist[suc]||0,pide); if(!desp) return;
       var prod=PRODUCTS.find(function(x){return x.r===p.ref;})||{};
-      var precio=parseFloat(msGetPrecioByMoneda(p.ref,moneda))||0;
+      var precio=msGetPrecio(p.ref)||0; // msGetPrecio respeta MS.moneda — mismo que tabla y barra
       var invActual=(function(){try{return parseInt(JSON.parse(localStorage.getItem('farmers_inv')||'{}')[p.ref])||0;}catch(e){return 0;}})();
       itemsSuc.push({r:p.ref,d:p.desc||(prod.d||''),br:prod.br||'',e:prod.e||'',
         precio:precio,orden:desp,total:precio*desp,
@@ -17385,17 +17442,22 @@ window.msConfirmarSeleccionadas = function(numP, sel, hayPendientes, ovEmision){
     });
     if(!itemsSuc.length) return;
 
-    var clMatch=clDB.find(function(cl){
-      var n=(cl.nombre||'').toUpperCase().replace(/[^A-Z0-9]/g,' ').trim();
-      var s=suc.toUpperCase().replace(/[^A-Z0-9]/g,' ').trim();
-      return n.split(' ').some(function(w){return w.length>3&&s.includes(w);})||
-             s.split(' ').some(function(w){return w.length>3&&n.includes(w);});
-    });
-    var clienteNombre=clMatch?clMatch.nombre:suc;
-    var clienteRif=clMatch?(clMatch.rif||'S/RIF'):'S/RIF';
-    var clienteId=clMatch?(clMatch.id||''):'';
-    var correo=clMatch?(clMatch.correo||''):'';
-    var diasCred=parseInt((clMatch&&clMatch.diasCredito)||'30')||30;
+    // ── Cliente: primero usar el seleccionado manualmente en el selector,
+    //    luego fallback a match automático, nunca usar nombre de sucursal
+    var clSelId = (MS.clientesPorSucursal || {})[suc] || '';
+    var clMatch = clSelId
+      ? clDB.find(function(cl){ return cl.id === clSelId; })
+      : clDB.find(function(cl){
+          var n=(cl.nombre||'').toUpperCase().replace(/[^A-Z0-9]/g,' ').trim();
+          var s=suc.toUpperCase().replace(/[^A-Z0-9]/g,' ').trim();
+          return n.split(' ').some(function(w){return w.length>3&&s.includes(w);})||
+                 s.split(' ').some(function(w){return w.length>3&&n.includes(w);});
+        });
+    var clienteNombre = clMatch ? clMatch.nombre : (clSelId ? clSelId : suc);
+    var clienteRif    = clMatch ? (clMatch.rif||'S/RIF')      : 'S/RIF';
+    var clienteId     = clMatch ? (clMatch.id||'')            : '';
+    var correo        = clMatch ? (clMatch.correo||'')        : '';
+    var diasCred      = parseInt((clMatch&&clMatch.diasCredito)||'30')||30;
     var grandTotal=itemsSuc.reduce(function(s,i){return s+i.total;},0);
     var grandUnits=itemsSuc.reduce(function(s,i){return s+i.orden;},0);
     var totalBs=tasa>0&&moneda==='BCV'?grandTotal*tasa:tasa>0&&moneda==='TF'?grandTotal*tasaTF:tasa>0?grandTotal*tasa:null;
@@ -30391,20 +30453,28 @@ window.msCorregirClientes = async function() {
     saveSales(sales);
   }
 
-  // ── 2. Corregir CXC en localStorage ──
+  // ── 2. Corregir CXC en localStorage (clave: farmers_cxc) ──
   try {
-    var rawCXC = localStorage.getItem('farmers_cxc_v7');
+    var rawCXC = localStorage.getItem('farmers_cxc');
     if(rawCXC) {
-      var cxcArr = JSON.parse(rawCXC);
+      var cxcData = JSON.parse(rawCXC);
+      // CXC tiene estructura {facturas: [...]}
+      var cxcArr = cxcData.facturas || cxcData || [];
       cxcArr.forEach(function(f) {
-        var fix = mapaCompleto[f.sucursal] || mapaCompleto[f.cliente];
+        // Buscar por sucursal o por clienteNombre actual
+        var fix = mapaCompleto[f.sucursal] || mapaCompleto[f.clienteNombre] || mapaCompleto[f.cliente];
         if(!fix) return;
-        f.cliente    = fix.nombre;
-        f.rif        = fix.rif       || f.rif       || '';
-        f.clienteId  = fix.clienteId || f.clienteId || '';
+        f.clienteNombre = fix.nombre;
+        f.cliente       = fix.nombre;
+        f.rif           = fix.rif       || f.rif       || '';
+        f.clienteId     = fix.clienteId || f.clienteId || '';
+        f.correo        = fix.correo    || f.correo    || '';
         corregidosCXC++;
       });
-      localStorage.setItem('farmers_cxc_v7', JSON.stringify(cxcArr));
+      // Guardar en la misma estructura
+      if(cxcData.facturas) cxcData.facturas = cxcArr;
+      else cxcData = cxcArr;
+      localStorage.setItem('farmers_cxc', JSON.stringify(cxcData));
     }
   } catch(e) { console.warn('CXC local:', e); }
 
@@ -30430,17 +30500,19 @@ window.msCorregirClientes = async function() {
         });
         corregidosFB++;
       }
-      // farmers_cxc
+      // farmers_cxc — corregir clienteNombre y cliente
       try {
         var snapCXC = await fireDb.collection('farmers_cxc').get();
         for(var dCXC of snapCXC.docs) {
           var cData = dCXC.data();
-          var fix5 = mapaCompleto[cData.sucursal] || mapaCompleto[cData.cliente];
+          var fix5 = mapaCompleto[cData.sucursal] || mapaCompleto[cData.clienteNombre] || mapaCompleto[cData.cliente];
           if(!fix5) continue;
           await dCXC.ref.update({
-            cliente:   fix5.nombre,
-            rif:       fix5.rif       || cData.rif       || '',
-            clienteId: fix5.clienteId || cData.clienteId || ''
+            clienteNombre: fix5.nombre,
+            cliente:       fix5.nombre,
+            rif:           fix5.rif       || cData.rif       || '',
+            clienteId:     fix5.clienteId || cData.clienteId || '',
+            correo:        fix5.correo    || cData.correo    || ''
           });
           corregidosFB++;
         }
