@@ -16250,81 +16250,120 @@ function msRowsToText(rows) {
   }).join('\n');
 }
 
-// ── PASO 1: detectar estructura del Excel ────────
+// ── PASO 1: detectar estructura del Excel — SIN IA, 100% automático ──
+// Analiza el encabezado real del archivo para encontrar cada columna.
+// No hace ninguna llamada a la API. Funciona siempre, sin errores 529.
 async function msDetectarEstructura(rows) {
-  var muestra = msRowsToText(rows.slice(0, 6));
-  var prompt =
-    'Analiza estas primeras filas de un Excel de pedidos multi-sucursal:\n\n' +
-    muestra + '\n\n' +
-    'Identifica:\n' +
-    '1. headerRow: índice (0-based) de la fila con encabezados de columna\n' +
-    '2. refCol: índice de la columna con la REFERENCIA del producto (ej: EXC001, MAT030)\n' +
-    '3. invCol: índice de la columna INVENTARIO/STOCK/EXIST/SALDO\n' +
-    '4. descCol: índice de la columna DESCRIPCIÓN (-1 si no existe)\n' +
-    '5. sucursalesCols: array con los índices de las columnas que tienen CANTIDADES PEDIDAS por sucursal\n' +
-    '   Estas columnas suelen tener prefijo PED, PEDIDO, o nombre de sucursal (MXM, HIPER, AZ, etc.)\n\n' +
-    'IMPORTANTE: devuelve SOLO los índices numéricos. NO inventes nombres de sucursal.\n' +
-    'RESPONDE SOLO JSON sin markdown:\n' +
-    '{"headerRow":1,"refCol":0,"invCol":3,"descCol":1,"sucursalesCols":[5,6,7,8]}';
-  var texto = await msCallProxy([{role:'user', content: prompt}], 600);
-  var parsed = JSON.parse(texto);
 
-  // ── Tomar nombres de sucursal DIRECTAMENTE del encabezado real del Excel ──
-  var headerRow = rows[parsed.headerRow] || rows[0] || [];
-  var totalCols = headerRow.length;
+  // ── 1. Encontrar la fila de encabezados ─────────────────────────────────
+  // Buscamos la primera fila que tenga al menos 5 celdas con texto
+  var headerRow = 0;
+  for(var ri=0; ri<Math.min(rows.length,5); ri++){
+    var row = rows[ri] || [];
+    var conTexto = row.filter(function(c){ return c && String(c).trim().length>0; }).length;
+    if(conTexto >= 5){ headerRow = ri; break; }
+  }
+  var enc = rows[headerRow] || [];
 
-  // Verificar refCol — debe tener referencia tipo EXC001 en la primera fila de datos
-  var dataRow0 = rows[(parsed.headerRow||0) + 1] || [];
-  var refVal = String(dataRow0[parsed.refCol]||'').trim();
-  if(!/^[A-Z]{2,6}\d{1,4}$/i.test(refVal)) {
-    for(var ci=0; ci<dataRow0.length; ci++){
-      if(/^[A-Z]{2,6}\d{1,4}$/i.test(String(dataRow0[ci]||'').trim())){
-        parsed.refCol = ci; break;
-      }
+  // ── 2. Encontrar columna de REFERENCIA (primera fila de datos con EXC001/MAT030) ──
+  var dataRow0 = rows[headerRow + 1] || [];
+  var refCol = -1;
+  for(var ci=0; ci<dataRow0.length; ci++){
+    if(/^[A-Z]{2,8}\d{1,4}$/i.test(String(dataRow0[ci]||'').trim())){
+      refCol = ci; break;
+    }
+  }
+  if(refCol < 0) throw new Error('No se encontró columna de referencia (ej: EXC001, MAT030) en el Excel.');
+
+  // ── 3. Encontrar columna DESCRIPCIÓN ─────────────────────────────────────
+  // Primera columna con texto largo en la primera fila de datos
+  var descCol = -1;
+  for(var ci=0; ci<dataRow0.length; ci++){
+    if(ci === refCol) continue;
+    var v = String(dataRow0[ci]||'').trim();
+    if(v.length > 10 && isNaN(parseFloat(v))){
+      descCol = ci; break;
     }
   }
 
-  // Validar sucursalesCols — deben ser índices válidos dentro del rango
-  var cols = (parsed.sucursalesCols||[]).filter(function(col){
-    return typeof col === 'number' && col >= 0 && col < totalCols;
-  });
-  if(!cols.length) {
-    throw new Error(
-      'La IA no identificó columnas de sucursales. ' +
-      'Encabezados del Excel: ' + headerRow.map(function(h,i){return i+'='+h;}).join(' | ')
-    );
+  // ── 4. Encontrar columna T.T / INVENTARIO ────────────────────────────────
+  // Columna numérica en encabezado que diga T.T, TOTAL, INV, STOCK, EXIST
+  var invCol = -1;
+  var invPatterns = /^(T\.T|TOTAL|INV|STOCK|EXIST|SALDO|T\.T\.UND|TTUND)/i;
+  for(var ci=0; ci<enc.length; ci++){
+    if(invPatterns.test(String(enc[ci]||'').replace(/\s/g,''))){
+      invCol = ci; break;
+    }
+  }
+  // Fallback: columna numérica después de la ref que no sea sucursal
+  if(invCol < 0){
+    for(var ci=refCol+1; ci<dataRow0.length; ci++){
+      var h = String(enc[ci]||'').toUpperCase();
+      if(h.indexOf('PED')>=0 || h.indexOf('MXM')>=0 || h.indexOf('HIPER')>=0 || h.indexOf('AZ.')>=0) continue;
+      var v = parseFloat(dataRow0[ci]);
+      if(!isNaN(v) && v >= 0){ invCol = ci; break; }
+    }
   }
 
-  // Verificar que ningún índice apunta a refCol, invCol o descCol
-  var reservadas = [parsed.refCol, parsed.invCol, parsed.descCol];
-  cols = cols.filter(function(col){ return reservadas.indexOf(col) === -1; });
-  if(!cols.length) {
-    throw new Error('Los índices de sucursales coinciden con columnas de referencia/stock/descripción.');
+  // ── 5. Encontrar columnas de SUCURSALES ──────────────────────────────────
+  // Columnas cuyo encabezado contenga: PED, PEDIDO, MXM, HIPER, AZ, SUC
+  var sucPatterns = /^(PED|PEDIDO|MXM|HIPER|AZ\.|MAXI|MERCO|SUC|ORIENTE|COLL|ECC|CLA|JC|AB|JORGE)/i;
+  var colsUnicas = [];
+  for(var ci=0; ci<enc.length; ci++){
+    if(ci === refCol || ci === descCol || ci === invCol) continue;
+    var h = String(enc[ci]||'').trim();
+    if(!h) continue;
+    // Verificar que el encabezado parece de sucursal
+    var hNorm = h.replace(/\s/g,'');
+    if(sucPatterns.test(hNorm)){
+      // Verificar que la columna tiene números en las filas de datos
+      var tieneNums = false;
+      for(var ri2=headerRow+1; ri2<Math.min(rows.length,headerRow+6); ri2++){
+        var val = (rows[ri2]||[])[ci];
+        if(val !== null && val !== undefined && val !== '' && !isNaN(parseInt(val))){
+          tieneNums = true; break;
+        }
+      }
+      if(tieneNums) colsUnicas.push(ci);
+    }
   }
 
-  // Verificar que no haya duplicados
-  var colsUnicas = cols.filter(function(col, idx){ return cols.indexOf(col) === idx; });
+  // Fallback: si no encontramos por nombre, tomar todas las columnas numéricas
+  // después de las columnas conocidas que no sean invCol
+  if(!colsUnicas.length){
+    for(var ci=0; ci<enc.length; ci++){
+      if(ci===refCol||ci===descCol||ci===invCol) continue;
+      var h = String(enc[ci]||'').trim();
+      if(!h) continue;
+      var tieneNums2 = false;
+      for(var ri3=headerRow+1; ri3<Math.min(rows.length,headerRow+6); ri3++){
+        var val2 = (rows[ri3]||[])[ci];
+        if(!isNaN(parseInt(val2))){ tieneNums2=true; break; }
+      }
+      if(tieneNums2) colsUnicas.push(ci);
+    }
+  }
 
-  // ── NOMBRES: leerlos DIRECTAMENTE del encabezado del Excel ──
-  // Limpiar el prefijo PED/PEDIDO para el nombre visible, pero el índice es exacto
+  if(!colsUnicas.length){
+    throw new Error('No se encontraron columnas de sucursales en el Excel. Encabezados: ' +
+      enc.map(function(h,i){return i+'='+h;}).join(' | '));
+  }
+
+  // ── 6. Nombres de sucursales — del encabezado real, sin prefijo PED ──────
   var sucursales = colsUnicas.map(function(col){
-    var raw = String(headerRow[col]||'').trim();
-    // Quitar prefijo PED/PEDIDO/CANT del nombre visible
-    var nombre = raw.replace(/^(PED|PEDIDO|CANT|QTY)[\s.\-_]*/i, '').trim() || raw;
-    return nombre || ('SUC-' + col);
+    var raw = String(enc[col]||'').trim();
+    return raw.replace(/^(PED|PEDIDO|CANT|QTY)[\s.\-_]*/i,'').trim() || raw || ('SUC-'+col);
   });
 
-  parsed.sucursalesCols = colsUnicas;
-  parsed.sucursales     = sucursales;
-
-  // Validación final
-  if(!parsed.sucursalesCols.length) {
-    throw new Error('No se encontraron columnas de sucursales en el Excel.');
-  }
-
-  return parsed;
+  return {
+    headerRow:    headerRow,
+    refCol:       refCol,
+    descCol:      descCol,
+    invCol:       invCol >= 0 ? invCol : refCol + 1,
+    sucursales:   sucursales,
+    sucursalesCols: colsUnicas
+  };
 }
-
 // ── PASO 2: extraer productos DIRECTO del Excel (sin IA) ────
 // Las cantidades se leen célula a célula — cero interpretación, cero errores.
 function msExtraerLoteDirecto(rows, estructura) {
