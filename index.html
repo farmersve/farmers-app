@@ -17120,39 +17120,101 @@ window.msAbrirSelectorDespacho = function(){
   aviso.textContent='Solo se descuenta inventario de las sucursales seleccionadas.';
   box.appendChild(aviso);
 
-  // ── SELECTOR DE CLIENTE por sucursal ──────────────────────────────
+  // ── SELECTOR DE CLIENTE CON BUSCADOR por sucursal ─────────────────
   var clDB = typeof getClientsDB==='function' ? getClientsDB() : [];
-  var clOpts = clDB.map(function(cl){
-    return '<option value="'+cl.id+'">'+cl.nombre+(cl.rif?' ('+cl.rif+')':'')+'</option>';
-  }).join('');
 
   var lblCliente = document.createElement('div');
   lblCliente.style.cssText = 'font-size:.72rem;font-weight:800;color:#1a2050;text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px;';
   lblCliente.textContent = '1. Asigna el cliente del directorio a cada sucursal';
   box.appendChild(lblCliente);
 
-  // Inicializar mapa de clientes si no existe
   if(!MS.clientesPorSucursal) MS.clientesPorSucursal = {};
+
+  // Función para renderizar lista filtrada
+  function msRenderClienteDropdown(idKey, suc, filtro, selectedId) {
+    var lista = document.getElementById('ms-cl-lista-'+idKey);
+    if(!lista) return;
+    var norm = (filtro||'').toUpperCase().trim();
+    var filtrados = norm.length >= 1
+      ? clDB.filter(function(cl){ return (cl.nombre||'').toUpperCase().includes(norm) || (cl.rif||'').toUpperCase().includes(norm); })
+      : clDB;
+    // Construir items con createElement para evitar problemas de comillas
+    lista.innerHTML = '';
+    var items = filtrados.length ? filtrados : [];
+    if(!items.length) {
+      var noRes = document.createElement('div');
+      noRes.style.cssText = 'padding:10px 12px;font-size:.72rem;color:#94a3b8;';
+      noRes.textContent = 'Sin resultados';
+      lista.appendChild(noRes);
+    }
+    items.forEach(function(cl) {
+      var item = document.createElement('div');
+      item.setAttribute('data-id', cl.id);
+      item.setAttribute('data-nombre', cl.nombre);
+      item.setAttribute('data-suc', suc);
+      var isSelected = cl.id === selectedId;
+      item.style.cssText = 'padding:7px 12px;cursor:pointer;font-size:.75rem;border-bottom:1px solid #f1f5f9;' + (isSelected?'background:#eff6ff;':'background:#fff;');
+      item.onmouseenter = function(){ this.style.background = '#f0f9ff'; };
+      item.onmouseleave = function(){ this.style.background = isSelected ? '#eff6ff' : '#fff'; };
+      var nm = document.createElement('span');
+      nm.style.cssText = 'font-weight:700;color:#1a2050;';
+      nm.textContent = cl.nombre;
+      item.appendChild(nm);
+      if(cl.rif) {
+        var rif = document.createElement('span');
+        rif.style.cssText = 'color:#94a3b8;font-size:.68rem;margin-left:6px;';
+        rif.textContent = cl.rif;
+        item.appendChild(rif);
+      }
+      lista.appendChild(item);
+    });
+
+    lista.querySelectorAll('[data-id]').forEach(function(item){
+      item.onclick = function(){
+        var clId   = this.getAttribute('data-id');
+        var clNom  = this.getAttribute('data-nombre');
+        var sucursal = this.getAttribute('data-suc');
+        MS.clientesPorSucursal[sucursal] = clId;
+        // Mostrar nombre seleccionado en el input
+        var inp = document.getElementById('ms-cl-inp-'+idKey);
+        if(inp){ inp.value = clNom; inp.style.borderColor = '#059669'; inp.style.background = '#f0fdf4'; }
+        // Ocultar lista
+        lista.style.display = 'none';
+        // Limpiar error visual si había
+        var rowEl = document.getElementById('ms-cl-row-'+idKey);
+        if(rowEl) rowEl.style.border = '';
+      };
+    });
+  }
 
   MS.sucursales.forEach(function(suc){
     var idKey = suc.replace(/[^A-Z0-9]/gi,'_');
-    var rowCl = document.createElement('div');
-    rowCl.style.cssText = 'display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid #f1f5f9;';
 
+    var rowCl = document.createElement('div');
+    rowCl.id = 'ms-cl-row-'+idKey;
+    rowCl.style.cssText = 'padding:6px 0;border-bottom:1px solid #f1f5f9;';
+
+    // Label sucursal
     var lbl = document.createElement('div');
-    lbl.style.cssText = 'font-size:.78rem;font-weight:700;color:#1a2050;min-width:130px;';
+    lbl.style.cssText = 'font-size:.78rem;font-weight:800;color:#1a2050;margin-bottom:4px;';
     lbl.textContent = suc;
     rowCl.appendChild(lbl);
 
-    var sel2 = document.createElement('select');
-    sel2.id = 'ms-cl-'+idKey;
-    sel2.style.cssText = 'flex:1;padding:5px 8px;border:1.5px solid #e2e8f0;border-radius:6px;font-size:.75rem;color:#1a2050;';
-    sel2.innerHTML = '<option value="">-- Selecciona cliente --</option>' + clOpts;
+    // Wrapper input + lista
+    var wrap = document.createElement('div');
+    wrap.style.cssText = 'position:relative;';
 
-    // Pre-seleccionar si ya fue asignado antes o intentar match automático
+    // Input buscador
+    var inp = document.createElement('input');
+    inp.id = 'ms-cl-inp-'+idKey;
+    inp.type = 'text';
+    inp.placeholder = '🔍 Buscar cliente del directorio...';
+    inp.style.cssText = 'width:100%;padding:7px 10px;border:1.5px solid #e2e8f0;border-radius:6px;font-size:.75rem;color:#1a2050;outline:none;box-sizing:border-box;';
+    inp.autocomplete = 'off';
+
+    // Pre-seleccionar
     var preId = MS.clientesPorSucursal[suc] || '';
     if(!preId) {
-      // Intentar match automático por nombre
       var sucNorm = suc.toUpperCase().replace(/[^A-Z0-9]/g,' ').trim();
       var autoMatch = clDB.find(function(cl){
         var clNorm = (cl.nombre||'').toUpperCase().replace(/[^A-Z0-9]/g,' ').trim();
@@ -17161,10 +17223,54 @@ window.msAbrirSelectorDespacho = function(){
       });
       if(autoMatch) preId = autoMatch.id;
     }
-    if(preId) sel2.value = preId;
+    if(preId) {
+      var clPre = clDB.find(function(x){ return x.id===preId; });
+      if(clPre){
+        inp.value = clPre.nombre;
+        inp.style.borderColor = '#059669';
+        inp.style.background = '#f0fdf4';
+        MS.clientesPorSucursal[suc] = preId;
+      }
+    }
 
-    sel2.onchange = function(){ MS.clientesPorSucursal[suc] = sel2.value; };
-    rowCl.appendChild(sel2);
+    // Lista desplegable
+    var lista = document.createElement('div');
+    lista.id = 'ms-cl-lista-'+idKey;
+    lista.style.cssText = 'display:none;position:absolute;top:100%;left:0;right:0;background:#fff;border:1.5px solid #1a2050;border-radius:0 0 8px 8px;max-height:160px;overflow-y:auto;z-index:9999;box-shadow:0 8px 24px rgba(0,0,0,.15);';
+
+    inp.onfocus = (function(ik, s){ return function(){
+      msRenderClienteDropdown(ik, s, this.value, MS.clientesPorSucursal[s]||'');
+      document.getElementById('ms-cl-lista-'+ik).style.display = 'block';
+    };})(idKey, suc);
+
+    inp.oninput = (function(ik, s){ return function(){
+      // Si borraron el texto, limpiar la selección
+      if(!this.value.trim()){
+        delete MS.clientesPorSucursal[s];
+        this.style.borderColor = '#e2e8f0';
+        this.style.background = '#fff';
+      }
+      msRenderClienteDropdown(ik, s, this.value, MS.clientesPorSucursal[s]||'');
+      document.getElementById('ms-cl-lista-'+ik).style.display = 'block';
+    };})(idKey, suc);
+
+    // Cerrar al hacer clic afuera
+    inp.onblur = (function(ik){ return function(){
+      setTimeout(function(){ 
+        var l = document.getElementById('ms-cl-lista-'+ik);
+        if(l) l.style.display='none';
+      }, 200);
+    };})(idKey);
+
+    // Campo hidden para compatibilidad con la validación
+    var hidden = document.createElement('input');
+    hidden.type = 'hidden';
+    hidden.id = 'ms-cl-'+idKey;
+
+    wrap.appendChild(inp);
+    wrap.appendChild(lista);
+    wrap.appendChild(hidden);
+    rowCl.appendChild(wrap);
     box.appendChild(rowCl);
   });
 
@@ -17231,17 +17337,17 @@ window.msAbrirSelectorDespacho = function(){
     var sinCliente = [];
     MS.sucursales.forEach(function(suc){
       var idKey = suc.replace(/[^A-Z0-9]/gi,'_');
-      var selEl = document.getElementById('ms-cl-'+idKey);
-      var val = selEl ? selEl.value : (MS.clientesPorSucursal||{})[suc]||'';
+      var val = (MS.clientesPorSucursal||{})[suc]||'';
       if(!val) sinCliente.push(suc);
-      else if(selEl) MS.clientesPorSucursal[suc] = val; // guardar selección actual
     });
     if(sinCliente.length){
-      // Resaltar los selectores vacíos
+      // Resaltar los inputs vacíos
       sinCliente.forEach(function(suc){
         var idKey = suc.replace(/[^A-Z0-9]/gi,'_');
-        var selEl = document.getElementById('ms-cl-'+idKey);
-        if(selEl){ selEl.style.border='2px solid #dc2626'; selEl.style.background='#fef2f2'; }
+        var inpEl = document.getElementById('ms-cl-inp-'+idKey);
+        if(inpEl){ inpEl.style.border='2px solid #dc2626'; inpEl.style.background='#fef2f2'; inpEl.focus(); }
+        var rowEl = document.getElementById('ms-cl-row-'+idKey);
+        if(rowEl){ rowEl.style.border='2px solid #dc2626'; rowEl.style.borderRadius='8px'; rowEl.style.padding='6px 8px'; }
       });
       showToast('⚠ Asigna el cliente a: '+sinCliente.join(', '),'error');
       return;
@@ -17548,7 +17654,9 @@ function msRegistrarVentaYCXC(numP, sel) {
     var sale={
       id:saleId, fecha:dateStr, hora:timeStr,
       numpedido:(numP||MS.numPedido)+'-'+suc.replace(/[^A-Z0-9]/gi,'').substring(0,8).toUpperCase(),
-      cliente:clienteNombre, rif:clienteRif, vendedor:'OGK', sucursal:suc,
+      cliente:clienteNombre, rif:clienteRif, vendedor:'OGK',
+      sucursal:clienteNombre,       // nombre del cliente del directorio — no el código del Excel
+      sucursalCodigo:suc,           // código original del Excel (HIPER, MXM.L, etc.) — referencia interna
       moneda:moneda, monedaLabel:{USD:'USD Efectivo/Transferencia',BCV:'Bolívares BCV',TF:'Bolívares Tierra Firme'}[moneda]||moneda,
       tasa:tasa, tasaFecha:typeof getTasaFechaKey==='function'?getTasaFechaKey():'',
       items:itemsSuc, total:grandTotal, units:grandUnits, totalBs:totalBs,
@@ -17617,8 +17725,14 @@ window.msAbrirOverlayReservado = function(numP, sel, hayPendientes) {
         var clId=(MS.clientesPorSucursal||{})[s]||'';
         var clDB2=typeof getClientsDB==='function'?getClientsDB():[];
         var cl=clDB2.find(function(x){return x.id===clId;});
+        var nombreMostrar = cl ? cl.nombre : s;
+        var rifMostrar = cl ? (cl.rif ? ' · '+cl.rif : '') : '';
         return '<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid #f1f5f9;font-size:.75rem;">'+
-          '<div><span style="font-weight:700;color:#1a2050;">'+s+'</span>'+(cl?'<span style="color:#64748b;font-size:.68rem;"> · '+cl.nombre+'</span>':'')+'</div>'+
+          '<div>'+
+            '<span style="font-weight:700;color:#1a2050;">'+nombreMostrar+'</span>'+
+            '<span style="color:#94a3b8;font-size:.65rem;"> ('+s+')</span>'+
+            '<span style="color:#64748b;font-size:.68rem;">'+rifMostrar+'</span>'+
+          '</div>'+
           '<span style="font-weight:700;color:#059669;">$ '+t.toFixed(2)+'</span>'+
         '</div>';
       }).join('')+
@@ -17721,10 +17835,12 @@ window.msAbrirOverlayDespacho = function(numP, sel, hayPendientes) {
     MS.data.forEach(function(p){var pide=p.pedidos[s]||0;if(pide>0) t+=msGetPrecio(p.ref)*Math.min(p.dist[s]||0,pide);});
     var clId=(MS.clientesPorSucursal||{})[s]||'';
     var cl=clDB2.find(function(x){return x.id===clId;});
+    var nomDesp = cl ? cl.nombre : ('⚠ Sin cliente — '+s);
+    var rifDesp = cl && cl.rif ? ' · '+cl.rif : '';
     html+='<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:#f8fafc;border-radius:8px;margin-bottom:6px;">'+
       '<div>'+
-        '<div style="font-size:.82rem;font-weight:800;color:#1a2050;">'+s+'</div>'+
-        '<div style="font-size:.7rem;color:#64748b;">'+(cl?cl.nombre:'Sin cliente asignado')+(cl&&cl.rif?' · '+cl.rif:'')+'</div>'+
+        '<div style="font-size:.82rem;font-weight:800;color:'+(cl?'#1a2050':'#dc2626')+';">'+nomDesp+'</div>'+
+        '<div style="font-size:.68rem;color:#94a3b8;">Cód: '+s+rifDesp+'</div>'+
       '</div>'+
       '<span style="font-size:.85rem;font-weight:900;color:#059669;">$ '+t.toFixed(2)+'</span>'+
     '</div>';
@@ -21570,98 +21686,180 @@ function cxcNotifFactura(facId) {
   if(!fac){ showToast('Factura no encontrada','error'); return; }
   if(cxcEstado(fac) === 'PAGADA'){ showToast('Esta factura ya está pagada','info'); return; }
 
-  var nombre  = fac.clienteNombre || fac.cliente || '—';
-  var rif     = fac.rif || '';
-  var suc     = fac.sucursal || '';
-  var hoy     = new Date().toLocaleDateString('es-VE',{day:'2-digit',month:'long',year:'numeric'});
-  var est     = cxcEstado(fac);
-  var dias    = cxcDias(fac);
-  var diasTxt = dias===null?'—':dias<0?'Vencida hace '+Math.abs(dias)+' día(s)':dias===0?'Vence hoy':'Vence en '+dias+' día(s)';
-  var diasCol = est==='VENCIDA'?'#dc2626':est==='POR_VENCER'?'#b45309':'#16a34a';
-  var tieneVenc = est === 'VENCIDA';
-  var accentColor = tieneVenc ? '#dc2626' : '#1B1F6B';
-  var accentLabel = tieneVenc ? '⚠ FACTURA VENCIDA' : 'NOTIFICACIÓN DE COBRANZA';
+  var nombre    = fac.clienteNombre || fac.cliente || '—';
+  var rif       = fac.rif || '';
+  var suc       = fac.sucursal || '';
+  var numpedido = fac.numpedido || fac.id || '—';
+  var hoy       = new Date().toLocaleDateString('es-VE',{day:'2-digit',month:'long',year:'numeric'});
+  var hoyUpper  = hoy.toUpperCase();
+  var est       = cxcEstado(fac);
+  var dias      = cxcDias(fac);
+  var diasTxt   = dias===null?'—':dias<0?'Vencida hace '+Math.abs(dias)+' día(s)':dias===0?'Vence hoy':'Vence en '+dias+' día(s)';
+  var diasCol   = est==='VENCIDA'?'#dc2626':est==='POR_VENCER'?'#b45309':'#16a34a';
+  var tieneVenc = est==='VENCIDA';
+  var tienePxV  = est==='POR_VENCER';
+  var pagado    = (fac.monto||0) - (fac.saldo||0);
+  var saldo     = fac.saldo||0;
+  var monto     = fac.monto||0;
 
-  var fila = '<tr style="background:#fff;">'
-    +'<td style="padding:9px 12px;border-bottom:1px solid #e8eaf6;font-size:11px;font-family:monospace;font-weight:700;color:#1B1F6B;">'+fac.numpedido+'</td>'
-    +'<td style="padding:9px 12px;border-bottom:1px solid #e8eaf6;font-size:11px;color:#374151;">'+cxcFecha(fac.fechaEmision)+'</td>'
-    +'<td style="padding:9px 12px;border-bottom:1px solid #e8eaf6;font-size:11px;color:#374151;">'+cxcFecha(fac.fechaVencimiento)+'</td>'
-    +'<td style="padding:9px 12px;border-bottom:1px solid #e8eaf6;font-size:11px;font-weight:700;color:'+diasCol+';">'+diasTxt+'</td>'
-    +'<td style="padding:9px 12px;border-bottom:1px solid #e8eaf6;font-size:11px;text-align:right;color:#374151;">$ '+cxcFmt(fac.monto)+'</td>'
-    +'<td style="padding:9px 12px;border-bottom:1px solid #e8eaf6;font-size:11px;text-align:right;color:#6b7280;">$ '+cxcFmt(fac.monto-(fac.saldo||0))+'</td>'
-    +'<td style="padding:9px 12px;border-bottom:1px solid #e8eaf6;font-size:12px;text-align:right;font-weight:900;color:#dc2626;">$ '+cxcFmt(fac.saldo||0)+'</td>'
-    +'</tr>';
+  var NAVY  = '#1B1F6B';
+  var NAVY2 = '#252b8c';
+  var RED   = '#dc2626';
+  var AMBER = '#b45309';
+  var GREEN = '#15803d';
 
-  var nombreArch = nombre.replace(/[^A-Z0-9]/gi,'_').substring(0,30)+'_'+fac.numpedido.replace(/[^A-Z0-9]/gi,'_');
+  var bannerBg    = tieneVenc ? '#fee2e2' : tienePxV ? '#fffbeb' : '#f0fdf4';
+  var bannerColor = tieneVenc ? RED       : tienePxV ? AMBER     : GREEN;
+  var bannerTxt   = tieneVenc ? '⚠ CUENTA CON FACTURA VENCIDA' : tienePxV ? '⏰ PRÓXIMA A VENCER' : '✓ FACTURA VIGENTE';
+  var headerBg    = tieneVenc
+    ? 'linear-gradient(135deg,'+RED+' 0%,#991b1b 100%)'
+    : 'linear-gradient(135deg,'+NAVY+' 0%,'+NAVY2+' 60%,#3730a3 100%)';
+
+  var nombreArch = nombre.replace(/[^A-Z0-9]/gi,'_').substring(0,30)
+    +'_'+numpedido.replace(/[^A-Z0-9]/gi,'_');
 
   var html = '<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8">'
-    +'<title>Notificación — '+nombre+' — '+fac.numpedido+'</title>'
+    +'<title>Notificación de Cobranza — '+nombre+'</title>'
     +'<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@700;800;900&family=Barlow:wght@400;500;600;700&display=swap" rel="stylesheet">'
-    +'<style>*{margin:0;padding:0;box-sizing:border-box;}*{-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important;}body{font-family:"Barlow",Arial,sans-serif;color:#111827;background:#f0f2f7;}@media print{body{background:#fff!important;}.no-print{display:none!important;}@page{size:A4 portrait;margin:5mm 6mm;}.wrap{box-shadow:none!important;border-radius:0!important;margin:0!important;max-width:100%!important;}}</style>'
+    +'<style>'
+    +'*{margin:0;padding:0;box-sizing:border-box;}'
+    +'*{-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important;color-adjust:exact!important;}'
+    +'body{font-family:"Barlow",Arial,sans-serif;color:#111827;background:#f0f2f7;}'
+    +'@media print{'
+    +'  body{background:#fff!important;}'
+    +'  .no-print{display:none!important;}'
+    +'  @page{size:A4 portrait;margin:8mm 10mm;}'
+    +'  .wrap{box-shadow:none!important;border-radius:0!important;margin:0!important;max-width:100%!important;}'
+    +'}'
+    +'</style>'
     +'</head><body>'
 
     // Botón imprimir
-    +'<div class="no-print" style="max-width:780px;margin:10px auto 6px;display:flex;justify-content:flex-end;">'
-    +'<button onclick="window.print()" style="background:#1B1F6B;color:#fff;border:none;padding:9px 22px;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;font-family:Arial;letter-spacing:.5px;">🖨 Imprimir / Guardar PDF</button>'
+    +'<div class="no-print" style="max-width:780px;margin:12px auto 8px;display:flex;justify-content:flex-end;">'
+    +'<button onclick="window.print()" style="background:'+NAVY+';color:#fff;border:none;padding:9px 22px;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;font-family:Arial,sans-serif;letter-spacing:.5px;">🖨 Imprimir / Guardar PDF</button>'
     +'</div>'
 
-    +'<div class="wrap" style="max-width:780px;margin:0 auto;background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 4px 20px rgba(27,31,107,.13);">'
+    // Wrapper
+    +'<div class="wrap" style="max-width:780px;margin:0 auto 20px;background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 4px 24px rgba(27,31,107,.15);">'
 
-    // Header
-    +'<div style="background:linear-gradient(135deg,'+accentColor+' 0%,#252b8c 100%);padding:16px 24px;display:flex;justify-content:space-between;align-items:center;">'
-      +'<div style="display:flex;align-items:center;gap:14px;">'
-        +'<div style="background:#fff;border-radius:10px;padding:5px 9px;">'
-          +'<img src="'+FARMERS_LOGO_B64+'" style="height:40px;width:auto;display:block;" />'
+    // ── HEADER ───────────────────────────────────────────────────────────
+    +'<div style="background:'+headerBg+';padding:18px 28px;display:flex;justify-content:space-between;align-items:center;">'
+      +'<div style="display:flex;align-items:center;gap:16px;">'
+        +'<div style="background:#fff;border-radius:10px;padding:6px 10px;display:flex;align-items:center;justify-content:center;">'
+          +'<img src="'+FARMERS_LOGO_B64+'" style="height:42px;width:auto;display:block;" />'
         +'</div>'
-        +'<div style="font-size:10px;color:rgba(255,255,255,.6);">Tel: 0412-0445797 &nbsp;·&nbsp; farmersve@gmail.com</div>'
+        +'<div style="font-size:10px;color:rgba(255,255,255,.65);letter-spacing:.3px;line-height:1.7;">'
+          +'Tel: 0412-0445797<br>farmersve@gmail.com'
+        +'</div>'
       +'</div>'
       +'<div style="text-align:right;">'
-        +'<div style="font-family:Barlow Condensed,sans-serif;font-size:18px;font-weight:900;color:#fff;letter-spacing:1px;text-transform:uppercase;">'+accentLabel+'</div>'
-        +'<div style="font-size:10px;color:rgba(255,255,255,.55);margin-top:3px;">Fecha: '+hoy+'</div>'
+        +'<div style="font-family:Barlow Condensed,sans-serif;font-size:22px;font-weight:900;color:#fff;letter-spacing:1.5px;text-transform:uppercase;">NOTIFICACIÓN DE COBRANZA</div>'
+        +'<div style="font-size:10px;color:rgba(255,255,255,.6);margin-top:4px;letter-spacing:.3px;">Fecha: '+hoy+'</div>'
       +'</div>'
     +'</div>'
 
-    // Datos cliente + factura
-    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:0;">'
-      +'<div style="padding:16px 24px;border-right:1px solid #e8eaf6;">'
-        +'<div style="font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#94a3b8;margin-bottom:6px;">Destinatario</div>'
-        +'<div style="font-size:15px;font-weight:800;color:#1B1F6B;font-family:Barlow Condensed,sans-serif;text-transform:uppercase;">'+nombre+'</div>'
-        +(rif?'<div style="font-size:11px;color:#475569;margin-top:2px;">RIF: '+rif+'</div>':'')
-        +(suc?'<div style="font-size:11px;color:#475569;margin-top:2px;">Sucursal: '+suc+'</div>':'')
+    // ── BANNER ESTADO ────────────────────────────────────────────────────
+    +'<div style="background:'+bannerBg+';padding:10px 28px;display:flex;justify-content:space-between;align-items:center;border-bottom:2px solid '+bannerColor+'20;">'
+      +'<span style="font-size:11px;font-weight:800;color:'+bannerColor+';letter-spacing:.5px;">'+bannerTxt+'</span>'
+      +'<span style="font-family:Barlow Condensed,sans-serif;font-size:18px;font-weight:900;color:'+bannerColor+';">Saldo Total: $ '+cxcFmt(saldo)+'</span>'
+    +'</div>'
+
+    // ── DATOS CLIENTE + RESUMEN ──────────────────────────────────────────
+    +'<div style="display:grid;grid-template-columns:1fr auto;gap:0;padding:20px 28px;border-bottom:1px solid #e8eaf6;">'
+      +'<div>'
+        +'<div style="font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:1.2px;color:#94a3b8;margin-bottom:6px;">Señores:</div>'
+        +'<div style="font-family:Barlow Condensed,sans-serif;font-size:22px;font-weight:900;color:'+NAVY+';text-transform:uppercase;letter-spacing:.3px;">'+nombre+'</div>'
+        +(rif?'<div style="font-size:11px;color:#475569;margin-top:3px;">RIF: '+rif+'</div>':'')
+        +(suc&&suc!==nombre?'<div style="font-size:11px;color:#64748b;margin-top:2px;">Sucursal: '+suc+'</div>':'')
       +'</div>'
-      +'<div style="padding:16px 24px;">'
-        +'<div style="font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#94a3b8;margin-bottom:6px;">Factura</div>'
-        +'<div style="font-size:15px;font-weight:900;color:#1B1F6B;font-family:Barlow Condensed,sans-serif;">'+fac.numpedido+'</div>'
-        +'<div style="font-size:11px;color:#475569;margin-top:2px;">Emisión: '+cxcFecha(fac.fechaEmision)+' · Vence: '+cxcFecha(fac.fechaVencimiento)+'</div>'
-        +'<div style="font-size:11px;font-weight:700;color:'+diasCol+';margin-top:4px;">'+diasTxt+'</div>'
+      +'<div style="text-align:right;background:#f8faff;border-radius:8px;padding:14px 18px;border:1px solid #e8eaf6;min-width:200px;">'
+        +'<div style="font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:1.2px;color:#94a3b8;margin-bottom:8px;">Resumen</div>'
+        +'<div style="display:flex;justify-content:space-between;gap:20px;font-size:11px;margin-bottom:4px;">'
+          +'<span style="color:#64748b;">Facturas pendientes:</span>'
+          +'<span style="font-weight:700;color:'+NAVY+';">1</span>'
+        +'</div>'
+        +'<div style="display:flex;justify-content:space-between;gap:20px;font-size:11px;margin-bottom:4px;">'
+          +'<span style="color:#64748b;">Total facturado:</span>'
+          +'<span style="font-weight:700;color:'+NAVY+';">$ '+cxcFmt(monto)+'</span>'
+        +'</div>'
+        +'<div style="display:flex;justify-content:space-between;gap:20px;font-size:11px;">'
+          +'<span style="color:#64748b;">Abonos recibidos:</span>'
+          +'<span style="font-weight:700;color:'+GREEN+';">$ '+cxcFmt(pagado)+'</span>'
+        +'</div>'
       +'</div>'
     +'</div>'
 
-    // Tabla
-    +'<div style="padding:0 24px 16px;">'
-    +'<table style="width:100%;border-collapse:collapse;font-family:Barlow,Arial,sans-serif;">'
-    +'<thead><tr style="background:#1B1F6B;">'
-    +'<th style="padding:8px 12px;text-align:left;font-size:10px;font-weight:800;color:#fff;letter-spacing:.5px;">N° PEDIDO</th>'
-    +'<th style="padding:8px 12px;text-align:left;font-size:10px;font-weight:800;color:#fff;">EMISIÓN</th>'
-    +'<th style="padding:8px 12px;text-align:left;font-size:10px;font-weight:800;color:#fff;">VENCIMIENTO</th>'
-    +'<th style="padding:8px 12px;text-align:left;font-size:10px;font-weight:800;color:#fff;">ESTADO</th>'
-    +'<th style="padding:8px 12px;text-align:right;font-size:10px;font-weight:800;color:#fff;">MONTO</th>'
-    +'<th style="padding:8px 12px;text-align:right;font-size:10px;font-weight:800;color:#fff;">PAGADO</th>'
-    +'<th style="padding:8px 12px;text-align:right;font-size:10px;font-weight:800;color:#fff;">SALDO</th>'
+    // ── TEXTO FORMAL ──────────────────────────────────────────────────────
+    +'<div style="padding:16px 28px;font-size:11px;color:#374151;line-height:1.7;border-bottom:1px solid #e8eaf6;">'
+      +'Por medio de la presente comunicación, <strong>Farmers C.A.</strong> le notifica respetuosamente que a la fecha indicada, su cuenta registra facturas con <strong>saldo pendiente de pago</strong>, según el siguiente detalle:'
+    +'</div>'
+
+    // ── TABLA ────────────────────────────────────────────────────────────
+    +'<div style="padding:0 28px 16px;">'
+    +'<table style="width:100%;border-collapse:collapse;font-family:Barlow,Arial,sans-serif;margin-top:16px;">'
+    +'<thead><tr style="background:'+NAVY+';">'
+    +'<th style="padding:9px 12px;text-align:left;font-size:10px;font-weight:800;color:#fff;letter-spacing:.8px;">Nº FACTURA</th>'
+    +'<th style="padding:9px 12px;text-align:left;font-size:10px;font-weight:800;color:#fff;letter-spacing:.5px;">EMISIÓN</th>'
+    +'<th style="padding:9px 12px;text-align:left;font-size:10px;font-weight:800;color:#fff;letter-spacing:.5px;">VENCIMIENTO</th>'
+    +'<th style="padding:9px 12px;text-align:left;font-size:10px;font-weight:800;color:#fff;letter-spacing:.5px;">ESTATUS</th>'
+    +'<th style="padding:9px 12px;text-align:right;font-size:10px;font-weight:800;color:#fff;letter-spacing:.5px;">MONTO</th>'
+    +'<th style="padding:9px 12px;text-align:right;font-size:10px;font-weight:800;color:#fff;letter-spacing:.5px;">ABONADO</th>'
+    +'<th style="padding:9px 12px;text-align:right;font-size:10px;font-weight:800;color:#fff;letter-spacing:.5px;">SALDO</th>'
     +'</tr></thead>'
-    +'<tbody>'+fila+'</tbody>'
+    +'<tbody>'
+    +'<tr style="background:#fff;">'
+    +'<td style="padding:10px 12px;border-bottom:2px solid #e8eaf6;font-size:11px;font-family:monospace;font-weight:700;color:'+NAVY+';">'+numpedido+'</td>'
+    +'<td style="padding:10px 12px;border-bottom:2px solid #e8eaf6;font-size:11px;color:#374151;">'+cxcFecha(fac.fechaEmision)+'</td>'
+    +'<td style="padding:10px 12px;border-bottom:2px solid #e8eaf6;font-size:11px;color:#374151;">'+cxcFecha(fac.fechaVencimiento)+'</td>'
+    +'<td style="padding:10px 12px;border-bottom:2px solid #e8eaf6;font-size:11px;font-weight:700;color:'+diasCol+';">'+diasTxt+'</td>'
+    +'<td style="padding:10px 12px;border-bottom:2px solid #e8eaf6;font-size:11px;text-align:right;color:#374151;">$ '+cxcFmt(monto)+'</td>'
+    +'<td style="padding:10px 12px;border-bottom:2px solid #e8eaf6;font-size:11px;text-align:right;color:'+GREEN+';">$ '+cxcFmt(pagado)+'</td>'
+    +'<td style="padding:10px 12px;border-bottom:2px solid #e8eaf6;font-size:12px;text-align:right;font-weight:900;color:'+RED+';">$ '+cxcFmt(saldo)+'</td>'
+    +'</tr>'
+    // Fila total
+    +'<tr style="background:#f8faff;">'
+    +'<td colspan="4" style="padding:10px 12px;font-size:11px;font-weight:800;color:'+NAVY+';letter-spacing:.5px;text-transform:uppercase;">Total Pendiente</td>'
+    +'<td style="padding:10px 12px;text-align:right;font-size:11px;font-weight:700;color:#374151;">$ '+cxcFmt(monto)+'</td>'
+    +'<td style="padding:10px 12px;text-align:right;font-size:11px;font-weight:700;color:'+GREEN+';">$ '+cxcFmt(pagado)+'</td>'
+    +'<td style="padding:10px 12px;text-align:right;font-size:13px;font-weight:900;color:'+RED+';">$ '+cxcFmt(saldo)+'</td>'
+    +'</tr>'
+    +'</tbody>'
     +'</table>'
     +'</div>'
 
-    // Total
-    +'<div style="background:'+accentColor+';padding:14px 24px;display:flex;justify-content:space-between;align-items:center;">'
-      +'<div style="font-size:12px;font-weight:700;color:rgba(255,255,255,.8);text-transform:uppercase;letter-spacing:.5px;">SALDO PENDIENTE</div>'
-      +'<div style="font-family:Barlow Condensed,sans-serif;font-size:26px;font-weight:900;color:#fff;">$ '+cxcFmt(fac.saldo||0)+'</div>'
+    // ── SALDO TOTAL ───────────────────────────────────────────────────────
+    +'<div style="background:'+NAVY+';padding:16px 28px;display:flex;justify-content:space-between;align-items:center;">'
+      +'<div style="font-size:12px;font-weight:800;color:rgba(255,255,255,.75);text-transform:uppercase;letter-spacing:.8px;">SALDO PENDIENTE</div>'
+      +'<div style="font-family:Barlow Condensed,sans-serif;font-size:30px;font-weight:900;color:#fff;letter-spacing:.5px;">$ '+cxcFmt(saldo)+'</div>'
     +'</div>'
 
-    +'<div style="padding:12px 24px;font-size:10px;color:#94a3b8;text-align:center;border-top:1px solid #e8eaf6;">'
-    +'FARMERS C.A. · Margarita, Nueva Esparta · Tel: 0412-0445797 · farmersve@gmail.com'
+    // ── TEXTO CONTACTO ────────────────────────────────────────────────────
+    +'<div style="padding:18px 28px;font-size:11px;color:#374151;line-height:1.8;border-bottom:1px solid #e8eaf6;">'
+      +'Le solicitamos muy respetuosamente proceder con la regularización del saldo pendiente a la brevedad posible. Para coordinar el pago o aclarar cualquier inquietud, comuníquese con nuestro departamento de cobranzas al <strong>0412-0445797</strong> o a través de <strong>farmersve@gmail.com</strong>. Agradecemos su atención y preferencia.'
     +'</div>'
+
+    // ── FIRMAS ────────────────────────────────────────────────────────────
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:40px;padding:24px 60px 20px;">'
+      +'<div style="text-align:center;">'
+        +'<div style="border-top:1.5px solid '+NAVY+';padding-top:8px;">'
+          +'<div style="font-size:10px;font-weight:700;color:'+NAVY+';text-transform:uppercase;letter-spacing:.5px;">Responsable de Cobranzas</div>'
+          +'<div style="font-size:10px;color:#64748b;margin-top:2px;">FARMERS C.A.</div>'
+        +'</div>'
+      +'</div>'
+      +'<div style="text-align:center;">'
+        +'<div style="border-top:1.5px solid '+NAVY+';padding-top:8px;">'
+          +'<div style="font-size:10px;font-weight:700;color:'+NAVY+';text-transform:uppercase;letter-spacing:.5px;">Representante Legal</div>'
+          +'<div style="font-size:10px;color:#64748b;margin-top:2px;text-transform:uppercase;">'+nombre+'</div>'
+        +'</div>'
+      +'</div>'
+    +'</div>'
+
+    // ── FOOTER ────────────────────────────────────────────────────────────
+    +'<div style="background:#f8faff;padding:10px 28px;display:flex;justify-content:space-between;align-items:center;border-top:1px solid #e8eaf6;">'
+      +'<span style="font-size:9px;color:#94a3b8;">Documento generado electrónicamente por el Sistema de Gestión de Farmers C.A.</span>'
+      +'<span style="font-size:9px;font-weight:700;color:'+NAVY+';text-transform:uppercase;letter-spacing:.5px;">'+hoyUpper+'</span>'
+    +'</div>'
+
     +'</div></body></html>';
 
   var blob = new Blob([html],{type:'text/html;charset=utf-8'});
@@ -21673,6 +21871,7 @@ function cxcNotifFactura(facId) {
   setTimeout(function(){ URL.revokeObjectURL(url); a.remove(); }, 1000);
 }
 window.cxcNotifFactura = cxcNotifFactura;
+
 
 function cxcNotifCliente(id,nombreEnc){
   var nombre=decodeURIComponent(nombreEnc||'');
