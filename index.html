@@ -16592,13 +16592,51 @@ function msCalcularDistribucion(productos) {
       });
       estado = 'completo';
     } else {
+      // Distribución proporcional con recuperación de sobrante
+      // Math.floor puede dejar unidades sin asignar — las repartimos después
       var hayParcial = false;
+      var totalDist = 0;
       MS.sucursales.forEach(function(s){
         var pide = parseInt(pedidos[s])||0;
         if(pide === 0){ dist[s] = 0; return; }
         var prop = Math.floor(stock * pide / totalPedido);
         dist[s] = Math.min(prop, pide);
-        if(dist[s] < pide) hayParcial = true;
+        totalDist += dist[s];
+      });
+
+      // Sobrante: unidades de stock que quedaron sin asignar por el redondeo
+      var sobrante = stock - totalDist;
+
+      // Repartir sobrante priorizando las sucursales que MÁS PIDIERON
+      // Regla: nunca despachar más de lo que pide, prioridad a mayor pedido
+      if(sobrante > 0) {
+        var sucOrden = MS.sucursales.slice().sort(function(a,b){
+          var pideA = parseInt(pedidos[a])||0;
+          var pideB = parseInt(pedidos[b])||0;
+          var defA  = pideA - (dist[a]||0);
+          var defB  = pideB - (dist[b]||0);
+          // Primero: mayor déficit proporcional (quien más le falta en relación a lo que pidió)
+          // Desempate: mayor cantidad pedida absoluta
+          var propA = pideA > 0 ? defA / pideA : 0;
+          var propB = pideB > 0 ? defB / pideB : 0;
+          if(Math.abs(propB - propA) > 0.0001) return propB - propA;
+          return pideB - pideA; // desempate: más pidió = más prioridad
+        });
+        sucOrden.forEach(function(s){
+          if(sobrante <= 0) return;
+          var pide  = parseInt(pedidos[s])||0;
+          var falta = pide - (dist[s]||0);
+          if(falta <= 0) return;
+          var asignar = Math.min(falta, sobrante);
+          dist[s] += asignar;
+          sobrante -= asignar;
+        });
+      }
+
+      // Verificar si quedó parcial después de recuperar el sobrante
+      MS.sucursales.forEach(function(s){
+        var pide = parseInt(pedidos[s])||0;
+        if(pide > 0 && (dist[s]||0) < pide) hayParcial = true;
       });
       estado = hayParcial ? 'parcial' : 'completo';
     }
@@ -17430,16 +17468,38 @@ window.msConfirmarSeleccionadas = function(numP, sel, hayPendientes, ovEmision){
   }catch(e){}
 
   if(!MS.sucursalesEstado) MS.sucursalesEstado={};
-  sel.forEach(function(s){MS.sucursalesEstado[s]='confirmado';});
+  sel.forEach(function(s){MS.sucursalesEstado[s]='reservado';});
 
-  var todasConfirmadas=MS.sucursales.every(function(s){
-    return (MS.sucursalesEstado[s]==='confirmado');
+  var todasReservadas=MS.sucursales.every(function(s){
+    return MS.sucursalesEstado[s]==='reservado'||MS.sucursalesEstado[s]==='despachado';
   });
-  if(todasConfirmadas) MS.fase='confirmado';
+  if(todasReservadas) MS.fase='reservado';
 
-  try{localStorage.removeItem('ms_reserva_'+(numP||MS.numPedido));}catch(e){}
+  // Guardar estado reservado en localStorage
+  try{
+    var reserva={
+      numPedido: MS.numPedido,
+      fecha: new Date().toISOString(),
+      sucursales: sel,
+      clientesPorSucursal: MS.clientesPorSucursal||{},
+      moneda: MS.moneda||'USD',
+      data: MS.data
+    };
+    localStorage.setItem('ms_reserva_'+(MS.numPedido||numP), JSON.stringify(reserva));
+  }catch(e){}
 
-  // ── REGISTRO AUTOMÁTICO EN VENTAS + CXC ──────────────────────
+  // ── FASE 1 COMPLETA: Inventario reservado ─────────────────────
+  // Venta y CXC NO se crean aquí. Se crean cuando confirmas el despacho físico.
+  // El inventario ya está comprometido. Puedes preparar las cajas con tranquilidad.
+
+  var quedanPendientes=MS.sucursales.some(function(s){
+    return MS.sucursalesEstado[s]==='pendiente';
+  });
+  msAbrirOverlayReservado(numP, sel, quedanPendientes);
+};
+
+// ── FUNCIÓN: registrar venta + CXC (solo al despachar) ─────────
+function msRegistrarVentaYCXC(numP, sel) {
   var now=new Date();
   var dateStr=now.toLocaleDateString('es-VE',{day:'2-digit',month:'2-digit',year:'numeric'});
   var timeStr=now.toLocaleTimeString('es-VE',{hour:'2-digit',minute:'2-digit'});
@@ -17450,12 +17510,15 @@ window.msConfirmarSeleccionadas = function(numP, sel, hayPendientes, ovEmision){
   var clDB=typeof getClientsDB==='function'?getClientsDB():[];
 
   sel.forEach(function(suc){
+    // No duplicar si ya fue despachada
+    if((MS.sucursalesEstado[suc])==='despachado') return;
+
     var itemsSuc=[];
     MS.data.forEach(function(p){
       var pide=p.pedidos[suc]||0; if(!pide) return;
       var desp=Math.min(p.dist[suc]||0,pide); if(!desp) return;
       var prod=PRODUCTS.find(function(x){return x.r===p.ref;})||{};
-      var precio=msGetPrecio(p.ref)||0; // msGetPrecio respeta MS.moneda — mismo que tabla y barra
+      var precio=msGetPrecio(p.ref)||0;
       var invActual=(function(){try{return parseInt(JSON.parse(localStorage.getItem('farmers_inv')||'{}')[p.ref])||0;}catch(e){return 0;}})();
       itemsSuc.push({r:p.ref,d:p.desc||(prod.d||''),br:prod.br||'',e:prod.e||'',
         precio:precio,orden:desp,total:precio*desp,
@@ -17463,52 +17526,249 @@ window.msConfirmarSeleccionadas = function(numP, sel, hayPendientes, ovEmision){
     });
     if(!itemsSuc.length) return;
 
-    // ── Cliente: primero usar el seleccionado manualmente en el selector,
-    //    luego fallback a match automático, nunca usar nombre de sucursal
-    var clSelId = (MS.clientesPorSucursal || {})[suc] || '';
+    var clSelId = (MS.clientesPorSucursal||{})[suc]||'';
     var clMatch = clSelId
-      ? clDB.find(function(cl){ return cl.id === clSelId; })
+      ? clDB.find(function(cl){return cl.id===clSelId;})
       : clDB.find(function(cl){
           var n=(cl.nombre||'').toUpperCase().replace(/[^A-Z0-9]/g,' ').trim();
           var s=suc.toUpperCase().replace(/[^A-Z0-9]/g,' ').trim();
           return n.split(' ').some(function(w){return w.length>3&&s.includes(w);})||
                  s.split(' ').some(function(w){return w.length>3&&n.includes(w);});
         });
-    var clienteNombre = clMatch ? clMatch.nombre : (clSelId ? clSelId : suc);
-    var clienteRif    = clMatch ? (clMatch.rif||'S/RIF')      : 'S/RIF';
-    var clienteId     = clMatch ? (clMatch.id||'')            : '';
-    var correo        = clMatch ? (clMatch.correo||'')        : '';
+    var clienteNombre = clMatch?clMatch.nombre:(clSelId?clSelId:suc);
+    var clienteRif    = clMatch?(clMatch.rif||'S/RIF'):'S/RIF';
+    var clienteId     = clMatch?(clMatch.id||''):'';
+    var correo        = clMatch?(clMatch.correo||''):'';
     var diasCred      = parseInt((clMatch&&clMatch.diasCredito)||'30')||30;
-    var grandTotal=itemsSuc.reduce(function(s,i){return s+i.total;},0);
-    var grandUnits=itemsSuc.reduce(function(s,i){return s+i.orden;},0);
-    var totalBs=tasa>0&&moneda==='BCV'?grandTotal*tasa:tasa>0&&moneda==='TF'?grandTotal*tasaTF:tasa>0?grandTotal*tasa:null;
-    var saleId=Date.now()+Math.floor(Math.random()*9999);
+    var grandTotal    = itemsSuc.reduce(function(s,i){return s+i.total;},0);
+    var grandUnits    = itemsSuc.reduce(function(s,i){return s+i.orden;},0);
+    var totalBs       = tasa>0&&moneda==='BCV'?grandTotal*tasa:tasa>0&&moneda==='TF'?grandTotal*tasaTF:tasa>0?grandTotal*tasa:null;
+    var saleId        = Date.now()+Math.floor(Math.random()*9999);
+
     var sale={
-      id:saleId,fecha:dateStr,hora:timeStr,
-      numpedido:(MS.numPedido||'MS')+'-'+suc.replace(/[^A-Z0-9]/gi,'').substring(0,8).toUpperCase(),
-      cliente:clienteNombre,rif:clienteRif,vendedor:'OGK',sucursal:suc,
-      moneda:moneda,monedaLabel:{USD:'USD Efectivo/Transferencia',BCV:'Bolívares BCV',TF:'Bolívares Tierra Firme'}[moneda]||moneda,
-      tasa:tasa,tasaFecha:typeof getTasaFechaKey==='function'?getTasaFechaKey():'',
-      items:itemsSuc,total:grandTotal,units:grandUnits,totalBs:totalBs,
-      clienteId:clienteId,correo:correo,credito:diasCred,tipoPrecio:moneda,
-      fuente:'ms_confirmado',msNumPedido:MS.numPedido||''
+      id:saleId, fecha:dateStr, hora:timeStr,
+      numpedido:(numP||MS.numPedido)+'-'+suc.replace(/[^A-Z0-9]/gi,'').substring(0,8).toUpperCase(),
+      cliente:clienteNombre, rif:clienteRif, vendedor:'OGK', sucursal:suc,
+      moneda:moneda, monedaLabel:{USD:'USD Efectivo/Transferencia',BCV:'Bolívares BCV',TF:'Bolívares Tierra Firme'}[moneda]||moneda,
+      tasa:tasa, tasaFecha:typeof getTasaFechaKey==='function'?getTasaFechaKey():'',
+      items:itemsSuc, total:grandTotal, units:grandUnits, totalBs:totalBs,
+      clienteId:clienteId, correo:correo, credito:diasCred, tipoPrecio:moneda,
+      fuente:'ms_despachado', msNumPedido:numP||MS.numPedido||''
     };
+
     if(typeof getSales==='function'&&typeof saveSales==='function'){
       var sales=getSales();
-      var yaExiste=sales.some(function(s){return s.msNumPedido===MS.numPedido&&s.sucursal===suc&&s.fuente==='ms_confirmado';});
+      var yaExiste=sales.some(function(x){return x.msNumPedido===sale.msNumPedido&&x.sucursal===suc&&x.fuente==='ms_despachado';});
       if(!yaExiste){sales.unshift(sale);saveSales(sales);}
     }
     if(typeof cxcCrearDesdePedido==='function') cxcCrearDesdePedido(sale);
+
+    MS.sucursalesEstado[suc]='despachado';
   });
+
+  var todasDespachadas=MS.sucursales.every(function(s){
+    return MS.sucursalesEstado[s]==='despachado'||MS.sucursalesEstado[s]==='pendiente';
+  });
+  if(todasDespachadas) MS.fase='despachado';
   MS.formalizado=true;
   if(typeof cxcUpdateBadge==='function') cxcUpdateBadge();
   if(typeof renderHistorial==='function') renderHistorial();
-  // ── FIN REGISTRO AUTOMÁTICO ───────────────────────────────────
+}
 
-  var quedanPendientes=MS.sucursales.some(function(s){
-    return MS.sucursalesEstado[s]==='pendiente';
+
+// ── Overlay RESERVADO — inventario comprometido, pendiente despacho ──
+window.msAbrirOverlayReservado = function(numP, sel, hayPendientes) {
+  var ex=document.getElementById('ms-reservado-ov'); if(ex) ex.remove();
+
+  var total=0;
+  MS.data.forEach(function(p){
+    var precio=msGetPrecio(p.ref);
+    sel.forEach(function(s){var pide=p.pedidos[s]||0;if(pide>0) total+=precio*Math.min(p.dist[s]||0,pide);});
   });
-  msAbrirOverlayConfirmado(numP, sel, quedanPendientes);
+  var monedaLabel={USD:'USD $',BCV:'BCV $',TF:'TF $'}[MS.moneda||'USD']||'USD $';
+
+  var ov=document.createElement('div');
+  ov.id='ms-reservado-ov';
+  ov.style.cssText='position:fixed;inset:0;z-index:99100;background:rgba(0,0,0,.65);display:flex;align-items:center;justify-content:center;';
+
+  var box=document.createElement('div');
+  box.style.cssText='background:#fff;border-radius:16px;padding:28px 32px;max-width:500px;width:92%;text-align:center;';
+
+  box.innerHTML=
+    '<div style="font-size:2rem;margin-bottom:8px;">📦</div>'+
+    '<div style="font-size:1.1rem;font-weight:900;color:#d97706;margin-bottom:4px;">Inventario reservado</div>'+
+    '<div style="font-size:.8rem;color:#64748b;margin-bottom:14px;">'+(numP||MS.numPedido)+' · '+MS.fechaEmision+'</div>'+
+
+    '<div style="background:#fffbeb;border:1.5px solid #fbbf24;border-radius:10px;padding:14px;margin-bottom:14px;text-align:left;">'+
+      '<div style="font-size:.72rem;font-weight:800;color:#92400e;text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px;">✅ Listo para preparar</div>'+
+      '<div style="font-size:.75rem;color:#78350f;line-height:1.8;">'+
+        '✓ Inventario comprometido · Stock descontado<br>'+
+        '✓ Puedes preparar las cajas y etiquetas<br>'+
+        '⏳ <strong>Venta y CXC NO generadas aún</strong><br>'+
+        '⏳ El tiempo de cobranza <strong>NO ha empezado</strong>'+
+      '</div>'+
+    '</div>'+
+
+    '<div style="background:#f8fafc;border-radius:8px;padding:10px 14px;margin-bottom:14px;text-align:left;">'+
+      '<div style="font-size:.62rem;font-weight:800;color:#94a3b8;text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;">Sucursales reservadas</div>'+
+      sel.map(function(s){
+        var t=0;
+        MS.data.forEach(function(p){var pide=p.pedidos[s]||0;if(pide>0) t+=msGetPrecio(p.ref)*Math.min(p.dist[s]||0,pide);});
+        var clId=(MS.clientesPorSucursal||{})[s]||'';
+        var clDB2=typeof getClientsDB==='function'?getClientsDB():[];
+        var cl=clDB2.find(function(x){return x.id===clId;});
+        return '<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid #f1f5f9;font-size:.75rem;">'+
+          '<div><span style="font-weight:700;color:#1a2050;">'+s+'</span>'+(cl?'<span style="color:#64748b;font-size:.68rem;"> · '+cl.nombre+'</span>':'')+'</div>'+
+          '<span style="font-weight:700;color:#059669;">$ '+t.toFixed(2)+'</span>'+
+        '</div>';
+      }).join('')+
+    '</div>'+
+
+    '<div style="font-size:1.15rem;font-weight:900;color:#1a2050;margin-bottom:18px;">'+monedaLabel+' $ '+total.toFixed(2)+'</div>';
+
+  var row=document.createElement('div');
+  row.style.cssText='display:flex;gap:8px;justify-content:center;flex-wrap:wrap;';
+
+  function mkBtn(txt,bg,fn){
+    var b=document.createElement('button');
+    b.innerHTML=txt;
+    b.style.cssText='background:'+bg+';color:white;border:none;border-radius:8px;padding:10px 18px;cursor:pointer;font-weight:700;font-size:.78rem;';
+    b.onclick=fn;
+    return b;
+  }
+
+  row.appendChild(mkBtn('📊 Excel','#16a34a',function(){msExportarExcel();ov.remove();}));
+  row.appendChild(mkBtn('📄 PDF','#dc2626',function(){msExportarPDF();ov.remove();}));
+  row.appendChild(mkBtn('🏷 Etiquetas','#7c3aed',function(){msAbrirFormEtiquetas();ov.remove();}));
+
+  // Botón DESPACHAR — este es el que crea venta y CXC
+  var btnDesp=document.createElement('button');
+  btnDesp.innerHTML='🚚 Confirmar Despacho';
+  btnDesp.style.cssText='background:linear-gradient(135deg,#059669,#047857);color:white;border:none;border-radius:8px;padding:10px 22px;cursor:pointer;font-weight:800;font-size:.85rem;';
+  btnDesp.onclick=function(){
+    ov.remove();
+    msAbrirOverlayDespacho(numP, sel, hayPendientes);
+  };
+  row.appendChild(btnDesp);
+
+  var btnCerrar=document.createElement('button');
+  btnCerrar.textContent='Cerrar';
+  btnCerrar.style.cssText='background:#f1f5f9;color:#475569;border:none;border-radius:8px;padding:10px 14px;cursor:pointer;font-weight:700;font-size:.78rem;';
+  btnCerrar.onclick=function(){ov.remove();};
+  row.appendChild(btnCerrar);
+
+  box.appendChild(row);
+  ov.appendChild(box);
+  document.body.appendChild(ov);
+
+  // Actualizar botón principal
+  var btn=document.getElementById('ms-btn-emitir');
+  if(btn){
+    btn.textContent='🚚 Despachar #'+(numP||MS.numPedido);
+    btn.style.background='#d97706';
+    btn.style.cursor='pointer';
+    btn.disabled=false;
+    btn.onclick=function(){
+      msAbrirOverlayDespacho(numP, MS.sucursales.filter(function(s){
+        return MS.sucursalesEstado[s]==='reservado';
+      }), hayPendientes);
+    };
+  }
+};
+
+// ── Overlay DESPACHO — confirmar envío físico → genera venta + CXC ──
+window.msAbrirOverlayDespacho = function(numP, sel, hayPendientes) {
+  var ex=document.getElementById('ms-despacho-ov'); if(ex) ex.remove();
+  if(!sel||!sel.length){
+    var pendReserv=MS.sucursales.filter(function(s){return MS.sucursalesEstado[s]==='reservado';});
+    sel=pendReserv.length?pendReserv:MS.sucursales.slice();
+  }
+
+  var total=0;
+  MS.data.forEach(function(p){
+    var precio=msGetPrecio(p.ref);
+    sel.forEach(function(s){var pide=p.pedidos[s]||0;if(pide>0) total+=precio*Math.min(p.dist[s]||0,pide);});
+  });
+  var monedaLabel={USD:'USD $',BCV:'BCV $',TF:'TF $'}[MS.moneda||'USD']||'USD $';
+  var clDB2=typeof getClientsDB==='function'?getClientsDB():[];
+
+  var ov=document.createElement('div');
+  ov.id='ms-despacho-ov';
+  ov.style.cssText='position:fixed;inset:0;z-index:99200;background:rgba(0,0,0,.72);display:flex;align-items:center;justify-content:center;';
+
+  var box=document.createElement('div');
+  box.style.cssText='background:#fff;border-radius:16px;padding:28px 32px;max-width:500px;width:92%;';
+
+  var html=
+    '<div style="font-size:2rem;margin-bottom:8px;text-align:center;">🚚</div>'+
+    '<div style="font-size:1.1rem;font-weight:900;color:#059669;margin-bottom:4px;text-align:center;">Confirmar Despacho Físico</div>'+
+    '<div style="font-size:.78rem;color:#64748b;margin-bottom:16px;text-align:center;">Al confirmar se generará la venta oficial y la CXC. El tiempo de cobranza empieza ahora.</div>'+
+
+    '<div style="background:#f0fdf4;border:1.5px solid #86efac;border-radius:10px;padding:14px;margin-bottom:16px;">'+
+      '<div style="font-size:.65rem;font-weight:800;color:#166534;text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px;">Lo que ocurrirá al confirmar</div>'+
+      '<div style="font-size:.75rem;color:#14532d;line-height:1.9;">'+
+        '✅ Venta registrada en Historial<br>'+
+        '✅ Factura CXC generada (tiempo de cobranza inicia)<br>'+
+        '✅ Notificación de cobranza disponible<br>'+
+        '✅ Todo sincronizado en Firebase'+
+      '</div>'+
+    '</div>'+
+
+    '<div style="margin-bottom:16px;">';
+
+  sel.forEach(function(s){
+    var t=0;
+    MS.data.forEach(function(p){var pide=p.pedidos[s]||0;if(pide>0) t+=msGetPrecio(p.ref)*Math.min(p.dist[s]||0,pide);});
+    var clId=(MS.clientesPorSucursal||{})[s]||'';
+    var cl=clDB2.find(function(x){return x.id===clId;});
+    html+='<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:#f8fafc;border-radius:8px;margin-bottom:6px;">'+
+      '<div>'+
+        '<div style="font-size:.82rem;font-weight:800;color:#1a2050;">'+s+'</div>'+
+        '<div style="font-size:.7rem;color:#64748b;">'+(cl?cl.nombre:'Sin cliente asignado')+(cl&&cl.rif?' · '+cl.rif:'')+'</div>'+
+      '</div>'+
+      '<span style="font-size:.85rem;font-weight:900;color:#059669;">$ '+t.toFixed(2)+'</span>'+
+    '</div>';
+  });
+
+  html+='</div>'+
+    '<div style="background:#0f172a;border-radius:8px;padding:12px 16px;margin-bottom:18px;display:flex;justify-content:space-between;align-items:center;">'+
+      '<span style="font-size:.72rem;font-weight:700;color:#475569;text-transform:uppercase;">Total '+monedaLabel+'</span>'+
+      '<span style="font-size:1.2rem;font-weight:900;color:#4ade80;">$ '+total.toFixed(2)+'</span>'+
+    '</div>';
+
+  box.innerHTML=html;
+
+  var row=document.createElement('div');
+  row.style.cssText='display:flex;gap:10px;justify-content:flex-end;';
+
+  var btnCancelar=document.createElement('button');
+  btnCancelar.textContent='Cancelar';
+  btnCancelar.style.cssText='background:#f1f5f9;color:#475569;border:none;border-radius:8px;padding:10px 18px;cursor:pointer;font-weight:700;font-size:.82rem;';
+  btnCancelar.onclick=function(){ov.remove();};
+  row.appendChild(btnCancelar);
+
+  var btnConf=document.createElement('button');
+  btnConf.textContent='✅ Confirmar Despacho';
+  btnConf.style.cssText='background:linear-gradient(135deg,#059669,#047857);color:white;border:none;border-radius:8px;padding:11px 26px;cursor:pointer;font-weight:900;font-size:.88rem;';
+  btnConf.onclick=function(){
+    ov.remove();
+    msRegistrarVentaYCXC(numP, sel);
+
+    // Actualizar botón principal
+    var btn=document.getElementById('ms-btn-emitir');
+    if(btn){
+      btn.textContent='✅ Despachado #'+(numP||MS.numPedido);
+      btn.style.background='#059669';
+      btn.disabled=false;
+      btn.onclick=function(){msAbrirOverlayConfirmado(numP,MS.sucursales.slice(),false);};
+    }
+    msAbrirOverlayConfirmado(numP, sel, false);
+  };
+  row.appendChild(btnConf);
+
+  box.appendChild(row);
+  ov.appendChild(box);
+  document.body.appendChild(ov);
 };
 
 // ── Overlay de pedido confirmado ──────────────────
