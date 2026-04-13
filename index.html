@@ -3487,161 +3487,6 @@ function syncInventoryToProducts(){
 }
 syncInventoryToProducts();
 
-
-// ═══════════════════════════════════════════════════════════════════════
-// AUDITORÍA AUTOMÁTICA DE PEDIDO — se ejecuta en CADA confirmación
-// Verifica: cantidades > 0, refs válidas, totales coherentes, no duplicados
-// Si encuentra errores: los muestra. Si todo OK: confirma silenciosamente.
-// ═══════════════════════════════════════════════════════════════════════
-function _auditarPedido(items, contexto) {
-  // contexto = 'pedido_normal' | 'importacion' | 'ms_<numPedido>'
-  var errores   = [];
-  var advertencias = [];
-  var refsVistas = {};
-
-  items.forEach(function(it, idx) {
-    var ref    = String(it.r || it.ref || '').trim();
-    var desc   = String(it.d || it.desc || '').trim();
-    var orden  = parseInt(it.orden || it.qty || 0);
-    var precio = parseFloat(it.precio || it.price || 0);
-    var total  = parseFloat(it.total || 0);
-
-    // 1. Referencia vacía
-    if(!ref) {
-      errores.push('Línea '+(idx+1)+': referencia vacía');
-      return;
-    }
-
-    // 2. Cantidad cero o negativa
-    if(orden <= 0) {
-      errores.push(ref+': cantidad inválida ('+orden+')');
-      return;
-    }
-
-    // 3. Precio cero en pedido normal (no en MS que puede tener precio 0 temporal)
-    if(precio <= 0 && contexto === 'pedido_normal') {
-      advertencias.push(ref+': precio = $0.00');
-    }
-
-    // 4. Total inconsistente (precio * orden debe coincidir con total declarado)
-    if(precio > 0 && orden > 0 && total > 0) {
-      var totalEsperado = Math.round(precio * orden * 100) / 100;
-      var totalReal     = Math.round(total * 100) / 100;
-      if(Math.abs(totalEsperado - totalReal) > 0.02) {
-        errores.push(ref+': total declarado $'+totalReal+' ≠ precio×cant $'+totalEsperado);
-      }
-    }
-
-    // 5. Duplicado
-    if(refsVistas[ref]) {
-      errores.push(ref+': aparece duplicado en el pedido (filas '+refsVistas[ref]+' y '+(idx+1)+')');
-    }
-    refsVistas[ref] = idx+1;
-  });
-
-  // 6. Pedido vacío
-  if(!items.length) {
-    errores.push('El pedido no tiene productos.');
-  }
-
-  var totalUnidades = items.reduce(function(s,i){ return s+(parseInt(i.orden||i.qty||0)); }, 0);
-  var totalUSD      = items.reduce(function(s,i){ return s+(parseFloat(i.total||0)); }, 0);
-
-  // Registrar en consola siempre
-  var tag = '[AUDITORÍA '+contexto+']';
-  if(errores.length || advertencias.length) {
-    console.warn(tag, errores.length+' errores,', advertencias.length+' advertencias');
-    errores.forEach(function(e){ console.error(tag, '❌', e); });
-    advertencias.forEach(function(a){ console.warn(tag, '⚠️', a); });
-  } else {
-    console.log(tag, '✅ OK —', items.length+' refs,', totalUnidades+' uds, $'+totalUSD.toFixed(2));
-  }
-
-  return {
-    ok:           errores.length === 0,
-    errores:      errores,
-    advertencias: advertencias,
-    totalRefs:    items.length,
-    totalUnidades: totalUnidades,
-    totalUSD:     totalUSD
-  };
-}
-
-// Mostrar resultado de auditoría en UI (si hay errores bloquea, si hay advertencias avisa)
-function _mostrarAuditoria(resultado, contexto, onContinuar) {
-  if(resultado.ok && resultado.advertencias.length === 0) {
-    // Todo perfecto — continuar sin interrumpir
-    if(typeof onContinuar === 'function') onContinuar();
-    return;
-  }
-
-  var ex = document.getElementById('_aud-overlay'); if(ex) ex.remove();
-  var ov = document.createElement('div');
-  ov.id = '_aud-overlay';
-  ov.style.cssText = 'position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,.75);display:flex;align-items:center;justify-content:center;';
-
-  var box = document.createElement('div');
-  box.style.cssText = 'background:#fff;border-radius:14px;padding:0;max-width:560px;width:94%;max-height:88vh;overflow:hidden;display:flex;flex-direction:column;';
-
-  // Header
-  var hayErrores = resultado.errores.length > 0;
-  var hdrColor   = hayErrores ? '#dc2626' : '#d97706';
-  var hdrBg      = hayErrores ? '#fef2f2' : '#fffbeb';
-  var hdrBorder  = hayErrores ? '#fca5a5' : '#fcd34d';
-  var hdr = document.createElement('div');
-  hdr.style.cssText = 'background:'+hdrBg+';border-bottom:2px solid '+hdrBorder+';padding:16px 20px;display:flex;align-items:center;gap:12px;flex-shrink:0;';
-  hdr.innerHTML = '<div style="font-size:1.6rem;">'+(hayErrores?'🚨':'⚠️')+'</div>'
-    +'<div><div style="font-size:.95rem;font-weight:800;color:'+hdrColor+';">'
-    +(hayErrores?'Auditoría bloqueó el pedido — hay errores':'Auditoría completada con advertencias')+'</div>'
-    +'<div style="font-size:.72rem;color:#64748b;margin-top:2px;">Pedido: '+contexto+' · '
-    +resultado.totalRefs+' refs · '+resultado.totalUnidades+' uds</div></div>';
-  box.appendChild(hdr);
-
-  // Cuerpo
-  var body = document.createElement('div');
-  body.style.cssText = 'padding:16px 20px;overflow-y:auto;flex:1;';
-
-  if(resultado.errores.length) {
-    var errHtml = '<div style="font-size:.7rem;font-weight:800;color:#dc2626;text-transform:uppercase;letter-spacing:.6px;margin-bottom:8px;">❌ Errores ('+resultado.errores.length+') — el pedido NO puede continuar</div>';
-    resultado.errores.forEach(function(e){
-      errHtml += '<div style="background:#fef2f2;border:1px solid #fca5a5;border-radius:7px;padding:8px 12px;margin-bottom:6px;font-size:.75rem;color:#991b1b;">'+e+'</div>';
-    });
-    body.innerHTML += errHtml;
-  }
-
-  if(resultado.advertencias.length) {
-    var advHtml = '<div style="font-size:.7rem;font-weight:800;color:#d97706;text-transform:uppercase;letter-spacing:.6px;margin-bottom:8px;margin-top:'+(resultado.errores.length?'14px':'0')+';">⚠️ Advertencias ('+resultado.advertencias.length+')</div>';
-    resultado.advertencias.forEach(function(a){
-      advHtml += '<div style="background:#fffbeb;border:1px solid #fcd34d;border-radius:7px;padding:8px 12px;margin-bottom:6px;font-size:.75rem;color:#92400e;">'+a+'</div>';
-    });
-    body.innerHTML += advHtml;
-  }
-
-  box.appendChild(body);
-
-  // Botones
-  var footer = document.createElement('div');
-  footer.style.cssText = 'padding:14px 20px;border-top:1px solid #e2e8f0;display:flex;gap:8px;justify-content:flex-end;flex-shrink:0;background:#f8fafc;';
-
-  var btnCerrar = document.createElement('button');
-  btnCerrar.textContent = hayErrores ? 'Corregir pedido' : 'Cancelar';
-  btnCerrar.style.cssText = 'background:#f1f5f9;color:#475569;border:none;border-radius:8px;padding:9px 18px;cursor:pointer;font-weight:700;font-size:.8rem;';
-  btnCerrar.onclick = function(){ ov.remove(); };
-  footer.appendChild(btnCerrar);
-
-  if(!hayErrores && typeof onContinuar === 'function') {
-    var btnOk = document.createElement('button');
-    btnOk.textContent = 'Continuar de todas formas';
-    btnOk.style.cssText = 'background:#d97706;color:white;border:none;border-radius:8px;padding:9px 18px;cursor:pointer;font-weight:700;font-size:.8rem;';
-    btnOk.onclick = function(){ ov.remove(); onContinuar(); };
-    footer.appendChild(btnOk);
-  }
-
-  box.appendChild(footer);
-  ov.appendChild(box);
-  document.body.appendChild(ov);
-}
-
 function confirmOrder(){
   const orderedProducts=PRODUCTS.filter(p=>orders[p.r]>0);
   if(!orderedProducts.length) return;
@@ -3681,13 +3526,6 @@ function confirmOrder(){
     credito: (window._activeClientObj && window._activeClientObj.diasCredito) || '',
     tipoPrecio: (window._activeClientObj && window._activeClientObj.tipoPrecio) || 'USD',
   };
-
-  // ── AUDITORÍA antes de confirmar ──
-  var _audResultado1 = _auditarPedido(items, 'pedido_normal');
-  if(!_audResultado1.ok) {
-    _mostrarAuditoria(_audResultado1, sale.numpedido||'S/N', null);
-    return; // bloquear confirmación
-  }
 
   // Descuenta inventario
   const inv=getInventory();
@@ -16169,59 +16007,44 @@ function msParsearExcel(file, input) {
 // ── Análisis IA ──────────────────────────────────
 // ── Llamada al proxy con reintento ───────────────
 async function msCallProxy(messages, maxTokens) {
-  // Reintentar hasta 4 veces en caso de 529 (sobrecarga) o 500/502/503
   var MAX_INTENTOS = 4;
-  var ESPERAS_MS   = [2000, 4000, 8000]; // espera progresiva entre intentos
-
+  var ESPERAS_MS   = [2000, 4000, 8000];
   for(var intento = 1; intento <= MAX_INTENTOS; intento++) {
     try {
-      // Informar al usuario si es reintento
-      if(intento > 1) {
-        msSetProgress(30, 'Reintentando conexión... (' + intento + '/' + MAX_INTENTOS + ')');
-      }
-
+      if(intento > 1) msSetProgress(30, 'Reintentando conexión... (' + intento + '/' + MAX_INTENTOS + ')');
       var resp = await fetch('https://farmers-proxy.farmersve.workers.dev/', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ model: 'claude-sonnet-4-20250514', max_tokens: maxTokens, messages: messages })
       });
-
-      // 529 = API sobrecargada, 500/502/503 = error temporal — reintentar
       if(resp.status === 529 || resp.status === 500 || resp.status === 502 || resp.status === 503) {
         if(intento < MAX_INTENTOS) {
-          var espera = ESPERAS_MS[intento - 1] || 8000;
-          msSetProgress(20, 'Servicio ocupado ('+resp.status+'). Reintentando en ' + (espera/1000) + 's... (' + intento + '/' + MAX_INTENTOS + ')');
+          var espera = ESPERAS_MS[intento-1]||8000;
+          msSetProgress(20, 'Servicio ocupado ('+resp.status+'). Reintentando en '+(espera/1000)+'s... ('+intento+'/'+MAX_INTENTOS+')');
           await new Promise(function(r){ setTimeout(r, espera); });
-          continue; // reintentar
+          continue;
         }
-        throw new Error('El servicio está temporalmente saturado (HTTP ' + resp.status + '). Intenta de nuevo en unos segundos.');
+        throw new Error('Servicio temporalmente saturado (HTTP '+resp.status+'). Intenta de nuevo en unos segundos.');
       }
-
       if(!resp.ok) throw new Error('HTTP ' + resp.status);
-
       var data = await resp.json();
       if(data.error) {
-        // overloaded_error también es recuperable
         if(data.error.type === 'overloaded_error' && intento < MAX_INTENTOS) {
-          var espera = ESPERAS_MS[intento - 1] || 8000;
-          msSetProgress(20, 'API saturada. Reintentando en ' + (espera/1000) + 's... (' + intento + '/' + MAX_INTENTOS + ')');
+          var espera = ESPERAS_MS[intento-1]||8000;
+          msSetProgress(20, 'API saturada. Reintentando en '+(espera/1000)+'s... ('+intento+'/'+MAX_INTENTOS+')');
           await new Promise(function(r){ setTimeout(r, espera); });
           continue;
         }
         throw new Error(data.error.message || 'Error API');
       }
-
       var text = (data.content && data.content[0]) ? data.content[0].text : '';
       return text.replace(/```json[\s\S]*?```|```/g,'').trim();
-
     } catch(err) {
-      // Si es el último intento o error no recuperable — lanzar
-      if(intento === MAX_INTENTOS || (err.message && !err.message.includes('saturad') && !err.message.includes('529') && !err.message.includes('502') && !err.message.includes('503'))) {
-        throw err;
-      }
-      // Error de red — también reintentar
-      var espera = ESPERAS_MS[intento - 1] || 8000;
-      msSetProgress(20, 'Error de conexión. Reintentando en ' + (espera/1000) + 's... (' + intento + '/' + MAX_INTENTOS + ')');
+      if(intento === MAX_INTENTOS) throw err;
+      var msg = err.message||'';
+      if(!msg.includes('529')&&!msg.includes('502')&&!msg.includes('503')&&!msg.includes('saturad')) throw err;
+      var espera = ESPERAS_MS[intento-1]||8000;
+      msSetProgress(20, 'Error de conexión. Reintentando en '+(espera/1000)+'s... ('+intento+'/'+MAX_INTENTOS+')');
       await new Promise(function(r){ setTimeout(r, espera); });
     }
   }
@@ -16250,159 +16073,40 @@ function msRowsToText(rows) {
   }).join('\n');
 }
 
-// ── PASO 1: detectar estructura del Excel — SIN IA, 100% automático ──
-// Analiza el encabezado real del archivo para encontrar cada columna.
-// No hace ninguna llamada a la API. Funciona siempre, sin errores 529.
+// ── PASO 1: detectar estructura del Excel ────────
 async function msDetectarEstructura(rows) {
-
-  // ── 1. Encontrar la fila de encabezados ─────────────────────────────────
-  // Buscamos la primera fila que tenga al menos 5 celdas con texto
-  var headerRow = 0;
-  for(var ri=0; ri<Math.min(rows.length,5); ri++){
-    var row = rows[ri] || [];
-    var conTexto = row.filter(function(c){ return c && String(c).trim().length>0; }).length;
-    if(conTexto >= 5){ headerRow = ri; break; }
-  }
-  var enc = rows[headerRow] || [];
-
-  // ── 2. Encontrar columna de REFERENCIA (primera fila de datos con EXC001/MAT030) ──
-  var dataRow0 = rows[headerRow + 1] || [];
-  var refCol = -1;
-  for(var ci=0; ci<dataRow0.length; ci++){
-    if(/^[A-Z]{2,8}\d{1,4}$/i.test(String(dataRow0[ci]||'').trim())){
-      refCol = ci; break;
-    }
-  }
-  if(refCol < 0) throw new Error('No se encontró columna de referencia (ej: EXC001, MAT030) en el Excel.');
-
-  // ── 3. Encontrar columna DESCRIPCIÓN ─────────────────────────────────────
-  // Primera columna con texto largo en la primera fila de datos
-  var descCol = -1;
-  for(var ci=0; ci<dataRow0.length; ci++){
-    if(ci === refCol) continue;
-    var v = String(dataRow0[ci]||'').trim();
-    if(v.length > 10 && isNaN(parseFloat(v))){
-      descCol = ci; break;
-    }
-  }
-
-  // ── 4. Encontrar columna T.T / INVENTARIO ────────────────────────────────
-  // Columna numérica en encabezado que diga T.T, TOTAL, INV, STOCK, EXIST
-  var invCol = -1;
-  var invPatterns = /^(T\.T|TOTAL|INV|STOCK|EXIST|SALDO|T\.T\.UND|TTUND)/i;
-  for(var ci=0; ci<enc.length; ci++){
-    if(invPatterns.test(String(enc[ci]||'').replace(/\s/g,''))){
-      invCol = ci; break;
-    }
-  }
-  // Fallback: columna numérica después de la ref que no sea sucursal
-  if(invCol < 0){
-    for(var ci=refCol+1; ci<dataRow0.length; ci++){
-      var h = String(enc[ci]||'').toUpperCase();
-      if(h.indexOf('PED')>=0 || h.indexOf('MXM')>=0 || h.indexOf('HIPER')>=0 || h.indexOf('AZ.')>=0) continue;
-      var v = parseFloat(dataRow0[ci]);
-      if(!isNaN(v) && v >= 0){ invCol = ci; break; }
-    }
-  }
-
-  // ── 5. Encontrar columnas de SUCURSALES ──────────────────────────────────
-  // Columnas cuyo encabezado contenga: PED, PEDIDO, MXM, HIPER, AZ, SUC
-  var sucPatterns = /^(PED|PEDIDO|MXM|HIPER|AZ\.|MAXI|MERCO|SUC|ORIENTE|COLL|ECC|CLA|JC|AB|JORGE)/i;
-  var colsUnicas = [];
-  for(var ci=0; ci<enc.length; ci++){
-    if(ci === refCol || ci === descCol || ci === invCol) continue;
-    var h = String(enc[ci]||'').trim();
-    if(!h) continue;
-    // Verificar que el encabezado parece de sucursal
-    var hNorm = h.replace(/\s/g,'');
-    if(sucPatterns.test(hNorm)){
-      // Verificar que la columna tiene números en las filas de datos
-      var tieneNums = false;
-      for(var ri2=headerRow+1; ri2<Math.min(rows.length,headerRow+6); ri2++){
-        var val = (rows[ri2]||[])[ci];
-        if(val !== null && val !== undefined && val !== '' && !isNaN(parseInt(val))){
-          tieneNums = true; break;
-        }
-      }
-      if(tieneNums) colsUnicas.push(ci);
-    }
-  }
-
-  // Fallback: si no encontramos por nombre, tomar todas las columnas numéricas
-  // después de las columnas conocidas que no sean invCol
-  if(!colsUnicas.length){
-    for(var ci=0; ci<enc.length; ci++){
-      if(ci===refCol||ci===descCol||ci===invCol) continue;
-      var h = String(enc[ci]||'').trim();
-      if(!h) continue;
-      var tieneNums2 = false;
-      for(var ri3=headerRow+1; ri3<Math.min(rows.length,headerRow+6); ri3++){
-        var val2 = (rows[ri3]||[])[ci];
-        if(!isNaN(parseInt(val2))){ tieneNums2=true; break; }
-      }
-      if(tieneNums2) colsUnicas.push(ci);
-    }
-  }
-
-  if(!colsUnicas.length){
-    throw new Error('No se encontraron columnas de sucursales en el Excel. Encabezados: ' +
-      enc.map(function(h,i){return i+'='+h;}).join(' | '));
-  }
-
-  // ── 6. Nombres de sucursales — del encabezado real, sin prefijo PED ──────
-  var sucursales = colsUnicas.map(function(col){
-    var raw = String(enc[col]||'').trim();
-    return raw.replace(/^(PED|PEDIDO|CANT|QTY)[\s.\-_]*/i,'').trim() || raw || ('SUC-'+col);
-  });
-
-  return {
-    headerRow:    headerRow,
-    refCol:       refCol,
-    descCol:      descCol,
-    invCol:       invCol >= 0 ? invCol : refCol + 1,
-    sucursales:   sucursales,
-    sucursalesCols: colsUnicas
-  };
-}
-// ── PASO 2: extraer productos DIRECTO del Excel (sin IA) ────
-// Las cantidades se leen célula a célula — cero interpretación, cero errores.
-function msExtraerLoteDirecto(rows, estructura) {
-  var resultados = [];
-  var refCol  = estructura.refCol;
-  var invCol  = estructura.invCol;
-  var descCol = estructura.descCol;
-  var sucCols = estructura.sucursalesCols; // array de índices de columna por sucursal
-
-  rows.forEach(function(row) {
-    if(!row) return;
-    var ref = String(row[refCol]||'').trim();
-    if(ref.length < 2) return; // fila vacía o sin referencia válida
-
-    var stock = parseInt(row[invCol])||0;
-    var desc  = descCol >= 0 ? String(row[descCol]||'').trim() : '';
-
-    // Leer cantidad de cada sucursal DIRECTAMENTE de la celda correspondiente
-    var q = sucCols.map(function(col){
-      if(col < 0 || col >= row.length) return 0;
-      var val = row[col];
-      if(val === null || val === undefined || val === '') return 0;
-      var n = parseInt(val);
-      return (isNaN(n) || n < 0) ? 0 : n;
-    });
-
-    resultados.push({ r: ref, d: desc, s: stock, q: q });
-  });
-  return resultados;
+  var muestra = msRowsToText(rows.slice(0, 5));
+  var prompt =
+    'Eres experto en pedidos de distribución. Analiza estas primeras filas de un Excel:\n\n' +
+    muestra + '\n\n' +
+    'Identifica exactamente:\n' +
+    '1. El índice (0-based) de la columna REFERENCIA de producto\n' +
+    '2. El índice de la columna INVENTARIO/STOCK\n' +
+    '3. El índice de la columna DESCRIPCIÓN (o -1 si no existe)\n' +
+    '4. La fila índice (0-based) que tiene los encabezados\n' +
+    '5. Los nombres limpios de sucursales (sin prefijo PED/PEDIDO) en orden de columna\n\n' +
+    'RESPONDE SOLO JSON sin markdown:\n' +
+    '{"refCol":2,"invCol":4,"descCol":1,"headerRow":1,"sucursales":["HIPER","MXM.J","MXM.G",...]}';
+  var texto = await msCallProxy([{role:'user', content: prompt}], 800);
+  return JSON.parse(texto);
 }
 
-// msExtraerLote — wrapper que usa lectura directa
+// ── PASO 2: extraer productos de un lote ─────────
 async function msExtraerLote(rows, estructura) {
-  // Si tenemos índices de columna de sucursales: leer directo (exacto, sin IA)
-  if(estructura.sucursalesCols && estructura.sucursalesCols.length > 0) {
-    return msExtraerLoteDirecto(rows, estructura);
-  }
-  // Fallback: no debería llegar aquí si msDetectarEstructura funcionó bien
-  return [];
+  var sJSON = JSON.stringify(estructura.sucursales);
+  var tablaTexto = msRowsToText(rows);
+  var prompt =
+    'Tienes este lote de filas de un Excel de pedidos (col ' + estructura.refCol + '=ref, col ' +
+    estructura.invCol + '=stock, col ' + estructura.descCol + '=desc).\n' +
+    'Sucursales en orden de columna de pedido: ' + sJSON + '\n\n' +
+    tablaTexto + '\n\n' +
+    'Extrae TODOS los productos con referencia válida (ej: EXC001, MAT015, LUM034).\n' +
+    'RESPONDE SOLO JSON sin markdown, sin texto extra:\n' +
+    '{"p":[{"r":"EXC001","d":"DESC","s":288,"q":[15,4,0,6,6,0,6,4,8,15,6,4,6,0,6]}]}\n' +
+    'Donde "q" es array de cantidades en el mismo orden que las sucursales.';
+  var texto = await msCallProxy([{role:'user', content: prompt}], 4000);
+  var parsed = msRepararJSON(texto);
+  return (parsed && parsed.p) ? parsed.p : [];
 }
 
 // ── ORQUESTADOR PRINCIPAL ─────────────────────────
@@ -16479,10 +16183,17 @@ async function msAnalizarConIA(rows, pdfBase64, input) {
       });
       if(!dataRows.length) throw new Error('No se encontraron filas de productos.');
 
-      // Lectura DIRECTA del Excel — célula a célula, sin IA, sin lotes, sin errores
-      msSetProgress(70, 'Leyendo ' + dataRows.length + ' productos directamente del Excel...');
-      var items = await msExtraerLote(dataRows, estructura);
-      todosProductos = todosProductos.concat(items);
+      // Procesar en lotes de 40
+      var LOTE = 40;
+      var totalLotes = Math.ceil(dataRows.length / LOTE);
+      for(var i=0; i<dataRows.length; i+=LOTE) {
+        var loteNum = Math.floor(i/LOTE) + 1;
+        msSetProgress(35 + Math.floor(55 * (loteNum-1) / totalLotes),
+          'Procesando productos ' + (i+1) + '–' + Math.min(i+LOTE, dataRows.length) + ' de ' + dataRows.length + '...');
+        var lote = dataRows.slice(i, i+LOTE);
+        var items = await msExtraerLote(lote, estructura);
+        todosProductos = todosProductos.concat(items);
+      }
     }
 
     if(!todosProductos.length) throw new Error('No se encontraron productos en el archivo.');
@@ -16495,48 +16206,31 @@ async function msAnalizarConIA(rows, pdfBase64, input) {
       return { ref: String(p.r||'').trim(), desc: String(p.d||'').trim(), stock: parseInt(p.s)||0, pedidos: pedidos };
     }).filter(function(p){ return p.ref.length >= 2; });
 
-    // ── DEDUPLICAR por referencia ──────────────────────────────
-    // La IA procesa en lotes y puede repetir productos en bordes de lote.
-    // Si una ref aparece más de una vez, tomamos la primera ocurrencia
-    // (la que tenga más sucursales con cantidad > 0) — NUNCA acumulamos cantidades.
+    // Deduplicar — quedarse con la ocurrencia que tenga más cantidades
     var refVisto = {};
     var productosNorm = [];
     productosRaw.forEach(function(p){
       if(!p.ref) return;
       if(refVisto[p.ref]){
-        // Ya existe — verificar si esta ocurrencia tiene más datos útiles
         var existing = refVisto[p.ref];
         var existingTotal = sucursales.reduce(function(s,x){ return s+(existing.pedidos[x]||0); },0);
         var thisTotal     = sucursales.reduce(function(s,x){ return s+(p.pedidos[x]||0); },0);
-        // Quedarse con la que tenga más cantidades (más completa)
         if(thisTotal > existingTotal){
-          // Reemplazar: quitar la anterior y poner esta
           var idx2 = productosNorm.indexOf(existing);
           if(idx2 >= 0) productosNorm.splice(idx2, 1);
           refVisto[p.ref] = p;
           productosNorm.push(p);
         }
-        // Si la existente tiene más o igual datos — ignorar duplicado silenciosamente
         return;
       }
       refVisto[p.ref] = p;
       productosNorm.push(p);
     });
 
-    msSetProgress(95, 'Auditando integridad del pedido...');
-
-    // ── AUDITORÍA OBLIGATORIA antes de procesar ────────────────
-    var fuenteArchivo = pdfBase64 ? 'PDF' : 'Excel';
-    var audit = msAuditarPedido(productosNorm, sucursales, fuenteArchivo);
-
-    msSetProgress(100, 'Auditoría completada');
-
-    // Mostrar resultado de auditoría — el usuario debe aprobar para continuar
-    msMostrarAuditoria(audit, function() {
-      // Solo llega aquí si el usuario presiona "Continuar" (audit.ok o sin errores graves)
-      msCalcularDistribucion(productosNorm);
-      setTimeout(function(){ msRenderResultados(); }, 300);
-    }, productosNorm);
+    msSetProgress(95, 'Calculando distribución proporcional...');
+    msCalcularDistribucion(productosNorm);
+    msSetProgress(100, 'Listo');
+    setTimeout(function(){ msRenderResultados(); }, 300);
 
   } catch(err) {
     msShowStep(1);
@@ -16546,284 +16240,6 @@ async function msAnalizarConIA(rows, pdfBase64, input) {
 }
 
 function msPromptIA() { return ''; // No se usa — reemplazado por lógica en dos pasos
-}
-
-
-// ═══════════════════════════════════════════════════════════════════
-// MÓDULO DE AUDITORÍA DE PEDIDOS
-// Se ejecuta automáticamente en cada importación (Excel y PDF)
-// Verifica integridad antes de calcular distribución
-// ═══════════════════════════════════════════════════════════════════
-function msAuditarPedido(productosNorm, sucursales, fuente) {
-  var errores   = [];
-  var alertas   = [];
-  var sinRef    = 0;
-  var conDatos  = 0;
-
-  // ── 1. Verificar cada producto ──────────────────────────────────
-  productosNorm.forEach(function(p, idx) {
-    var fila = idx + 1;
-
-    // Referencia vacía
-    if(!p.ref || p.ref.length < 2) {
-      errores.push({ fila: fila, ref: p.ref||'—', desc: p.desc||'—', tipo: 'Referencia vacía o inválida' });
-      sinRef++;
-      return;
-    }
-
-    // Cantidades negativas
-    sucursales.forEach(function(s) {
-      var q = p.pedidos[s];
-      if(typeof q === 'number' && q < 0) {
-        errores.push({ fila: fila, ref: p.ref, desc: p.desc, tipo: 'Cantidad negativa en "' + s + '": ' + q });
-      }
-    });
-
-    // Verificar que al menos una sucursal tiene datos (si todas son 0 es sospechoso pero no error)
-    var totalPedido = sucursales.reduce(function(t,s){ return t+(p.pedidos[s]||0); }, 0);
-    if(totalPedido > 0) conDatos++;
-
-    // Referencia no existe en PRODUCTS (alerta, no error — puede ser nuevo producto)
-    if(typeof PRODUCTS !== 'undefined') {
-      var existe = PRODUCTS.some(function(x){ return x.r === p.ref; });
-      if(!existe) {
-        alertas.push({ fila: fila, ref: p.ref, desc: p.desc, tipo: 'Referencia no encontrada en base de datos de productos' });
-      }
-    }
-  });
-
-  // ── 2. Verificar estructura general ────────────────────────────
-  if(productosNorm.length === 0) {
-    errores.push({ fila: 0, ref: '—', desc: '—', tipo: 'No se encontraron productos en el archivo' });
-  }
-  if(sucursales.length === 0) {
-    errores.push({ fila: 0, ref: '—', desc: '—', tipo: 'No se identificaron sucursales' });
-  }
-
-  // ── 3. Verificar duplicados ─────────────────────────────────────
-  var vistosRef = {};
-  productosNorm.forEach(function(p, idx) {
-    if(!p.ref) return;
-    if(vistosRef[p.ref] !== undefined) {
-      errores.push({ fila: idx+1, ref: p.ref, desc: p.desc,
-        tipo: 'Referencia duplicada (ya aparece en fila ' + (vistosRef[p.ref]+1) + ')' });
-    } else {
-      vistosRef[p.ref] = idx;
-    }
-  });
-
-  return {
-    ok:          errores.length === 0,
-    errores:     errores,
-    alertas:     alertas,
-    totalProds:  productosNorm.length,
-    conDatos:    conDatos,
-    sucursales:  sucursales,
-    fuente:      fuente || 'Excel',
-    totalUds:    productosNorm.reduce(function(t,p){
-      return t + sucursales.reduce(function(ts,s){ return ts+(p.pedidos[s]||0); },0);
-    }, 0),
-    totalesPorSuc: sucursales.map(function(s){
-      return { suc: s, total: productosNorm.reduce(function(t,p){ return t+(p.pedidos[s]||0); },0) };
-    })
-  };
-}
-
-// ── Modal de resultado de auditoría ────────────────────────────────
-function msAuditCancelar() {
-  var ov = document.getElementById('ms-audit-ov');
-  if(ov) ov.remove();
-  msShowStep(1);
-  var fi = document.getElementById('ms-file-input');
-  if(fi) fi.value = '';
-}
-
-function msMostrarAuditoria(audit, onContinuar, productosNorm) {
-  productosNorm = productosNorm || [];
-  var ex = document.getElementById('ms-audit-ov'); if(ex) ex.remove();
-
-  var ov = document.createElement('div');
-  ov.id = 'ms-audit-ov';
-  ov.style.cssText = 'position:fixed;inset:0;z-index:99300;background:rgba(0,0,0,.75);display:flex;align-items:center;justify-content:center;overflow-y:auto;padding:20px;box-sizing:border-box;';
-
-  var box = document.createElement('div');
-  box.style.cssText = 'background:#fff;border-radius:16px;width:100%;max-width:820px;max-height:88vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,.3);';
-
-  // ── Header ──
-  var colorHdr = audit.ok ? '#059669' : '#dc2626';
-  var iconoHdr = audit.ok ? '✅' : '❌';
-  var tituloHdr = audit.ok
-    ? 'Auditoría completada — ' + audit.totalProds + ' productos verificados'
-    : 'Auditoría detectó ' + audit.errores.length + ' error(es) — Revisar antes de continuar';
-
-  var hdrHtml =
-    '<div style="background:' + (audit.ok ? 'linear-gradient(135deg,#059669,#047857)' : 'linear-gradient(135deg,#dc2626,#991b1b)') + ';padding:20px 28px;border-radius:16px 16px 0 0;">' +
-      '<div style="display:flex;align-items:center;gap:12px;">' +
-        '<div style="font-size:1.8rem;">' + iconoHdr + '</div>' +
-        '<div>' +
-          '<div style="font-size:1rem;font-weight:800;color:#fff;">' + tituloHdr + '</div>' +
-          '<div style="font-size:.72rem;color:rgba(255,255,255,.75);margin-top:2px;">Fuente: ' + audit.fuente + ' &nbsp;·&nbsp; ' + audit.sucursales.length + ' sucursales &nbsp;·&nbsp; ' + audit.totalUds.toLocaleString() + ' unidades totales</div>' +
-        '</div>' +
-      '</div>' +
-    '</div>';
-
-  // ── KPIs ──
-  var kpiHtml = '<div style="display:grid;grid-template-columns:repeat(' + (2 + audit.sucursales.length) + ',1fr);gap:8px;padding:16px 20px;background:#f8fafc;border-bottom:1px solid #e2e8f0;">';
-  kpiHtml +=
-    '<div style="background:#fff;border-radius:8px;padding:10px 12px;border:1px solid #e2e8f0;text-align:center;">' +
-      '<div style="font-size:.58rem;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:.5px;">Productos</div>' +
-      '<div style="font-size:1.1rem;font-weight:900;color:#1a2050;">' + audit.totalProds + '</div>' +
-    '</div>' +
-    '<div style="background:#fff;border-radius:8px;padding:10px 12px;border:1px solid #e2e8f0;text-align:center;">' +
-      '<div style="font-size:.58rem;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:.5px;">Total uds</div>' +
-      '<div style="font-size:1.1rem;font-weight:900;color:#059669;">' + audit.totalUds.toLocaleString() + '</div>' +
-    '</div>';
-
-  var sucColors = ['#1d4ed8','#7c3aed','#0891b2','#d97706','#dc2626','#059669'];
-  audit.totalesPorSuc.forEach(function(ts, i) {
-    kpiHtml +=
-      '<div style="background:#fff;border-radius:8px;padding:10px 12px;border:1px solid #e2e8f0;text-align:center;">' +
-        '<div style="font-size:.55rem;font-weight:700;color:' + (sucColors[i]||'#475569') + ';text-transform:uppercase;letter-spacing:.3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="' + ts.suc + '">' + ts.suc + '</div>' +
-        '<div style="font-size:1rem;font-weight:900;color:' + (sucColors[i]||'#475569') + ';">' + ts.total.toLocaleString() + '</div>' +
-      '</div>';
-  });
-  kpiHtml += '</div>';
-
-  // ── Errores ──
-  var erroresHtml = '';
-  if(audit.errores.length) {
-    erroresHtml = '<div style="padding:14px 20px;">' +
-      '<div style="font-size:.7rem;font-weight:800;color:#dc2626;text-transform:uppercase;letter-spacing:.8px;margin-bottom:8px;">⛔ ' + audit.errores.length + ' error(es) — el pedido NO puede procesarse</div>' +
-      '<table style="width:100%;border-collapse:collapse;">' +
-        '<thead><tr style="background:#fef2f2;">' +
-          '<th style="padding:6px 10px;text-align:center;font-size:.6rem;color:#991b1b;font-weight:800;width:50px;">FILA</th>' +
-          '<th style="padding:6px 10px;text-align:left;font-size:.6rem;color:#991b1b;font-weight:800;width:90px;">REF</th>' +
-          '<th style="padding:6px 10px;text-align:left;font-size:.6rem;color:#991b1b;font-weight:800;">DESCRIPCIÓN</th>' +
-          '<th style="padding:6px 10px;text-align:left;font-size:.6rem;color:#991b1b;font-weight:800;">ERROR</th>' +
-        '</tr></thead><tbody>';
-    audit.errores.forEach(function(e) {
-      erroresHtml += '<tr style="border-bottom:1px solid #fee2e2;">' +
-        '<td style="padding:5px 10px;text-align:center;font-size:.7rem;color:#dc2626;font-weight:700;">' + e.fila + '</td>' +
-        '<td style="padding:5px 10px;font-family:monospace;font-size:.7rem;font-weight:700;color:#1a2050;">' + e.ref + '</td>' +
-        '<td style="padding:5px 10px;font-size:.68rem;color:#475569;">' + e.desc + '</td>' +
-        '<td style="padding:5px 10px;font-size:.68rem;color:#dc2626;font-weight:600;">' + e.tipo + '</td>' +
-        '</tr>';
-    });
-    erroresHtml += '</tbody></table></div>';
-  }
-
-  // ── Alertas ──
-  var alertasHtml = '';
-  if(audit.alertas.length) {
-    alertasHtml = '<div style="padding:0 20px 14px;">' +
-      '<div style="font-size:.7rem;font-weight:800;color:#d97706;text-transform:uppercase;letter-spacing:.8px;margin-bottom:8px;">⚠️ ' + audit.alertas.length + ' referencia(s) no encontrada(s) en base de datos</div>' +
-      '<div style="background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:10px 14px;max-height:140px;overflow-y:auto;">';
-    audit.alertas.forEach(function(a) {
-      alertasHtml += '<div style="display:flex;gap:10px;padding:3px 0;border-bottom:1px solid #fef3c7;font-size:.68rem;">' +
-        '<span style="font-family:monospace;font-weight:700;color:#92400e;min-width:80px;">' + a.ref + '</span>' +
-        '<span style="color:#78350f;">' + a.desc + '</span>' +
-        '<span style="color:#b45309;margin-left:auto;white-space:nowrap;">no en BD</span>' +
-        '</div>';
-    });
-    alertasHtml += '</div>' +
-      '<div style="font-size:.65rem;color:#92400e;margin-top:6px;">El sistema usará el nombre del archivo. Puedes continuar pero verifica que las referencias sean correctas.</div>' +
-    '</div>';
-  }
-
-  // ── Tabla detalle COMPLETA producto por producto ──────────────────
-  var sucColors2 = ['#1d4ed8','#7c3aed','#0891b2','#d97706','#dc2626','#059669'];
-
-  var thSucs = audit.sucursales.map(function(s,i){
-    return '<th style="padding:6px 8px;text-align:center;font-size:.58rem;font-weight:800;color:' + (sucColors2[i]||'#fff') + ';white-space:nowrap;">' + s + '</th>';
-  }).join('');
-
-  var filasProd = productosNorm.map(function(p, idx){
-    var bg = idx%2===0 ? '#ffffff' : '#f8fafc';
-    var totalProd = audit.sucursales.reduce(function(t,s){ return t+(p.pedidos[s]||0); },0);
-    var prod = (typeof PRODUCTS !== 'undefined') ? PRODUCTS.find(function(x){return x.r===p.ref;}) : null;
-    var enBD = prod ? '✓' : '!';
-    var enBDColor = prod ? '#16a34a' : '#d97706';
-
-    var tdSucs = audit.sucursales.map(function(s,i){
-      var q = p.pedidos[s]||0;
-      var color = q>0 ? (sucColors2[i]||'#1d4ed8') : '#cbd5e1';
-      var weight = q>0 ? '800' : '400';
-      return '<td style="padding:4px 6px;text-align:center;font-size:.68rem;font-weight:' + weight + ';color:' + color + ';border-bottom:1px solid #f1f5f9;">' + (q>0?q:'—') + '</td>';
-    }).join('');
-
-    var badge = '<span style="background:' + (p.problemas&&p.problemas.length?'#fef9c3':'#dcfce7') + ';color:' + (p.problemas&&p.problemas.length?'#92400e':'#166534') + ';font-size:.58rem;font-weight:800;padding:1px 6px;border-radius:20px;">' + (p.problemas&&p.problemas.length?'⚠':'✓') + '</span>';
-
-    return '<tr style="background:' + bg + '">' +
-      '<td style="padding:4px 6px;text-align:center;font-size:.6rem;color:#94a3b8;border-bottom:1px solid #f1f5f9;">' + (idx+1) + '</td>' +
-      '<td style="padding:4px 8px;font-family:monospace;font-size:.7rem;font-weight:800;color:#1a2050;border-bottom:1px solid #f1f5f9;white-space:nowrap;">' + p.ref + '</td>' +
-      '<td style="padding:4px 8px;font-size:.67rem;color:#374151;border-bottom:1px solid #f1f5f9;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + p.desc + '">' + p.desc + '</td>' +
-      tdSucs +
-      '<td style="padding:4px 8px;text-align:center;font-size:.72rem;font-weight:900;color:#059669;border-bottom:1px solid #f1f5f9;">' + totalProd + '</td>' +
-      '<td style="padding:4px 6px;text-align:center;font-size:.65rem;font-weight:700;color:' + enBDColor + ';border-bottom:1px solid #f1f5f9;">' + enBD + '</td>' +
-      '<td style="padding:4px 6px;text-align:center;border-bottom:1px solid #f1f5f9;">' + badge + '</td>' +
-    '</tr>';
-  }).join('');
-
-  // Fila de totales
-  var totalesFila = '<tr style="background:#0f172a;">' +
-    '<td colspan="3" style="padding:8px 10px;text-align:right;font-size:.62rem;color:#475569;font-weight:800;letter-spacing:.8px;">TOTALES</td>' +
-    audit.sucursales.map(function(s,i){
-      return '<td style="padding:8px 6px;text-align:center;font-size:.78rem;font-weight:900;color:' + (sucColors2[i]||'#fff') + ';">' +
-        audit.totalesPorSuc[i].total.toLocaleString() + '</td>';
-    }).join('') +
-    '<td style="padding:8px 6px;text-align:center;font-size:.82rem;font-weight:900;color:#4ade80;">' + audit.totalUds.toLocaleString() + '</td>' +
-    '<td colspan="2"></td>' +
-  '</tr>';
-
-  var okHtml = '<div style="padding:14px 20px 0;">' +
-    (audit.ok
-      ? '<div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:10px 14px;font-size:.72rem;color:#166534;line-height:1.7;margin-bottom:12px;">' +
-          '✓ ' + audit.totalProds + ' referencias leídas sin duplicados &nbsp;·&nbsp; ' +
-          '✓ Cantidades directas de celda — sin interpretación &nbsp;·&nbsp; ' +
-          '✓ ' + audit.sucursales.length + ' sucursales &nbsp;·&nbsp; ' +
-          '✓ ' + audit.totalUds.toLocaleString() + ' uds totales' +
-          (audit.alertas.length===0 ? ' &nbsp;·&nbsp; ✓ Todas las refs en BD' : '') +
-        '</div>'
-      : '') +
-    '<div style="font-size:.65rem;font-weight:800;color:#475569;text-transform:uppercase;letter-spacing:.8px;margin-bottom:6px;">Detalle completo por producto</div>' +
-    '<div style="border-radius:8px;border:1px solid #e2e8f0;overflow:hidden;max-height:340px;overflow-y:auto;">' +
-      '<table style="width:100%;border-collapse:collapse;">' +
-        '<thead style="position:sticky;top:0;z-index:2;"><tr style="background:#1e293b;">' +
-          '<th style="padding:6px 6px;text-align:center;font-size:.57rem;font-weight:800;color:#64748b;width:28px;">#</th>' +
-          '<th style="padding:6px 8px;text-align:left;font-size:.57rem;font-weight:800;color:#94a3b8;">REF</th>' +
-          '<th style="padding:6px 8px;text-align:left;font-size:.57rem;font-weight:800;color:#94a3b8;min-width:160px;">DESCRIPCIÓN</th>' +
-          thSucs +
-          '<th style="padding:6px 6px;text-align:center;font-size:.57rem;font-weight:800;color:#4ade80;">TOTAL</th>' +
-          '<th style="padding:6px 6px;text-align:center;font-size:.57rem;font-weight:800;color:#94a3b8;">BD</th>' +
-          '<th style="padding:6px 6px;text-align:center;font-size:.57rem;font-weight:800;color:#94a3b8;">OK</th>' +
-        '</tr></thead>' +
-        '<tbody>' + filasProd + '</tbody>' +
-        '<tfoot>' + totalesFila + '</tfoot>' +
-      '</table>' +
-    '</div>' +
-  '</div>';
-
-  // ── Botones ──
-  var botonesHtml = '<div style="display:flex;gap:10px;justify-content:flex-end;padding:16px 20px;border-top:1px solid #e2e8f0;background:#f8fafc;border-radius:0 0 16px 16px;">';
-    botonesHtml += '<button onclick="msAuditCancelar()" style="background:#f1f5f9;color:#475569;border:none;border-radius:8px;padding:10px 20px;cursor:pointer;font-weight:700;font-size:.82rem;">Cancelar y volver</button>';
-  if(audit.ok || audit.errores.length === 0) {
-    botonesHtml += '<button id="ms-audit-continuar" ' +
-      'style="background:linear-gradient(135deg,#059669,#047857);color:white;border:none;border-radius:8px;padding:10px 24px;cursor:pointer;font-weight:800;font-size:.85rem;">Continuar con el pedido →</button>';
-  }
-  botonesHtml += '</div>';
-
-  box.innerHTML = hdrHtml + kpiHtml + erroresHtml + alertasHtml + okHtml + botonesHtml;
-  ov.appendChild(box);
-  document.body.appendChild(ov);
-
-  // Asignar acción al botón continuar
-  var btnCont = document.getElementById('ms-audit-continuar');
-  if(btnCont) {
-    btnCont.onclick = function() {
-      ov.remove();
-      onContinuar();
-    };
-  }
 }
 
 // ── Calcular distribución proporcional ───────────
@@ -16853,7 +16269,6 @@ function msCalcularDistribucion(productos) {
     } else if(stock >= totalPedido) {
       MS.sucursales.forEach(function(s){
         var pide = parseInt(pedidos[s])||0;
-        // BLINDAJE ABSOLUTO: despachar exactamente lo pedido, nunca más, nunca a quien no pidió
         dist[s] = pide;
       });
       estado = 'completo';
@@ -16861,9 +16276,9 @@ function msCalcularDistribucion(productos) {
       var hayParcial = false;
       MS.sucursales.forEach(function(s){
         var pide = parseInt(pedidos[s])||0;
-        if(pide === 0){ dist[s] = 0; return; } // BLINDAJE: si no pidió, dist=0 siempre
+        if(pide === 0){ dist[s] = 0; return; }
         var prop = Math.floor(stock * pide / totalPedido);
-        dist[s] = Math.min(prop, pide); // BLINDAJE: nunca despachar más de lo pedido
+        dist[s] = Math.min(prop, pide);
         if(dist[s] < pide) hayParcial = true;
       });
       estado = hayParcial ? 'parcial' : 'completo';
@@ -17042,7 +16457,7 @@ function msRenderTbody(filas) {
     var alt=idx%2===0?'#ffffff':'#fafbff';
     var E=ESTADO[p.estado]||ESTADO.sinpedido;
     var pr=msGetPrecio(p.ref);
-    var desp_total=0; MS.sucursales.forEach(function(s){ var _p=p.pedidos[s]||0; if(_p>0) desp_total+=Math.min(p.dist[s]||0,_p); });
+    var desp_total=0; MS.sucursales.forEach(function(s){ desp_total+=(p.dist[s]||0); });
     var venta_total=pr*desp_total;
     var sc=p.stock===0?'#dc2626':(p.stock<p.totalPedido?'#d97706':'#16a34a');
     var sisBadge=p.enSistema===false?'<span title="No en sistema" style="background:#fef9c3;color:#92400e;border:1px solid #fde68a;border-radius:2px;font-size:.5rem;font-weight:900;padding:0 3px;margin-left:3px;vertical-align:middle;">!SIS</span>':'';
@@ -17066,7 +16481,7 @@ function msRenderTbody(filas) {
 
     // SUCURSALES
     MS.sucursales.forEach(function(s){
-      var pide=p.pedidos[s]||0, desp=pide>0?Math.min(p.dist[s]||0,pide):0;
+      var pide=p.pedidos[s]||0, desp=p.dist[s]||0;
       var vs=pr>0&&desp>0?('$ '+msFmt(pr*desp)):'—';
       var dc=desp===0&&pide>0?'#dc2626':(desp<pide?'#d97706':'#16a34a');
       var db=desp===0&&pide>0?'#fff1f2':(desp<pide?'#fffbeb':'#f0fdf4');
@@ -17101,7 +16516,7 @@ function msRenderTfoot() {
   html+='<td style="'+base+'text-align:center;border-right:2px solid #334155;"></td>';
 
   MS.sucursales.forEach(function(s){
-    var td_s=0,ts=0; MS.data.forEach(function(p){ var _p=p.pedidos[s]||0; var d=_p>0?Math.min(p.dist[s]||0,_p):0; td_s+=d; ts+=msGetPrecio(p.ref)*d; });
+    var td_s=0,ts=0; MS.data.forEach(function(p){ var d=p.dist[s]||0; td_s+=d; ts+=msGetPrecio(p.ref)*d; });
     html+='<td style="'+base+'text-align:center;color:#64748b;font-size:.65rem;border-left:2px solid #334155;white-space:nowrap;">'+msFmtN(td_s)+' u</td>';
     html+='<td style="'+base+'text-align:center;color:#fbbf24;">'+msFmtN(td_s)+'</td>';
     html+='<td style="'+base+'text-align:right;padding:9px 8px;color:#4ade80;background:#052e16;font-size:.68rem;border-right:2px solid #134e2f;white-space:nowrap;">$ '+msFmt(ts)+'</td>';
@@ -17118,7 +16533,7 @@ function msRenderTotalesBar() {
   var acc='#14b8a6';
   var html='<span style="font-size:.6rem;font-weight:700;color:#475569;letter-spacing:1.2px;text-transform:uppercase;flex-shrink:0;align-self:center;">'+monLabel+'&nbsp;/&nbsp;sucursal</span>';
   MS.sucursales.forEach(function(s){
-    var t=0; MS.data.forEach(function(p){ var _p=p.pedidos[s]||0; t+=msGetPrecio(p.r||p.ref)*(_p>0?Math.min(p.dist[s]||0,_p):0); });
+    var t=0; MS.data.forEach(function(p){ var pide=p.pedidos[s]||0; t+=msGetPrecio(p.r||p.ref)*(pide>0?Math.min(p.dist[s]||0,pide):0); });
     grand+=t;
     html+='<div style="background:#1e293b;border-radius:5px;padding:5px 12px;flex-shrink:0;min-width:88px;text-align:center;">'+
       '<div style="font-size:.57rem;color:#475569;font-weight:700;text-transform:uppercase;letter-spacing:.4px;line-height:1.3;">'+s+'</div>'+
@@ -17226,10 +16641,9 @@ window.msExportarExcel = function() {
   var dRows=[hRes],totM=0;
   MS.data.forEach(function(p){
     var pr=pm(p.ref),td=0;
-    // BLINDAJE: T.DESP solo suma sucursales que pidieron, cap pide
     MS.sucursales.forEach(function(s){
       var pide=p.pedidos[s]||0;
-      if(pide>0) td+=Math.min(p.dist[s]||0, pide);
+      if(pide>0) td+=Math.min(p.dist[s]||0,pide);
     });
     var vm=pr*td; totM+=vm;
     var pb2=PRODUCTS.find(function(x){return x.r===p.ref;})||{};
@@ -17240,16 +16654,15 @@ window.msExportarExcel = function() {
              p.estado.toUpperCase()];
     MS.sucursales.forEach(function(s){
       var pide=p.pedidos[s]||0;
-      // BLINDAJE: si no pidió, despacho=0; nunca superar lo pedido
       var desp=pide>0?Math.min(p.dist[s]||0,pide):0;
-      var vs=pr*desp;
+      var vs=pm(p.ref)*desp;
       row.push(pide);row.push(desp);row.push(vs?+vs.toFixed(2):'');
     });
     dRows.push(row);
   });
   var totRow=['','','','','','TOTALES','',+totM.toFixed(2),''];
   MS.sucursales.forEach(function(s){
-    var tv=0;MS.data.forEach(function(p){var _p=p.pedidos[s]||0;tv+=pm(p.ref)*(_p>0?Math.min(p.dist[s]||0,_p):0);});
+    var tv=0;MS.data.forEach(function(p){tv+=pm(p.ref)*(p.dist[s]||0);});
     totRow.push('');totRow.push('');totRow.push(+tv.toFixed(2));
   });
   dRows.push(totRow);
@@ -17272,7 +16685,6 @@ window.msExportarExcel = function() {
     var sdRows=[hSuc],tvM=0;
     MS.data.forEach(function(p){
       var pide=p.pedidos[suc]||0;
-      // SOLO incluir si la sucursal pidió el producto — nunca despachar lo que no fue pedido
       if(!pide)return;
       var desp=Math.min(p.dist[suc]||0,pide);
       var pr=pm(p.ref),vm=pr*desp; tvM+=vm;
@@ -17300,7 +16712,6 @@ window.msExportarExcel = function() {
 window.msNuevoPedido = function() {
   MS.data=[]; MS.sucursales=[]; MS.colMap={}; MS.moneda='USD';
   MS.fase='borrador'; MS.numPedido=null; MS.fechaEmision=null; MS.sucursalesEstado={};
-  MS.formalizado=false; // reset al iniciar nuevo pedido
   var fi=document.getElementById('ms-file-input'); if(fi) fi.value='';
   document.getElementById('ms-upload-status').textContent='';
   var btn=document.getElementById('ms-btn-emitir');
@@ -17357,8 +16768,7 @@ window.msAbrirSelectorDespacho = function(){
     var totalRef=0,totalUnd=0,totalUSD=0;
     var monedaModal = MS.moneda || 'USD';
     MS.data.forEach(function(p){
-      var _pide=p.pedidos[suc]||0;
-      var d=_pide>0?Math.min(p.dist[suc]||0,_pide):0;
+      var d=p.dist[suc]||0;
       if(!d) return;
       totalRef++;
       totalUnd+=d;
@@ -17446,7 +16856,7 @@ window.msEmitirSeleccionadas = function(ov){
   var reservas={};
   MS.data.forEach(function(p){
     var td=0;
-    sel.forEach(function(s){var _p=p.pedidos[s]||0; if(_p>0) td+=Math.min(p.dist[s]||0,_p);});
+    sel.forEach(function(s){td+=p.dist[s]||0;});
     if(td>0) reservas[p.ref]=td;
   });
   try{localStorage.setItem('ms_reserva_'+MS.numPedido,JSON.stringify({reservas:reservas,fecha:MS.fechaEmision,sucursales:sel}));}catch(e){}
@@ -17471,30 +16881,22 @@ window.msEmitirSeleccionadas = function(ov){
 // ── Overlay de emisión (antes de confirmar) ───────
 window.msAbrirOverlayEmision = function(sel, hayPendientes){
   var ex=document.getElementById('ms-em-ov');if(ex)ex.remove();
+  var moneda=MS.moneda||'USD';
+  var monedaLabel={USD:'USD $',BCV:'BCV $',TF:'TF $'}[moneda]||moneda;
+
+  // Usar msGetPrecio — exactamente la misma función que usa la tabla principal
+  // Así el total del overlay siempre coincide con el TOTAL GENERAL de la pantalla
+  var totalSel=0;
+  MS.data.forEach(function(p){
+    var precio=msGetPrecio(p.ref);
+    sel.forEach(function(s){var pide=p.pedidos[s]||0;if(pide>0) totalSel+=precio*Math.min(p.dist[s]||0,pide);});
+  });
+  var totalGeneral=0;
+  MS.data.forEach(function(p){
+    var precio=msGetPrecio(p.ref);
+    MS.sucursales.forEach(function(s){var pide=p.pedidos[s]||0;if(pide>0) totalGeneral+=precio*Math.min(p.dist[s]||0,pide);});
+  });
   var tasa=getTasaHoy()||0;
-
-  // Total SOLO de las sucursales seleccionadas ahora
-  var totalSelUSD=0;
-  MS.data.forEach(function(p){
-    var u=parseFloat(msGetPrecioByMoneda(p.ref,'USD'))||0;
-    sel.forEach(function(s){
-      var pide=p.pedidos[s]||0;
-      if(pide>0) totalSelUSD+=u*Math.min(p.dist[s]||0,pide);
-    });
-  });
-
-  // Total GENERAL de todo el pedido (todas las sucursales)
-  var totalGeneralUSD=0;
-  MS.data.forEach(function(p){
-    var u=parseFloat(msGetPrecioByMoneda(p.ref,'USD'))||0;
-    MS.sucursales.forEach(function(s){
-      var pide=p.pedidos[s]||0;
-      if(pide>0) totalGeneralUSD+=u*Math.min(p.dist[s]||0,pide);
-    });
-  });
-
-  var totalUSD=totalSelUSD; // compatibilidad con código existente
-  var totalBCV=tasa>0?totalUSD*tasa:0;
   var numPend=hayPendientes?MS.sucursales.filter(function(s){return MS.sucursalesEstado[s]==='pendiente';}).length:0;
 
   var ov=document.createElement('div');
@@ -17526,33 +16928,32 @@ window.msAbrirOverlayEmision = function(sel, hayPendientes){
     box.appendChild(avisoP);
   }
 
-  // ── Bloque de totales — diferencia entre "estas sucursales" y "total pedido" ──
   var totales=document.createElement('div');
   totales.style.cssText='background:#f8fafc;border-radius:10px;padding:12px;margin-bottom:12px;';
 
-  var esParcial = hayPendientes && Math.abs(totalSelUSD - totalGeneralUSD) > 0.01;
+  var esParcial=hayPendientes&&Math.abs(totalSel-totalGeneral)>0.01;
+  var totalHTML='';
   if(esParcial){
-    // Mostrar ambos: estas sucursales vs total completo
-    totales.innerHTML=
-      '<div style="font-size:.62rem;font-weight:800;color:#94a3b8;letter-spacing:.8px;text-transform:uppercase;margin-bottom:8px;">Resumen de esta emisión</div>'+
-      '<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid #e2e8f0;">'+
-        '<div style="font-size:.75rem;color:#475569;">Estas '+sel.length+' sucursal(es)</div>'+
-        '<div style="font-size:1rem;font-weight:800;color:#1a2050;">$ '+totalSelUSD.toFixed(2)+'</div>'+
-      '</div>'+
-      '<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;">'+
-        '<div style="font-size:.75rem;color:#475569;">Total general del pedido</div>'+
-        '<div style="font-size:1rem;font-weight:800;color:#059669;">$ '+totalGeneralUSD.toFixed(2)+'</div>'+
-      '</div>'+
-      (totalBCV>0?'<div style="font-size:.72rem;color:#92400e;margin-top:4px;">BCV: Bs '+totalBCV.toFixed(2)+'</div>':'');
+    totalHTML=
+      '<div style="font-size:.62rem;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px;">'+monedaLabel+'</div>'
+      +'<div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid #e2e8f0;">'
+        +'<div style="font-size:.75rem;color:#475569;">Estas '+sel.length+' sucursal(es)</div>'
+        +'<div style="font-size:1rem;font-weight:900;color:#1a2050;">$ '+totalSel.toFixed(2)+'</div>'
+      +'</div>'
+      +'<div style="display:flex;justify-content:space-between;padding:5px 0;">'
+        +'<div style="font-size:.75rem;color:#475569;">Total general del pedido</div>'
+        +'<div style="font-size:1rem;font-weight:900;color:#059669;">$ '+totalGeneral.toFixed(2)+'</div>'
+      +'</div>';
   } else {
-    // Emisión completa — mostrar total único
-    totales.innerHTML=
-      '<div style="display:flex;justify-content:space-around;">'+
-        '<div><div style="font-size:.68rem;color:#94a3b8;font-weight:700;">TOTAL USD</div>'+
-        '<div style="font-size:1.2rem;font-weight:800;color:#1a2050;">$ '+totalSelUSD.toFixed(2)+'</div></div>'+
-        (totalBCV>0?'<div><div style="font-size:.68rem;color:#94a3b8;font-weight:700;">BCV</div>'+
-        '<div style="font-size:1.2rem;font-weight:800;color:#f59e0b;">Bs '+totalBCV.toFixed(2)+'</div></div>':'')+'</div>';
+    totalHTML=
+      '<div style="display:flex;justify-content:space-around;">'
+      +'<div>'
+        +'<div style="font-size:.68rem;color:#94a3b8;font-weight:700;">'+monedaLabel+'</div>'
+        +'<div style="font-size:1.2rem;font-weight:900;color:#1a2050;">$ '+totalSel.toFixed(2)+'</div>'
+      +'</div>'
+      +'</div>';
   }
+  totales.innerHTML=totalHTML;
   box.appendChild(totales);
 
   var aviso=document.createElement('div');
@@ -17602,11 +17003,9 @@ window.msConfirmarSeleccionadas = function(numP, sel, hayPendientes, ovEmision){
     });
     if(!td) return;
     inv[p.ref] = Math.max(0,(parseInt(inv[p.ref])||0)-td);
-    // Actualizar PRODUCTS en memoria también
     var prod = PRODUCTS.find(function(x){return x.r===p.ref;});
     if(prod) prod.ex = inv[p.ref];
   });
-  // saveInventory = localStorage + Firebase en una sola llamada (igual que pedido normal)
   if(typeof saveInventory==='function') saveInventory(inv);
   if(typeof syncInventoryToProducts==='function') syncInventoryToProducts();
   try{
@@ -17615,12 +17014,7 @@ window.msConfirmarSeleccionadas = function(numP, sel, hayPendientes, ovEmision){
       var ptArr=JSON.parse(ptRaw);
       MS.data.forEach(function(p){
         var td=0;
-        // BLINDAJE: mismo criterio — solo sucursales que pidieron
-        sel.forEach(function(s){
-          var pide=p.pedidos[s]||0;
-          var desp=p.dist[s]||0;
-          if(pide>0) td+=Math.min(desp,pide);
-        });
+        sel.forEach(function(s){td+=p.dist[s]||0;});
         if(!td) return;
         var pt=ptArr.find(function(x){return x.r===p.ref;});
         if(pt){
@@ -17643,21 +17037,17 @@ window.msConfirmarSeleccionadas = function(numP, sel, hayPendientes, ovEmision){
 
   try{localStorage.removeItem('ms_reserva_'+(numP||MS.numPedido));}catch(e){}
 
-  // ══════════════════════════════════════════════════════════
-  // REGISTRO AUTOMÁTICO EN VENTAS + CXC — igual que pedido normal
-  // Se ejecuta aquí, al confirmar, sin pasos adicionales
-  // ══════════════════════════════════════════════════════════
-  var now      = new Date();
-  var dateStr  = now.toLocaleDateString('es-VE',{day:'2-digit',month:'2-digit',year:'numeric'});
-  var timeStr  = now.toLocaleTimeString('es-VE',{hour:'2-digit',minute:'2-digit'});
-  var tasa     = getTasaHoy()||0;
-  var tfSpr    = (typeof TF_SPREAD!=='undefined')?TF_SPREAD:0;
-  var tasaTF   = tasa>0?tasa*(1+tfSpr/100):0;
-  var moneda   = MS.moneda||'USD';
-  var clDB     = typeof getClientsDB==='function'?getClientsDB():[];
+  // ── REGISTRO AUTOMÁTICO EN VENTAS + CXC ──────────────────────
+  var now=new Date();
+  var dateStr=now.toLocaleDateString('es-VE',{day:'2-digit',month:'2-digit',year:'numeric'});
+  var timeStr=now.toLocaleTimeString('es-VE',{hour:'2-digit',minute:'2-digit'});
+  var tasa=getTasaHoy()||0;
+  var tfSpr=(typeof TF_SPREAD!=='undefined')?TF_SPREAD:0;
+  var tasaTF=tasa>0?tasa*(1+tfSpr/100):0;
+  var moneda=MS.moneda||'USD';
+  var clDB=typeof getClientsDB==='function'?getClientsDB():[];
 
   sel.forEach(function(suc){
-    // Items de esta sucursal — solo productos que pidió y se despacharon
     var itemsSuc=[];
     MS.data.forEach(function(p){
       var pide=p.pedidos[suc]||0; if(!pide) return;
@@ -17665,81 +17055,48 @@ window.msConfirmarSeleccionadas = function(numP, sel, hayPendientes, ovEmision){
       var prod=PRODUCTS.find(function(x){return x.r===p.ref;})||{};
       var precio=parseFloat(msGetPrecioByMoneda(p.ref,moneda))||0;
       var invActual=(function(){try{return parseInt(JSON.parse(localStorage.getItem('farmers_inv')||'{}')[p.ref])||0;}catch(e){return 0;}})();
-      itemsSuc.push({
-        r:p.ref, d:p.desc||(prod.d||''), br:prod.br||'', e:prod.e||'',
-        precio:precio, orden:desp,
-        total:precio*desp,
-        ex_antes:invActual+desp,  // ya descontado — restauramos para registro histórico
-        ex_despues:invActual
-      });
+      itemsSuc.push({r:p.ref,d:p.desc||(prod.d||''),br:prod.br||'',e:prod.e||'',
+        precio:precio,orden:desp,total:precio*desp,
+        ex_antes:invActual+desp,ex_despues:invActual});
     });
     if(!itemsSuc.length) return;
 
-    // Buscar cliente en BD por nombre de sucursal
     var clMatch=clDB.find(function(cl){
       var n=(cl.nombre||'').toUpperCase().replace(/[^A-Z0-9]/g,' ').trim();
       var s=suc.toUpperCase().replace(/[^A-Z0-9]/g,' ').trim();
       return n.split(' ').some(function(w){return w.length>3&&s.includes(w);})||
              s.split(' ').some(function(w){return w.length>3&&n.includes(w);});
     });
-    var clienteNombre = clMatch?(clMatch.nombre):suc;
-    var clienteRif    = clMatch?(clMatch.rif||'S/RIF'):'S/RIF';
-    var clienteId     = clMatch?(clMatch.id||''):'';
-    var correo        = clMatch?(clMatch.correo||''):'';
-    var diasCred      = parseInt((clMatch&&clMatch.diasCredito)||'30')||30;
-
-    var grandTotal = itemsSuc.reduce(function(s,i){return s+i.total;},0);
-    var grandUnits = itemsSuc.reduce(function(s,i){return s+i.orden;},0);
-    var totalBs    = tasa>0&&moneda==='BCV'?grandTotal*tasa
-                   :tasa>0&&moneda==='TF'?grandTotal*tasaTF
-                   :tasa>0?grandTotal*tasa:null;
-
-    var saleId = Date.now()+Math.floor(Math.random()*9999);
+    var clienteNombre=clMatch?clMatch.nombre:suc;
+    var clienteRif=clMatch?(clMatch.rif||'S/RIF'):'S/RIF';
+    var clienteId=clMatch?(clMatch.id||''):'';
+    var correo=clMatch?(clMatch.correo||''):'';
+    var diasCred=parseInt((clMatch&&clMatch.diasCredito)||'30')||30;
+    var grandTotal=itemsSuc.reduce(function(s,i){return s+i.total;},0);
+    var grandUnits=itemsSuc.reduce(function(s,i){return s+i.orden;},0);
+    var totalBs=tasa>0&&moneda==='BCV'?grandTotal*tasa:tasa>0&&moneda==='TF'?grandTotal*tasaTF:tasa>0?grandTotal*tasa:null;
+    var saleId=Date.now()+Math.floor(Math.random()*9999);
     var sale={
-      id:         saleId,
-      fecha:      dateStr,
-      hora:       timeStr,
-      numpedido:  (MS.numPedido||'MS')+'-'+suc.replace(/[^A-Z0-9]/gi,'').substring(0,8).toUpperCase(),
-      cliente:    clienteNombre,
-      rif:        clienteRif,
-      vendedor:   'OGK',
-      sucursal:   suc,
-      moneda:     moneda,
-      monedaLabel:{USD:'USD Efectivo/Transferencia',BCV:'Bolívares BCV',TF:'Bolívares Tierra Firme'}[moneda]||moneda,
-      tasa:       tasa,
-      tasaFecha:  typeof getTasaFechaKey==='function'?getTasaFechaKey():'',
-      items:      itemsSuc,
-      total:      grandTotal,
-      units:      grandUnits,
-      totalBs:    totalBs,
-      clienteId:  clienteId,
-      correo:     correo,
-      credito:    diasCred,
-      tipoPrecio: moneda,
-      fuente:     'ms_confirmado',
-      msNumPedido:MS.numPedido||''
+      id:saleId,fecha:dateStr,hora:timeStr,
+      numpedido:(MS.numPedido||'MS')+'-'+suc.replace(/[^A-Z0-9]/gi,'').substring(0,8).toUpperCase(),
+      cliente:clienteNombre,rif:clienteRif,vendedor:'OGK',sucursal:suc,
+      moneda:moneda,monedaLabel:{USD:'USD Efectivo/Transferencia',BCV:'Bolívares BCV',TF:'Bolívares Tierra Firme'}[moneda]||moneda,
+      tasa:tasa,tasaFecha:typeof getTasaFechaKey==='function'?getTasaFechaKey():'',
+      items:itemsSuc,total:grandTotal,units:grandUnits,totalBs:totalBs,
+      clienteId:clienteId,correo:correo,credito:diasCred,tipoPrecio:moneda,
+      fuente:'ms_confirmado',msNumPedido:MS.numPedido||''
     };
-
-    // Guardar en farmers_sales (verificar duplicado)
     if(typeof getSales==='function'&&typeof saveSales==='function'){
       var sales=getSales();
-      var yaExiste=sales.some(function(s){
-        return s.msNumPedido===MS.numPedido&&s.sucursal===suc&&s.fuente==='ms_confirmado';
-      });
-      if(!yaExiste){
-        sales.unshift(sale);
-        saveSales(sales);
-      }
+      var yaExiste=sales.some(function(s){return s.msNumPedido===MS.numPedido&&s.sucursal===suc&&s.fuente==='ms_confirmado';});
+      if(!yaExiste){sales.unshift(sale);saveSales(sales);}
     }
-
-    // Crear factura CXC automáticamente
     if(typeof cxcCrearDesdePedido==='function') cxcCrearDesdePedido(sale);
   });
-
-  MS.formalizado=true; // ya está registrado — evitar doble registro desde Formalizar
+  MS.formalizado=true;
   if(typeof cxcUpdateBadge==='function') cxcUpdateBadge();
   if(typeof renderHistorial==='function') renderHistorial();
-  // ══ FIN REGISTRO AUTOMÁTICO ═══════════════════════════════
+  // ── FIN REGISTRO AUTOMÁTICO ───────────────────────────────────
 
   var quedanPendientes=MS.sucursales.some(function(s){
     return MS.sucursalesEstado[s]==='pendiente';
@@ -17750,14 +17107,10 @@ window.msConfirmarSeleccionadas = function(numP, sel, hayPendientes, ovEmision){
 // ── Overlay de pedido confirmado ──────────────────
 window.msAbrirOverlayConfirmado = function(numP, sel, hayPendientes){
   var ex=document.getElementById('ms-done-overlay');if(ex)ex.remove();
-  // Total de las sucursales confirmadas — con blindaje pide>0
   var totalUSD=0;
   MS.data.forEach(function(p){
     var u=parseFloat(msGetPrecioByMoneda(p.ref,'USD'))||0;
-    sel.forEach(function(s){
-      var pide=p.pedidos[s]||0;
-      if(pide>0) totalUSD+=u*Math.min(p.dist[s]||0,pide);
-    });
+    sel.forEach(function(s){var pide=p.pedidos[s]||0;if(pide>0) totalUSD+=u*Math.min(p.dist[s]||0,pide);});
   });
   var numPend=hayPendientes?MS.sucursales.filter(function(s){return MS.sucursalesEstado[s]==='pendiente';}).length:0;
 
@@ -17791,8 +17144,9 @@ window.msAbrirOverlayConfirmado = function(numP, sel, hayPendientes){
   }
 
   var inv=document.createElement('div');
-  inv.style.cssText='font-size:.78rem;color:#064e3b;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:10px 14px;margin-bottom:10px;line-height:1.7;';
-  inv.innerHTML='✅ <strong>Inventario descontado</strong> de Firebase y módulo PT.<br>'    +'✅ <strong>Venta registrada</strong> en historial por cada sucursal.<br>'    +'✅ <strong>Factura CXC generada</strong> automáticamente con días de crédito del cliente.';  box.appendChild(inv);
+  inv.style.cssText='font-size:.78rem;color:#64748b;background:#f0fdf4;border-radius:8px;padding:8px 12px;margin-bottom:10px;';
+  inv.textContent='Inventario descontado de Firebase y modulo PT.';
+  box.appendChild(inv);
 
   var total=document.createElement('div');
   total.style.cssText='font-size:1.15rem;font-weight:800;color:#1a2050;margin-bottom:18px;';
@@ -17828,504 +17182,6 @@ window.msAbrirOverlayConfirmado = function(numP, sel, hayPendientes){
   box.appendChild(row);
   ov.appendChild(box);
   document.body.appendChild(ov);
-};
-
-
-// ═══════════════════════════════════════════════════════════════
-// MS FORMALIZAR — Integración total con el sistema de ventas
-// Crea una venta por sucursal conectada a: sales, CXC, inventario
-// ═══════════════════════════════════════════════════════════════
-
-window.msAbrirFormalizarVenta = function() {
-  // Solo se puede formalizar si el pedido está confirmado y hay sucursales confirmadas
-  var confirmadas = MS.sucursales.filter(function(s){
-    return (MS.sucursalesEstado||{})[s]==='confirmado';
-  });
-  if(!confirmadas.length){
-    showToast('Debes confirmar al menos una sucursal antes de formalizar','warn');
-    return;
-  }
-  // Verificar si ya fue formalizado
-  if(MS.formalizado){
-    showToast('Este pedido ya fue formalizado en el sistema','info');
-    return;
-  }
-
-  var tasa = getTasaHoy()||0;
-  var ex = document.getElementById('ms-formalizar-ov'); if(ex) ex.remove();
-  var ov = document.createElement('div');
-  ov.id = 'ms-formalizar-ov';
-  ov.style.cssText = 'position:fixed;inset:0;z-index:99200;background:rgba(0,0,0,.7);display:flex;align-items:center;justify-content:center;';
-
-  var box = document.createElement('div');
-  box.style.cssText = 'background:#fff;border-radius:16px;padding:28px 32px;max-width:520px;width:94%;max-height:90vh;overflow-y:auto;';
-
-  // ── Header ──
-  var hdr = document.createElement('div');
-  hdr.style.cssText = 'display:flex;align-items:center;gap:10px;margin-bottom:18px;';
-  hdr.innerHTML = '<div style="font-size:1.8rem;">📋</div>'
-    +'<div><div style="font-size:1.05rem;font-weight:800;color:#1a2050;">Formalizar Venta en el Sistema</div>'
-    +'<div style="font-size:.75rem;color:#64748b;">Esto registrará '+confirmadas.length+' venta(s) con toda la trazabilidad del sistema</div></div>';
-  box.appendChild(hdr);
-
-  // ── Resumen por sucursal ──
-  var clDB = typeof getClientsDB==='function' ? getClientsDB() : [];
-
-  var tabla = document.createElement('div');
-  tabla.style.cssText = 'background:#f8fafc;border-radius:10px;padding:14px;margin-bottom:16px;';
-  var tablaHtml = '<div style="font-size:.65rem;font-weight:800;color:#94a3b8;letter-spacing:1px;text-transform:uppercase;margin-bottom:10px;">Sucursales a formalizar</div>';
-
-  var grandTotalUSD = 0;
-  confirmadas.forEach(function(suc){
-    var totalUSD=0;
-    MS.data.forEach(function(p){
-      var pide=p.pedidos[suc]||0;
-      if(!pide) return;
-      var u=parseFloat(msGetPrecioByMoneda(p.ref,'USD'))||0;
-      totalUSD += u*Math.min(p.dist[suc]||0,pide);
-    });
-    grandTotalUSD += totalUSD;
-
-    // Buscar cliente en la BD por nombre de sucursal
-    var clMatch = clDB.find(function(c){
-      var n=(c.nombre||'').toUpperCase().replace(/[^A-Z0-9]/g,' ').trim();
-      var s=suc.toUpperCase().replace(/[^A-Z0-9]/g,' ').trim();
-      return n.split(' ').some(function(w){return w.length>3&&s.includes(w);})||
-             s.split(' ').some(function(w){return w.length>3&&n.includes(w);});
-    });
-    var clienteNombre = clMatch ? clMatch.nombre : suc;
-    var clienteRif    = clMatch ? (clMatch.rif||'S/RIF') : 'S/RIF';
-    var diasCred      = parseInt((clMatch&&clMatch.diasCredito)||'30')||30;
-    var idKey         = suc.replace(/\W/g,'_');
-
-    // Sucursales del cliente para el select
-    var sucursalesCliente = (clMatch && clMatch.sucursales && clMatch.sucursales.length)
-      ? clMatch.sucursales : [];
-    var optsSuc = '<option value="">— Sin sucursal específica —</option>';
-    sucursalesCliente.forEach(function(sc){
-      var nombre = sc.nombre||sc.id||'';
-      var dir    = sc.direccion||sc.despacho||'';
-      optsSuc += '<option value="'+nombre+'" title="'+dir+'">'+nombre+(dir?' — '+dir.substring(0,35):'')+'</option>';
-    });
-
-    tablaHtml += '<div style="padding:10px 0;border-bottom:1px solid #e2e8f0;">'      +'<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:6px;">'        +'<div>'          +'<div style="font-size:.85rem;font-weight:800;color:#1a2050;">'+suc+'</div>'          +'<div style="font-size:.7rem;color:#64748b;margin-top:1px;">'+clienteNombre+' &nbsp;·&nbsp; '+clienteRif+'</div>'          +'<div style="font-size:.65rem;color:#94a3b8;">Crédito: '+diasCred+' días</div>'        +'</div>'        +'<div style="font-size:.92rem;font-weight:800;color:#059669;white-space:nowrap;">$ '+totalUSD.toFixed(2)+'</div>'      +'</div>'      +'<div>'        +'<label style="font-size:.62rem;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:3px;">Sucursal del cliente</label>'        +(sucursalesCliente.length > 0
-          ? '<select id="msf-suc-'+idKey+'" style="width:100%;padding:7px 10px;border:1px solid #e2e8f0;border-radius:7px;font-size:.78rem;color:#1a2050;background:#fff;">'+optsSuc+'</select>'
-          : '<input id="msf-suc-'+idKey+'" type="text" placeholder="Ej: Principal, Barcelona, Lecherías..." style="width:100%;padding:7px 10px;border:1px solid #e2e8f0;border-radius:7px;font-size:.78rem;box-sizing:border-box;color:#1a2050;">')      +'</div>'      +'</div>';  });
-  tablaHtml += '<div style="display:flex;justify-content:space-between;align-items:center;padding-top:10px;">'    +'<div style="font-size:.72rem;font-weight:700;color:#475569;text-transform:uppercase;letter-spacing:.5px;">Total General</div>'    +'<div style="font-size:1rem;font-weight:900;color:#1a2050;">$'+grandTotalUSD.toFixed(2)+' USD</div></div>';
-  tabla.innerHTML = tablaHtml;
-  box.appendChild(tabla);
-
-  // ── Configuración ──
-  var cfg = document.createElement('div');
-  cfg.style.cssText = 'display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px;';
-
-  // Moneda
-  var monedaWrap = document.createElement('div');
-  monedaWrap.innerHTML = '<label style="font-size:.68rem;font-weight:700;color:#64748b;display:block;margin-bottom:4px;">MONEDA</label>'
-    +'<select id="msf-moneda" style="width:100%;padding:8px;border:1px solid #e2e8f0;border-radius:8px;font-size:.8rem;font-weight:600;">'
-    +'<option value="USD">USD — Dólar</option>'
-    +'<option value="BCV">BCV — Bolívares BCV</option>'
-    +'<option value="TF">TF — Tierra Firme</option>'
-    +'</select>';
-
-  // Vendedor
-  var vendedorWrap = document.createElement('div');
-  vendedorWrap.innerHTML = '<label style="font-size:.68rem;font-weight:700;color:#64748b;display:block;margin-bottom:4px;">VENDEDOR</label>'
-    +'<input id="msf-vendedor" type="text" value="OGK" style="width:100%;padding:8px;border:1px solid #e2e8f0;border-radius:8px;font-size:.8rem;box-sizing:border-box;">';
-
-  cfg.appendChild(monedaWrap);
-  cfg.appendChild(vendedorWrap);
-  box.appendChild(cfg);
-
-  // Tasa BCV
-  var tasaWrap = document.createElement('div');
-  tasaWrap.style.cssText = 'background:#fffbeb;border:1px solid #fbbf24;border-radius:8px;padding:10px 14px;margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;';
-  tasaWrap.innerHTML = '<div><div style="font-size:.68rem;font-weight:700;color:#92400e;">TASA BCV DEL DÍA</div>'
-    +'<div style="font-size:.75rem;color:#78350f;">'+(tasa>0?'Bs '+tasa.toFixed(2)+' / $':'No registrada — Ve a Marcas & Moneda')+'</div></div>'
-    +(tasa>0?'<div style="font-size:.9rem;font-weight:800;color:#92400e;">Bs '+grandTotalUSD.toFixed(0)+'</div>':'');
-  box.appendChild(tasaWrap);
-
-  // Aviso
-  var aviso = document.createElement('div');
-  aviso.style.cssText = 'font-size:.72rem;color:#475569;background:#f0f9ff;border:1px solid #bae6fd;border-radius:8px;padding:10px 14px;margin-bottom:18px;line-height:1.6;';
-  aviso.innerHTML = '✅ <strong>Se creará una venta por cada sucursal</strong> con sus productos y cantidades despachadas.<br>'
-    +'✅ <strong>Inventario ya descontado</strong> al confirmar — no se descuenta de nuevo.<br>'
-    +'✅ <strong>Facturas CXC</strong> generadas automáticamente con vencimiento por cliente.<br>'
-    +'✅ <strong>Historial de ventas</strong> actualizado en tiempo real.';
-  box.appendChild(aviso);
-
-  // Botones
-  var btns = document.createElement('div');
-  btns.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;';
-
-  var btnCancel = document.createElement('button');
-  btnCancel.textContent = 'Cancelar';
-  btnCancel.style.cssText = 'background:#f1f5f9;color:#475569;border:none;border-radius:8px;padding:10px 18px;cursor:pointer;font-weight:700;font-size:.82rem;';
-  btnCancel.onclick = function(){ ov.remove(); };
-
-  var btnOk = document.createElement('button');
-  btnOk.textContent = '✅ Formalizar Venta';
-  btnOk.style.cssText = 'background:linear-gradient(135deg,#059669,#047857);color:white;border:none;border-radius:8px;padding:10px 22px;cursor:pointer;font-weight:800;font-size:.85rem;';
-  btnOk.onclick = function(){
-    var moneda   = document.getElementById('msf-moneda').value;
-    var vendedor = (document.getElementById('msf-vendedor').value||'OGK').trim().toUpperCase();
-    // Recoger sucursal seleccionada/escrita para cada fila
-    var sucMap = {};
-    confirmadas.forEach(function(suc){
-      var idKey = suc.replace(/\W/g,'_');
-      var el = document.getElementById('msf-suc-'+idKey);
-      sucMap[suc] = el ? (el.value||'').trim() : '';
-    });
-    msFormalizar(confirmadas, moneda, vendedor, sucMap);
-    ov.remove();
-  };
-
-  btns.appendChild(btnCancel);
-  btns.appendChild(btnOk);
-  box.appendChild(btns);
-  ov.appendChild(box);
-  document.body.appendChild(ov);
-};
-
-// ── Motor principal de formalización ─────────────────────────
-window.msFormalizar = function(sucursales, moneda, vendedor, sucMap) {
-  sucMap = sucMap || {}; // mapa suc -> sucursal del cliente
-  moneda  = moneda  || 'USD';
-  vendedor = vendedor || 'OGK';
-
-  var now     = new Date();
-  var dateStr = now.toLocaleDateString('es-VE',{day:'2-digit',month:'2-digit',year:'numeric'});
-  var timeStr = now.toLocaleTimeString('es-VE',{hour:'2-digit',minute:'2-digit'});
-  var tasa    = getTasaHoy()||0;
-  var tfSpr   = (typeof TF_SPREAD!=='undefined')?TF_SPREAD:0;
-  var tasaTF  = tasa>0?tasa*(1+tfSpr/100):0;
-  var clDB    = typeof getClientsDB==='function'?getClientsDB():[];
-
-  function getPrecioRef(ref, mon){
-    return parseFloat(msGetPrecioByMoneda(ref, mon))||0;
-  }
-
-  var ventasCreadas = 0;
-  var cxcCreadas    = 0;
-
-  sucursales.forEach(function(suc){
-    // Filtrar solo productos que esta sucursal pidió y se despacharon
-    var itemsSuc = [];
-    MS.data.forEach(function(p){
-      var pide = p.pedidos[suc]||0;
-      if(!pide) return;
-      var desp = Math.min(p.dist[suc]||0, pide);
-      if(!desp) return;
-      var precioUSD = getPrecioRef(p.ref,'USD');
-      var precio    = getPrecioRef(p.ref, moneda);
-      var prod      = PRODUCTS.find(function(x){return x.r===p.ref;})||{};
-      var invActual = (function(){try{return parseInt(JSON.parse(localStorage.getItem('farmers_inv')||'{}')[p.ref])||0;}catch(e){return 0;}})();
-      itemsSuc.push({
-        r:        p.ref,
-        d:        p.desc || prod.d || '',
-        br:       prod.br || '',
-        e:        prod.e || 'UNIDAD',
-        precio:   precio,
-        precioUSD: precioUSD,
-        orden:    desp,
-        total:    precio * desp,
-        ex_antes: invActual + desp,  // ya descontado al confirmar — restauramos para registro
-        ex_despues: invActual,
-      });
-    });
-    if(!itemsSuc.length) return;
-
-    // Buscar cliente en la BD por nombre de sucursal
-    var clMatch = clDB.find(function(c){
-      var n=(c.nombre||'').toUpperCase().replace(/[^A-Z0-9]/g,' ').trim();
-      var s=suc.toUpperCase().replace(/[^A-Z0-9]/g,' ').trim();
-      return n.split(' ').some(function(w){return w.length>3&&s.includes(w);})||
-             s.split(' ').some(function(w){return w.length>3&&n.includes(w);});
-    });
-    var clienteNombre = clMatch ? clMatch.nombre : suc;
-    var clienteRif    = clMatch ? (clMatch.rif||'S/RIF') : 'S/RIF';
-    var clienteId     = clMatch ? (clMatch.id||'') : '';
-    var correo        = clMatch ? (clMatch.correo||'') : '';
-    var diasCred      = parseInt((clMatch&&clMatch.diasCredito)||'30')||30;
-
-    var grandTotal = itemsSuc.reduce(function(s,i){return s+i.total;},0);
-    var grandUnits = itemsSuc.reduce(function(s,i){return s+i.orden;},0);
-    var totalBs    = tasa>0 && moneda==='BCV' ? grandTotal * tasa
-                   : tasa>0 && moneda==='TF'  ? grandTotal * tasaTF
-                   : tasa>0                    ? grandTotal * tasa : null;
-
-    var monedaLabel = {
-      USD:'USD Efectivo/Transferencia',
-      BCV:'Bolívares BCV',
-      TF: 'Bolívares Tierra Firme'
-    }[moneda]||moneda;
-
-    // ── Construir objeto sale (mismo formato que pedido normal) ──
-    var saleId = Date.now() + Math.floor(Math.random()*1000);
-    var sale = {
-      id:         saleId,
-      fecha:      dateStr,
-      hora:       timeStr,
-      numpedido:  (MS.numPedido||'MS') + '-' + suc.replace(/[^A-Z0-9]/gi,'').substring(0,8).toUpperCase(),
-      cliente:    clienteNombre,
-      rif:        clienteRif,
-      vendedor:   vendedor,
-      sucursal:   sucMap[suc] || suc,  // sucursal del cliente si fue especificada, si no el nombre MS
-      moneda:     moneda,
-      monedaLabel: monedaLabel,
-      tasa:       tasa,
-      tasaFecha:  getTasaFechaKey(),
-      items:      itemsSuc,
-      total:      grandTotal,
-      units:      grandUnits,
-      totalBs:    totalBs,
-      clienteId:  clienteId,
-      correo:     correo,
-      credito:    diasCred,
-      tipoPrecio: moneda,
-      fuente:     'ms_formalizado',   // marca de origen MS
-      msNumPedido: MS.numPedido||'',  // referencia al pedido MS original
-    };
-
-    // ── Guardar en farmers_sales (NO descontar inventario — ya se hizo al confirmar) ──
-    var sales = typeof getSales==='function' ? getSales() : [];
-    // Verificar que no exista ya (idempotencia)
-    var yaExiste = sales.some(function(s){
-      return s.msNumPedido===MS.numPedido && s.sucursal===suc && s.fuente==='ms_formalizado';
-    });
-    if(!yaExiste){
-      sales.unshift(sale);
-      if(typeof saveSales==='function') saveSales(sales);
-      ventasCreadas++;
-    }
-
-    // ── Crear factura CXC ──
-    if(typeof cxcCrearDesdePedido==='function'){
-      cxcCrearDesdePedido(sale);
-      cxcCreadas++;
-    }
-  });
-
-  // Marcar MS como formalizado
-  MS.formalizado = true;
-
-  // Actualizar badge CXC
-  if(typeof cxcUpdateBadge==='function') cxcUpdateBadge();
-  // Refrescar historial si está abierto
-  if(typeof renderHistorial==='function') renderHistorial();
-
-  // Notificación final
-  showToast('✅ '+ventasCreadas+' venta(s) formalizadas · '+cxcCreadas+' factura(s) CXC generadas', 'success');
-
-  // Actualizar botón en overlay
-  var btnF = document.getElementById('ms-btn-formalizar');
-  if(btnF){
-    btnF.textContent = '✅ Formalizado';
-    btnF.disabled = true;
-    btnF.style.background = '#059669';
-    btnF.style.opacity = '.7';
-    btnF.style.cursor = 'default';
-  }
-
-  setTimeout(function(){
-    showToast('💳 Facturas CXC disponibles en el módulo Cuentas por Cobrar', 'info');
-  }, 1500);
-};
-
-
-// ═══════════════════════════════════════════════════════════════
-// MS GENERAR FACTURA PDF — Factura profesional del pedido MS
-// ═══════════════════════════════════════════════════════════════
-window.msGenerarFacturaPDF = function() {
-  if(!MS.data||!MS.data.length){ showToast('No hay datos del pedido','warn'); return; }
-
-  var moneda   = MS.moneda||'USD';
-  var monLabel = moneda==='BCV'?'BCV Bs':moneda==='TF'?'TF Bs':'USD $';
-  var cur      = moneda==='USD'?'$':'Bs';
-  var numP     = MS.numPedido||('MS-'+Date.now());
-  var fecha    = MS.fechaEmision||new Date().toLocaleDateString('es-VE',{day:'2-digit',month:'2-digit',year:'numeric'});
-  var tasa     = getTasaHoy()||0;
-  var tfSpr    = (typeof TF_SPREAD!=='undefined')?TF_SPREAD:0;
-  var tasaTF   = tasa>0?tasa*(1+tfSpr/100):0;
-  var logoB64  = (typeof FARMERS_LOGO_B64!=='undefined')?FARMERS_LOGO_B64:'';
-  var hoy      = new Date().toLocaleDateString('es-VE',{day:'2-digit',month:'long',year:'numeric'});
-
-  // Sucursales confirmadas o todas
-  var sucConfirmadas = MS.sucursales.filter(function(s){
-    return !MS.sucursalesEstado||
-           !MS.sucursalesEstado[s]||
-           MS.sucursalesEstado[s]==='confirmado'||
-           MS.sucursalesEstado[s]==='emitido';
-  });
-  if(!sucConfirmadas.length) sucConfirmadas = MS.sucursales.slice();
-
-  function getPrecio(ref){
-    return parseFloat(msGetPrecioByMoneda(ref, moneda))||0;
-  }
-  function fmt(n){ return Number(n||0).toLocaleString('es-VE',{minimumFractionDigits:2,maximumFractionDigits:2}); }
-  function fmtU(n){ return Number(n||0).toLocaleString('es-VE'); }
-
-  // ── Calcular totales generales ──
-  var grandTotal=0, grandUnits=0;
-  MS.data.forEach(function(p){
-    sucConfirmadas.forEach(function(s){
-      var pide=p.pedidos[s]||0; if(!pide) return;
-      var desp=Math.min(p.dist[s]||0,pide);
-      grandTotal+=getPrecio(p.ref)*desp;
-      grandUnits+=desp;
-    });
-  });
-  var grandBs = tasa>0&&moneda==='BCV'?grandTotal*tasa:
-                tasa>0&&moneda==='TF'?grandTotal*tasaTF:
-                tasa>0?grandTotal*tasa:0;
-
-  // ── Secciones por sucursal ──
-  var seccionesHtml = sucConfirmadas.map(function(suc){
-    var filas = MS.data.filter(function(p){ return (p.pedidos[suc]||0)>0; });
-    if(!filas.length) return '';
-    var subTotal=0;
-    var rows = filas.map(function(p,i){
-      var pide=p.pedidos[suc]||0;
-      var desp=Math.min(p.dist[suc]||0,pide);
-      var pr=getPrecio(p.ref);
-      var total=pr*desp;
-      subTotal+=total;
-      var prod=PRODUCTS.find(function(x){return x.r===p.ref;})||{};
-      var bg=i%2===0?'#fff':'#f8fafc';
-      var despColor=desp===pide?'#16a34a':desp>0?'#d97706':'#dc2626';
-      return '<tr style="background:'+bg+'">'+
-        '<td style="padding:5px 10px;font-family:monospace;font-size:.68rem;font-weight:700;color:#1a2050;border-bottom:1px solid #f1f5f9;">'+p.ref+'</td>'+
-        '<td style="padding:5px 10px;font-size:.7rem;border-bottom:1px solid #f1f5f9;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+p.desc+'</td>'+
-        '<td style="padding:5px 8px;text-align:center;font-size:.68rem;color:#6b7280;border-bottom:1px solid #f1f5f9;">'+(prod.b||'—')+'</td>'+
-        '<td style="padding:5px 8px;text-align:center;font-size:.7rem;color:#94a3b8;border-bottom:1px solid #f1f5f9;">'+fmtU(pide)+'</td>'+
-        '<td style="padding:5px 8px;text-align:center;font-size:.75rem;font-weight:800;color:'+despColor+';border-bottom:1px solid #f1f5f9;">'+fmtU(desp)+'</td>'+
-        '<td style="padding:5px 10px;text-align:right;font-size:.7rem;color:#475569;border-bottom:1px solid #f1f5f9;">'+cur+' '+fmt(pr)+'</td>'+
-        '<td style="padding:5px 10px;text-align:right;font-size:.75rem;font-weight:700;color:#059669;border-bottom:1px solid #f1f5f9;">'+cur+' '+fmt(total)+'</td>'+
-        '</tr>';
-    }).join('');
-
-    return '<div style="margin-bottom:28px;page-break-inside:avoid;">'+
-      '<div style="background:linear-gradient(135deg,#0e1240,#1B1F6B);color:white;padding:8px 16px;border-radius:8px 8px 0 0;display:flex;justify-content:space-between;align-items:center;">'+
-        '<div style="font-family:Barlow Condensed,sans-serif;font-size:1rem;font-weight:900;letter-spacing:.5px;">'+suc.toUpperCase()+'</div>'+
-        '<div style="font-size:.75rem;font-weight:700;color:#4ade80;">'+cur+' '+fmt(subTotal)+'</div>'+
-      '</div>'+
-      '<table style="width:100%;border-collapse:collapse;border:1px solid #e2e8f0;border-top:none;">'+
-        '<thead><tr style="background:#1e293b;">'+
-          '<th style="padding:6px 10px;text-align:left;font-size:.6rem;font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:#94a3b8;">Ref</th>'+
-          '<th style="padding:6px 10px;text-align:left;font-size:.6rem;font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:#94a3b8;">Descripción</th>'+
-          '<th style="padding:6px 8px;text-align:center;font-size:.6rem;font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:#94a3b8;">Cód.Barra</th>'+
-          '<th style="padding:6px 8px;text-align:center;font-size:.6rem;font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:#94a3b8;">Pedido</th>'+
-          '<th style="padding:6px 8px;text-align:center;font-size:.6rem;font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:#4ade80;">Despacho</th>'+
-          '<th style="padding:6px 10px;text-align:right;font-size:.6rem;font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:#94a3b8;">P.Unit</th>'+
-          '<th style="padding:6px 10px;text-align:right;font-size:.6rem;font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:#4ade80;">Total</th>'+
-        '</tr></thead>'+
-        '<tbody>'+rows+'</tbody>'+
-      '</table>'+
-    '</div>';
-  }).join('');
-
-  // ── Tabla resumen por sucursal ──
-  var resumenRows = sucConfirmadas.map(function(suc){
-    var t=0,u=0;
-    MS.data.forEach(function(p){
-      var pide=p.pedidos[suc]||0; if(!pide) return;
-      var desp=Math.min(p.dist[suc]||0,pide);
-      t+=getPrecio(p.ref)*desp; u+=desp;
-    });
-    if(!u) return '';
-    return '<tr>'+
-      '<td style="padding:6px 14px;font-size:.78rem;font-weight:600;color:#1a2050;">'+suc+'</td>'+
-      '<td style="padding:6px 14px;text-align:center;font-size:.78rem;color:#475569;">'+fmtU(u)+' uds</td>'+
-      '<td style="padding:6px 14px;text-align:right;font-size:.82rem;font-weight:800;color:#059669;">'+cur+' '+fmt(t)+'</td>'+
-      '</tr>';
-  }).join('');
-
-  // ── HTML completo ──
-  var html = '<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8">'+
-    '<title>Factura '+numP+'</title>'+
-    '<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;700;900&family=Barlow:wght@400;500;600&display=swap" rel="stylesheet">'+
-    '<style>'+
-      'body{font-family:Barlow,sans-serif;margin:0;padding:0;background:#f0f4fa;print-color-adjust:exact;-webkit-print-color-adjust:exact;}'+
-      '@page{size:A4 portrait;margin:6mm 8mm;}'+
-      '@media print{body{background:#fff;}.no-print{display:none!important;}}'+
-      '.wrap{max-width:780px;margin:20px auto;background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,.1);}'+
-      '.hdr{background:linear-gradient(135deg,#0e1240,#1B1F6B);padding:20px 28px;display:flex;align-items:center;justify-content:space-between;}'+
-      '.logo-box{background:#fff;border-radius:10px;padding:6px 14px;}'+
-      '.logo-box img{height:52px;object-fit:contain;}'+
-      '.hdr-info{text-align:right;}'+
-      '.hdr-tipo{font-family:"Barlow Condensed",sans-serif;font-size:1.4rem;font-weight:900;color:#fff;letter-spacing:.5px;}'+
-      '.hdr-num{font-size:.8rem;color:rgba(255,255,255,.7);margin-top:2px;}'+
-      '.meta{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;padding:18px 28px;background:#f8fafc;border-bottom:1px solid #e2e8f0;}'+
-      '.mc{border-radius:8px;padding:10px 14px;background:#fff;border:1px solid #e2e8f0;}'+
-      '.ml{font-size:.6rem;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:#94a3b8;margin-bottom:3px;}'+
-      '.mv{font-size:.85rem;font-weight:700;color:#1B1F6B;}'+
-      '.mv-sub{font-size:.68rem;color:#6b7280;margin-top:1px;}'+
-      '.body{padding:20px 28px;}'+
-      '.sec-title{font-family:"Barlow Condensed",sans-serif;font-size:.75rem;font-weight:900;text-transform:uppercase;letter-spacing:1.5px;color:#94a3b8;margin:0 0 14px;padding-bottom:6px;border-bottom:2px solid #f1f5f9;}'+
-      '.resumen{width:100%;border-collapse:collapse;margin-bottom:20px;}'+
-      '.resumen thead th{background:#0f172a;color:#e2e8f0;padding:8px 14px;font-size:.65rem;font-weight:800;text-transform:uppercase;letter-spacing:.5px;text-align:left;}'+
-      '.resumen tbody tr:nth-child(even){background:#f8fafc;}'+
-      '.resumen tfoot td{background:#0f172a;color:#4ade80;padding:10px 14px;font-size:.85rem;font-weight:800;}'+
-      '.footer{background:#f8fafc;border-top:2px solid #e2e8f0;padding:14px 28px;display:flex;justify-content:space-between;align-items:center;}'+
-      '.print-btn{padding:9px 22px;background:#1B1F6B;color:#fff;border:none;border-radius:8px;font-family:"Barlow Condensed",sans-serif;font-size:.9rem;font-weight:800;cursor:pointer;letter-spacing:.3px;}'+
-    '</style></head><body><div class="wrap">'+
-
-    // Header
-    '<div class="hdr">'+
-      '<div class="logo-box">'+(logoB64?'<img src="'+logoB64+'" alt="Farmers C.A.">':
-        '<span style="font-family:Barlow Condensed,sans-serif;font-size:1.1rem;font-weight:900;color:#1B1F6B;">FARMERS C.A.</span>')+
-      '</div>'+
-      '<div class="hdr-info">'+
-        '<div class="hdr-tipo">FACTURA DE PEDIDO MULTI-SUCURSAL</div>'+
-        '<div class="hdr-num">N° '+numP+' &nbsp;·&nbsp; '+fecha+' &nbsp;·&nbsp; '+monLabel+'</div>'+
-      '</div>'+
-    '</div>'+
-
-    // Meta
-    '<div class="meta">'+
-      '<div class="mc"><div class="ml">Emisor</div><div class="mv">FARMERS C.A.</div>'+
-        '<div class="mv-sub">RIF J-401008631</div>'+
-        '<div class="mv-sub">Porlamar, Nueva Esparta</div></div>'+
-      '<div class="mc"><div class="ml">Pedido</div><div class="mv">'+numP+'</div>'+
-        '<div class="mv-sub">'+fecha+'</div>'+
-        '<div class="mv-sub">'+sucConfirmadas.length+' sucursal(es)</div></div>'+
-      '<div class="mc"><div class="ml">Tasa BCV</div>'+
-        '<div class="mv">'+(tasa>0?'Bs '+fmt(tasa)+' / $':'—')+'</div>'+
-        (tasaTF>0?'<div class="mv-sub">TF: Bs '+fmt(tasaTF)+' / $</div>':'')+
-        '<div class="mv-sub">'+hoy+'</div></div>'+
-    '</div>'+
-
-    '<div class="body">'+
-
-    // Resumen por sucursal
-    '<div class="sec-title">Resumen por Sucursal</div>'+
-    '<table class="resumen"><thead><tr>'+
-      '<th>Sucursal</th><th style="text-align:center;">Unidades</th><th style="text-align:right;">Subtotal</th>'+
-    '</tr></thead><tbody>'+resumenRows+'</tbody>'+
-    '<tfoot><tr>'+
-      '<td>TOTAL GENERAL</td>'+
-      '<td style="text-align:center;font-size:.78rem;">'+fmtU(grandUnits)+' uds</td>'+
-      '<td style="text-align:right;">'+cur+' '+fmt(grandTotal)+(grandBs>0?' &nbsp;·&nbsp; <span style="font-size:.75rem;color:#fbbf24;">Bs '+fmt(grandBs)+'</span>':'')+'</td>'+
-    '</tr></tfoot></table>'+
-
-    // Detalle por sucursal
-    '<div class="sec-title" style="margin-top:24px;">Detalle por Sucursal</div>'+
-    seccionesHtml+
-
-    '</div>'+
-
-    // Footer
-    '<div class="footer">'+
-      '<div style="font-size:.72rem;color:#94a3b8;">Farmers C.A. &nbsp;·&nbsp; RIF J-401008631 &nbsp;·&nbsp; 0412-044 5797 &nbsp;·&nbsp; farmersve@gmail.com</div>'+
-      '<button class="print-btn no-print" onclick="window.print()">🖨 Imprimir / Guardar PDF</button>'+
-    '</div>'+
-    '</div></body></html>';
-
-  // Abrir en ventana nueva
-  var w = window.open('','_blank','width=860,height:950');
-  if(w){ w.document.write(html); w.document.close(); }
-  else { showToast('Permite ventanas emergentes para la factura','warn'); }
-  showToast('📄 Factura generada — N° '+numP,'success');
 };
 
 // ── Módulo Etiquetas de Despacho ─────────────────
@@ -18429,8 +17285,7 @@ window.msAbrirEtiquetas = function() {
   MS.sucursales.forEach(function(suc){
     var totalRef=0, totalUnd=0;
     MS.data.forEach(function(p){
-      var _p=p.pedidos[suc]||0;
-      var d=_p>0?Math.min(p.dist[suc]||0,_p):0;
+      var d=p.dist[suc]||0;
       if(d>0){totalRef++;totalUnd+=d;}
     });
 
@@ -18505,7 +17360,7 @@ window.msAbrirEtiquetas = function() {
     rifInput.type='text';
     rifInput.id='rif-'+idKey;
     rifInput.value=rifVal;
-    rifInput.placeholder='J-401008631';
+    rifInput.placeholder='J-XXXXXXXXX';
     rifInput.style.cssText='width:100%;padding:6px 8px;border:1.5px solid '+(rifVal?'#e2e8f0':'#fca5a5')+';'
       +'border-radius:6px;font-size:.75rem;color:#1a2050;font-weight:600;box-sizing:border-box;'
       +'background:'+(rifVal?'white':'#fff5f5')+';';
@@ -18569,20 +17424,21 @@ window.msGenerarEtiquetasPDF = function() {
     var idKey=suc.replace(/\s+/g,'_');
     var inp=document.getElementById('cajas-'+idKey);
     var numCajas=inp?parseInt(inp.value)||1:1;
-    var totalRef=0,totalUnd=0,totalVol=0;
+    var totalRef=0,totalUnd=0,totalVol=0,totalPeso=0;
     var ptD={};
     try{var ptRaw=localStorage.getItem('farmers_pt_data');if(ptRaw){var ptArr=JSON.parse(ptRaw);ptArr.forEach(function(x){ptD[x.r]=x;});}}catch(e){}
     MS.data.forEach(function(p){
-      var _pe=p.pedidos[suc]||0;
-      var d=_pe>0?Math.min(p.dist[suc]||0,_pe):0;if(!d)return;
+      var d=p.dist[suc]||0;if(!d)return;
       totalRef++;totalUnd+=d;
       var med=(ptD[p.ref]&&ptD[p.ref].medidas)?ptD[p.ref].medidas:{};
       var vd=parseFloat(med.volDirecto)||0;
       var l=parseFloat(med.largo)||0,a=parseFloat(med.ancho)||0,h=parseFloat(med.alto)||0;
       // largo/ancho/alto y peso están en medidas POR UNIDAD individual
       var volUnd=vd>0?vd:(l&&a&&h?(l*a*h/28316.85):0);
-      // Solo volumen — peso no se usa en etiquetas
+      var pesoUnd=parseFloat(med.peso)||0;
+      // Multiplicar por unidades despachadas a esta sucursal
       totalVol+=volUnd*d;
+      totalPeso+=pesoUnd*d;
     });
     // Leer valores del formulario (editados manualmente si aplica)
     var idKey=suc.replace(/\W/g,'_');
@@ -18598,7 +17454,7 @@ window.msGenerarEtiquetasPDF = function() {
     })||{};
     var dirCliente=(clienteData.direccion||'').toUpperCase()||'MARGARITA, NUEVA ESPARTA';
     for(var i=1;i<=numCajas;i++){
-      etiquetas.push({suc:suc,caja:i,total:numCajas,refs:totalRef,uds:totalUnd,vol:totalVol,numP:numP,fecha:fecha,rif:rifCliente,rs:razonSocial,dir:dirCliente});
+      etiquetas.push({suc:suc,caja:i,total:numCajas,refs:totalRef,uds:totalUnd,vol:totalVol,peso:totalPeso,numP:numP,fecha:fecha,rif:rifCliente,rs:razonSocial,dir:dirCliente});
     }
   });
 
@@ -18617,6 +17473,7 @@ window.msGenerarEtiquetasPDF = function() {
       'CAJA: '+e.caja+' DE '+e.total,
       'REFS: '+e.refs+' | UDS: '+e.uds
     ].concat(e.vol>0?['VOL: '+e.vol.toFixed(2)+' FT3']:[])
+     .concat(e.peso>0?['PESO: '+e.peso.toFixed(1)+' KG']:[])
      .join(' | ');
     return 'https://api.qrserver.com/v1/create-qr-code/?size=200x200&qzone=1&data='+encodeURIComponent(data);
   }
@@ -18671,7 +17528,7 @@ window.msGenerarEtiquetasPDF = function() {
         +'</div>'
         +'<div class="etq-body">'
         +'<div class="etq-info">'
-        +'<div class="etq-empresa">REMITENTE: FARMERS C.A. · RIF J-401008631</div>'
+        +'<div class="etq-empresa">REMITENTE: FARMERS C.A. · RIF J-XXXXXXXXX</div>'
         +'<div class="etq-dest-lbl">DESTINATARIO:</div>'
         +'<div class="etq-suc">'+e.suc.toUpperCase()+'</div>'
         +'<div class="etq-rs">'+e.rs+'</div>'
@@ -18684,7 +17541,7 @@ window.msGenerarEtiquetasPDF = function() {
         +'<span class="etq-tot-sep">·</span>'
         +'<span class="etq-tot-item">'+e.uds.toLocaleString()+' UDS</span>'
         +(e.vol>0?'<span class="etq-tot-sep">·</span><span class="etq-tot-item">'+e.vol.toFixed(2)+' FT³</span>':'')
-        
+        +(e.peso>0?'<span class="etq-tot-sep">·</span><span class="etq-tot-item">'+e.peso.toFixed(1)+' KG</span>':'')
         +'</div>'
         +'</div>'
         +'</div>'
@@ -18732,21 +17589,17 @@ window.msExportarPDF = function(){
   var tasaBCVstr=tasa>0?tasa.toFixed(2)+' Bs/$':'—';
   var tasaTFstr=tasaTF>0?tasaTF.toFixed(2)+' Bs/$':'—';
   var grandTotal=0;
-  // BLINDAJE PDF: grandTotal solo suma sucursales que pidieron, cap pide
-  MS.data.forEach(function(p){var pr=parseFloat(msGetPrecioByMoneda(p.ref,moneda))||0;MS.sucursales.forEach(function(s){var pide=p.pedidos[s]||0;if(pide>0) grandTotal+=pr*Math.min(p.dist[s]||0,pide);});});
+  MS.data.forEach(function(p){var pr=parseFloat(msGetPrecioByMoneda(p.ref,moneda))||0;MS.sucursales.forEach(function(s){grandTotal+=pr*(p.dist[s]||0);});});
 
   function pmRef(ref){return moneda==='BCV'?msGetPrecioByMoneda(ref,'BCV'):moneda==='TF'?msGetPrecioByMoneda(ref,'TF'):msGetPrecioByMoneda(ref,'USD');}
 
   var resFilas=MS.data.map(function(p,i){
     var pr=parseFloat(pmRef(p.ref))||0,td=0;
-    // BLINDAJE: td solo cuenta sucursales que pidieron, cap pide
-    MS.sucursales.forEach(function(s){var pide=p.pedidos[s]||0;if(pide>0) td+=Math.min(p.dist[s]||0,pide);});
+    MS.sucursales.forEach(function(s){td+=p.dist[s]||0;});
     var vm=pr*td;
     var sucCols=MS.sucursales.map(function(s){
-      var pide=p.pedidos[s]||0;
-      // BLINDAJE: si no pidió, mostrar 0/—; nunca mostrar despacho sin pedido
-      var d=pide>0?Math.min(p.dist[s]||0,pide):0;
-      return '<td style="text-align:center;padding:3px 5px;border:1px solid #e2e8f0;font-size:.63rem;">'+pide+'</td>'
+      var d=p.dist[s]||0;
+      return '<td style="text-align:center;padding:3px 5px;border:1px solid #e2e8f0;font-size:.63rem;">'+(p.pedidos[s]||0)+'</td>'
             +'<td style="text-align:center;padding:3px 5px;border:1px solid #e2e8f0;font-size:.63rem;font-weight:700;color:'+(d>0?'#16a34a':'#94a3b8')+'">'+(d||'—')+'</td>';
     }).join('');
     var pbc=PRODUCTS.find(function(x){return x.r===p.ref;})||{};
@@ -18772,8 +17625,7 @@ window.msExportarPDF = function(){
     var filas=MS.data.filter(function(p){return (p.pedidos[suc]||0)>0;}).map(function(p,i){
       var u=parseFloat(pmRef(p.ref))||0;
       var pide=p.pedidos[suc]||0;
-      // BLINDAJE: despacho nunca supera pedido; si no pidió esta función no llega aquí
-      var desp=Math.min(p.dist[suc]||0, pide);
+      var desp=Math.min(p.dist[suc]||0,pide);
       var vu=u*desp;tvu+=vu;
       var pbcs=PRODUCTS.find(function(x){return x.r===p.ref;})||{};
       return '<tr style="background:'+(i%2===0?'#fff':'#f8fafc')+'">'
