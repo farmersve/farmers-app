@@ -17188,7 +17188,28 @@ window.msAbrirSelectorDespacho = function(){
   var btnEmitir=document.createElement('button');
   btnEmitir.textContent='Emitir seleccionadas';
   btnEmitir.style.cssText='background:#1a2050;color:white;border:none;border-radius:8px;padding:10px 22px;cursor:pointer;font-weight:700;font-size:.82rem;';
-  btnEmitir.onclick=function(){msEmitirSeleccionadas(ov);};
+  btnEmitir.onclick=function(){
+    // ── VALIDACIÓN: todos los clientes deben estar asignados ──
+    var sinCliente = [];
+    MS.sucursales.forEach(function(suc){
+      var idKey = suc.replace(/[^A-Z0-9]/gi,'_');
+      var selEl = document.getElementById('ms-cl-'+idKey);
+      var val = selEl ? selEl.value : (MS.clientesPorSucursal||{})[suc]||'';
+      if(!val) sinCliente.push(suc);
+      else if(selEl) MS.clientesPorSucursal[suc] = val; // guardar selección actual
+    });
+    if(sinCliente.length){
+      // Resaltar los selectores vacíos
+      sinCliente.forEach(function(suc){
+        var idKey = suc.replace(/[^A-Z0-9]/gi,'_');
+        var selEl = document.getElementById('ms-cl-'+idKey);
+        if(selEl){ selEl.style.border='2px solid #dc2626'; selEl.style.background='#fef2f2'; }
+      });
+      showToast('⚠ Asigna el cliente a: '+sinCliente.join(', '),'error');
+      return;
+    }
+    msEmitirSeleccionadas(ov);
+  };
 
   footer.appendChild(btnCancelar);
   footer.appendChild(btnEmitir);
@@ -19611,6 +19632,7 @@ function cxcRenderEstadoCuenta(body,cl){
         +'<td style="padding:11px 16px;text-align:center;">'
           +'<span style="background:'+badgeBg+';color:'+estCol+';padding:3px 9px;border-radius:20px;font-size:.65rem;font-weight:800;letter-spacing:.5px;text-transform:uppercase;display:block;margin-bottom:5px;">'+est+'</span>'
           +(est!=='PAGADA'?'<button onclick="ncMostrarModal(null,\'cxc\',\''+m.factura.id+'\')" style="padding:3px 10px;background:#f0fdf4;color:#15803d;border:1px solid #86efac;border-radius:6px;font-size:.62rem;font-weight:700;cursor:pointer;white-space:nowrap;">📋 NC</button>':'')
+          +(est!=='PAGADA'?'<button onclick="cxcNotifFactura(\''+m.factura.id+'\')" style="margin-top:3px;padding:3px 10px;background:#fff7ed;color:#c2410c;border:1px solid #fed7aa;border-radius:6px;font-size:.62rem;font-weight:700;cursor:pointer;white-space:nowrap;display:block;">📤 Notificación</button>':'')  
         +'</td>';
     } else if (m.tipo === 'pago') {
       saldoAcum-=m.monto;
@@ -19869,10 +19891,29 @@ function cxcTabNotif(body){
 
       var genBtn=document.createElement('button');
       genBtn.className='cxc-btn cxc-btn-orange cxc-btn-sm';
-      genBtn.textContent='📤 Generar Notificación';
+      genBtn.textContent='📤 Notificaciones';
       genBtn.dataset.cid=cl.id;
       genBtn.dataset.cnm=encodeURIComponent(cl.nombre);
-      genBtn.onclick=function(){cxcNotifCliente(this.dataset.cid,this.dataset.cnm);};
+      genBtn.onclick=function(){
+        // Generar una notificación por cada factura pendiente del cliente
+        var clId=this.dataset.cid;
+        var clNm=decodeURIComponent(this.dataset.cnm);
+        var facsPend=cxcFacs().filter(function(f){
+          return ((clId&&f.clienteId===clId)||f.clienteNombre===clNm)&&cxcEstado(f)!=='PAGADA';
+        });
+        if(!facsPend.length){showToast('Sin facturas pendientes','info');return;}
+        if(facsPend.length===1){
+          cxcNotifFactura(facsPend[0].id);
+        } else {
+          // Múltiples facturas — preguntar
+          var msg='Este cliente tiene '+facsPend.length+' facturas pendientes.\n\nSe generará una notificación por cada factura por separado.\n\n¿Continuar?';
+          if(confirm(msg)){
+            facsPend.forEach(function(f,i){
+              setTimeout(function(){cxcNotifFactura(f.id);},i*600);
+            });
+          }
+        }
+      };
       row.appendChild(genBtn);
       listDiv.appendChild(row);
     });
@@ -21260,6 +21301,119 @@ function cxcPagoKpi(label,val,sub){
 // ══════════════════════════════════════════════════════════
 //  NOTIFICACIÓN DE COBRANZA
 // ══════════════════════════════════════════════════════════
+
+// ── Notificación individual por factura ──────────────────────────
+// Una notificación = una factura = un número de pedido + sucursal
+// Nunca mezcla facturas de distintas sucursales ni distintos pedidos
+function cxcNotifFactura(facId) {
+  var fac = cxcFacs().find(function(f){ return f.id === facId; });
+  if(!fac){ showToast('Factura no encontrada','error'); return; }
+  if(cxcEstado(fac) === 'PAGADA'){ showToast('Esta factura ya está pagada','info'); return; }
+
+  var nombre  = fac.clienteNombre || fac.cliente || '—';
+  var rif     = fac.rif || '';
+  var suc     = fac.sucursal || '';
+  var hoy     = new Date().toLocaleDateString('es-VE',{day:'2-digit',month:'long',year:'numeric'});
+  var est     = cxcEstado(fac);
+  var dias    = cxcDias(fac);
+  var diasTxt = dias===null?'—':dias<0?'Vencida hace '+Math.abs(dias)+' día(s)':dias===0?'Vence hoy':'Vence en '+dias+' día(s)';
+  var diasCol = est==='VENCIDA'?'#dc2626':est==='POR_VENCER'?'#b45309':'#16a34a';
+  var tieneVenc = est === 'VENCIDA';
+  var accentColor = tieneVenc ? '#dc2626' : '#1B1F6B';
+  var accentLabel = tieneVenc ? '⚠ FACTURA VENCIDA' : 'NOTIFICACIÓN DE COBRANZA';
+
+  var fila = '<tr style="background:#fff;">'
+    +'<td style="padding:9px 12px;border-bottom:1px solid #e8eaf6;font-size:11px;font-family:monospace;font-weight:700;color:#1B1F6B;">'+fac.numpedido+'</td>'
+    +'<td style="padding:9px 12px;border-bottom:1px solid #e8eaf6;font-size:11px;color:#374151;">'+cxcFecha(fac.fechaEmision)+'</td>'
+    +'<td style="padding:9px 12px;border-bottom:1px solid #e8eaf6;font-size:11px;color:#374151;">'+cxcFecha(fac.fechaVencimiento)+'</td>'
+    +'<td style="padding:9px 12px;border-bottom:1px solid #e8eaf6;font-size:11px;font-weight:700;color:'+diasCol+';">'+diasTxt+'</td>'
+    +'<td style="padding:9px 12px;border-bottom:1px solid #e8eaf6;font-size:11px;text-align:right;color:#374151;">$ '+cxcFmt(fac.monto)+'</td>'
+    +'<td style="padding:9px 12px;border-bottom:1px solid #e8eaf6;font-size:11px;text-align:right;color:#6b7280;">$ '+cxcFmt(fac.monto-(fac.saldo||0))+'</td>'
+    +'<td style="padding:9px 12px;border-bottom:1px solid #e8eaf6;font-size:12px;text-align:right;font-weight:900;color:#dc2626;">$ '+cxcFmt(fac.saldo||0)+'</td>'
+    +'</tr>';
+
+  var nombreArch = nombre.replace(/[^A-Z0-9]/gi,'_').substring(0,30)+'_'+fac.numpedido.replace(/[^A-Z0-9]/gi,'_');
+
+  var html = '<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8">'
+    +'<title>Notificación — '+nombre+' — '+fac.numpedido+'</title>'
+    +'<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@700;800;900&family=Barlow:wght@400;500;600;700&display=swap" rel="stylesheet">'
+    +'<style>*{margin:0;padding:0;box-sizing:border-box;}*{-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important;}body{font-family:"Barlow",Arial,sans-serif;color:#111827;background:#f0f2f7;}@media print{body{background:#fff!important;}.no-print{display:none!important;}@page{size:A4 portrait;margin:5mm 6mm;}.wrap{box-shadow:none!important;border-radius:0!important;margin:0!important;max-width:100%!important;}}</style>'
+    +'</head><body>'
+
+    // Botón imprimir
+    +'<div class="no-print" style="max-width:780px;margin:10px auto 6px;display:flex;justify-content:flex-end;">'
+    +'<button onclick="window.print()" style="background:#1B1F6B;color:#fff;border:none;padding:9px 22px;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;font-family:Arial;letter-spacing:.5px;">🖨 Imprimir / Guardar PDF</button>'
+    +'</div>'
+
+    +'<div class="wrap" style="max-width:780px;margin:0 auto;background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 4px 20px rgba(27,31,107,.13);">'
+
+    // Header
+    +'<div style="background:linear-gradient(135deg,'+accentColor+' 0%,#252b8c 100%);padding:16px 24px;display:flex;justify-content:space-between;align-items:center;">'
+      +'<div style="display:flex;align-items:center;gap:14px;">'
+        +'<div style="background:#fff;border-radius:10px;padding:5px 9px;">'
+          +'<img src="'+FARMERS_LOGO_B64+'" style="height:40px;width:auto;display:block;" />'
+        +'</div>'
+        +'<div style="font-size:10px;color:rgba(255,255,255,.6);">Tel: 0412-0445797 &nbsp;·&nbsp; farmersve@gmail.com</div>'
+      +'</div>'
+      +'<div style="text-align:right;">'
+        +'<div style="font-family:Barlow Condensed,sans-serif;font-size:18px;font-weight:900;color:#fff;letter-spacing:1px;text-transform:uppercase;">'+accentLabel+'</div>'
+        +'<div style="font-size:10px;color:rgba(255,255,255,.55);margin-top:3px;">Fecha: '+hoy+'</div>'
+      +'</div>'
+    +'</div>'
+
+    // Datos cliente + factura
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:0;">'
+      +'<div style="padding:16px 24px;border-right:1px solid #e8eaf6;">'
+        +'<div style="font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#94a3b8;margin-bottom:6px;">Destinatario</div>'
+        +'<div style="font-size:15px;font-weight:800;color:#1B1F6B;font-family:Barlow Condensed,sans-serif;text-transform:uppercase;">'+nombre+'</div>'
+        +(rif?'<div style="font-size:11px;color:#475569;margin-top:2px;">RIF: '+rif+'</div>':'')
+        +(suc?'<div style="font-size:11px;color:#475569;margin-top:2px;">Sucursal: '+suc+'</div>':'')
+      +'</div>'
+      +'<div style="padding:16px 24px;">'
+        +'<div style="font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#94a3b8;margin-bottom:6px;">Factura</div>'
+        +'<div style="font-size:15px;font-weight:900;color:#1B1F6B;font-family:Barlow Condensed,sans-serif;">'+fac.numpedido+'</div>'
+        +'<div style="font-size:11px;color:#475569;margin-top:2px;">Emisión: '+cxcFecha(fac.fechaEmision)+' · Vence: '+cxcFecha(fac.fechaVencimiento)+'</div>'
+        +'<div style="font-size:11px;font-weight:700;color:'+diasCol+';margin-top:4px;">'+diasTxt+'</div>'
+      +'</div>'
+    +'</div>'
+
+    // Tabla
+    +'<div style="padding:0 24px 16px;">'
+    +'<table style="width:100%;border-collapse:collapse;font-family:Barlow,Arial,sans-serif;">'
+    +'<thead><tr style="background:#1B1F6B;">'
+    +'<th style="padding:8px 12px;text-align:left;font-size:10px;font-weight:800;color:#fff;letter-spacing:.5px;">N° PEDIDO</th>'
+    +'<th style="padding:8px 12px;text-align:left;font-size:10px;font-weight:800;color:#fff;">EMISIÓN</th>'
+    +'<th style="padding:8px 12px;text-align:left;font-size:10px;font-weight:800;color:#fff;">VENCIMIENTO</th>'
+    +'<th style="padding:8px 12px;text-align:left;font-size:10px;font-weight:800;color:#fff;">ESTADO</th>'
+    +'<th style="padding:8px 12px;text-align:right;font-size:10px;font-weight:800;color:#fff;">MONTO</th>'
+    +'<th style="padding:8px 12px;text-align:right;font-size:10px;font-weight:800;color:#fff;">PAGADO</th>'
+    +'<th style="padding:8px 12px;text-align:right;font-size:10px;font-weight:800;color:#fff;">SALDO</th>'
+    +'</tr></thead>'
+    +'<tbody>'+fila+'</tbody>'
+    +'</table>'
+    +'</div>'
+
+    // Total
+    +'<div style="background:'+accentColor+';padding:14px 24px;display:flex;justify-content:space-between;align-items:center;">'
+      +'<div style="font-size:12px;font-weight:700;color:rgba(255,255,255,.8);text-transform:uppercase;letter-spacing:.5px;">SALDO PENDIENTE</div>'
+      +'<div style="font-family:Barlow Condensed,sans-serif;font-size:26px;font-weight:900;color:#fff;">$ '+cxcFmt(fac.saldo||0)+'</div>'
+    +'</div>'
+
+    +'<div style="padding:12px 24px;font-size:10px;color:#94a3b8;text-align:center;border-top:1px solid #e8eaf6;">'
+    +'FARMERS C.A. · Margarita, Nueva Esparta · Tel: 0412-0445797 · farmersve@gmail.com'
+    +'</div>'
+    +'</div></body></html>';
+
+  var blob = new Blob([html],{type:'text/html;charset=utf-8'});
+  var url  = URL.createObjectURL(blob);
+  var a    = document.createElement('a');
+  a.href   = url;
+  a.download = 'Notif_'+nombreArch+'_'+new Date().toISOString().slice(0,10)+'.html';
+  document.body.appendChild(a); a.click();
+  setTimeout(function(){ URL.revokeObjectURL(url); a.remove(); }, 1000);
+}
+window.cxcNotifFactura = cxcNotifFactura;
+
 function cxcNotifCliente(id,nombreEnc){
   var nombre=decodeURIComponent(nombreEnc||'');
   var facs=cxcFacs().filter(function(f){
