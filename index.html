@@ -16169,16 +16169,62 @@ function msParsearExcel(file, input) {
 // ── Análisis IA ──────────────────────────────────
 // ── Llamada al proxy con reintento ───────────────
 async function msCallProxy(messages, maxTokens) {
-  var resp = await fetch('https://farmers-proxy.farmersve.workers.dev/', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model: 'claude-sonnet-4-20250514', max_tokens: maxTokens, messages: messages })
-  });
-  if(!resp.ok) throw new Error('HTTP ' + resp.status);
-  var data = await resp.json();
-  if(data.error) throw new Error(data.error.message || 'Error API');
-  var text = (data.content && data.content[0]) ? data.content[0].text : '';
-  return text.replace(/```json[\s\S]*?```|```/g,'').trim();
+  // Reintentar hasta 4 veces en caso de 529 (sobrecarga) o 500/502/503
+  var MAX_INTENTOS = 4;
+  var ESPERAS_MS   = [2000, 4000, 8000]; // espera progresiva entre intentos
+
+  for(var intento = 1; intento <= MAX_INTENTOS; intento++) {
+    try {
+      // Informar al usuario si es reintento
+      if(intento > 1) {
+        msSetProgress(30, 'Reintentando conexión... (' + intento + '/' + MAX_INTENTOS + ')');
+      }
+
+      var resp = await fetch('https://farmers-proxy.farmersve.workers.dev/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: 'claude-sonnet-4-20250514', max_tokens: maxTokens, messages: messages })
+      });
+
+      // 529 = API sobrecargada, 500/502/503 = error temporal — reintentar
+      if(resp.status === 529 || resp.status === 500 || resp.status === 502 || resp.status === 503) {
+        if(intento < MAX_INTENTOS) {
+          var espera = ESPERAS_MS[intento - 1] || 8000;
+          msSetProgress(20, 'Servicio ocupado ('+resp.status+'). Reintentando en ' + (espera/1000) + 's... (' + intento + '/' + MAX_INTENTOS + ')');
+          await new Promise(function(r){ setTimeout(r, espera); });
+          continue; // reintentar
+        }
+        throw new Error('El servicio está temporalmente saturado (HTTP ' + resp.status + '). Intenta de nuevo en unos segundos.');
+      }
+
+      if(!resp.ok) throw new Error('HTTP ' + resp.status);
+
+      var data = await resp.json();
+      if(data.error) {
+        // overloaded_error también es recuperable
+        if(data.error.type === 'overloaded_error' && intento < MAX_INTENTOS) {
+          var espera = ESPERAS_MS[intento - 1] || 8000;
+          msSetProgress(20, 'API saturada. Reintentando en ' + (espera/1000) + 's... (' + intento + '/' + MAX_INTENTOS + ')');
+          await new Promise(function(r){ setTimeout(r, espera); });
+          continue;
+        }
+        throw new Error(data.error.message || 'Error API');
+      }
+
+      var text = (data.content && data.content[0]) ? data.content[0].text : '';
+      return text.replace(/```json[\s\S]*?```|```/g,'').trim();
+
+    } catch(err) {
+      // Si es el último intento o error no recuperable — lanzar
+      if(intento === MAX_INTENTOS || (err.message && !err.message.includes('saturad') && !err.message.includes('529') && !err.message.includes('502') && !err.message.includes('503'))) {
+        throw err;
+      }
+      // Error de red — también reintentar
+      var espera = ESPERAS_MS[intento - 1] || 8000;
+      msSetProgress(20, 'Error de conexión. Reintentando en ' + (espera/1000) + 's... (' + intento + '/' + MAX_INTENTOS + ')');
+      await new Promise(function(r){ setTimeout(r, espera); });
+    }
+  }
 }
 
 // ── Reparar JSON truncado ─────────────────────────
