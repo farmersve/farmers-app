@@ -20154,16 +20154,29 @@ function cxcTabNotif(body){
   cxcUpdateBadge();
   body.innerHTML='';
 
-  var facs=cxcFacs();
-  var porCl={};
-  facs.filter(function(f){return cxcEstado(f)!=='PAGADA';}).forEach(function(f){
-    var k=f.clienteId||f.clienteNombre||'?';
-    if(!porCl[k]) porCl[k]={id:f.clienteId||'',nombre:f.clienteNombre||'—',rif:f.rif||'',facs:[],deuda:0,urgente:false,tieneVenc:false,tienePxV:false};
-    porCl[k].facs.push(f); porCl[k].deuda+=f.saldo||0;
-    if(cxcEstado(f)==='VENCIDA'){porCl[k].urgente=true; porCl[k].tieneVenc=true;}
-    if(cxcEstado(f)==='POR_VENCER'){porCl[k].urgente=true; porCl[k].tienePxV=true;}
+  // Listar por FACTURA INDIVIDUAL — no agrupar por cliente
+  // Cada factura pendiente = una fila = un botón de notificación separado
+  var todasFacs = cxcFacs().filter(function(f){ return cxcEstado(f)!=='PAGADA'; });
+  todasFacs.sort(function(a,b){
+    var ord={VENCIDA:0,POR_VENCER:1,VIGENTE:2};
+    return (ord[cxcEstado(a)]||3)-(ord[cxcEstado(b)]||3) || (b.saldo||0)-(a.saldo||0);
   });
-  var todosClientes=Object.values(porCl).sort(function(a,b){return (b.urgente?1:0)-(a.urgente?1:0)||(b.deuda-a.deuda);});
+  // Adaptar al formato esperado por _renderLista (una "entrada" por factura)
+  var todosClientes = todasFacs.map(function(f){
+    var est = cxcEstado(f);
+    return {
+      id:        f.clienteId||'',
+      nombre:    f.clienteNombre||f.cliente||'—',
+      rif:       f.rif||'',
+      numpedido: f.numpedido||f.id||'',
+      facs:      [f],
+      deuda:     f.saldo||0,
+      urgente:   est==='VENCIDA'||est==='POR_VENCER',
+      tieneVenc: est==='VENCIDA',
+      tienePxV:  est==='POR_VENCER',
+      facId:     f.id   // ID de la factura para notif directa
+    };
+  });
 
   // ── BARRA DE FILTRO + BOTÓN LOTE ───────────────────
   var toolbar=document.createElement('div');
@@ -20292,34 +20305,21 @@ function cxcTabNotif(body){
       row.innerHTML='<div class="cxc-cl-avatar" style="background:'+color+';">'+ini+'</div>'
         +'<div class="cxc-cl-info">'
           +'<div class="cxc-cl-name">'+cl.nombre+' '+estPill+'</div>'
-          +'<div class="cxc-cl-sub">'+(cl.rif||'—')+' · '+cl.facs.length+' factura'+(cl.facs.length!==1?'s':'')+': <b>$ '+cxcFmt(cl.deuda)+'</b> pendiente</div>'
+          +'<div class="cxc-cl-sub">'+(cl.rif||'—')+' · <b style="font-family:monospace;font-size:.72rem;color:var(--cxc-navy);">'+(cl.numpedido||cl.facs[0].numpedido||cl.facs[0].id||'—')+'</b> · <b>$ '+cxcFmt(cl.deuda)+'</b> pendiente</div>'
         +'</div>';
 
       var genBtn=document.createElement('button');
       genBtn.className='cxc-btn cxc-btn-orange cxc-btn-sm';
-      genBtn.textContent='📤 Notificaciones';
-      genBtn.dataset.cid=cl.id;
+      genBtn.textContent='📤 Notificación';
+      genBtn.dataset.facid=cl.facId||cl.facs[0].id||'';
       genBtn.dataset.cnm=encodeURIComponent(cl.nombre);
-      genBtn.onclick=function(){
-        // Generar una notificación por cada factura pendiente del cliente
-        var clId=this.dataset.cid;
-        var clNm=decodeURIComponent(this.dataset.cnm);
-        var facsPend=cxcFacs().filter(function(f){
-          return ((clId&&f.clienteId===clId)||f.clienteNombre===clNm)&&cxcEstado(f)!=='PAGADA';
-        });
-        if(!facsPend.length){showToast('Sin facturas pendientes','info');return;}
-        if(facsPend.length===1){
-          cxcNotifFactura(facsPend[0].id);
-        } else {
-          // Múltiples facturas — preguntar
-          var msg='Este cliente tiene '+facsPend.length+' facturas pendientes.\n\nSe generará una notificación por cada factura por separado.\n\n¿Continuar?';
-          if(confirm(msg)){
-            facsPend.forEach(function(f,i){
-              setTimeout(function(){cxcNotifFactura(f.id);},i*600);
-            });
-          }
-        }
-      };
+      genBtn.onclick=(function(fid){
+        return function(){
+          // Notificación DIRECTA — una por factura, sin agrupación
+          if(fid){ cxcNotifFactura(fid); }
+          else { showToast('Factura no encontrada','error'); }
+        };
+      })(genBtn.dataset.facid);
       row.appendChild(genBtn);
       listDiv.appendChild(row);
     });
@@ -20626,6 +20626,35 @@ function cxcGuardarFactura(){
     showToast('Factura registrada','success');
   }
   cxcSaveFacs(facs);
+
+  // ── Sincronizar numpedido en Ventas (farmers_sales) ──────────────
+  // Si el numpedido cambió, actualizarlo también en el historial de ventas
+  if(_cxcFacId && typeof getSales==='function' && typeof saveSales==='function') {
+    var sales = getSales();
+    var changed = false;
+    sales.forEach(function(s) {
+      // Buscar por saleId o por numpedido anterior
+      if(String(s.id) === String(_cxcFacId).replace('cxc_','') ||
+         s.numpedido === (facs.find(function(x){return x.id===_cxcFacId;})||{}).numpedido) {
+        // match — pero mejor buscar por el facId guardado en el sale
+      }
+    });
+    // Buscar la factura actualizada para obtener su saleId
+    var facActualizada = facs.find(function(x){return x.id===_cxcFacId;});
+    if(facActualizada && facActualizada.saleId) {
+      sales.forEach(function(s){
+        if(String(s.id)===String(facActualizada.saleId) || s.numpedido===facActualizada.saleId) {
+          s.numpedido = numpedido;
+          s.cliente   = cliente;
+          s.rif       = rif;
+          changed = true;
+        }
+      });
+      if(changed) saveSales(sales);
+    }
+    if(typeof renderHistorial==='function') renderHistorial();
+  }
+
   cxcCloseFacOverlay();
   cxcGoTab(_cxcTab);
 }
