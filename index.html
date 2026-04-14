@@ -18507,120 +18507,153 @@ window.msAbrirEditorPedido = function(ped) {
   function renderTabla(){
     tablaWrap.innerHTML='';
     if(!editData.length){
-      tablaWrap.innerHTML='<div style="text-align:center;padding:40px;color:'+GRAY+';text-transform:uppercase;font-size:.8rem;">SIN REFERENCIAS EN ESTE PEDIDO</div>';
+      tablaWrap.innerHTML='<div style="text-align:center;padding:40px;color:'+GRAY+';text-transform:uppercase;font-size:.85rem;">SIN REFERENCIAS EN ESTE PEDIDO</div>';
       calcTotales(); return;
     }
 
-    var tbl=document.createElement('div');
-    tbl.style.cssText='border-radius:10px;overflow:hidden;border:1px solid rgba(255,255,255,.08);min-width:900px;';
+    var clDB = typeof getClientsDB==='function' ? getClientsDB() : [];
+    var inv  = typeof getInventory==='function'  ? getInventory() : {};
 
-    // Calcular columnas: REF + DESC + PRECIO + STOCK + sucursales + TOTAL + DEL
-    var sucCols = sucursales.map(function(s){
-      var cl = (typeof getClientsDB==='function'?getClientsDB():[]).find(function(x){return x.id===((ped.clientesPorSucursal||{})[s]||'');});
-      return cl ? cl.nombre.toUpperCase().substring(0,12) : s.toUpperCase();
+    // Nombres completos de sucursales
+    var sucNombres = sucursales.map(function(s){
+      var cl = clDB.find(function(x){return x.id===((ped.clientesPorSucursal||{})[s]||'');});
+      return cl ? cl.nombre.toUpperCase() : s.toUpperCase();
     });
 
-    var cols = '110px 1fr 90px 70px '+sucursales.map(function(){return '90px';}).join(' ')+' 90px 40px';
+    // Tabla HTML nativa — más nítida y controlable
+    var table = document.createElement('table');
+    table.style.cssText = 'width:100%;border-collapse:collapse;font-family:"Barlow Condensed",Arial,sans-serif;font-size:.78rem;';
 
-    // Cabecera
-    var thead=document.createElement('div');
-    thead.style.cssText='display:grid;grid-template-columns:'+cols+';background:'+NAVY2+';padding:9px 12px;gap:6px;position:sticky;top:0;';
-    var heads=['REF','DESCRIPCIÓN','PRECIO','STOCK'].concat(sucCols).concat(['TOTAL','']);
-    heads.forEach(function(h){
-      var th=document.createElement('div');
-      th.style.cssText='font-size:8px;font-weight:800;color:rgba(255,255,255,.5);text-transform:uppercase;letter-spacing:.6px;text-align:center;';
-      th.textContent=h; thead.appendChild(th);
+    // ── CABECERA ────────────────────────────────────────────────
+    var thead = document.createElement('thead');
+    var trh   = document.createElement('tr');
+    trh.style.cssText = 'background:'+NAVY2+';position:sticky;top:0;z-index:2;';
+
+    var headDefs = [
+      {label:'REF',       w:'100px', align:'left'},
+      {label:'DESCRIPCIÓN',w:'',     align:'left'},
+      {label:'PRECIO',    w:'85px',  align:'center'},
+      {label:'STOCK',     w:'65px',  align:'center'},
+    ];
+    sucNombres.forEach(function(n){
+      headDefs.push({label:n, w:'78px', align:'center', isSuc:true});
     });
-    tbl.appendChild(thead);
+    headDefs.push({label:'TOTAL',  w:'90px', align:'right'});
+    headDefs.push({label:'',       w:'36px', align:'center'});
 
-    // Filas
+    headDefs.forEach(function(h){
+      var th = document.createElement('th');
+      th.style.cssText = 'padding:10px 8px;font-size:'+(h.isSuc?'.62rem':'.65rem')+';font-weight:900;color:'+(h.isSuc?'#fbbf24':'rgba(255,255,255,.7)')+';text-transform:uppercase;letter-spacing:.6px;text-align:'+h.align+';border-right:1px solid rgba(255,255,255,.06);white-space:normal;line-height:1.2;'+(h.w?'width:'+h.w+';min-width:'+h.w+';':'');
+      th.textContent = h.label;
+      trh.appendChild(th);
+    });
+    thead.appendChild(trh);
+    table.appendChild(thead);
+
+    // ── FILAS ────────────────────────────────────────────────────
+    var tbody = document.createElement('tbody');
+
     editData.forEach(function(item,idx){
-      var prod=PRODUCTS.find(function(p){return p.r===item.ref;});
-      var stockReal=parseInt((typeof getInventory==='function'?getInventory()[item.ref]:0)||0);
-      var precio=item.precioOverride||calcPrecio(item.ref,ped.moneda);
-      var totalUds=Object.values(item.sucursales||{}).reduce(function(s,sd){return s+(parseInt(sd.desp)||0);},0);
-      var totalLinea=precio*totalUds;
-      var bg=idx%2===0?'rgba(255,255,255,.02)':'rgba(255,255,255,.04)';
+      var prod     = PRODUCTS.find(function(p){return p.r===item.ref;});
+      var stockReal= parseInt(inv[item.ref])||0;
+      var comp     = typeof getComprometido==='function' ? (getComprometido()[item.ref]||{qty:0}) : {qty:0};
+      var disponible = Math.max(0, stockReal - (comp.qty||0));
+      var precio   = item.precioOverride||calcPrecio(item.ref,ped.moneda);
+      var totalUds = Object.values(item.sucursales||{}).reduce(function(s,sd){return s+(parseInt(sd.desp)||0);},0);
+      var totalLinea = precio*totalUds;
+      var rowBg = idx%2===0 ? 'rgba(255,255,255,.025)' : 'rgba(255,255,255,.05)';
+      var stColor = disponible===0?RED:disponible<=10?AMBER:GREEN;
 
-      var row=document.createElement('div');
-      row.style.cssText='display:grid;grid-template-columns:'+cols+';padding:7px 12px;gap:6px;background:'+bg+';border-top:1px solid rgba(255,255,255,.04);align-items:center;';
+      var tr = document.createElement('tr');
+      tr.style.cssText = 'background:'+rowBg+';border-bottom:1px solid rgba(255,255,255,.06);transition:background .1s;';
+      tr.onmouseover = function(){ tr.style.background='rgba(255,255,255,.08)'; };
+      tr.onmouseout  = function(){ tr.style.background=rowBg; };
+
+      function mkTd(content, extra){
+        var td = document.createElement('td');
+        td.style.cssText = 'padding:8px 8px;border-right:1px solid rgba(255,255,255,.04);vertical-align:middle;'+(extra||'');
+        if(typeof content==='string') td.innerHTML=content;
+        else td.appendChild(content);
+        return td;
+      }
 
       // REF
-      var refCell=document.createElement('div');
-      refCell.style.cssText='font-family:monospace;font-size:10px;font-weight:700;color:#93c5fd;text-transform:uppercase;';
-      refCell.textContent=item.ref;
-      row.appendChild(refCell);
+      tr.appendChild(mkTd('<span style="font-family:monospace;font-size:.8rem;font-weight:800;color:#93c5fd;letter-spacing:.5px;">'+item.ref+'</span>'));
 
-      // DESC
-      var descCell=document.createElement('div');
-      descCell.style.cssText='font-size:.65rem;color:'+DIM+';text-transform:uppercase;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;';
-      descCell.textContent=(prod?prod.d:item.desc||item.ref).toUpperCase();
-      row.appendChild(descCell);
+      // DESCRIPCIÓN
+      tr.appendChild(mkTd('<span style="font-size:.75rem;color:'+DIM+';text-transform:uppercase;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block;max-width:220px;">'+(prod?prod.d:item.desc||item.ref).toUpperCase()+'</span>'));
 
       // PRECIO editable
-      var precioCell=document.createElement('input');
-      precioCell.type='number'; precioCell.step='0.01'; precioCell.min='0';
-      precioCell.value=precio.toFixed(2);
-      precioCell.style.cssText='background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.12);border-radius:6px;color:'+WHITE+';padding:5px 7px;font-family:inherit;font-size:.72rem;width:100%;text-align:center;';
-      precioCell.oninput=(function(it){ return function(){
-        it.precioOverride=parseFloat(precioCell.value)||0;
-        // actualizar total línea
-        var newTotal=(it.precioOverride||calcPrecio(it.ref,ped.moneda))*Object.values(it.sucursales||{}).reduce(function(s,sd){return s+(parseInt(sd.desp)||0);},0);
-        var tCell=precioCell.parentElement.querySelector('.total-cell');
-        if(tCell) tCell.textContent='$'+newTotal.toFixed(2);
+      var precioInput = document.createElement('input');
+      precioInput.type='number'; precioInput.step='0.01'; precioInput.min='0';
+      precioInput.value=precio.toFixed(2);
+      precioInput.style.cssText='background:rgba(255,255,255,.08);border:1.5px solid rgba(99,102,241,.3);border-radius:6px;color:#a5b4fc;padding:5px 6px;font-family:"Barlow Condensed",Arial,sans-serif;font-size:.82rem;font-weight:700;width:100%;text-align:center;outline:none;';
+      precioInput.onfocus=function(){precioInput.style.borderColor='rgba(99,102,241,.8)';};
+      precioInput.onblur=function(){precioInput.style.borderColor='rgba(99,102,241,.3)';};
+      precioInput.oninput=(function(it,row){ return function(){
+        it.precioOverride=parseFloat(precioInput.value)||0;
+        var tot=(it.precioOverride||calcPrecio(it.ref,ped.moneda))*Object.values(it.sucursales||{}).reduce(function(s,sd){return s+(parseInt(sd.desp)||0);},0);
+        var tc=row.querySelector('.ed-total-cell');
+        if(tc) tc.textContent='$ '+tot.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
         calcTotales();
-      }; })(item);
-      row.appendChild(precioCell);
+      };})(item,tr);
+      var tdPrecio=mkTd(precioInput,'text-align:center;');
+      tr.appendChild(tdPrecio);
 
-      // STOCK
-      var stCell=document.createElement('div');
-      stCell.style.cssText='font-size:.72rem;font-weight:700;color:'+(stockReal===0?RED:stockReal<10?AMBER:GREEN)+';text-align:center;';
-      stCell.textContent=stockReal;
-      row.appendChild(stCell);
+      // STOCK / DISPONIBLE
+      tr.appendChild(mkTd(
+        '<div style="text-align:center;">' +
+          '<div style="font-size:.9rem;font-weight:900;color:'+stColor+';">'+disponible+'</div>'+
+          (comp.qty>0?'<div style="font-size:.52rem;color:#f59e0b;font-weight:700;">🔒'+comp.qty+'</div>':'')+
+        '</div>'
+      ));
 
       // Cantidades por sucursal
       sucursales.forEach(function(suc){
         if(!item.sucursales[suc]) item.sucursales[suc]={pide:0,desp:0};
-        var qty=document.createElement('input');
-        qty.type='number'; qty.min='0';
-        qty.value=parseInt(item.sucursales[suc].desp)||0;
-        qty.style.cssText='background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.1);border-radius:6px;color:'+WHITE+';padding:5px 4px;font-family:inherit;font-size:.72rem;width:100%;text-align:center;';
-        qty.oninput=(function(it,s,q){ return function(){
-          var v=parseInt(q.value)||0;
-          it.sucursales[s].desp=v;
-          it.sucursales[s].pide=v;
-          // recalc total línea
-          var totalL=(it.precioOverride||calcPrecio(it.ref,ped.moneda))*Object.values(it.sucursales||{}).reduce(function(ss,sd){return ss+(parseInt(sd.desp)||0);},0);
-          var tCell=qty.parentElement.querySelector('.total-cell');
-          if(!tCell){ tCell=qty.parentElement.parentElement.querySelector('.total-cell'); }
-          // buscar en el row
-          var rowEl=qty.closest?qty.closest('[data-row]'):null;
+        var qtyInput=document.createElement('input');
+        qtyInput.type='number'; qtyInput.min='0';
+        qtyInput.value=parseInt(item.sucursales[suc].desp)||0;
+        qtyInput.style.cssText='background:rgba(255,255,255,.07);border:1.5px solid rgba(255,255,255,.12);border-radius:6px;color:'+WHITE+';padding:5px 4px;font-family:"Barlow Condensed",Arial,sans-serif;font-size:.88rem;font-weight:700;width:100%;text-align:center;outline:none;';
+        qtyInput.onfocus=function(){qtyInput.style.borderColor='rgba(251,191,36,.6)';qtyInput.style.background='rgba(251,191,36,.08)';};
+        qtyInput.onblur=function(){qtyInput.style.borderColor='rgba(255,255,255,.12)';qtyInput.style.background='rgba(255,255,255,.07)';};
+        qtyInput.oninput=(function(it,s,q,r){ return function(){
+          it.sucursales[s].desp=parseInt(q.value)||0;
+          it.sucursales[s].pide=parseInt(q.value)||0;
+          var tot=(it.precioOverride||calcPrecio(it.ref,ped.moneda))*Object.values(it.sucursales||{}).reduce(function(ss,sd){return ss+(parseInt(sd.desp)||0);},0);
+          var tc=r.querySelector('.ed-total-cell');
+          if(tc) tc.textContent='$ '+tot.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
           calcTotales();
-        }; })(item,suc,qty);
-        row.appendChild(qty);
+        };})(item,suc,qtyInput,tr);
+        tr.appendChild(mkTd(qtyInput,'text-align:center;'));
       });
 
+
       // TOTAL línea
-      var totalCell=document.createElement('div');
-      totalCell.className='total-cell';
-      totalCell.style.cssText='font-size:.7rem;font-weight:700;color:'+WHITE+';text-align:center;';
-      totalCell.textContent='$'+totalLinea.toFixed(2);
-      row.appendChild(totalCell);
+      var totalCell=document.createElement('span');
+      totalCell.className='ed-total-cell';
+      totalCell.style.cssText='font-size:.85rem;font-weight:900;color:#4ade80;font-family:"Barlow Condensed",Arial,sans-serif;';
+      totalCell.textContent='$ '+totalLinea.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+      tr.appendChild(mkTd(totalCell,'text-align:right;padding-right:10px;'));
 
       // ELIMINAR
       var delBtn=document.createElement('button');
       delBtn.textContent='✕';
-      delBtn.style.cssText='background:rgba(220,38,38,.15);color:#f87171;border:1px solid rgba(220,38,38,.2);border-radius:6px;width:28px;height:28px;cursor:pointer;font-size:.8rem;font-weight:900;';
+      delBtn.title='ELIMINAR REFERENCIA';
+      delBtn.style.cssText='background:rgba(220,38,38,.12);color:#f87171;border:1.5px solid rgba(220,38,38,.25);border-radius:6px;width:28px;height:28px;cursor:pointer;font-size:.85rem;font-weight:900;transition:all .15s;';
+      delBtn.onmouseover=function(){delBtn.style.background='rgba(220,38,38,.3)';};
+      delBtn.onmouseout=function(){delBtn.style.background='rgba(220,38,38,.12)';};
       delBtn.onclick=(function(i){ return function(){
         editData.splice(i,1);
         renderTabla();
       }; })(idx);
-      row.appendChild(delBtn);
+      tr.appendChild(mkTd(delBtn,'text-align:center;'));
 
-      tbl.appendChild(row);
+      tbody.appendChild(tr);
     });
 
-    tablaWrap.appendChild(tbl);
+    table.appendChild(tbody);
+    tablaWrap.appendChild(table);
     calcTotales();
   }
 
@@ -19389,6 +19422,10 @@ window.msAbrirEtiquetas = function() {
   }
 
   // ── Card por sucursal ─────────────────────────────
+  // Recuperar datos guardados de etiquetas previas
+  var _etiqData = {};
+  try { _etiqData = JSON.parse(localStorage.getItem('ms_etiq_'+MS.numPedido)||'{}'); } catch(e){}
+
   MS.sucursales.forEach(function(suc){
     var totalRef=0, totalUnd=0;
     MS.data.forEach(function(p){
@@ -19396,31 +19433,62 @@ window.msAbrirEtiquetas = function() {
       if(d>0){totalRef++;totalUnd+=d;}
     });
 
-    // Auto-match en CLIENTS
-    var clienteData=(typeof CLIENTS!=='undefined'?CLIENTS:[]).find(function(cl){
-      var n=(cl.nombre||'').toUpperCase().replace(/[^A-Z0-9]/g,' ').trim();
-      var s=suc.toUpperCase().replace(/[^A-Z0-9]/g,' ').trim();
-      return n.split(' ').some(function(w){return w.length>3&&s.includes(w);})
-        ||s.split(' ').some(function(w){return w.length>3&&n.includes(w);});
-    })||{};
+    // Datos guardados previamente
+    var _savedSuc = _etiqData[suc] || {};
 
-    var rifVal=clienteData.rif||'';
-    var rsVal=(clienteData.nombre||'').toUpperCase();
-    var idKey=suc.replace(/\W/g,'_');
+    // Auto-match: primero por clientesPorSucursal, luego por nombre
+    var clDB = typeof getClientsDB==='function' ? getClientsDB() : (typeof CLIENTS!=='undefined'?CLIENTS:[]);
+    var clId = (MS.clientesPorSucursal||{})[suc]||'';
+    var clienteData = clDB.find(function(cl){return cl.id===clId;});
+    if(!clienteData){
+      clienteData=clDB.find(function(cl){
+        var n=(cl.nombre||'').toUpperCase().replace(/[^A-Z0-9]/g,' ').trim();
+        var s=suc.toUpperCase().replace(/[^A-Z0-9]/g,' ').trim();
+        return n.split(' ').some(function(w){return w.length>3&&s.includes(w);})
+          ||s.split(' ').some(function(w){return w.length>3&&n.includes(w);});
+      });
+    }
+    clienteData = clienteData||{};
+
+    var rifVal = _savedSuc.rif || clienteData.rif   || '';
+    var rsVal  = _savedSuc.rs  || (clienteData.nombre||'').toUpperCase();
+    var ocVal  = _savedSuc.oc  || '';  // Orden de Compra
+    var nomSuc = _savedSuc.nom || suc; // Nombre editable de la sucursal
+    var idKey  = suc.replace(/\W/g,'_');
 
     var card=document.createElement('div');
-    card.style.cssText='border:1.5px solid #e2e8f0;border-radius:10px;padding:12px 14px;margin-bottom:12px;';
+    card.style.cssText='border:1.5px solid #e2e8f0;border-radius:12px;padding:14px 16px;margin-bottom:12px;background:white;box-shadow:0 1px 4px rgba(0,0,0,.05);';
 
-    // Título sucursal
-    var sucTit=document.createElement('div');
-    sucTit.style.cssText='display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;';
-    sucTit.innerHTML='<div style="font-weight:800;font-size:.9rem;color:#1a2050;">'+suc+'</div>'
-      +'<div style="font-size:.7rem;color:#94a3b8;">'+totalRef+' refs &middot; '+totalUnd+' uds</div>';
-    card.appendChild(sucTit);
+    // ── HEADER: nombre editable de la sucursal ──────────
+    var sucHdr=document.createElement('div');
+    sucHdr.style.cssText='display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;padding-bottom:10px;border-bottom:1.5px solid #f1f5f9;gap:10px;';
 
-    // Grid
+    var nomLabel=document.createElement('div');
+    nomLabel.style.cssText='font-size:.58rem;font-weight:900;color:#94a3b8;text-transform:uppercase;letter-spacing:.5px;white-space:nowrap;margin-bottom:2px;';
+    nomLabel.textContent='NOMBRE SUCURSAL';
+    var nomInputWrap=document.createElement('div');
+    nomInputWrap.style.cssText='flex:1;';
+    nomInputWrap.appendChild(nomLabel);
+    var nomInput=document.createElement('input');
+    nomInput.type='text';
+    nomInput.id='nom-'+idKey;
+    nomInput.value=nomSuc;
+    nomInput.style.cssText='width:100%;padding:6px 10px;border:1.5px solid #e2e8f0;border-radius:7px;font-size:.88rem;font-weight:800;color:#1a2050;background:#f8faff;outline:none;box-sizing:border-box;';
+    nomInput.onfocus=function(){nomInput.style.borderColor='#7c3aed';nomInput.style.background='#faf7ff';};
+    nomInput.onblur=function(){nomInput.style.borderColor='#e2e8f0';nomInput.style.background='#f8faff';};
+    nomInputWrap.appendChild(nomInput);
+    sucHdr.appendChild(nomInputWrap);
+
+    var statsDiv=document.createElement('div');
+    statsDiv.style.cssText='font-size:.7rem;color:#94a3b8;white-space:nowrap;padding-top:16px;';
+    statsDiv.textContent=totalRef+' refs · '+totalUnd+' uds';
+    sucHdr.appendChild(statsDiv);
+    card.appendChild(sucHdr);
+
+    // Grid 4 columnas: RAZÓN SOCIAL | RIF | OC | CAJAS
     var grid=document.createElement('div');
-    grid.style.cssText='display:grid;grid-template-columns:1fr 1fr 80px;gap:8px;';
+    grid.style.cssText='display:grid;grid-template-columns:1fr 140px 130px 70px;gap:8px;align-items:start;';
+
 
     // ── Razón Social con selector ─────────────────
     var rsWrap=document.createElement('div');
@@ -19474,14 +19542,29 @@ window.msAbrirEtiquetas = function() {
     rifWrap.appendChild(rifInput);
     grid.appendChild(rifWrap);
 
+    // ── Orden de Compra ───────────────────────────
+    var ocWrap=document.createElement('div');
+    ocWrap.innerHTML='<div style="font-size:.65rem;font-weight:700;color:#94a3b8;margin-bottom:3px;">N° ORDEN DE COMPRA</div>';
+    var ocInput=document.createElement('input');
+    ocInput.type='text';
+    ocInput.id='oc-'+idKey;
+    ocInput.value=ocVal;
+    ocInput.placeholder='OC-XXXXX';
+    ocInput.style.cssText='width:100%;padding:6px 8px;border:1.5px solid #e2e8f0;border-radius:6px;font-size:.78rem;font-weight:700;color:#1a2050;box-sizing:border-box;outline:none;';
+    ocInput.onfocus=function(){ocInput.style.borderColor='#0d9488';};
+    ocInput.onblur=function(){ocInput.style.borderColor='#e2e8f0';};
+    ocWrap.appendChild(ocInput);
+    grid.appendChild(ocWrap);
+
     // ── Cajas ─────────────────────────────────────
     var cajasWrap=document.createElement('div');
     cajasWrap.innerHTML='<div style="font-size:.65rem;font-weight:700;color:#94a3b8;margin-bottom:3px;">CAJAS</div>';
     var cajasInput=document.createElement('input');
     cajasInput.type='number';
     cajasInput.id='cajas-'+idKey;
-    cajasInput.min=1; cajasInput.max=99; cajasInput.value=1;
-    cajasInput.style.cssText='width:100%;padding:6px 8px;border:1.5px solid #e2e8f0;border-radius:6px;font-size:.85rem;font-weight:700;text-align:center;color:#1a2050;box-sizing:border-box;';
+    cajasInput.min=1; cajasInput.max=99;
+    cajasInput.value=_savedSuc.cajas||1;
+    cajasInput.style.cssText='width:100%;padding:6px 8px;border:1.5px solid #e2e8f0;border-radius:6px;font-size:.88rem;font-weight:800;text-align:center;color:#1a2050;box-sizing:border-box;outline:none;';
     cajasWrap.appendChild(cajasInput);
     grid.appendChild(cajasWrap);
 
@@ -19491,10 +19574,38 @@ window.msAbrirEtiquetas = function() {
     var warnEl=null;
     if(!rifVal||!rsVal){
       warnEl=document.createElement('div');
-      warnEl.style.cssText='font-size:.68rem;color:#7c3aed;margin-top:6px;display:flex;align-items:center;gap:4px;';
+      warnEl.style.cssText='font-size:.68rem;color:#7c3aed;margin-top:8px;display:flex;align-items:center;gap:4px;background:#f5f3ff;border-radius:6px;padding:6px 8px;';
       warnEl.innerHTML='<span>👆</span><span>Haz clic en RAZ&Oacute;N SOCIAL para seleccionar el cliente del directorio</span>';
       card.appendChild(warnEl);
     }
+
+    // Guardar datos de etiqueta en localStorage al cambiar cualquier campo
+    function _guardarEtiq(){
+      try{
+        var d=JSON.parse(localStorage.getItem('ms_etiq_'+MS.numPedido)||'{}');
+        d[suc]={
+          nom: document.getElementById('nom-'+idKey)?document.getElementById('nom-'+idKey).value:'',
+          rs:  document.getElementById('rs-'+idKey)?document.getElementById('rs-'+idKey).value:'',
+          rif: document.getElementById('rif-'+idKey)?document.getElementById('rif-'+idKey).value:'',
+          oc:  document.getElementById('oc-'+idKey)?document.getElementById('oc-'+idKey).value:'',
+          cajas: document.getElementById('cajas-'+idKey)?parseInt(document.getElementById('cajas-'+idKey).value)||1:1
+        };
+        localStorage.setItem('ms_etiq_'+MS.numPedido, JSON.stringify(d));
+        // Sincronizar OC al pedido en farmers_ms_pedidos
+        if(typeof getMsPedidos==='function'){
+          var peds=getMsPedidos();
+          var pidx=peds.findIndex(function(p){return p.numP===MS.numPedido;});
+          if(pidx>=0){
+            if(!peds[pidx].etiqData) peds[pidx].etiqData={};
+            peds[pidx].etiqData[suc]=d[suc];
+            if(typeof saveMsPedidos==='function') saveMsPedidos(peds);
+          }
+        }
+      }catch(e){}
+    }
+    nomInput.oninput=function(){nomInput.style.borderColor='#7c3aed';_guardarEtiq();};
+    cajasInput.onchange=function(){_guardarEtiq();};
+    ocInput.onchange=function(){_guardarEtiq();};
 
     box.appendChild(card);
   });
@@ -19550,10 +19661,14 @@ window.msGenerarEtiquetasPDF = function() {
     });
     // Leer valores del formulario (editados manualmente si aplica)
     var idKey=suc.replace(/\W/g,'_');
-    var rifInput=document.getElementById('rif-'+idKey);
-    var rsInput=document.getElementById('rs-'+idKey);
-    var rifCliente=(rifInput&&rifInput.value.trim())||'S/RIF';
-    var razonSocial=((rsInput&&rsInput.value.trim())||suc).toUpperCase();
+    var rifInput  =document.getElementById('rif-'+idKey);
+    var rsInput   =document.getElementById('rs-'+idKey);
+    var ocInput   =document.getElementById('oc-'+idKey);
+    var nomInput2 =document.getElementById('nom-'+idKey);
+    var rifCliente  =(rifInput&&rifInput.value.trim())||'S/RIF';
+    var razonSocial =((rsInput&&rsInput.value.trim())||suc).toUpperCase();
+    var ordenCompra =(ocInput&&ocInput.value.trim())||'';
+    var nomSucursal =(nomInput2&&nomInput2.value.trim())||suc;
     // Dirección desde CLIENTS como fallback
     var clienteData=(typeof CLIENTS!=='undefined'?CLIENTS:[]).find(function(cl){
       var n=(cl.nombre||'').toUpperCase().replace(/[^A-Z0-9]/g,' ').trim();
@@ -19562,7 +19677,7 @@ window.msGenerarEtiquetasPDF = function() {
     })||{};
     var dirCliente=(clienteData.direccion||'').toUpperCase()||'MARGARITA, NUEVA ESPARTA';
     for(var i=1;i<=numCajas;i++){
-      etiquetas.push({suc:suc,caja:i,total:numCajas,refs:totalRef,uds:totalUnd,vol:totalVol,peso:totalPeso,numP:numP,fecha:fecha,rif:rifCliente,rs:razonSocial,dir:dirCliente});
+      etiquetas.push({suc:suc,nom:nomSucursal,caja:i,total:numCajas,refs:totalRef,uds:totalUnd,vol:totalVol,peso:totalPeso,numP:numP,fecha:fecha,rif:rifCliente,rs:razonSocial,dir:dirCliente,oc:ordenCompra});
     }
   });
 
@@ -19575,9 +19690,10 @@ window.msGenerarEtiquetasPDF = function() {
       'FARMERS C.A.',
       'PEDIDO: '+e.numP,
       'FECHA: '+e.fecha,
-      'DESTINATARIO: '+e.suc.toUpperCase(),
+      'DESTINATARIO: '+e.nom.toUpperCase(),
       'RAZON SOCIAL: '+e.rs,
       'RIF: '+e.rif,
+      (e.oc?'OC: '+e.oc:''),
       'CAJA: '+e.caja+' DE '+e.total,
       'REFS: '+e.refs+' | UDS: '+e.uds
     ].concat(e.vol>0?['VOL: '+e.vol.toFixed(2)+' FT3']:[])
@@ -19638,10 +19754,11 @@ window.msGenerarEtiquetasPDF = function() {
         +'<div class="etq-info">'
         +'<div class="etq-empresa">REMITENTE: FARMERS C.A. · RIF J-XXXXXXXXX</div>'
         +'<div class="etq-dest-lbl">DESTINATARIO:</div>'
-        +'<div class="etq-suc">'+e.suc.toUpperCase()+'</div>'
+        +'<div class="etq-suc">'+e.nom.toUpperCase()+'</div>'
         +'<div class="etq-rs">'+e.rs+'</div>'
         +'<div class="etq-rif">RIF: '+e.rif+'</div>'
-        +'<div class="etq-caja">CAJA '+e.caja+' DE '+e.total+'</div>'
+        +'<div class="etq-rif">RIF: '+e.rif+'</div>'
+        +(e.oc?'<div style="font-size:9px;font-weight:800;color:#0d9488;margin-top:2px;letter-spacing:.3px;">N° ORDEN DE COMPRA: '+e.oc+'</div>':'')
         +'<div class="etq-meta">'
         +'<div class="etq-fecha">FECHA DESPACHO: '+e.fecha+'</div>'
         +'<div class="etq-totales">'
