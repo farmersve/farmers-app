@@ -3175,8 +3175,21 @@ function renderTable() {
         min="0" value="${ord}" placeholder="0"
         oninput="setOrder('${p.r}',this.value,this)"></td>
       <td class="total-cell" id="tot-${p.r}">${total ? cur+' '+fmt(total) : ''}</td>
-      <td class="${sc} stock-cell">${p.ex}</td>
+      <td class="${sc} stock-cell" title="Stock real: ${p.ex}">${p.ex}</td>
       <td class="${etClass} stock-cell" id="et-${p.r}">${existTotal}</td>
+      <td style="text-align:center;font-size:.75rem;" title="Comprometido en pedidos MS">${(()=>{
+        var comp=typeof getComprometido==='function'?getComprometido():{};
+        var compQty=comp[p.r]?comp[p.r].qty:0;
+        if(!compQty) return '<span style="color:#94a3b8;">—</span>';
+        return '<span style="color:#dc2626;font-weight:800;">🔒 '+compQty+'</span>';
+      })()}</td>
+      <td style="text-align:center;font-size:.75rem;font-weight:800;" title="Disponible para venta">${(()=>{
+        var comp=typeof getComprometido==='function'?getComprometido():{};
+        var compQty=comp[p.r]?comp[p.r].qty:0;
+        var disp=Math.max(0,(p.ex||0)-compQty);
+        var color=disp===0?'#dc2626':compQty>0?'#b45309':'#15803d';
+        return '<span style="color:'+color+';">'+disp+'</span>';
+      })()}</td>
       ${(()=>{
         const ptD = typeof ptGetData==='function' ? ptGetData() : {};
         const med = (ptD[p.r] && ptD[p.r].medidas) ? ptD[p.r].medidas : {};
@@ -3489,6 +3502,11 @@ function saveSales(s){ localStorage.setItem('farmers_sales', JSON.stringify(s));
 function syncInventoryToProducts(){
   const inv=getInventory();
   PRODUCTS.forEach(p=>{ if(inv[p.r]!==undefined) p.ex=inv[p.r]; });
+  // Actualizar disponible = real - comprometido en cada producto
+  if(typeof getComprometido==='function'){
+    var comp=getComprometido();
+    PRODUCTS.forEach(function(p){ p.exDisp=Math.max(0,(p.ex||0)-(comp[p.r]?comp[p.r].qty:0)); });
+  }
 }
 syncInventoryToProducts();
 
@@ -15956,6 +15974,7 @@ window.confirmUploadImages=async function(){
      <button onclick="msExportarPDF()" style="background:linear-gradient(135deg,#dc2626,#991b1b);color:white;border:none;border-radius:6px;padding:7px 18px;cursor:pointer;font-weight:700;font-size:.78rem;">📄 Exportar PDF</button>
      <button id="ms-btn-emitir" onclick="msEmitirPedido()" style="background:linear-gradient(135deg,#1a2050,#2d3a8c);color:white;border:none;border-radius:6px;padding:7px 18px;cursor:pointer;font-weight:700;font-size:.78rem;">📋 Emitir Pedido</button>
      <button onclick="msNuevoPedido()" style="background:white;border:2px solid #1a2050;color:#1a2050;border-radius:6px;padding:7px 16px;cursor:pointer;font-weight:700;font-size:.78rem;">↺ Nuevo Pedido</button>
+     <button onclick="if(typeof msAbrirMonitor==='function')msAbrirMonitor()" style="background:#fef3c7;border:2px solid #b45309;color:#b45309;border-radius:6px;padding:7px 16px;cursor:pointer;font-weight:700;font-size:.78rem;">📦 Monitor</button>
     </div>
    </div>
 
@@ -17586,21 +17605,21 @@ window.msAbrirOverlayEmision = function(sel, hayPendientes){
 window.msConfirmarSeleccionadas = function(numP, sel, hayPendientes, ovEmision){
   if(ovEmision) ovEmision.remove();
 
-  // Descontar inventario — igual que confirmOrder() del sistema normal
-  var inv = typeof getInventory==='function' ? getInventory() : {};
-  MS.data.forEach(function(p){
-    var td=0;
-    sel.forEach(function(s){
-      var pide=p.pedidos[s]||0;
-      var desp=p.dist[s]||0;
-      if(pide>0) td+=Math.min(desp,pide);
-    });
-    if(!td) return;
-    inv[p.ref] = Math.max(0,(parseInt(inv[p.ref])||0)-td);
-    var prod = PRODUCTS.find(function(x){return x.r===p.ref;});
-    if(prod) prod.ex = inv[p.ref];
-  });
-  if(typeof saveInventory==='function') saveInventory(inv);
+  // ── FASE 1: COMPROMETER inventario (NO descontar el real todavía) ──
+  // El stock real permanece igual. Solo aumenta el comprometido.
+  // El inventario DISPONIBLE = Real - Comprometido disminuye.
+  // El real solo se descuenta cuando se DESPACHA (Fase 2).
+  if(typeof msComprometerInventario==='function') {
+    msComprometerInventario(
+      numP || MS.numPedido,
+      sel,
+      MS.data,
+      MS.clientesPorSucursal || {},
+      MS.moneda || 'USD',
+      MS.fechaEmision || new Date().toLocaleDateString('es-VE',{day:'2-digit',month:'2-digit',year:'numeric'})
+    );
+  }
+  // Sincronizar catálogo con el disponible actualizado
   if(typeof syncInventoryToProducts==='function') syncInventoryToProducts();
   try{
     var ptRaw=localStorage.getItem('farmers_pt_data');
@@ -17658,6 +17677,28 @@ function msRegistrarVentaYCXC(numP, sel) {
   var dateStr=now.toLocaleDateString('es-VE',{day:'2-digit',month:'2-digit',year:'numeric'});
   var timeStr=now.toLocaleTimeString('es-VE',{hour:'2-digit',minute:'2-digit'});
   var tasa=getTasaHoy()||0;
+
+  // ── FASE 2: Liberar comprometido Y descontar inventario real ──
+  // Ahora sí se hace efectivo: real -= comprometido, comp -= comprometido
+  if(typeof msLiberarComprometido==='function') {
+    msLiberarComprometido(numP || MS.numPedido, sel, MS.data);
+  }
+  // Descontar inventario real
+  var _invD = typeof getInventory==='function' ? getInventory() : {};
+  MS.data.forEach(function(p){
+    var td=0;
+    sel.forEach(function(s){
+      var pide=p.pedidos[s]||0;
+      var desp=p.dist[s]||0;
+      if(pide>0) td+=Math.min(desp,pide);
+    });
+    if(!td) return;
+    _invD[p.ref] = Math.max(0,(parseInt(_invD[p.ref])||0)-td);
+    var prod=PRODUCTS.find(function(x){return x.r===p.ref;});
+    if(prod) prod.ex=_invD[p.ref];
+  });
+  if(typeof saveInventory==='function') saveInventory(_invD);
+  if(typeof syncInventoryToProducts==='function') syncInventoryToProducts();
   var tfSpr=(typeof TF_SPREAD!=='undefined')?TF_SPREAD:0;
   var tasaTF=tasa>0?tasa*(1+tfSpr/100):0;
   var moneda=MS.moneda||'USD';
@@ -17733,6 +17774,569 @@ function msRegistrarVentaYCXC(numP, sel) {
 
 
 // ── Overlay RESERVADO — inventario comprometido, pendiente despacho ──
+// ═══════════════════════════════════════════════════════════════
+// SISTEMA DE INVENTARIO COMPROMETIDO — farmers_inv_comprometido
+// ═══════════════════════════════════════════════════════════════
+// Estructura: { ref: { qty: N, pedidos: [{numP, cliente, fecha, qty}] } }
+// Regla:
+//   Stock Real  = inv[ref]   (nunca se modifica al reservar)
+//   Comprometido = comp[ref].qty
+//   DISPONIBLE  = Real - Comprometido  ← lo único que se puede vender/reservar
+//
+// Al RESERVAR  → comp[ref].qty += td  (real no cambia)
+// Al DESPACHAR → comp[ref].qty -= td  Y  inv[ref] -= td  (se hace efectivo)
+// Al CANCELAR  → comp[ref].qty -= td  (se libera sin tocar real)
+// ═══════════════════════════════════════════════════════════════
+
+var COMP_KEY = 'farmers_inv_comprometido';
+var MS_PEDIDOS_KEY = 'farmers_ms_pedidos';
+
+// ── CRUD comprometido ─────────────────────────────────────────
+window.getComprometido = function() {
+  try { var r=localStorage.getItem(COMP_KEY); if(r) return JSON.parse(r); } catch(e){}
+  return {};
+};
+window.saveComprometido = function(comp) {
+  try { localStorage.setItem(COMP_KEY, JSON.stringify(comp)); } catch(e){}
+  // Sincronizar a Firebase si está disponible
+  if(window.fbSaveComprometido) window.fbSaveComprometido(comp);
+};
+window.getDisponible = function(ref) {
+  var inv  = typeof getInventory==='function' ? getInventory() : {};
+  var comp = getComprometido();
+  var real = parseInt(inv[ref])||0;
+  var comp_qty = comp[ref] ? (comp[ref].qty||0) : 0;
+  return Math.max(0, real - comp_qty);
+};
+
+// ── CRUD pedidos MS ───────────────────────────────────────────
+window.getMsPedidos = function() {
+  try { var r=localStorage.getItem(MS_PEDIDOS_KEY); if(r) return JSON.parse(r); } catch(e){}
+  return [];
+};
+window.saveMsPedidos = function(pedidos) {
+  try { localStorage.setItem(MS_PEDIDOS_KEY, JSON.stringify(pedidos)); } catch(e){}
+  if(window.fbSaveMsPedidos) window.fbSaveMsPedidos(pedidos);
+};
+
+// ── Comprometer inventario al RESERVAR ───────────────────────
+window.msComprometerInventario = function(numP, sel, data, clientesPorSucursal, moneda, fecha) {
+  var comp = getComprometido();
+  var pedidos = getMsPedidos();
+
+  // Calcular totales comprometidos por referencia
+  var refs = {};
+  data.forEach(function(p){
+    var td = 0;
+    sel.forEach(function(s){ td += Math.min(p.dist[s]||0, p.pedidos[s]||0); });
+    if(td > 0) refs[p.ref] = td;
+  });
+
+  // Actualizar comprometido
+  Object.keys(refs).forEach(function(ref){
+    if(!comp[ref]) comp[ref] = {qty:0, pedidos:[]};
+    comp[ref].qty = (comp[ref].qty||0) + refs[ref];
+    // Registrar qué pedido comprometió qué cantidad
+    comp[ref].pedidos = (comp[ref].pedidos||[]).filter(function(p){ return p.numP !== numP; });
+    comp[ref].pedidos.push({ numP:numP, qty:refs[ref], fecha:fecha||new Date().toISOString().slice(0,10) });
+  });
+  saveComprometido(comp);
+
+  // Registrar pedido en el monitor
+  pedidos = pedidos.filter(function(p){ return p.numP !== numP; });
+  var itemsPedido = data.map(function(p){
+    var sucursalesDetalle = {};
+    sel.forEach(function(s){
+      var pide = p.pedidos[s]||0;
+      var desp = Math.min(p.dist[s]||0, pide);
+      if(pide > 0) sucursalesDetalle[s] = {pide:pide, desp:desp};
+    });
+    return {ref:p.ref, desc:p.desc, sucursales:sucursalesDetalle};
+  }).filter(function(i){ return Object.keys(i.sucursales).length > 0; });
+
+  pedidos.unshift({
+    numP: numP,
+    fecha: fecha || new Date().toLocaleDateString('es-VE',{day:'2-digit',month:'2-digit',year:'numeric'}),
+    fechaISO: new Date().toISOString(),
+    estado: 'RESERVADO',
+    moneda: moneda || 'USD',
+    sucursales: sel,
+    clientesPorSucursal: clientesPorSucursal || {},
+    items: itemsPedido,
+    sucursalesEstado: {}
+  });
+  sel.forEach(function(s){
+    pedidos[0].sucursalesEstado[s] = 'RESERVADO';
+  });
+  saveMsPedidos(pedidos);
+};
+
+// ── Liberar comprometido al DESPACHAR ────────────────────────
+// (inventario real se descuenta en msConfirmarSeleccionadas — igual que antes)
+window.msLiberarComprometido = function(numP, sel, data) {
+  var comp = getComprometido();
+  data.forEach(function(p){
+    var td = 0;
+    sel.forEach(function(s){ td += Math.min(p.dist[s]||0, p.pedidos[s]||0); });
+    if(!td || !comp[p.ref]) return;
+    comp[p.ref].qty = Math.max(0, (comp[p.ref].qty||0) - td);
+    comp[p.ref].pedidos = (comp[p.ref].pedidos||[]).map(function(entry){
+      if(entry.numP === numP) return Object.assign({},entry,{qty:Math.max(0,entry.qty-td)});
+      return entry;
+    }).filter(function(e){ return e.qty > 0; });
+    if(comp[p.ref].qty <= 0) delete comp[p.ref];
+  });
+  saveComprometido(comp);
+
+  // Actualizar estado del pedido → DESPACHADO
+  var pedidos = getMsPedidos();
+  var idx = pedidos.findIndex(function(p){ return p.numP === numP; });
+  if(idx >= 0) {
+    sel.forEach(function(s){ pedidos[idx].sucursalesEstado[s] = 'DESPACHADO'; });
+    var todasDesp = pedidos[idx].sucursales.every(function(s){ return pedidos[idx].sucursalesEstado[s]==='DESPACHADO'; });
+    pedidos[idx].estado = todasDesp ? 'DESPACHADO' : 'PARCIAL';
+    pedidos[idx].fechaDespacho = new Date().toLocaleDateString('es-VE',{day:'2-digit',month:'2-digit',year:'numeric'});
+    saveMsPedidos(pedidos);
+  }
+};
+
+// ── Cancelar pedido (liberar todo) ───────────────────────────
+window.msCancelarPedido = function(numP) {
+  var pedidos = getMsPedidos();
+  var pedido = pedidos.find(function(p){ return p.numP === numP; });
+  if(!pedido) return;
+
+  var comp = getComprometido();
+  (pedido.items||[]).forEach(function(item){
+    if(!comp[item.ref]) return;
+    // Suma total comprometida por este pedido para esta ref
+    var entry = (comp[item.ref].pedidos||[]).find(function(e){ return e.numP === numP; });
+    if(entry) {
+      comp[item.ref].qty = Math.max(0, (comp[item.ref].qty||0) - entry.qty);
+      comp[item.ref].pedidos = comp[item.ref].pedidos.filter(function(e){ return e.numP !== numP; });
+      if(comp[item.ref].qty <= 0) delete comp[item.ref];
+    }
+  });
+  saveComprometido(comp);
+
+  // Marcar como cancelado
+  var idx = pedidos.indexOf(pedido);
+  pedidos[idx].estado = 'CANCELADO';
+  pedidos[idx].fechaCancelacion = new Date().toLocaleDateString('es-VE',{day:'2-digit',month:'2-digit',year:'numeric'});
+  saveMsPedidos(pedidos);
+};
+
+
+// ═══════════════════════════════════════════════════════════════
+// MONITOR DE PEDIDOS MS — Panel en tiempo real
+// ═══════════════════════════════════════════════════════════════
+window.msAbrirMonitor = function() {
+  var ex = document.getElementById('ms-monitor-ov'); if(ex) ex.remove();
+  var pedidos = getMsPedidos();
+  var comp = getComprometido();
+  var inv = typeof getInventory==='function' ? getInventory() : {};
+  var clDB = typeof getClientsDB==='function' ? getClientsDB() : [];
+
+  var NAVY='#0f1547', NAVY2='#1B1F6B';
+  var GREEN='#15803d', RED='#dc2626', AMBER='#b45309', GRAY='#64748b';
+
+  // ── Overlay ───────────────────────────────────────────────────
+  var ov = document.createElement('div');
+  ov.id = 'ms-monitor-ov';
+  ov.style.cssText = 'position:fixed;inset:0;z-index:99500;background:rgba(0,0,0,.75);display:flex;align-items:flex-start;justify-content:center;padding:20px 16px;overflow-y:auto;';
+
+  var box = document.createElement('div');
+  box.style.cssText = 'background:#f0f2f7;border-radius:12px;width:100%;max-width:1100px;min-height:400px;overflow:hidden;box-shadow:0 8px 40px rgba(0,0,0,.3);';
+
+  // ── Header ────────────────────────────────────────────────────
+  var hdr = document.createElement('div');
+  hdr.style.cssText = 'background:linear-gradient(135deg,'+NAVY+' 0%,'+NAVY2+' 100%);padding:18px 24px;display:flex;justify-content:space-between;align-items:center;';
+  hdr.innerHTML = '<div style="display:flex;align-items:center;gap:14px;">'
+    +'<span style="font-size:1.6rem;">📦</span>'
+    +'<div>'
+      +'<div style="font-family:Barlow Condensed,sans-serif;font-size:22px;font-weight:900;color:#fff;text-transform:uppercase;letter-spacing:.5px;">Monitor de Pedidos</div>'
+      +'<div style="font-size:10px;color:rgba(255,255,255,.5);">Inventario comprometido en tiempo real</div>'
+    +'</div>'
+  +'</div>'
+  +'<button id="ms-mon-close" style="background:rgba(255,255,255,.15);border:none;color:#fff;width:32px;height:32px;border-radius:8px;cursor:pointer;font-size:1.1rem;">✕</button>';
+  box.appendChild(hdr);
+  document.getElementById && setTimeout(function(){
+    var b=document.getElementById('ms-mon-close'); if(b) b.onclick=function(){ov.remove();};
+  },50);
+  hdr.querySelector('#ms-mon-close') && (hdr.querySelector('#ms-mon-close').onclick = function(){ ov.remove(); });
+
+  var body = document.createElement('div');
+  body.style.cssText = 'padding:20px 24px;';
+
+  // ── KPIs ──────────────────────────────────────────────────────
+  var totalComp = Object.values(comp).reduce(function(s,c){ return s+(c.qty||0); }, 0);
+  var totalRef  = Object.keys(comp).length;
+  var pedReserv = pedidos.filter(function(p){ return p.estado==='RESERVADO'||p.estado==='PARCIAL'; }).length;
+  var pedDesp   = pedidos.filter(function(p){ return p.estado==='DESPACHADO'; }).length;
+
+  var kpis = [
+    {ico:'🔒', label:'Unidades comprometidas', val:totalComp, color:RED},
+    {ico:'📋', label:'Referencias comprometidas', val:totalRef, color:AMBER},
+    {ico:'⏳', label:'Pedidos reservados', val:pedReserv, color:NAVY2},
+    {ico:'✅', label:'Pedidos despachados', val:pedDesp, color:GREEN},
+  ];
+  var kRow = document.createElement('div');
+  kRow.style.cssText = 'display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px;';
+  kpis.forEach(function(k){
+    var c = document.createElement('div');
+    c.style.cssText = 'background:#fff;border-radius:10px;padding:14px 16px;border-left:4px solid '+k.color+';box-shadow:0 1px 4px rgba(0,0,0,.06);';
+    c.innerHTML = '<div style="font-size:1.4rem;margin-bottom:4px;">'+k.ico+'</div>'
+      +'<div style="font-size:22px;font-weight:800;color:'+k.color+';">'+k.val+'</div>'
+      +'<div style="font-size:10px;color:'+GRAY+';text-transform:uppercase;letter-spacing:.5px;">'+k.label+'</div>';
+    kRow.appendChild(c);
+  });
+  body.appendChild(kRow);
+
+  // ── Tabs ─────────────────────────────────────────────────────
+  var tabBar = document.createElement('div');
+  tabBar.style.cssText = 'display:flex;gap:8px;margin-bottom:16px;';
+  var tabContent = document.createElement('div');
+
+  function mkTab(id, label, active) {
+    var t = document.createElement('button');
+    t.dataset.tabid = id;
+    t.style.cssText = 'padding:8px 18px;border-radius:8px;border:none;font-size:.75rem;font-weight:700;cursor:pointer;transition:all .15s;font-family:var(--font,Arial);letter-spacing:.3px;';
+    t.textContent = label;
+    if(active) { t.style.background=NAVY2; t.style.color='#fff'; }
+    else { t.style.background='#e2e8f0'; t.style.color=GRAY; }
+    t.onclick = function(){
+      tabBar.querySelectorAll('button').forEach(function(b){
+        b.style.background='#e2e8f0'; b.style.color=GRAY;
+      });
+      t.style.background=NAVY2; t.style.color='#fff';
+      renderTab(id);
+    };
+    return t;
+  }
+
+  tabBar.appendChild(mkTab('pedidos','📋 Pedidos',true));
+  tabBar.appendChild(mkTab('comprometido','🔒 Inventario Comprometido',false));
+  body.appendChild(tabBar);
+  body.appendChild(tabContent);
+
+  function renderTab(id) {
+    tabContent.innerHTML = '';
+    if(id==='pedidos') renderPedidos();
+    else renderComprometido();
+  }
+
+  // ── TAB: Pedidos ─────────────────────────────────────────────
+  function renderPedidos() {
+    if(!pedidos.length){
+      tabContent.innerHTML='<div style="text-align:center;padding:40px;color:'+GRAY+';font-size:.85rem;">Sin pedidos registrados</div>';
+      return;
+    }
+    pedidos.forEach(function(ped){
+      var card = document.createElement('div');
+      card.style.cssText = 'background:#fff;border-radius:10px;margin-bottom:12px;overflow:hidden;box-shadow:0 1px 4px rgba(0,0,0,.06);';
+
+      var estadoCol = {RESERVADO:AMBER,PARCIAL:'#b45309',DESPACHADO:GREEN,CANCELADO:GRAY}[ped.estado]||GRAY;
+      var estadoBg  = {RESERVADO:'#fffbeb',PARCIAL:'#fffbeb',DESPACHADO:'#f0fdf4',CANCELADO:'#f8faff'}[ped.estado]||'#f8faff';
+
+      // Header del pedido
+      var ph = document.createElement('div');
+      ph.style.cssText = 'padding:12px 16px;background:'+estadoBg+';border-bottom:1px solid #e2e8f0;display:flex;justify-content:space-between;align-items:center;';
+
+      var totalUds = (ped.items||[]).reduce(function(s,item){
+        return s + Object.values(item.sucursales||{}).reduce(function(ss,sd){ return ss+(sd.desp||0); },0);
+      },0);
+      var totalRefs = (ped.items||[]).length;
+
+      ph.innerHTML = '<div style="display:flex;align-items:center;gap:12px;">'
+        +'<div style="font-family:Barlow Condensed,sans-serif;font-size:18px;font-weight:900;color:'+NAVY2+';">'+ped.numP+'</div>'
+        +'<span style="background:'+estadoCol+';color:#fff;font-size:9px;font-weight:800;padding:3px 10px;border-radius:20px;text-transform:uppercase;letter-spacing:.5px;">'+ped.estado+'</span>'
+        +(ped.estado==='RESERVADO'||ped.estado==='PARCIAL'?'<span style="font-size:9px;color:'+AMBER+';background:#fef3c7;padding:2px 8px;border-radius:4px;">⏳ Pendiente de despacho</span>':'')
+      +'</div>'
+      +'<div style="text-align:right;font-size:10px;color:'+GRAY+';">'
+        +'<div>'+ped.fecha+(ped.fechaDespacho?' → '+ped.fechaDespacho:'')+'</div>'
+        +'<div style="font-weight:700;color:'+NAVY2+';">'+totalRefs+' refs · '+totalUds+' uds</div>'
+      +'</div>';
+      card.appendChild(ph);
+
+      // Sucursales con estados
+      var sucRow = document.createElement('div');
+      sucRow.style.cssText = 'padding:10px 16px;display:flex;flex-wrap:wrap;gap:8px;border-bottom:1px solid #f1f5f9;';
+      (ped.sucursales||[]).forEach(function(suc){
+        var est = (ped.sucursalesEstado||{})[suc]||'PENDIENTE';
+        var cl = clDB.find(function(c){ return c.id === ((ped.clientesPorSucursal||{})[suc]||''); });
+        var nombre = cl ? cl.nombre : suc;
+        var estCol = est==='DESPACHADO'?GREEN:est==='RESERVADO'?AMBER:GRAY;
+        sucRow.innerHTML += '<div style="background:#f8faff;border:1px solid #e2e8f0;border-radius:6px;padding:5px 10px;font-size:.7rem;">'
+          +'<span style="font-weight:700;color:'+NAVY2+';">'+nombre.substring(0,20)+'</span>'
+          +'<span style="margin-left:6px;color:'+estCol+';font-size:.65rem;font-weight:700;">'+est+'</span>'
+        +'</div>';
+      });
+      card.appendChild(sucRow);
+
+      // Botones de acción
+      if(ped.estado==='RESERVADO'||ped.estado==='PARCIAL'){
+        var btnRow = document.createElement('div');
+        btnRow.style.cssText = 'padding:10px 16px;display:flex;gap:8px;';
+
+        var btnCanc = document.createElement('button');
+        btnCanc.textContent = '❌ Cancelar pedido';
+        btnCanc.style.cssText = 'background:#fee2e2;color:'+RED+';border:1px solid #fca5a5;border-radius:6px;padding:6px 14px;font-size:.7rem;font-weight:700;cursor:pointer;';
+        btnCanc.onclick = (function(numP){ return function(){
+          if(confirm('¿Cancelar el pedido '+numP+'?\nEl inventario comprometido se liberará.')) {
+            msCancelarPedido(numP);
+            showToast('Pedido '+numP+' cancelado — inventario liberado','success');
+            ov.remove();
+            msAbrirMonitor();
+          }
+        };})(ped.numP);
+        btnRow.appendChild(btnCanc);
+        card.appendChild(btnRow);
+      }
+
+      tabContent.appendChild(card);
+    });
+  }
+
+  // ── TAB: Inventario Comprometido ─────────────────────────────
+  function renderComprometido() {
+    var refs = Object.keys(comp);
+    if(!refs.length){
+      tabContent.innerHTML='<div style="text-align:center;padding:40px;color:'+GRAY+';font-size:.85rem;">✅ Sin inventario comprometido actualmente</div>';
+      return;
+    }
+
+    // Tabla
+    var tbl = document.createElement('div');
+    tbl.style.cssText = 'background:#fff;border-radius:10px;overflow:hidden;box-shadow:0 1px 4px rgba(0,0,0,.06);';
+
+    tbl.innerHTML = '<div style="display:grid;grid-template-columns:120px 1fr 90px 90px 90px 90px;background:'+NAVY2+';padding:8px 12px;gap:8px;">'
+      +'<div style="font-size:9px;font-weight:800;color:rgba(255,255,255,.7);text-transform:uppercase;letter-spacing:.5px;">Referencia</div>'
+      +'<div style="font-size:9px;font-weight:800;color:rgba(255,255,255,.7);text-transform:uppercase;letter-spacing:.5px;">Descripción</div>'
+      +'<div style="font-size:9px;font-weight:800;color:rgba(255,255,255,.7);text-align:center;text-transform:uppercase;">Stock Real</div>'
+      +'<div style="font-size:9px;font-weight:800;color:#fbbf24;text-align:center;text-transform:uppercase;">Comprometido</div>'
+      +'<div style="font-size:9px;font-weight:800;color:#86efac;text-align:center;text-transform:uppercase;">DISPONIBLE</div>'
+      +'<div style="font-size:9px;font-weight:800;color:rgba(255,255,255,.7);text-align:center;text-transform:uppercase;">Pedidos</div>'
+    +'</div>';
+
+    refs.sort().forEach(function(ref, i){
+      var prod = PRODUCTS.find(function(p){ return p.r===ref; });
+      var real = parseInt(inv[ref])||0;
+      var comprometido = comp[ref].qty||0;
+      var disponible = Math.max(0, real - comprometido);
+      var numPedidos = (comp[ref].pedidos||[]).length;
+      var bg = i%2===0?'#fff':'#f8faff';
+      var dispColor = disponible===0?RED:disponible<comprometido?AMBER:GREEN;
+
+      tbl.innerHTML += '<div style="display:grid;grid-template-columns:120px 1fr 90px 90px 90px 90px;padding:8px 12px;gap:8px;background:'+bg+';border-bottom:1px solid #f1f5f9;align-items:center;">'
+        +'<div style="font-family:monospace;font-size:10px;font-weight:600;color:'+NAVY2+';">'+ref+'</div>'
+        +'<div style="font-size:10px;color:#374151;">'+(prod?prod.d:ref)+'</div>'
+        +'<div style="text-align:center;font-size:11px;font-weight:700;color:#374151;">'+real+'</div>'
+        +'<div style="text-align:center;font-size:11px;font-weight:800;color:'+RED+';">'+comprometido+'</div>'
+        +'<div style="text-align:center;font-size:12px;font-weight:900;color:'+dispColor+';">'+disponible+'</div>'
+        +'<div style="text-align:center;font-size:10px;color:'+GRAY+';">'+numPedidos+' pedido'+(numPedidos!==1?'s':'')+'</div>'
+      +'</div>';
+    });
+
+    tabContent.appendChild(tbl);
+  }
+
+  renderTab('pedidos');
+  box.appendChild(body);
+  ov.appendChild(box);
+  document.body.appendChild(ov);
+  ov.addEventListener('click',function(e){ if(e.target===ov) ov.remove(); });
+};
+
+
+// ── Documento de PEDIDO (≠ Factura) ──────────────────────────────
+// Se genera al RESERVAR — antes del despacho y la facturación
+// Es un compromiso de entrega, no una venta
+window.msGenerarDocPedido = function(numP, sel) {
+  var clDB   = typeof getClientsDB==='function' ? getClientsDB() : [];
+  var moneda = MS.moneda || 'USD';
+  var monedaLabel = {USD:'USD $', BCV:'BCV $', TF:'TF $'}[moneda] || moneda;
+  var fecha  = MS.fechaEmision || new Date().toLocaleDateString('es-VE',{day:'2-digit',month:'2-digit',year:'numeric'});
+  var hoy    = new Date().toLocaleDateString('es-VE',{day:'2-digit',month:'long',year:'numeric'}).toUpperCase();
+  var numPed = numP || MS.numPedido || 'MS-?';
+
+  var NAVY = '#0f1547', NAVY2 = '#1B1F6B', BLUE = '#2d35a0';
+  var AMBER = '#92400e', AMBERBG = '#fffbeb';
+
+  // Construir detalle por sucursal
+  var seccionesSucs = sel.map(function(suc) {
+    var clId = (MS.clientesPorSucursal||{})[suc]||'';
+    var cl   = clDB.find(function(x){return x.id===clId;});
+    var nombreCl = cl ? cl.nombre : suc;
+    var rifCl    = cl ? (cl.rif||'') : '';
+    var dirCl    = cl ? (cl.direccion||'') : '';
+
+    var items = [];
+    MS.data.forEach(function(p){
+      var pide = p.pedidos[suc]||0; if(!pide) return;
+      var desp = Math.min(p.dist[suc]||0, pide);
+      var precio = msGetPrecio(p.ref)||0;
+      items.push({ref:p.ref, desc:p.desc, pide:pide, desp:desp, precio:precio, total:precio*desp, estado:p.estado});
+    });
+    if(!items.length) return '';
+
+    var totalSuc = items.reduce(function(s,i){return s+i.total;},0);
+    var totalUds = items.reduce(function(s,i){return s+i.desp;},0);
+
+    var filas = items.map(function(it,i){
+      var bg = i%2===0?'#fff':'#f8faff';
+      var estadoCol = it.estado==='completo'?'#16a34a':it.estado==='parcial'?'#b45309':'#dc2626';
+      return '<tr style="background:'+bg+';">'+
+        '<td style="padding:7px 12px;font-family:monospace;font-size:10px;font-weight:600;color:'+NAVY2+';">'+it.ref+'</td>'+
+        '<td style="padding:7px 12px;font-size:10px;color:#374151;">'+it.desc+'</td>'+
+        '<td style="padding:7px 12px;text-align:center;font-size:10px;color:#64748b;">'+it.pide+'</td>'+
+        '<td style="padding:7px 12px;text-align:center;font-size:10px;font-weight:700;color:'+estadoCol+';">'+it.desp+'</td>'+
+        '<td style="padding:7px 12px;text-align:right;font-size:10px;color:#374151;">$ '+it.precio.toFixed(2)+'</td>'+
+        '<td style="padding:7px 12px;text-align:right;font-size:10px;font-weight:700;color:'+NAVY+';">$ '+it.total.toFixed(2)+'</td>'+
+      '</tr>';
+    }).join('');
+
+    return '<div style="margin-bottom:28px;break-inside:avoid;">'+
+      // Header sucursal
+      '<div style="background:'+NAVY+';padding:10px 20px;border-radius:6px 6px 0 0;display:flex;justify-content:space-between;align-items:center;">'+
+        '<div>'+
+          '<div style="font-family:\'Barlow Condensed\',sans-serif;font-size:16px;font-weight:900;color:#fff;text-transform:uppercase;letter-spacing:.3px;">'+nombreCl+'</div>'+
+          (rifCl?'<div style="font-size:9px;color:rgba(255,255,255,.55);margin-top:2px;">RIF: '+rifCl+(suc!==nombreCl?' · Cód: '+suc:'')+'</div>':'<div style="font-size:9px;color:rgba(255,255,255,.55);">Cód: '+suc+'</div>')+
+        '</div>'+
+        '<div style="text-align:right;">'+
+          '<div style="font-size:9px;color:rgba(255,255,255,.5);text-transform:uppercase;letter-spacing:.5px;">Subtotal</div>'+
+          '<div style="font-family:\'Barlow Condensed\',sans-serif;font-size:20px;font-weight:900;color:#fff;">$ '+totalSuc.toFixed(2)+'</div>'+
+          '<div style="font-size:9px;color:rgba(255,255,255,.45);">'+totalUds+' unidades</div>'+
+        '</div>'+
+      '</div>'+
+      // Tabla
+      '<table style="width:100%;border-collapse:collapse;">'+
+        '<thead><tr style="background:#e8eaf6;">'+
+          '<th style="padding:7px 12px;text-align:left;font-size:8.5px;font-weight:800;color:'+NAVY+';letter-spacing:.8px;text-transform:uppercase;">Referencia</th>'+
+          '<th style="padding:7px 12px;text-align:left;font-size:8.5px;font-weight:800;color:'+NAVY+';text-transform:uppercase;">Descripción</th>'+
+          '<th style="padding:7px 12px;text-align:center;font-size:8.5px;font-weight:800;color:'+NAVY+';text-transform:uppercase;">Pedido</th>'+
+          '<th style="padding:7px 12px;text-align:center;font-size:8.5px;font-weight:800;color:'+NAVY+';text-transform:uppercase;">Despacho</th>'+
+          '<th style="padding:7px 12px;text-align:right;font-size:8.5px;font-weight:800;color:'+NAVY+';text-transform:uppercase;">P. Unit.</th>'+
+          '<th style="padding:7px 12px;text-align:right;font-size:8.5px;font-weight:800;color:'+NAVY+';text-transform:uppercase;">Total</th>'+
+        '</tr></thead>'+
+        '<tbody>'+filas+'</tbody>'+
+        '<tfoot><tr style="background:#f0f4ff;">'+
+          '<td colspan="3" style="padding:8px 12px;font-size:9px;font-weight:700;color:'+NAVY+';text-transform:uppercase;letter-spacing:.5px;">Totales</td>'+
+          '<td style="padding:8px 12px;text-align:center;font-size:11px;font-weight:900;color:'+NAVY+';">'+totalUds+'</td>'+
+          '<td></td>'+
+          '<td style="padding:8px 12px;text-align:right;font-size:13px;font-weight:900;color:'+NAVY+';">$ '+totalSuc.toFixed(2)+'</td>'+
+        '</tr></tfoot>'+
+      '</table>'+
+      (dirCl?'<div style="padding:5px 12px;background:#f8faff;border:1px solid #e2e8f0;border-top:none;font-size:8.5px;color:#64748b;border-radius:0 0 6px 6px;">📍 '+dirCl+'</div>':'<div style="border-radius:0 0 6px 6px;border:1px solid #e2e8f0;border-top:none;"></div>')+
+    '</div>';
+  }).join('');
+
+  // Total general
+  var grandTotal = 0, grandUds = 0;
+  sel.forEach(function(suc){
+    MS.data.forEach(function(p){
+      var pide=p.pedidos[suc]||0; if(!pide)return;
+      var desp=Math.min(p.dist[suc]||0,pide);
+      grandTotal+=msGetPrecio(p.ref)*desp;
+      grandUds+=desp;
+    });
+  });
+
+  var html = '<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8">'
+  +'<title>Pedido '+numPed+'</title>'
+  +'<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@700;800;900&family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">'
+  +'<style>'
+  +'*{margin:0;padding:0;box-sizing:border-box;}'
+  +'*{-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important;}'
+  +'body{font-family:"DM Sans",Arial,sans-serif;color:#1e293b;background:#eef2f7;}'
+  +'@media print{'
+  +'  body{background:#fff!important;}'
+  +'  .no-print{display:none!important;}'
+  +'  @page{size:A4 portrait;margin:8mm 10mm;}'
+  +'  .page{padding:0!important;}'
+  +'  .doc{box-shadow:none!important;}'
+  +'}'
+  +'</style></head><body>'
+
+  // Print btn
+  +'<div class="no-print" style="max-width:794px;margin:14px auto 8px;display:flex;justify-content:flex-end;gap:8px;">'
+  +'<button onclick="window.print()" style="background:'+NAVY+';color:#fff;border:none;padding:9px 22px;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;font-family:\'DM Sans\',sans-serif;">🖨 Imprimir / Guardar PDF</button>'
+  +'</div>'
+
+  +'<div class="page" style="max-width:794px;margin:0 auto;padding:0 0 32px;">'
+  +'<div class="doc" style="background:#fff;border-radius:4px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.08),0 8px 32px rgba(15,21,71,.12);">'
+
+  // HEADER
+  +'<div style="background:linear-gradient(135deg,'+NAVY+' 0%,'+NAVY2+' 55%,'+BLUE+' 100%);padding:20px 28px;display:flex;justify-content:space-between;align-items:center;">'
+    +'<div style="display:flex;align-items:center;gap:16px;">'
+      +'<div style="background:#fff;border-radius:8px;padding:6px 10px;">'
+        +'<img src="'+FARMERS_LOGO_B64+'" style="height:42px;width:auto;display:block;" />'
+      +'</div>'
+      +'<div style="font-size:9.5px;color:rgba(255,255,255,.55);line-height:1.8;">Tel: 0412-0445797<br>farmersve@gmail.com</div>'
+    +'</div>'
+    +'<div style="text-align:right;">'
+      +'<div style="font-family:\'Barlow Condensed\',sans-serif;font-size:26px;font-weight:900;color:#fff;letter-spacing:1px;">ORDEN DE PEDIDO</div>'
+      +'<div style="font-size:10px;color:rgba(255,255,255,.55);margin-top:4px;">'+hoy+'</div>'
+    +'</div>'
+  +'</div>'
+
+  // BANNER PEDIDO
+  +'<div style="background:'+AMBERBG+';border-bottom:2px solid '+AMBER+'30;padding:10px 28px;display:flex;justify-content:space-between;align-items:center;">'
+    +'<div>'
+      +'<span style="font-size:9px;font-weight:700;color:'+AMBER+';text-transform:uppercase;letter-spacing:.8px;">⏳ PENDIENTE DE DESPACHO</span>'
+      +'<span style="font-size:9px;color:#64748b;margin-left:12px;">Este documento NO es una factura · La venta se registra al confirmar el despacho</span>'
+    +'</div>'
+    +'<div style="font-family:\'Barlow Condensed\',sans-serif;font-size:16px;font-weight:900;color:'+NAVY2+';">N° '+numPed+'</div>'
+  +'</div>'
+
+  // INFO PEDIDO
+  +'<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0;padding:16px 28px;border-bottom:1px solid #e2e8f0;">'
+    +'<div>'
+      +'<div style="font-size:8.5px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#94a3b8;margin-bottom:4px;">Fecha de Pedido</div>'
+      +'<div style="font-size:13px;font-weight:700;color:'+NAVY+';">'+fecha+'</div>'
+    +'</div>'
+    +'<div>'
+      +'<div style="font-size:8.5px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#94a3b8;margin-bottom:4px;">Lista de Precios</div>'
+      +'<div style="font-size:13px;font-weight:700;color:'+NAVY+';">'+monedaLabel+'</div>'
+    +'</div>'
+    +'<div style="text-align:right;">'
+      +'<div style="font-size:8.5px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#94a3b8;margin-bottom:4px;">Sucursales</div>'
+      +'<div style="font-size:13px;font-weight:700;color:'+NAVY+';">'+sel.length+' despacho'+(sel.length!==1?'s':'')+' · '+grandUds+' uds</div>'
+    +'</div>'
+  +'</div>'
+
+  // DETALLE POR SUCURSAL
+  +'<div style="padding:20px 28px;">'
+    +seccionesSucs
+  +'</div>'
+
+  // TOTAL GENERAL
+  +'<div style="background:linear-gradient(135deg,'+NAVY+' 0%,'+NAVY2+' 100%);padding:16px 28px;display:flex;justify-content:space-between;align-items:center;">'
+    +'<div>'
+      +'<div style="font-size:10px;font-weight:600;color:rgba(255,255,255,.65);text-transform:uppercase;letter-spacing:.8px;">Total General del Pedido</div>'
+      +'<div style="font-size:10px;color:rgba(255,255,255,.4);margin-top:2px;">'+grandUds+' unidades · '+sel.length+' sucursal'+(sel.length!==1?'es':'')+'</div>'
+    +'</div>'
+    +'<div style="font-family:\'Barlow Condensed\',sans-serif;font-size:32px;font-weight:900;color:#fff;">'+monedaLabel+' $ '+grandTotal.toFixed(2)+'</div>'
+  +'</div>'
+
+  // AVISO LEGAL
+  +'<div style="padding:12px 28px;background:#f8faff;border-top:1px solid #e2e8f0;display:flex;justify-content:space-between;align-items:center;">'
+    +'<span style="font-size:8.5px;color:#94a3b8;">Este documento es una orden de pedido. La factura se emite al confirmar el despacho físico.</span>'
+    +'<span style="font-size:8.5px;font-weight:700;color:'+NAVY2+';text-transform:uppercase;letter-spacing:.5px;">'+hoy+'</span>'
+  +'</div>'
+
+  +'</div></div></body></html>';
+
+  var nombreArch = 'Pedido_'+numPed.replace(/[^A-Z0-9]/gi,'_')+'_'+new Date().toISOString().slice(0,10);
+  var blob = new Blob([html],{type:'text/html;charset=utf-8'});
+  var url  = URL.createObjectURL(blob);
+  var a    = document.createElement('a');
+  a.href   = url;
+  a.download = nombreArch+'.html';
+  document.body.appendChild(a); a.click();
+  setTimeout(function(){ URL.revokeObjectURL(url); a.remove(); }, 1200);
+};
+
+
 window.msAbrirOverlayReservado = function(numP, sel, hayPendientes) {
   var ex=document.getElementById('ms-reservado-ov'); if(ex) ex.remove();
 
@@ -17799,6 +18403,7 @@ window.msAbrirOverlayReservado = function(numP, sel, hayPendientes) {
     return b;
   }
 
+  row.appendChild(mkBtn('📋 Doc. Pedido','#1B1F6B',function(){msGenerarDocPedido(numP,sel);ov.remove();}));
   row.appendChild(mkBtn('📊 Excel','#16a34a',function(){msExportarExcel();ov.remove();}));
   row.appendChild(mkBtn('📄 PDF','#dc2626',function(){msExportarPDF();ov.remove();}));
   row.appendChild(mkBtn('🏷 Etiquetas','#7c3aed',function(){msAbrirFormEtiquetas();ov.remove();}));
