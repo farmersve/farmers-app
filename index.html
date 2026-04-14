@@ -10537,12 +10537,12 @@ function _catDownloadPDFWithImgs(_prodImgsLocal) {
       var pTF  = p.t  ? '$ ' + p.t.toFixed(2)  : pUSD;
       var capital = (p.u && stock) ? stock * p.u : 0;
       var imgSrc = _prodImgsLocal[p.r] || _prodImgsLocal[p.c] || _prodImgsLocal[p.b] || '';
-      // Usar data-ref para que el script de la ventana asigne el src desde _IMGS
-      var imgKey = p.r || p.c || p.b || '';
-      // Imagen: src directo (base64) — funciona en blob PDF sin scripts externos
-      var imgHTML = imgSrc
-        ? '<img class="card-img" src="' + imgSrc + '" onerror="this.style.display=\'none\';this.insertAdjacentHTML(\'afterend\',\'<div class=\"card-img-empty\">📦</div>\');">'
-        : '<div class="card-img-empty">📦</div>';
+
+      var stockPill = stock>10
+        ? '<span class="stock-pill" style="background:#dcfce7;color:#15803d;">✓ EN STOCK</span>'
+        : stock>0
+          ? '<span class="stock-pill" style="background:#fef3c7;color:#b45309;">⚠ BAJO STOCK</span>'
+          : '<span class="stock-pill" style="background:#fee2e2;color:#dc2626;">✗ AGOTADO</span>';
 
       var preciosHTML = !_catClientMode
         ? '<div class="precios-grid">' +
@@ -10550,124 +10550,55 @@ function _catDownloadPDFWithImgs(_prodImgsLocal) {
             '<div class="precio-cell"><div class="pcel-label">BCV</div><div class="pcel-val">' + pBCV + '</div></div>' +
             '<div class="precio-cell"><div class="pcel-label">TF</div><div class="pcel-val">' + pTF + '</div></div>' +
           '</div>'
-        : '<div class="precio-cliente"><span class="pcel-label">Precio ' + monLabel + '</span><span class="pcel-val-big">' + getPrecioStr(p) + '</span></div>';
+        : '<div class="precio-cliente"><span class="pcel-label">PRECIO ' + monLabel + '</span><span class="pcel-val-big">' + getPrecioStr(p) + '</span></div>';
 
       var capitalHTML = (!_catClientMode && capital > 0)
-        ? '<div class="capital-row"><span>💰 Capital</span><strong>$ ' + capital.toFixed(2) + '</strong><span class="cap-det">' + stock + ' uds × ' + pUSD + '</span></div>'
+        ? '<div class="capital-row"><span>💰 CAPITAL</span><strong>$ ' + capital.toFixed(2) + '</strong><span class="cap-det">' + stock + ' uds × ' + pUSD + '</span></div>'
         : '';
+
+      var _pd=_ptDataPDF[p.r]||{}; var _med=_pd.medidas||{};
+      var _fl=parseFloat(_med.largo)||0,_fa=parseFloat(_med.ancho)||0,_fh=parseFloat(_med.alto)||0;
+      var _fvd=parseFloat(_med.volDirecto)||0;
+      var _fv=(_fl&&_fa&&_fh)?(_fl*_fa*_fh)/28316.85:_fvd;
+      var _fdim=(_fl&&_fa&&_fh)?_fl+'×'+_fa+'×'+_fh+' cm':(_fvd?'DATO PROV.':'');
+      var volHTML = _fv
+        ? '<div class="vol-row"><span class="vol-label">📐 VOL. FT³/BULTO'+(_fdim?' — '+_fdim:'')+'</span><span class="vol-val">'+_fv.toFixed(4)+' ft³</span></div>'
+        : '<div class="vol-row" style="opacity:.3;"><span class="vol-label">📐 VOL. FT³/BULTO</span><span class="vol-val">—</span></div>';
 
       return '<div class="card">' +
 
-        // ── IMAGEN: 140px altura fija, full width ──
-        (imgSrc
-          ? '<img class="card-img" src="' + imgSrc + '" onerror="this.outerHTML=\'<div class=\"card-img-empty\">📦</div>\';">'
-          : '<div class="card-img-empty">📦</div>') +
+        // ── IMAGEN 140px full-width ──
+        (imgSrc ? '<img class="card-img" src="' + imgSrc + '">' : '<div class="card-img-empty">📦</div>') +
 
-        // ── BARRA REF: color marca, REF COMPLETA + badge ──
+        // ── BARRA REF + STOCK PILL ──
         '<div class="card-ref-bar" style="background:' + bColor + ';">' +
           '<div>' +
             '<div class="card-ref">' + (p.r||'') + '</div>' +
             '<div class="card-marca">' + (p.br||'') + '</div>' +
           '</div>' +
-          // Badge
-        (function(){
-          var _hasComp  = _compQtyCat > 0;
-          var _dispColor= stock > 10 ? '#15803d' : stock > 0 ? '#b45309' : '#dc2626';
-          var _dispBg   = stock > 10 ? '#dcfce7' : stock > 0 ? '#fef3c7' : '#fee2e2';
-
-          // ── MODO CLIENTE: solo estado, sin cantidades ni comprometido ──
-          if(_catClientMode){
-            var _clLabel = stock > 10 ? '✓ EN STOCK' : stock > 0 ? '⚠ BAJO STOCK' : '✗ AGOTADO';
-            var _clColor = stock > 10 ? '#15803d' : stock > 0 ? '#b45309' : '#dc2626';
-            var _clBg    = stock > 10 ? '#dcfce7' : stock > 0 ? '#fef3c7' : '#fee2e2';
-            return '<div style="flex-shrink:0;text-align:center;background:'+_clBg+';border-radius:10px;padding:8px 12px;min-width:72px;border:2px solid '+_clColor+';">' +
-              '<div style="font-size:.65rem;font-weight:900;color:'+_clColor+';text-transform:uppercase;letter-spacing:.8px;line-height:1.3;">'+_clLabel+'</div>' +
-            '</div>';
-          }
-
-          // ── MODO INTERNO: badge completo ──
-          if(!_hasComp){
-            return '<div style="flex-shrink:0;text-align:center;background:white;border-radius:10px;padding:7px 11px;min-width:68px;border:2px solid rgba(255,255,255,.5);box-shadow:0 2px 8px rgba(0,0,0,.15);">' +
-              '<div style="font-size:.4rem;font-weight:900;color:#94a3b8;text-transform:uppercase;letter-spacing:1.2px;margin-bottom:2px;">EXISTENCIA</div>' +
-              '<div style="font-family:Barlow Condensed,sans-serif;font-weight:900;font-size:1.6rem;color:'+_dispColor+';line-height:1;">'+_stockReal+'</div>' +
-              '<div style="font-size:.4rem;color:#94a3b8;font-weight:700;text-transform:uppercase;">UDS</div>' +
-            '</div>';
-          } else {
-            return '<div style="flex-shrink:0;text-align:center;background:white;border-radius:10px;overflow:hidden;min-width:80px;border:2px solid #b45309;box-shadow:0 2px 12px rgba(180,83,9,.3);">' +
-              '<div style="background:#f8faff;padding:5px 10px;border-bottom:1px solid #e2e8f0;">' +
-                '<div style="font-size:.38rem;font-weight:900;color:#64748b;text-transform:uppercase;letter-spacing:1px;">EXISTENCIA</div>' +
-                '<div style="font-family:Barlow Condensed,sans-serif;font-weight:900;font-size:1.4rem;color:#1B1F6B;line-height:1.1;">'+_stockReal+'</div>' +
-              '</div>' +
-              '<div style="background:#fff7ed;padding:4px 10px;border-bottom:1px solid #fed7aa;">' +
-                '<div style="font-size:.38rem;font-weight:900;color:#b45309;text-transform:uppercase;letter-spacing:1px;">🔒 COMPROMETIDA</div>' +
-                '<div style="font-family:Barlow Condensed,sans-serif;font-weight:900;font-size:1.2rem;color:#b45309;line-height:1.1;">'+_compQtyCat+'</div>' +
-              '</div>' +
-              '<div style="background:'+_dispBg+';padding:4px 10px;">' +
-                '<div style="font-size:.38rem;font-weight:900;color:'+_dispColor+';text-transform:uppercase;letter-spacing:1px;">✓ DISPONIBLE</div>' +
-                '<div style="font-family:Barlow Condensed,sans-serif;font-weight:900;font-size:1.3rem;color:'+_dispColor+';line-height:1.1;">'+stock+'</div>' +
-              '</div>' +
-            '</div>';
-          }
-        })() +
+          stockPill +
         '</div>' +
 
         // ── CUERPO ──
         '<div class="card-body">' +
-
-          // Descripción — altura fija 2 líneas
+          // Descripción 2 líneas fijas
           '<div class="prod-desc">' + (p.d||'') + '</div>' +
-
-          // Código barra | Código — 2 cols compactas
+          // Código barra + código
           '<div class="meta-grid">' +
             '<div class="meta-cell"><div class="meta-label">CÓD. BARRA</div><div class="meta-val">' + (p.b||'—') + '</div></div>' +
             '<div class="meta-cell"><div class="meta-label">CÓDIGO</div><div class="meta-val">' + (p.c||'—') + '</div></div>' +
           '</div>' +
-
-          // Empaque | Medida
+          // Empaque + medida
           '<div class="meta-grid">' +
             '<div class="meta-cell"><div class="meta-label">EMPAQUE</div><div class="meta-val">' + (p.e||'—') + '</div></div>' +
             '<div class="meta-cell"><div class="meta-label">MEDIDA</div><div class="meta-val">' + (p.m||'—') + '</div></div>' +
           '</div>' +
-
-          // Vol. ft³ — siempre reserva el espacio aunque no tenga datos
-          (function(){
-            var _pd = _ptDataPDF[p.r] || {};
-            var _m = _pd.medidas || {};
-            var _l = parseFloat(_m.largo)||0, _a = parseFloat(_m.ancho)||0, _h = parseFloat(_m.alto)||0;
-            var _vDirect = parseFloat((_m.volDirecto)||0);
-            var _v = (_l && _a && _h) ? (_l*_a*_h)/28316.85 : _vDirect;
-            var _dim = (_l && _a && _h) ? _l+'\u00d7'+_a+'\u00d7'+_h+' cm' : (_vDirect ? 'DATO PROVEEDOR' : '');
-            // Siempre mostrar la fila — vacía si no hay datos (espacio reservado)
-            if (!_v) {
-              return '<div class="vol-row" style="opacity:.3;">'+
-                '<span class="vol-label">📐 VOL. FT³ / BULTO</span>'+
-                '<span class="vol-val">—</span>'+
-              '</div>';
-            }
-            return '<div class="vol-row">'+
-              '<span class="vol-label">📐 VOL. FT³ / BULTO'+(_dim?' — '+_dim:'')+' </span>'+
-              '<span class="vol-val">'+_v.toFixed(4)+' ft³</span>'+
-            '</div>';
-          })() +
-
-          // Ordenada — solo si aplica
-          ((_catShowOrden && exOrden > 0)
-            ? '<div style="background:#fffbeb;border-bottom:1px solid #fde68a;padding:5px 12px;display:flex;align-items:center;justify-content:space-between;">' +
-                '<div style="font-size:.46rem;font-weight:800;color:#92400e;text-transform:uppercase;letter-spacing:1px;">📦 Ordenada</div>' +
-                '<div style="font-family:Barlow Condensed,sans-serif;font-size:.9rem;font-weight:900;color:#92400e;">' + exOrden + ' uds</div>' +
-              '</div>'
-            : '') +
-
-          // Precios
-          '<div style="padding:6px 12px;background:#f8faff;border-bottom:1px solid #e2e8f0;">' +
-            preciosHTML +
-          '</div>' +
-
-          // Capital — solo si aplica
-          (capitalHTML ? '<div>' + capitalHTML + '</div>' : '') +
-
+          // Vol ft³ (siempre reservado)
+          volHTML +
+          // Precios (siempre al pie)
+          preciosHTML +
+          capitalHTML +
         '</div>' +
-
       '</div>';
     }).join('');
 
@@ -10812,16 +10743,8 @@ function _catDownloadPDFWithImgs(_prodImgsLocal) {
     '<div class="body">' + cardsHTML + '</div>' +
     '<div class="footer">Farmers C.A. &nbsp;·&nbsp; Catálogo generado el ' + hoy + ' &nbsp;·&nbsp; Uso interno confidencial</div>' +
     '<scr'+'ipt>' +
-      'function assignImages(map){' +
-        'document.querySelectorAll("img[data-ref]").forEach(function(img){' +
-          'var r=img.getAttribute("data-ref");' +
-          'var src=map[r]||map[img.getAttribute("data-b")]||map[img.getAttribute("data-c")];' +
-          'var wrap=img.parentElement;' +
-          'if(src){img.src=src;}' +
-          'else{wrap.innerHTML=String.fromCodePoint(128230);wrap.style.cssText+="display:flex;align-items:center;justify-content:center;font-size:1.6rem;";}' +
-        '});' +
-      '}' +
-      'function catSetOrientPDF(o){var s=document.querySelector(\"style\");var re=/@page\\{[^}]+\\}/;if(s&&re.test(s.textContent)){s.textContent=s.textContent.replace(re,\"@page{size:A4 \"+o+\";margin:6mm 8mm;}\");}var g=document.querySelectorAll(\".cards-grid\");g.forEach(function(el){el.style.gridTemplateColumns=o===\"landscape\"?\"repeat(4,1fr)\":\"repeat(3,1fr)\";});var bl=document.getElementById(\"btnOrL\");var bp=document.getElementById(\"btnOrP\");if(bl){bl.style.background=o===\"landscape\"?\"#1B1F6B\":\"rgba(255,255,255,.12)\";bl.style.color=o===\"landscape\"?\"white\":\"rgba(255,255,255,.6)\";}if(bp){bp.style.background=o===\"portrait\"?\"#1B1F6B\":\"rgba(255,255,255,.12)\";bp.style.color=o===\"portrait\"?\"white\":\"rgba(255,255,255,.6)\";}}' +
+// assignImages ya no necesario — src base64 directo
+
     'function catSetOrientPDF(o){var s=document.querySelector("style");if(s){s.textContent=s.textContent.replace(/@page\\{[^}]+\\}/,"@page{size:A4 "+o+";margin:6mm 8mm;}");}document.querySelectorAll(".cards-grid").forEach(function(g){g.style.gridTemplateColumns=o==="landscape"?"repeat(4,1fr)":"repeat(3,1fr)";});var bl=document.getElementById("btnOrL"),bp=document.getElementById("btnOrP");if(bl){bl.style.background=o==="landscape"?"#f47b3e":"rgba(255,255,255,.12)";bl.style.color="white";}if(bp){bp.style.background=o==="portrait"?"#f47b3e":"rgba(255,255,255,.12)";bp.style.color=o==="portrait"?"white":"rgba(255,255,255,.6)";}}' +
       'function showPrintBar(){' +
         'var bar=document.createElement("div");' +
@@ -10842,23 +10765,8 @@ function _catDownloadPDFWithImgs(_prodImgsLocal) {
 
   // Crear blob URL con el HTML — evita restricciones de about:blank
   // e inyectar imágenes directamente en el HTML antes de crear el blob
-  var imgEntries = Object.entries(_prodImgsLocal);
-  var imgsInlineScript = '<scr'+'ipt>var _CAT_IMGS={';
-  imgEntries.forEach(function(entry, i) {
-    // Escapar correctamente la clave
-    imgsInlineScript += JSON.stringify(entry[0]) + ':' + JSON.stringify(entry[1]);
-    if (i < imgEntries.length - 1) imgsInlineScript += ',';
-  });
-  imgsInlineScript += '};' +
-    'document.querySelectorAll("img[data-ref]").forEach(function(img){' +
-      'var r=img.getAttribute("data-ref");' +
-      'var src=_CAT_IMGS[r]||_CAT_IMGS[img.getAttribute("data-b")]||_CAT_IMGS[img.getAttribute("data-c")];' +
-      'if(src){img.src=src;}' +
-      'else{var w=img.parentElement;w.innerHTML=String.fromCodePoint(128230);w.style.cssText+="display:flex;align-items:center;justify-content:center;font-size:1.6rem;";}' +
-    '});' +
-  '<\/script>';
-  // Insertar este script al final del body
-  var finalHtml = html.replace('</'+'body>', imgsInlineScript + '</'+'body>');
+  // Imágenes ya tienen src base64 directo — no se necesita script de inyección
+  var finalHtml = html;
 
   var blob = new Blob([finalHtml], {type: 'text/html;charset=utf-8'});
   var blobUrl = URL.createObjectURL(blob);
