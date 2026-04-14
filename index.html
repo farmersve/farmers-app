@@ -5415,6 +5415,54 @@ async function loadFromFirebase() {
       } catch(eNC) { console.warn('loadFromFirebase NC:', eNC); }
     }
   } catch(e) { console.warn('loadFromFirebase:', e); }
+
+  // Auto-corregir clientes MS después de cargar — asegura sincronización permanente
+  try {
+    var _MAPA_AUTO = {
+      'MxM.CLA':        {nombre:'INVERSIONES BARCELONA ORIENTE 20.22, CA.', rif:'J501227527', clienteId:'J501227527'},
+      'MXM JORGE COLL': {nombre:'INVERSIONES BARCELONA ORIENTE 20.22, CA.', rif:'J501227527', clienteId:'J501227527'},
+      'MXM.ECC':        {nombre:'INVERSIONES BARCELONA ORIENTE 20.23, C.A.', rif:'J503676990', clienteId:'J503676990'},
+      'AZ.AB':          {nombre:'INVERSIONES BARCELONA ORIENTE 20.23, C.A.', rif:'J503676990', clienteId:'J503676990'}
+    };
+    // Corregir CXC en memoria
+    var _cxcRaw = localStorage.getItem('farmers_cxc');
+    if(_cxcRaw) {
+      var _cxcObj = JSON.parse(_cxcRaw);
+      var _cxcArr = _cxcObj.facturas || _cxcObj || [];
+      var _cxcChg = false;
+      _cxcArr.forEach(function(f) {
+        var fix = _MAPA_AUTO[f.sucursal] || _MAPA_AUTO[f.sucursalCodigo];
+        if(!fix) return;
+        if(f.clienteId !== fix.clienteId || f.rif !== fix.rif) {
+          f.clienteNombre = fix.nombre;
+          f.cliente       = fix.nombre;
+          f.rif           = fix.rif;
+          f.clienteId     = fix.clienteId;
+          _cxcChg = true;
+        }
+      });
+      if(_cxcChg) {
+        if(_cxcObj.facturas) _cxcObj.facturas = _cxcArr; else _cxcObj = _cxcArr;
+        localStorage.setItem('farmers_cxc', JSON.stringify(_cxcObj));
+      }
+    }
+    // Corregir Ventas en memoria
+    if(typeof getSales==='function' && typeof saveSales==='function') {
+      var _salesArr = getSales();
+      var _salesChg = false;
+      _salesArr.forEach(function(s) {
+        var fix = _MAPA_AUTO[s.sucursalCodigo] || _MAPA_AUTO[s.sucursal];
+        if(!fix) return;
+        if(s.clienteId !== fix.clienteId || s.rif !== fix.rif) {
+          s.cliente   = fix.nombre;
+          s.rif       = fix.rif;
+          s.clienteId = fix.clienteId;
+          _salesChg   = true;
+        }
+      });
+      if(_salesChg) saveSales(_salesArr);
+    }
+  } catch(_eAuto) { console.warn('auto-corrección MS:', _eAuto); }
 }
 
 
@@ -20538,6 +20586,7 @@ function cxcEditarFactura(id){
   document.getElementById('cxcf_cliente').value=f.clienteNombre||'';
   document.getElementById('cxcf_rif').value=f.rif||'';
   document.getElementById('cxcf_numpedido').value=f.numpedido||'';
+  window._cxcNumAnterior = f.numpedido||''; // Guardar número anterior para sincronización
   document.getElementById('cxcf_moneda').value=f.moneda||'USD';
   document.getElementById('cxcf_monto').value=f.monto||'';
   document.getElementById('cxcf_saldo').value=f.saldo||'';
@@ -20627,32 +20676,37 @@ function cxcGuardarFactura(){
   }
   cxcSaveFacs(facs);
 
-  // ── Sincronizar numpedido en Ventas (farmers_sales) ──────────────
-  // Si el numpedido cambió, actualizarlo también en el historial de ventas
-  if(_cxcFacId && typeof getSales==='function' && typeof saveSales==='function') {
+  // ── Sincronizar CXC → Ventas ──────────────────────────────────────
+  // Regla: cuando se edita una factura en CXC, el número y cliente
+  // se actualizan en TODO el sistema — Ventas y Firebase
+  if(typeof getSales==='function' && typeof saveSales==='function') {
     var sales = getSales();
     var changed = false;
+    var facActualizada = facs.find(function(x){ return x.id === _cxcFacId; });
+    var numAnterior = facActualizada ? facActualizada._numAnterior : null;
+
     sales.forEach(function(s) {
-      // Buscar por saleId o por numpedido anterior
-      if(String(s.id) === String(_cxcFacId).replace('cxc_','') ||
-         s.numpedido === (facs.find(function(x){return x.id===_cxcFacId;})||{}).numpedido) {
-        // match — pero mejor buscar por el facId guardado en el sale
+      var match = false;
+      // Buscar por: saleId que coincide con el ID de la factura CXC
+      if(String(s.id) === String(_cxcFacId).replace('cxc_','')) match = true;
+      // O por numpedido anterior guardado en la factura
+      if(numAnterior && s.numpedido === numAnterior) match = true;
+      // O por numpedido anterior que venga de la búsqueda previa al editar
+      if(s.numpedido === _cxcNumAnterior) match = true;
+      if(!match) return;
+      s.numpedido = numpedido;
+      s.cliente   = cliente;
+      s.rif       = rif;
+      if(clMatch) {
+        s.clienteId = clMatch.id || s.clienteId;
+        s.correo    = clMatch.correo || s.correo;
       }
+      changed = true;
     });
-    // Buscar la factura actualizada para obtener su saleId
-    var facActualizada = facs.find(function(x){return x.id===_cxcFacId;});
-    if(facActualizada && facActualizada.saleId) {
-      sales.forEach(function(s){
-        if(String(s.id)===String(facActualizada.saleId) || s.numpedido===facActualizada.saleId) {
-          s.numpedido = numpedido;
-          s.cliente   = cliente;
-          s.rif       = rif;
-          changed = true;
-        }
-      });
-      if(changed) saveSales(sales);
+    if(changed) {
+      saveSales(sales);
+      if(typeof renderHistorial==='function') renderHistorial();
     }
-    if(typeof renderHistorial==='function') renderHistorial();
   }
 
   cxcCloseFacOverlay();
