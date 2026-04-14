@@ -17992,251 +17992,653 @@ window.msCancelarPedido = function(numP) {
 // MONITOR DE PEDIDOS MS — Panel en tiempo real
 // ═══════════════════════════════════════════════════════════════
 window.msAbrirMonitor = function() {
-  var ex = document.getElementById('ms-monitor-ov'); if(ex) ex.remove();
-  var pedidos = getMsPedidos();
-  var comp = getComprometido();
-  var inv = typeof getInventory==='function' ? getInventory() : {};
-  var clDB = typeof getClientsDB==='function' ? getClientsDB() : [];
+  var ex=document.getElementById('ms-monitor-ov'); if(ex) ex.remove();
 
-  var NAVY='#0f1547', NAVY2='#1B1F6B';
-  var GREEN='#15803d', RED='#dc2626', AMBER='#b45309', GRAY='#64748b';
+  var pedidos = typeof getMsPedidos==='function' ? getMsPedidos() : [];
+  var comp    = typeof getComprometido==='function' ? getComprometido() : {};
+  var inv     = typeof getInventory==='function' ? getInventory() : {};
+  var clDB    = typeof getClientsDB==='function' ? getClientsDB() : [];
 
-  // ── Overlay ───────────────────────────────────────────────────
+  var NAVY='#0a0e2e', NAVY2='#1B1F6B', NAVY3='#252d7a';
+  var GREEN='#15803d', GREENBG='rgba(21,128,61,.15)';
+  var RED='#dc2626',   REDBG='rgba(220,38,38,.12)';
+  var AMBER='#b45309', AMBERBG='rgba(180,83,9,.15)';
+  var GRAY='rgba(255,255,255,.35)';
+  var WHITE='#fff', DIM='rgba(255,255,255,.55)';
+
+  var totalComp = Object.values(comp).reduce(function(s,v){ return s+(v.qty||0); },0);
+  var pedRes    = pedidos.filter(function(p){ return p.estado==='RESERVADO'||p.estado==='PARCIAL'; });
+  var pedDesp   = pedidos.filter(function(p){ return p.estado==='DESPACHADO'; });
+
+  // ── OVERLAY ────────────────────────────────────────────────────
   var ov = document.createElement('div');
   ov.id = 'ms-monitor-ov';
-  ov.style.cssText = 'position:fixed;inset:0;z-index:99500;background:rgba(0,0,0,.75);display:flex;align-items:flex-start;justify-content:center;padding:20px 16px;overflow-y:auto;';
+  ov.style.cssText = 'position:fixed;inset:0;z-index:99500;background:rgba(0,0,0,.82);display:flex;align-items:flex-start;justify-content:center;padding:16px;overflow-y:auto;font-family:"Barlow Condensed",Arial,sans-serif;';
 
   var box = document.createElement('div');
-  box.style.cssText = 'background:#f0f2f7;border-radius:12px;width:100%;max-width:1100px;min-height:400px;overflow:hidden;box-shadow:0 8px 40px rgba(0,0,0,.3);';
+  box.style.cssText = 'background:'+NAVY+';border-radius:14px;width:100%;max-width:1300px;min-height:500px;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.5);';
 
-  // ── Header ────────────────────────────────────────────────────
+  // ── HEADER ─────────────────────────────────────────────────────
   var hdr = document.createElement('div');
-  hdr.style.cssText = 'background:linear-gradient(135deg,'+NAVY+' 0%,'+NAVY2+' 100%);padding:18px 24px;display:flex;justify-content:space-between;align-items:center;';
-  hdr.innerHTML = '<div style="display:flex;align-items:center;gap:14px;">'
-    +'<span style="font-size:1.6rem;">📦</span>'
+  hdr.style.cssText = 'background:linear-gradient(135deg,'+NAVY+' 0%,'+NAVY3+' 100%);padding:20px 28px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid rgba(255,255,255,.08);';
+  hdr.innerHTML = '<div style="display:flex;align-items:center;gap:16px;">'
+    +'<div style="width:44px;height:44px;background:'+AMBERBG+';border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:1.4rem;">📦</div>'
     +'<div>'
-      +'<div style="font-family:Barlow Condensed,sans-serif;font-size:22px;font-weight:900;color:#fff;text-transform:uppercase;letter-spacing:.5px;">Monitor de Pedidos</div>'
-      +'<div style="font-size:10px;color:rgba(255,255,255,.5);">Inventario comprometido en tiempo real</div>'
+      +'<div style="font-size:22px;font-weight:900;color:'+WHITE+';text-transform:uppercase;letter-spacing:1px;">MONITOR DE PEDIDOS</div>'
+      +'<div style="font-size:10px;color:'+GRAY+';text-transform:uppercase;letter-spacing:.5px;margin-top:2px;">INVENTARIO COMPROMETIDO EN TIEMPO REAL</div>'
     +'</div>'
   +'</div>'
-  +'<button id="ms-mon-close" style="background:rgba(255,255,255,.15);border:none;color:#fff;width:32px;height:32px;border-radius:8px;cursor:pointer;font-size:1.1rem;">✕</button>';
+  +'<button id="ms-mon-close" style="background:rgba(255,255,255,.08);border:none;color:'+WHITE+';width:34px;height:34px;border-radius:8px;cursor:pointer;font-size:1.1rem;transition:background .15s;">✕</button>';
   box.appendChild(hdr);
-  document.getElementById && setTimeout(function(){
-    var b=document.getElementById('ms-mon-close'); if(b) b.onclick=function(){ov.remove();};
-  },50);
-  hdr.querySelector('#ms-mon-close') && (hdr.querySelector('#ms-mon-close').onclick = function(){ ov.remove(); });
+  setTimeout(function(){ var b=document.getElementById('ms-mon-close'); if(b){ b.onclick=function(){ov.remove();}; b.onmouseover=function(){b.style.background='rgba(255,255,255,.16)';}; b.onmouseout=function(){b.style.background='rgba(255,255,255,.08)';}; } },30);
 
-  var body = document.createElement('div');
-  body.style.cssText = 'padding:20px 24px;';
-
-  // ── KPIs ──────────────────────────────────────────────────────
-  var totalComp = Object.values(comp).reduce(function(s,c){ return s+(c.qty||0); }, 0);
-  var totalRef  = Object.keys(comp).length;
-  var pedReserv = pedidos.filter(function(p){ return p.estado==='RESERVADO'||p.estado==='PARCIAL'; }).length;
-  var pedDesp   = pedidos.filter(function(p){ return p.estado==='DESPACHADO'; }).length;
-
-  var kpis = [
-    {ico:'🔒', label:'Unidades comprometidas', val:totalComp, color:RED},
-    {ico:'📋', label:'Referencias comprometidas', val:totalRef, color:AMBER},
-    {ico:'⏳', label:'Pedidos reservados', val:pedReserv, color:NAVY2},
-    {ico:'✅', label:'Pedidos despachados', val:pedDesp, color:GREEN},
-  ];
+  // ── KPI ROW ────────────────────────────────────────────────────
   var kRow = document.createElement('div');
-  kRow.style.cssText = 'display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px;';
-  kpis.forEach(function(k){
-    var c = document.createElement('div');
-    c.style.cssText = 'background:#fff;border-radius:10px;padding:14px 16px;border-left:4px solid '+k.color+';box-shadow:0 1px 4px rgba(0,0,0,.06);';
-    c.innerHTML = '<div style="font-size:1.4rem;margin-bottom:4px;">'+k.ico+'</div>'
-      +'<div style="font-size:22px;font-weight:800;color:'+k.color+';">'+k.val+'</div>'
-      +'<div style="font-size:10px;color:'+GRAY+';text-transform:uppercase;letter-spacing:.5px;">'+k.label+'</div>';
-    kRow.appendChild(c);
+  kRow.style.cssText = 'display:grid;grid-template-columns:repeat(4,1fr);gap:0;border-bottom:1px solid rgba(255,255,255,.07);';
+  [
+    {ico:'🔒', label:'UNIDADES COMPROMETIDAS', val:totalComp,      col:RED,   bg:REDBG},
+    {ico:'📋', label:'REFERENCIAS COMPROMETIDAS',val:Object.keys(comp).length, col:AMBER, bg:AMBERBG},
+    {ico:'⏳', label:'PEDIDOS RESERVADOS',      val:pedRes.length,  col:AMBER, bg:AMBERBG},
+    {ico:'✅', label:'PEDIDOS DESPACHADOS',      val:pedDesp.length, col:GREEN, bg:GREENBG},
+  ].forEach(function(k,i){
+    var kd = document.createElement('div');
+    kd.style.cssText = 'padding:18px 24px;'+(i<3?'border-right:1px solid rgba(255,255,255,.07);':'')+'transition:background .15s;cursor:default;';
+    kd.innerHTML = '<div style="font-size:1.3rem;margin-bottom:6px;">'+k.ico+'</div>'
+      +'<div style="font-size:28px;font-weight:900;color:'+k.col+';">'+k.val+'</div>'
+      +'<div style="font-size:9px;color:'+GRAY+';text-transform:uppercase;letter-spacing:.7px;margin-top:2px;">'+k.label+'</div>';
+    kRow.appendChild(kd);
   });
-  body.appendChild(kRow);
+  box.appendChild(kRow);
 
-  // ── Tabs ─────────────────────────────────────────────────────
+  // ── TABS ───────────────────────────────────────────────────────
   var tabBar = document.createElement('div');
-  tabBar.style.cssText = 'display:flex;gap:8px;margin-bottom:16px;';
+  tabBar.style.cssText = 'display:flex;gap:0;border-bottom:1px solid rgba(255,255,255,.07);background:rgba(0,0,0,.2);';
+
   var tabContent = document.createElement('div');
+  tabContent.style.cssText = 'padding:24px 28px;min-height:350px;';
+
+  var _activeTab = 'pedidos';
 
   function mkTab(id, label, active) {
     var t = document.createElement('button');
     t.dataset.tabid = id;
-    t.style.cssText = 'padding:8px 18px;border-radius:8px;border:none;font-size:.75rem;font-weight:700;cursor:pointer;transition:all .15s;font-family:var(--font,Arial);letter-spacing:.3px;';
+    t.style.cssText = 'padding:14px 24px;border:none;background:none;font-family:"Barlow Condensed",Arial,sans-serif;font-size:.75rem;font-weight:800;cursor:pointer;text-transform:uppercase;letter-spacing:.7px;transition:all .15s;border-bottom:2px solid '+(active?AMBER:'transparent')+';color:'+(active?AMBER:GRAY)+';';
     t.textContent = label;
-    if(active) { t.style.background=NAVY2; t.style.color='#fff'; }
-    else { t.style.background='#e2e8f0'; t.style.color=GRAY; }
     t.onclick = function(){
+      _activeTab = id;
       tabBar.querySelectorAll('button').forEach(function(b){
-        b.style.background='#e2e8f0'; b.style.color=GRAY;
+        var isActive = b.dataset.tabid===id;
+        b.style.color = isActive?AMBER:GRAY;
+        b.style.borderBottom = '2px solid '+(isActive?AMBER:'transparent');
       });
-      t.style.background=NAVY2; t.style.color='#fff';
       renderTab(id);
     };
     return t;
   }
 
-  tabBar.appendChild(mkTab('pedidos','📋 Pedidos',true));
-  tabBar.appendChild(mkTab('comprometido','🔒 Inventario Comprometido',false));
-  body.appendChild(tabBar);
-  body.appendChild(tabContent);
+  tabBar.appendChild(mkTab('pedidos','📋 PEDIDOS',true));
+  tabBar.appendChild(mkTab('comprometido','🔒 INVENTARIO COMPROMETIDO',false));
+  box.appendChild(tabBar);
+  box.appendChild(tabContent);
 
+  // ── RENDER TABS ────────────────────────────────────────────────
   function renderTab(id) {
     tabContent.innerHTML = '';
     if(id==='pedidos') renderPedidos();
     else renderComprometido();
   }
 
-  // ── TAB: Pedidos ─────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────
+  // TAB PEDIDOS
+  // ─────────────────────────────────────────────────────────────
   function renderPedidos() {
     if(!pedidos.length){
-      tabContent.innerHTML='<div style="text-align:center;padding:40px;color:'+GRAY+';font-size:.85rem;">Sin pedidos registrados</div>';
+      tabContent.innerHTML='<div style="text-align:center;padding:60px;color:'+GRAY+';font-size:.85rem;text-transform:uppercase;letter-spacing:.5px;">SIN PEDIDOS REGISTRADOS</div>';
       return;
     }
-    pedidos.forEach(function(ped){
-      var card = document.createElement('div');
-      card.style.cssText = 'background:#fff;border-radius:10px;margin-bottom:12px;overflow:hidden;box-shadow:0 1px 4px rgba(0,0,0,.06);';
 
-      var estadoCol = {RESERVADO:AMBER,PARCIAL:'#b45309',DESPACHADO:GREEN,CANCELADO:GRAY}[ped.estado]||GRAY;
-      var estadoBg  = {RESERVADO:'#fffbeb',PARCIAL:'#fffbeb',DESPACHADO:'#f0fdf4',CANCELADO:'#f8faff'}[ped.estado]||'#f8faff';
+    // ── Pendientes ──────────────────────────────────────────────
+    if(pedRes.length){
+      var secTitle = document.createElement('div');
+      secTitle.style.cssText = 'font-size:.65rem;font-weight:800;color:'+AMBER+';text-transform:uppercase;letter-spacing:1px;margin-bottom:14px;display:flex;align-items:center;gap:8px;';
+      secTitle.innerHTML = '<span style="width:6px;height:6px;border-radius:50%;background:'+AMBER+';display:inline-block;"></span> PENDIENTES DE DESPACHO ('+pedRes.length+')';
+      tabContent.appendChild(secTitle);
 
-      // Header del pedido
-      var ph = document.createElement('div');
-      ph.style.cssText = 'padding:12px 16px;background:'+estadoBg+';border-bottom:1px solid #e2e8f0;display:flex;justify-content:space-between;align-items:center;';
-
-      var totalUds = (ped.items||[]).reduce(function(s,item){
-        return s + Object.values(item.sucursales||{}).reduce(function(ss,sd){ return ss+(sd.desp||0); },0);
-      },0);
-      var totalRefs = (ped.items||[]).length;
-
-      ph.innerHTML = '<div style="display:flex;align-items:center;gap:12px;">'
-        +'<div style="font-family:Barlow Condensed,sans-serif;font-size:18px;font-weight:900;color:'+NAVY2+';">'+ped.numP+'</div>'
-        +'<span style="background:'+estadoCol+';color:#fff;font-size:9px;font-weight:800;padding:3px 10px;border-radius:20px;text-transform:uppercase;letter-spacing:.5px;">'+ped.estado+'</span>'
-        +(ped.estado==='RESERVADO'||ped.estado==='PARCIAL'?'<span style="font-size:9px;color:'+AMBER+';background:#fef3c7;padding:2px 8px;border-radius:4px;">⏳ Pendiente de despacho</span>':'')
-      +'</div>'
-      +'<div style="text-align:right;font-size:10px;color:'+GRAY+';">'
-        +'<div>'+ped.fecha+(ped.fechaDespacho?' → '+ped.fechaDespacho:'')+'</div>'
-        +'<div style="font-weight:700;color:'+NAVY2+';">'+totalRefs+' refs · '+totalUds+' uds</div>'
-      +'</div>';
-      card.appendChild(ph);
-
-      // Sucursales con estados
-      var sucRow = document.createElement('div');
-      sucRow.style.cssText = 'padding:10px 16px;display:flex;flex-wrap:wrap;gap:8px;border-bottom:1px solid #f1f5f9;';
-      (ped.sucursales||[]).forEach(function(suc){
-        var est = (ped.sucursalesEstado||{})[suc]||'PENDIENTE';
-        var cl = clDB.find(function(c){ return c.id === ((ped.clientesPorSucursal||{})[suc]||''); });
-        var nombre = cl ? cl.nombre : suc;
-        var estCol = est==='DESPACHADO'?GREEN:est==='RESERVADO'?AMBER:GRAY;
-        sucRow.innerHTML += '<div style="background:#f8faff;border:1px solid #e2e8f0;border-radius:6px;padding:5px 10px;font-size:.7rem;">'
-          +'<span style="font-weight:700;color:'+NAVY2+';">'+nombre.substring(0,20)+'</span>'
-          +'<span style="margin-left:6px;color:'+estCol+';font-size:.65rem;font-weight:700;">'+est+'</span>'
-        +'</div>';
+      pedRes.forEach(function(ped){
+        renderPedidoCard(ped, true);
       });
-      card.appendChild(sucRow);
+    }
 
-      // Botones de acción
-      if(ped.estado==='RESERVADO'||ped.estado==='PARCIAL'){
-        var btnRow = document.createElement('div');
-        btnRow.style.cssText = 'padding:10px 16px;display:flex;gap:8px;';
+    // ── Despachados ─────────────────────────────────────────────
+    if(pedDesp.length){
+      var secTitle2 = document.createElement('div');
+      secTitle2.style.cssText = 'font-size:.65rem;font-weight:800;color:'+GREEN+';text-transform:uppercase;letter-spacing:1px;margin:20px 0 14px;display:flex;align-items:center;gap:8px;';
+      secTitle2.innerHTML = '<span style="width:6px;height:6px;border-radius:50%;background:'+GREEN+';display:inline-block;"></span> DESPACHADOS ('+pedDesp.length+')';
+      tabContent.appendChild(secTitle2);
 
-        var btnCanc = document.createElement('button');
-        btnCanc.textContent = '❌ Cancelar pedido';
-        btnCanc.style.cssText = 'background:#fee2e2;color:'+RED+';border:1px solid #fca5a5;border-radius:6px;padding:6px 14px;font-size:.7rem;font-weight:700;cursor:pointer;';
-        btnCanc.onclick = (function(numP){ return function(){
-          if(confirm('¿Cancelar el pedido '+numP+'?\nEl inventario comprometido se liberará.')) {
-            msCancelarPedido(numP);
-            showToast('Pedido '+numP+' cancelado — inventario liberado','success');
-            ov.remove();
-            msAbrirMonitor();
-          }
-        };})(ped.numP);
-        btnRow.appendChild(btnCanc);
-
-        // Botón Retomar — carga el pedido en el Paso 3 para despachar/etiquetar
-        var btnRetomar = document.createElement('button');
-        btnRetomar.textContent = '🚚 Retomar pedido';
-        btnRetomar.style.cssText = 'background:#fffbeb;color:'+AMBER+';border:1px solid #fbbf24;border-radius:6px;padding:6px 14px;font-size:.7rem;font-weight:700;cursor:pointer;';
-        btnRetomar.onclick = (function(pedido){ return function(){
-          ov.remove();
-          // Cerrar ventas si está abierto
-          var vm = document.getElementById('ventas-modal');
-          if(vm) vm.style.display='none';
-          // Cargar el pedido en MS
-          MS.numPedido = pedido.numP;
-          MS.fase = 'reservado';
-          MS.sucursales = pedido.sucursales || [];
-          MS.clientesPorSucursal = pedido.clientesPorSucursal || {};
-          MS.moneda = pedido.moneda || 'USD';
-          MS.sucursalesEstado = pedido.sucursalesEstado || {};
-          // Ir al paso 3
-          if(typeof goToStep==='function'){
-            if(typeof selectedBrands!=='undefined' && selectedBrands.size===0){
-              // Activar EXCALIBUR por defecto si no hay marcas
-              if(typeof selectedBrands!=='undefined') selectedBrands.add('EXCALIBUR');
-              if(typeof selectedMoneda==='undefined'||!selectedMoneda) window.selectedMoneda=pedido.moneda||'TF';
-            }
-            goToStep(3);
-          } else if(typeof homeGoTo==='function') homeGoTo('ms');
-          showToast('Pedido '+pedido.numP+' cargado — listo para despachar','success');
-        };})(ped);
-        btnRow.appendChild(btnRetomar);
-
-        card.appendChild(btnRow);
-      }
-
-      tabContent.appendChild(card);
-    });
+      pedDesp.slice(0,10).forEach(function(ped){
+        renderPedidoCard(ped, false);
+      });
+    }
   }
 
-  // ── TAB: Inventario Comprometido ─────────────────────────────
+  function renderPedidoCard(ped, activo) {
+    var card = document.createElement('div');
+    card.style.cssText = 'background:rgba(255,255,255,.04);border-radius:10px;margin-bottom:12px;overflow:hidden;border:1px solid '+(activo?'rgba(180,83,9,.25)':'rgba(255,255,255,.06)')+';transition:border-color .15s;';
+
+    var totalUds = (ped.items||[]).reduce(function(s,item){
+      return s+Object.values(item.sucursales||{}).reduce(function(ss,sd){return ss+(sd.desp||0);},0);
+    },0);
+    var totalRefs = (ped.items||[]).length;
+    var estadoCol = {RESERVADO:AMBER,PARCIAL:AMBER,DESPACHADO:GREEN,CANCELADO:GRAY}[ped.estado]||GRAY;
+    var estadoBg  = {RESERVADO:AMBERBG,PARCIAL:AMBERBG,DESPACHADO:GREENBG,CANCELADO:'rgba(100,116,139,.1)'}[ped.estado]||'rgba(100,116,139,.1)';
+
+    // Header de la card
+    var ph = document.createElement('div');
+    ph.style.cssText = 'padding:14px 18px;display:flex;justify-content:space-between;align-items:center;background:rgba(0,0,0,.15);';
+    ph.innerHTML = '<div style="display:flex;align-items:center;gap:12px;">'
+      +'<div style="font-size:20px;font-weight:900;color:'+WHITE+';letter-spacing:.5px;">'+ped.numP+'</div>'
+      +'<div style="background:'+estadoBg+';color:'+estadoCol+';font-size:8px;font-weight:800;padding:4px 12px;border-radius:20px;text-transform:uppercase;letter-spacing:.7px;">'+ped.estado+'</div>'
+      +(activo?'<div style="font-size:8px;color:'+AMBER+';background:rgba(180,83,9,.1);padding:3px 8px;border-radius:4px;text-transform:uppercase;letter-spacing:.3px;">⏳ PENDIENTE DE DESPACHO</div>':'')
+    +'</div>'
+    +'<div style="text-align:right;font-size:10px;color:'+GRAY+';text-transform:uppercase;letter-spacing:.3px;">'
+      +'<div>'+ped.fecha+(ped.fechaDespacho?' → '+ped.fechaDespacho:'')+'</div>'
+      +'<div style="color:'+DIM+';font-weight:700;margin-top:2px;">'+totalRefs+' REFS · '+totalUds+' UDS</div>'
+    +'</div>';
+    card.appendChild(ph);
+
+    // Chips de sucursales
+    var sucRow = document.createElement('div');
+    sucRow.style.cssText = 'padding:12px 18px;display:flex;flex-wrap:wrap;gap:6px;border-bottom:1px solid rgba(255,255,255,.05);';
+    (ped.sucursales||[]).forEach(function(suc){
+      var est = (ped.sucursalesEstado||{})[suc]||'PENDIENTE';
+      var cl  = clDB.find(function(x){return x.id===((ped.clientesPorSucursal||{})[suc]||'');});
+      var nombre = cl ? cl.nombre.toUpperCase().substring(0,22) : suc.toUpperCase();
+      var col = est==='DESPACHADO'?GREEN:est==='RESERVADO'?AMBER:GRAY;
+      sucRow.innerHTML += '<div style="background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);border-radius:6px;padding:5px 10px;display:flex;align-items:center;gap:6px;">'
+        +'<span style="font-size:.65rem;font-weight:700;color:'+WHITE+';">'+nombre+'</span>'
+        +'<span style="font-size:.58rem;font-weight:800;color:'+col+';text-transform:uppercase;">'+est+'</span>'
+        +'</div>';
+    });
+    card.appendChild(sucRow);
+
+    // Botones
+    if(activo){
+      var btnRow = document.createElement('div');
+      btnRow.style.cssText = 'padding:12px 18px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;';
+
+      // EDITAR PEDIDO
+      var btnEdit = document.createElement('button');
+      btnEdit.innerHTML = '✏️ <span style="text-transform:uppercase;letter-spacing:.5px;">EDITAR PEDIDO</span>';
+      btnEdit.style.cssText = 'background:rgba(99,102,241,.15);color:#818cf8;border:1px solid rgba(99,102,241,.3);border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:800;font-size:.7rem;font-family:"Barlow Condensed",Arial,sans-serif;';
+      btnEdit.onclick = (function(p){ return function(){ ov.remove(); msAbrirEditorPedido(p); }; })(ped);
+      btnRow.appendChild(btnEdit);
+
+      // ETIQUETAS
+      var btnEtiq = document.createElement('button');
+      btnEtiq.innerHTML = '🏷 <span style="text-transform:uppercase;letter-spacing:.5px;">ETIQUETAS</span>';
+      btnEtiq.style.cssText = 'background:rgba(124,58,237,.15);color:#a78bfa;border:1px solid rgba(124,58,237,.3);border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:800;font-size:.7rem;font-family:"Barlow Condensed",Arial,sans-serif;';
+      btnEtiq.onclick = (function(p){ return function(){
+        ov.remove();
+        MS.numPedido=p.numP; MS.sucursales=p.sucursales||[];
+        MS.clientesPorSucursal=p.clientesPorSucursal||{};
+        MS.moneda=p.moneda||'USD';
+        if(p.data) MS.data=p.data;
+        if(typeof msAbrirFormEtiquetas==='function') msAbrirFormEtiquetas();
+        else showToast('ABRE EL PASO 3 PRIMERO','warn');
+      }; })(ped);
+      btnRow.appendChild(btnEtiq);
+
+      // DOC PEDIDO
+      var btnDoc = document.createElement('button');
+      btnDoc.innerHTML = '📋 <span style="text-transform:uppercase;letter-spacing:.5px;">DOC. PEDIDO</span>';
+      btnDoc.style.cssText = 'background:rgba(30,64,175,.15);color:#93c5fd;border:1px solid rgba(30,64,175,.3);border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:800;font-size:.7rem;font-family:"Barlow Condensed",Arial,sans-serif;';
+      btnDoc.onclick = (function(p){ return function(){
+        MS.numPedido=p.numP; MS.sucursales=p.sucursales||[];
+        MS.clientesPorSucursal=p.clientesPorSucursal||{};
+        if(typeof msGenerarDocPedido==='function') msGenerarDocPedido(p.numP, p.sucursales||[]);
+      }; })(ped);
+      btnRow.appendChild(btnDoc);
+
+      // DESPACHAR
+      var btnDesp = document.createElement('button');
+      btnDesp.innerHTML = '🚚 <span style="text-transform:uppercase;letter-spacing:.5px;">DESPACHAR</span>';
+      btnDesp.style.cssText = 'background:linear-gradient(135deg,'+AMBER+',#d97706);color:'+WHITE+';border:none;border-radius:8px;padding:8px 18px;cursor:pointer;font-weight:800;font-size:.7rem;font-family:"Barlow Condensed",Arial,sans-serif;';
+      btnDesp.onclick = (function(p){ return function(){
+        ov.remove();
+        var vm=document.getElementById('ventas-modal'); if(vm) vm.style.display='none';
+        MS.numPedido=p.numP; MS.fase='reservado';
+        MS.sucursales=p.sucursales||[];
+        MS.clientesPorSucursal=p.clientesPorSucursal||{};
+        MS.moneda=p.moneda||'USD';
+        MS.sucursalesEstado=p.sucursalesEstado||{};
+        if(typeof selectedBrands!=='undefined'&&selectedBrands.size===0){
+          selectedBrands.add('EXCALIBUR');
+          if(!window.selectedMoneda) window.selectedMoneda=p.moneda||'TF';
+        }
+        if(typeof goToStep==='function') goToStep(3);
+        setTimeout(function(){
+          var btn=document.getElementById('ms-btn-emitir');
+          if(btn){ btn.textContent='🚚 DESPACHAR #'+p.numP; btn.style.background='#d97706'; btn.disabled=false;
+            btn.onclick=function(){msAbrirOverlayReservado(p.numP,p.sucursales||[],false);}; }
+        },400);
+        showToast('PEDIDO '+p.numP+' LISTO PARA DESPACHAR','success');
+      }; })(ped);
+      btnRow.appendChild(btnDesp);
+
+      // Separador
+      var sep=document.createElement('div');
+      sep.style.cssText='flex:1;';
+      btnRow.appendChild(sep);
+
+      // CANCELAR
+      var btnCanc = document.createElement('button');
+      btnCanc.innerHTML = '❌ <span style="text-transform:uppercase;letter-spacing:.5px;">CANCELAR</span>';
+      btnCanc.style.cssText = 'background:rgba(220,38,38,.1);color:#f87171;border:1px solid rgba(220,38,38,.2);border-radius:8px;padding:8px 14px;cursor:pointer;font-weight:800;font-size:.7rem;font-family:"Barlow Condensed",Arial,sans-serif;';
+      btnCanc.onclick = (function(numP){ return function(){
+        if(confirm('⚠️ ¿CANCELAR EL PEDIDO '+numP+'?\n\nEL INVENTARIO COMPROMETIDO SE LIBERARÁ.')){
+          if(typeof msCancelarPedido==='function') msCancelarPedido(numP);
+          showToast('PEDIDO '+numP+' CANCELADO — INVENTARIO LIBERADO','success');
+          ov.remove(); msAbrirMonitor();
+        }
+      }; })(ped.numP);
+      btnRow.appendChild(btnCanc);
+
+      card.appendChild(btnRow);
+    }
+
+    tabContent.appendChild(card);
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // TAB INVENTARIO COMPROMETIDO
+  // ─────────────────────────────────────────────────────────────
   function renderComprometido() {
     var refs = Object.keys(comp);
     if(!refs.length){
-      tabContent.innerHTML='<div style="text-align:center;padding:40px;color:'+GRAY+';font-size:.85rem;">✅ Sin inventario comprometido actualmente</div>';
+      tabContent.innerHTML='<div style="text-align:center;padding:60px;color:'+GRAY+';font-size:.85rem;text-transform:uppercase;letter-spacing:.5px;">✅ SIN INVENTARIO COMPROMETIDO ACTUALMENTE</div>';
       return;
     }
 
-    // Tabla
+    // Header tabla
     var tbl = document.createElement('div');
-    tbl.style.cssText = 'background:#fff;border-radius:10px;overflow:hidden;box-shadow:0 1px 4px rgba(0,0,0,.06);';
+    tbl.style.cssText = 'border-radius:10px;overflow:hidden;border:1px solid rgba(255,255,255,.08);';
 
-    tbl.innerHTML = '<div style="display:grid;grid-template-columns:120px 1fr 90px 90px 90px 90px;background:'+NAVY2+';padding:8px 12px;gap:8px;">'
-      +'<div style="font-size:9px;font-weight:800;color:rgba(255,255,255,.7);text-transform:uppercase;letter-spacing:.5px;">Referencia</div>'
-      +'<div style="font-size:9px;font-weight:800;color:rgba(255,255,255,.7);text-transform:uppercase;letter-spacing:.5px;">Descripción</div>'
-      +'<div style="font-size:9px;font-weight:800;color:rgba(255,255,255,.7);text-align:center;text-transform:uppercase;">Stock Real</div>'
-      +'<div style="font-size:9px;font-weight:800;color:#fbbf24;text-align:center;text-transform:uppercase;">Comprometido</div>'
-      +'<div style="font-size:9px;font-weight:800;color:#86efac;text-align:center;text-transform:uppercase;">DISPONIBLE</div>'
-      +'<div style="font-size:9px;font-weight:800;color:rgba(255,255,255,.7);text-align:center;text-transform:uppercase;">Pedidos</div>'
-    +'</div>';
+    var tHead = document.createElement('div');
+    tHead.style.cssText = 'display:grid;grid-template-columns:130px 1fr 100px 110px 110px 100px;background:'+NAVY2+';padding:10px 14px;gap:8px;';
+    [['REF','left'],['DESCRIPCIÓN','left'],['STOCK REAL','center'],['🔒 COMPROMETIDO','center'],['✅ DISPONIBLE','center'],['PEDIDOS','center']].forEach(function(h){
+      var th=document.createElement('div');
+      th.style.cssText='font-size:8px;font-weight:800;color:rgba(255,255,255,.5);text-transform:uppercase;letter-spacing:.7px;text-align:'+h[1]+';';
+      th.textContent=h[0]; tHead.appendChild(th);
+    });
+    tbl.appendChild(tHead);
 
-    refs.sort().forEach(function(ref, i){
-      var prod = PRODUCTS.find(function(p){ return p.r===ref; });
-      var real = parseInt(inv[ref])||0;
-      var comprometido = comp[ref].qty||0;
-      var disponible = Math.max(0, real - comprometido);
-      var numPedidos = (comp[ref].pedidos||[]).length;
-      var bg = i%2===0?'#fff':'#f8faff';
-      var dispColor = disponible===0?RED:disponible<comprometido?AMBER:GREEN;
+    refs.sort().forEach(function(ref,i){
+      var prod   = PRODUCTS.find(function(p){return p.r===ref;});
+      var real   = parseInt(inv[ref])||0;
+      var compQ  = comp[ref].qty||0;
+      var disp   = Math.max(0,real-compQ);
+      var nPeds  = (comp[ref].pedidos||[]).length;
+      var dispCol= disp===0?RED:disp<compQ?AMBER:GREEN;
+      var bg     = i%2===0?'rgba(255,255,255,.02)':'rgba(255,255,255,.04)';
 
-      tbl.innerHTML += '<div style="display:grid;grid-template-columns:120px 1fr 90px 90px 90px 90px;padding:8px 12px;gap:8px;background:'+bg+';border-bottom:1px solid #f1f5f9;align-items:center;">'
-        +'<div style="font-family:monospace;font-size:10px;font-weight:600;color:'+NAVY2+';">'+ref+'</div>'
-        +'<div style="font-size:10px;color:#374151;">'+(prod?prod.d:ref)+'</div>'
-        +'<div style="text-align:center;font-size:11px;font-weight:700;color:#374151;">'+real+'</div>'
-        +'<div style="text-align:center;font-size:11px;font-weight:800;color:'+RED+';">'+comprometido+'</div>'
-        +'<div style="text-align:center;font-size:12px;font-weight:900;color:'+dispColor+';">'+disponible+'</div>'
-        +'<div style="text-align:center;font-size:10px;color:'+GRAY+';">'+numPedidos+' pedido'+(numPedidos!==1?'s':'')+'</div>'
-      +'</div>';
+      var row = document.createElement('div');
+      row.style.cssText = 'display:grid;grid-template-columns:130px 1fr 100px 110px 110px 100px;padding:10px 14px;gap:8px;background:'+bg+';border-top:1px solid rgba(255,255,255,.04);align-items:center;';
+      row.innerHTML = '<div style="font-family:monospace;font-size:10px;font-weight:700;color:#93c5fd;text-transform:uppercase;">'+ref+'</div>'
+        +'<div style="font-size:.68rem;color:'+DIM+';text-transform:uppercase;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;">'+(prod?prod.d:ref)+'</div>'
+        +'<div style="text-align:center;font-size:12px;font-weight:700;color:'+WHITE+';">'+real+'</div>'
+        +'<div style="text-align:center;font-size:12px;font-weight:800;color:'+RED+';">'+compQ+'</div>'
+        +'<div style="text-align:center;font-size:13px;font-weight:900;color:'+dispCol+';">'+disp+'</div>'
+        +'<div style="text-align:center;font-size:10px;color:'+GRAY+';">'+nPeds+' PED.</div>';
+      tbl.appendChild(row);
     });
 
     tabContent.appendChild(tbl);
   }
 
   renderTab('pedidos');
-  box.appendChild(body);
+  box.appendChild(tabContent);
   ov.appendChild(box);
   document.body.appendChild(ov);
   ov.addEventListener('click',function(e){ if(e.target===ov) ov.remove(); });
 };
+
+
+// ══════════════════════════════════════════════════════════════════
+// EDITOR DE PEDIDO — modificar refs, cantidades, precios antes de despachar
+// ══════════════════════════════════════════════════════════════════
+window.msAbrirEditorPedido = function(ped) {
+  var ex=document.getElementById('ms-editor-ov'); if(ex) ex.remove();
+
+  var NAVY='#0a0e2e', NAVY2='#1B1F6B', NAVY3='#252d7a';
+  var AMBER='#b45309', GREEN='#15803d', RED='#dc2626';
+  var WHITE='#fff', DIM='rgba(255,255,255,.55)', GRAY='rgba(255,255,255,.3)';
+
+  // Clonar datos del pedido para edición
+  var editData = JSON.parse(JSON.stringify(ped.items||[]));
+  var sucursales = ped.sucursales||[];
+
+  var ov = document.createElement('div');
+  ov.id = 'ms-editor-ov';
+  ov.style.cssText = 'position:fixed;inset:0;z-index:99600;background:rgba(0,0,0,.85);display:flex;align-items:flex-start;justify-content:center;padding:16px;overflow-y:auto;font-family:"Barlow Condensed",Arial,sans-serif;';
+
+  var box = document.createElement('div');
+  box.style.cssText = 'background:'+NAVY+';border-radius:14px;width:100%;max-width:1400px;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.6);';
+
+  // HEADER
+  box.innerHTML = '<div style="background:linear-gradient(135deg,'+NAVY+','+NAVY3+');padding:18px 28px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid rgba(255,255,255,.08);">'
+    +'<div style="display:flex;align-items:center;gap:14px;">'
+      +'<div style="width:42px;height:42px;background:rgba(99,102,241,.2);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:1.3rem;">✏️</div>'
+      +'<div>'
+        +'<div style="font-size:20px;font-weight:900;color:'+WHITE+';text-transform:uppercase;letter-spacing:1px;">EDITAR PEDIDO — '+ped.numP+'</div>'
+        +'<div style="font-size:9px;color:'+GRAY+';text-transform:uppercase;letter-spacing:.5px;margin-top:2px;">MODIFICAR REFERENCIAS · CANTIDADES · PRECIOS ANTES DE DESPACHAR</div>'
+      +'</div>'
+    +'</div>'
+    +'<button id="ms-ed-close" style="background:rgba(255,255,255,.08);border:none;color:'+WHITE+';width:34px;height:34px;border-radius:8px;cursor:pointer;font-size:1.1rem;">✕</button>'
+    +'</div>';
+
+  ov.appendChild(box);
+  document.body.appendChild(ov);
+  setTimeout(function(){ var b=document.getElementById('ms-ed-close'); if(b) b.onclick=function(){ov.remove();msAbrirMonitor();}; },30);
+
+  // TOOLBAR — buscar referencias
+  var toolbar = document.createElement('div');
+  toolbar.style.cssText = 'padding:14px 28px;background:rgba(0,0,0,.2);display:flex;align-items:center;gap:12px;border-bottom:1px solid rgba(255,255,255,.06);';
+  toolbar.innerHTML = '<div style="font-size:.65rem;font-weight:800;color:'+GRAY+';text-transform:uppercase;letter-spacing:.5px;">BUSCAR REFERENCIA:</div>'
+    +'<input id="ms-ed-buscar" placeholder="Escribe REF o descripción..." style="background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.12);border-radius:8px;color:'+WHITE+';padding:7px 12px;font-family:inherit;font-size:.75rem;width:260px;text-transform:uppercase;letter-spacing:.3px;" />'
+    +'<button id="ms-ed-agregar" style="background:rgba(21,128,61,.2);color:#86efac;border:1px solid rgba(21,128,61,.3);border-radius:8px;padding:7px 16px;cursor:pointer;font-weight:800;font-size:.7rem;text-transform:uppercase;font-family:inherit;">+ AGREGAR REF</button>'
+    +'<div style="flex:1;"></div>'
+    +'<div id="ms-ed-total" style="font-size:.75rem;font-weight:800;color:'+WHITE+';text-transform:uppercase;"></div>';
+  box.appendChild(toolbar);
+
+  // SUGERENCIAS de búsqueda
+  var suggest = document.createElement('div');
+  suggest.id = 'ms-ed-suggest';
+  suggest.style.cssText = 'position:absolute;z-index:99700;background:#1a1f4e;border:1px solid rgba(255,255,255,.15);border-radius:8px;max-height:220px;overflow-y:auto;min-width:400px;display:none;box-shadow:0 8px 24px rgba(0,0,0,.4);';
+  document.body.appendChild(suggest);
+
+  var buscarInput = document.getElementById('ms-ed-buscar');
+  buscarInput.addEventListener('input', function(){
+    var q = buscarInput.value.toLowerCase().trim();
+    if(q.length < 2){ suggest.style.display='none'; return; }
+    var rect = buscarInput.getBoundingClientRect();
+    suggest.style.top = (rect.bottom+4)+'px';
+    suggest.style.left = rect.left+'px';
+    var matches = PRODUCTS.filter(function(p){
+      return p.r.toLowerCase().includes(q)||p.d.toLowerCase().includes(q);
+    }).slice(0,12);
+    if(!matches.length){ suggest.style.display='none'; return; }
+    suggest.innerHTML='';
+    matches.forEach(function(p){
+      var it=document.createElement('div');
+      it.style.cssText='padding:8px 14px;cursor:pointer;font-size:.72rem;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid rgba(255,255,255,.06);';
+      it.innerHTML='<div><span style="color:#93c5fd;font-weight:700;text-transform:uppercase;">'+p.r+'</span><span style="color:rgba(255,255,255,.6);margin-left:10px;text-transform:uppercase;">'+p.d+'</span></div>'
+        +'<span style="color:rgba(255,255,255,.4);font-size:.65rem;">STOCK: '+( p.ex||0)+'</span>';
+      it.onmouseover=function(){it.style.background='rgba(255,255,255,.08)';};
+      it.onmouseout=function(){it.style.background='none';};
+      it.onclick=function(){
+        buscarInput.value=p.r.toUpperCase();
+        suggest.style.display='none';
+        // Agregar al editData si no existe
+        var existe=editData.find(function(d){return d.ref===p.r;});
+        if(!existe){
+          var newItem={ref:p.r,desc:p.d,sucursales:{}};
+          sucursales.forEach(function(s){ newItem.sucursales[s]={pide:0,desp:0}; });
+          editData.push(newItem);
+        }
+        renderTabla();
+        showToast('REFERENCIA '+p.r+' AGREGADA','success');
+        buscarInput.value='';
+      };
+      suggest.appendChild(it);
+    });
+    suggest.style.display='block';
+  });
+  document.addEventListener('click',function(e){ if(e.target!==buscarInput) suggest.style.display='none'; },true);
+
+  // TABLA EDITABLE
+  var tablaWrap = document.createElement('div');
+  tablaWrap.style.cssText = 'padding:20px 28px;overflow-x:auto;max-height:calc(100vh - 300px);overflow-y:auto;';
+  box.appendChild(tablaWrap);
+
+  function calcPrecio(ref, moneda){
+    var prod=PRODUCTS.find(function(p){return p.r===ref;});
+    if(!prod) return 0;
+    var m=moneda||(ped.moneda||'USD');
+    if(m==='BCV') return prod.bv||0;
+    if(m==='TF')  return prod.t||0;
+    return prod.u||0;
+  }
+
+  function calcTotales(){
+    var total=0;
+    editData.forEach(function(item){
+      var precio=item.precioOverride||calcPrecio(item.ref,ped.moneda);
+      var uds=Object.values(item.sucursales||{}).reduce(function(s,sd){return s+(parseInt(sd.desp)||0);},0);
+      total+=precio*uds;
+    });
+    var monedaLabel={USD:'USD $',BCV:'BCV $',TF:'TF $'}[ped.moneda||'USD']||'$';
+    var el=document.getElementById('ms-ed-total');
+    if(el) el.textContent='TOTAL: '+monedaLabel+' '+total.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+  }
+
+  function renderTabla(){
+    tablaWrap.innerHTML='';
+    if(!editData.length){
+      tablaWrap.innerHTML='<div style="text-align:center;padding:40px;color:'+GRAY+';text-transform:uppercase;font-size:.8rem;">SIN REFERENCIAS EN ESTE PEDIDO</div>';
+      calcTotales(); return;
+    }
+
+    var tbl=document.createElement('div');
+    tbl.style.cssText='border-radius:10px;overflow:hidden;border:1px solid rgba(255,255,255,.08);min-width:900px;';
+
+    // Calcular columnas: REF + DESC + PRECIO + STOCK + sucursales + TOTAL + DEL
+    var sucCols = sucursales.map(function(s){
+      var cl = (typeof getClientsDB==='function'?getClientsDB():[]).find(function(x){return x.id===((ped.clientesPorSucursal||{})[s]||'');});
+      return cl ? cl.nombre.toUpperCase().substring(0,12) : s.toUpperCase();
+    });
+
+    var cols = '110px 1fr 90px 70px '+sucursales.map(function(){return '90px';}).join(' ')+' 90px 40px';
+
+    // Cabecera
+    var thead=document.createElement('div');
+    thead.style.cssText='display:grid;grid-template-columns:'+cols+';background:'+NAVY2+';padding:9px 12px;gap:6px;position:sticky;top:0;';
+    var heads=['REF','DESCRIPCIÓN','PRECIO','STOCK'].concat(sucCols).concat(['TOTAL','']);
+    heads.forEach(function(h){
+      var th=document.createElement('div');
+      th.style.cssText='font-size:8px;font-weight:800;color:rgba(255,255,255,.5);text-transform:uppercase;letter-spacing:.6px;text-align:center;';
+      th.textContent=h; thead.appendChild(th);
+    });
+    tbl.appendChild(thead);
+
+    // Filas
+    editData.forEach(function(item,idx){
+      var prod=PRODUCTS.find(function(p){return p.r===item.ref;});
+      var stockReal=parseInt((typeof getInventory==='function'?getInventory()[item.ref]:0)||0);
+      var precio=item.precioOverride||calcPrecio(item.ref,ped.moneda);
+      var totalUds=Object.values(item.sucursales||{}).reduce(function(s,sd){return s+(parseInt(sd.desp)||0);},0);
+      var totalLinea=precio*totalUds;
+      var bg=idx%2===0?'rgba(255,255,255,.02)':'rgba(255,255,255,.04)';
+
+      var row=document.createElement('div');
+      row.style.cssText='display:grid;grid-template-columns:'+cols+';padding:7px 12px;gap:6px;background:'+bg+';border-top:1px solid rgba(255,255,255,.04);align-items:center;';
+
+      // REF
+      var refCell=document.createElement('div');
+      refCell.style.cssText='font-family:monospace;font-size:10px;font-weight:700;color:#93c5fd;text-transform:uppercase;';
+      refCell.textContent=item.ref;
+      row.appendChild(refCell);
+
+      // DESC
+      var descCell=document.createElement('div');
+      descCell.style.cssText='font-size:.65rem;color:'+DIM+';text-transform:uppercase;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;';
+      descCell.textContent=(prod?prod.d:item.desc||item.ref).toUpperCase();
+      row.appendChild(descCell);
+
+      // PRECIO editable
+      var precioCell=document.createElement('input');
+      precioCell.type='number'; precioCell.step='0.01'; precioCell.min='0';
+      precioCell.value=precio.toFixed(2);
+      precioCell.style.cssText='background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.12);border-radius:6px;color:'+WHITE+';padding:5px 7px;font-family:inherit;font-size:.72rem;width:100%;text-align:center;';
+      precioCell.oninput=(function(it){ return function(){
+        it.precioOverride=parseFloat(precioCell.value)||0;
+        // actualizar total línea
+        var newTotal=(it.precioOverride||calcPrecio(it.ref,ped.moneda))*Object.values(it.sucursales||{}).reduce(function(s,sd){return s+(parseInt(sd.desp)||0);},0);
+        var tCell=precioCell.parentElement.querySelector('.total-cell');
+        if(tCell) tCell.textContent='$'+newTotal.toFixed(2);
+        calcTotales();
+      }; })(item);
+      row.appendChild(precioCell);
+
+      // STOCK
+      var stCell=document.createElement('div');
+      stCell.style.cssText='font-size:.72rem;font-weight:700;color:'+(stockReal===0?RED:stockReal<10?AMBER:GREEN)+';text-align:center;';
+      stCell.textContent=stockReal;
+      row.appendChild(stCell);
+
+      // Cantidades por sucursal
+      sucursales.forEach(function(suc){
+        if(!item.sucursales[suc]) item.sucursales[suc]={pide:0,desp:0};
+        var qty=document.createElement('input');
+        qty.type='number'; qty.min='0';
+        qty.value=parseInt(item.sucursales[suc].desp)||0;
+        qty.style.cssText='background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.1);border-radius:6px;color:'+WHITE+';padding:5px 4px;font-family:inherit;font-size:.72rem;width:100%;text-align:center;';
+        qty.oninput=(function(it,s,q){ return function(){
+          var v=parseInt(q.value)||0;
+          it.sucursales[s].desp=v;
+          it.sucursales[s].pide=v;
+          // recalc total línea
+          var totalL=(it.precioOverride||calcPrecio(it.ref,ped.moneda))*Object.values(it.sucursales||{}).reduce(function(ss,sd){return ss+(parseInt(sd.desp)||0);},0);
+          var tCell=qty.parentElement.querySelector('.total-cell');
+          if(!tCell){ tCell=qty.parentElement.parentElement.querySelector('.total-cell'); }
+          // buscar en el row
+          var rowEl=qty.closest?qty.closest('[data-row]'):null;
+          calcTotales();
+        }; })(item,suc,qty);
+        row.appendChild(qty);
+      });
+
+      // TOTAL línea
+      var totalCell=document.createElement('div');
+      totalCell.className='total-cell';
+      totalCell.style.cssText='font-size:.7rem;font-weight:700;color:'+WHITE+';text-align:center;';
+      totalCell.textContent='$'+totalLinea.toFixed(2);
+      row.appendChild(totalCell);
+
+      // ELIMINAR
+      var delBtn=document.createElement('button');
+      delBtn.textContent='✕';
+      delBtn.style.cssText='background:rgba(220,38,38,.15);color:#f87171;border:1px solid rgba(220,38,38,.2);border-radius:6px;width:28px;height:28px;cursor:pointer;font-size:.8rem;font-weight:900;';
+      delBtn.onclick=(function(i){ return function(){
+        editData.splice(i,1);
+        renderTabla();
+      }; })(idx);
+      row.appendChild(delBtn);
+
+      tbl.appendChild(row);
+    });
+
+    tablaWrap.appendChild(tbl);
+    calcTotales();
+  }
+
+  renderTabla();
+
+  // FOOTER con botones de guardar
+  var footer=document.createElement('div');
+  footer.style.cssText='padding:16px 28px;background:rgba(0,0,0,.2);border-top:1px solid rgba(255,255,255,.07);display:flex;justify-content:space-between;align-items:center;gap:12px;';
+
+  var btnCancelar=document.createElement('button');
+  btnCancelar.innerHTML='✕ <span style="text-transform:uppercase;letter-spacing:.5px;">CANCELAR</span>';
+  btnCancelar.style.cssText='background:rgba(255,255,255,.06);color:'+DIM+';border:1px solid rgba(255,255,255,.1);border-radius:8px;padding:10px 20px;cursor:pointer;font-weight:800;font-size:.75rem;font-family:inherit;';
+  btnCancelar.onclick=function(){ov.remove();msAbrirMonitor();};
+  footer.appendChild(btnCancelar);
+
+  var rightBtns=document.createElement('div');
+  rightBtns.style.cssText='display:flex;gap:10px;';
+
+  var btnGuardar=document.createElement('button');
+  btnGuardar.innerHTML='💾 <span style="text-transform:uppercase;letter-spacing:.5px;">GUARDAR CAMBIOS</span>';
+  btnGuardar.style.cssText='background:rgba(30,64,175,.25);color:#93c5fd;border:1px solid rgba(30,64,175,.4);border-radius:8px;padding:10px 22px;cursor:pointer;font-weight:800;font-size:.75rem;font-family:inherit;';
+  btnGuardar.onclick=function(){
+    // Guardar cambios en farmers_ms_pedidos
+    var pedidos=typeof getMsPedidos==='function'?getMsPedidos():[];
+    var idx=pedidos.findIndex(function(p){return p.numP===ped.numP;});
+    if(idx>=0){
+      pedidos[idx].items=editData;
+      // Actualizar también MS.data si coincide
+      if(MS.numPedido===ped.numP){
+        MS.data=(MS.data||[]).map(function(d){
+          var edited=editData.find(function(e){return e.ref===d.ref;});
+          if(edited){
+            d.pedidos={}; d.dist={};
+            sucursales.forEach(function(s){
+              d.pedidos[s]=edited.sucursales[s]?edited.sucursales[s].pide:0;
+              d.dist[s]=edited.sucursales[s]?edited.sucursales[s].desp:0;
+            });
+            if(edited.precioOverride) d.precioOverride=edited.precioOverride;
+          }
+          return d;
+        });
+        // Agregar refs nuevas a MS.data
+        editData.forEach(function(it){
+          var existe=MS.data.find(function(d){return d.ref===it.ref;});
+          if(!existe){
+            var prod=PRODUCTS.find(function(p){return p.r===it.ref;});
+            var newD={ref:it.ref,desc:it.desc||it.ref,pedidos:{},dist:{}};
+            sucursales.forEach(function(s){
+              newD.pedidos[s]=it.sucursales[s]?it.sucursales[s].pide:0;
+              newD.dist[s]=it.sucursales[s]?it.sucursales[s].desp:0;
+            });
+            if(it.precioOverride) newD.precioOverride=it.precioOverride;
+            MS.data.push(newD);
+          }
+        });
+      }
+      if(typeof saveMsPedidos==='function') saveMsPedidos(pedidos);
+      showToast('PEDIDO '+ped.numP+' ACTUALIZADO','success');
+    }
+    ov.remove();
+    msAbrirMonitor();
+  };
+  rightBtns.appendChild(btnGuardar);
+
+  var btnDespachar=document.createElement('button');
+  btnDespachar.innerHTML='🚚 <span style="text-transform:uppercase;letter-spacing:.5px;">GUARDAR Y DESPACHAR</span>';
+  btnDespachar.style.cssText='background:linear-gradient(135deg,#b45309,#d97706);color:'+WHITE+';border:none;border-radius:8px;padding:10px 22px;cursor:pointer;font-weight:800;font-size:.75rem;font-family:inherit;';
+  btnDespachar.onclick=function(){
+    // Guardar primero
+    btnGuardar.click();
+    // Luego despachar
+    setTimeout(function(){
+      MS.numPedido=ped.numP; MS.fase='reservado';
+      MS.sucursales=sucursales;
+      MS.clientesPorSucursal=ped.clientesPorSucursal||{};
+      MS.moneda=ped.moneda||'USD';
+      MS.sucursalesEstado=ped.sucursalesEstado||{};
+      var vm=document.getElementById('ventas-modal'); if(vm) vm.style.display='none';
+      if(typeof selectedBrands!=='undefined'&&selectedBrands.size===0){
+        selectedBrands.add('EXCALIBUR');
+        if(!window.selectedMoneda) window.selectedMoneda=ped.moneda||'TF';
+      }
+      if(typeof goToStep==='function') goToStep(3);
+      setTimeout(function(){
+        var btn=document.getElementById('ms-btn-emitir');
+        if(btn){
+          btn.textContent='🚚 DESPACHAR #'+ped.numP;
+          btn.style.background='#d97706'; btn.disabled=false;
+          btn.onclick=function(){msAbrirOverlayReservado(ped.numP,sucursales,false);};
+        }
+      },400);
+      showToast('PEDIDO LISTO PARA DESPACHAR','success');
+    },200);
+  };
+  rightBtns.appendChild(btnDespachar);
+
+  footer.appendChild(rightBtns);
+  box.appendChild(footer);
+};
+
 
 
 // ── Documento de PEDIDO (≠ Factura) ──────────────────────────────
