@@ -3184,6 +3184,13 @@ function getFilteredProducts() {
     if(activeFilterBrand && p.br!==activeFilterBrand) return false;
     if(onlyStock && p.ex<=0) return false;
     if(q && !p.r.toLowerCase().includes(q) && !p.d.toLowerCase().includes(q)) return false;
+    // ── FILTRO: ocultar artículos sin disponible (comprometidos al 100%) ──
+    if(_catExclComp){
+      var _comp = typeof getComprometido==='function' ? getComprometido() : {};
+      var _compQ = _comp[p.r] ? (_comp[p.r].qty||0) : 0;
+      var _disp  = Math.max(0,(p.ex||0) - _compQ);
+      if(_disp <= 0) return false; // excluir si no hay nada disponible
+    }
     return true;
   }).sort(function(a,b){
     return (a.r||'').localeCompare(b.r||'', undefined, {numeric:true, sensitivity:'base'});
@@ -3211,12 +3218,15 @@ function renderTable() {
     const price = getPrice(p);
     const ord = orders[p.r]||'';
     const total = ord ? parseFloat(ord)*price : 0;
-    const sc = p.ex===0?'stock-zero':p.ex<20?'stock-low':'stock-good';
+    const _compMap2 = typeof getComprometido==='function' ? getComprometido() : {};
+    const _compQty2 = _compMap2[p.r] ? (_compMap2[p.r].qty||0) : 0;
+    const _dispStock = Math.max(0,(p.ex||0)-_compQty2); // disponible real
+    const sc = _dispStock===0?'stock-zero':_dispStock<20?'stock-low':'stock-good';
     const meta = BRAND_META[p.br];
     const logoCell = meta && meta.logo
       ? `<img class="brand-logo-mini" src="${meta.logo}" alt="${p.br}">`
       : `<span style="font-size:0.72rem;font-weight:700">${meta?meta.code:p.br}</span>`;
-    const existTotal = ord ? p.ex - parseFloat(ord) : p.ex;
+    const existTotal = ord ? _dispStock - parseFloat(ord) : _dispStock;
     const etClass = existTotal < 0 ? 'stock-zero' : existTotal < 20 ? 'stock-low' : 'stock-good';
     return `<tr class="${p.ex===0?'zero-stock':''}">
       <td><span class="ref-tag">${p.r}</span></td>
@@ -3231,7 +3241,7 @@ function renderTable() {
         min="0" value="${ord}" placeholder="0"
         oninput="setOrder('${p.r}',this.value,this)"></td>
       <td class="total-cell" id="tot-${p.r}">${total ? cur+' '+fmt(total) : ''}</td>
-      <td class="${sc} stock-cell" title="Stock real: ${p.ex}">${p.ex}</td>
+      <td class="${sc} stock-cell" title="Real: ${p.ex} | Comprometido: ${_compQty2} | Disponible: ${_dispStock}">${_dispStock}<span style="font-size:.6rem;color:#94a3b8;margin-left:3px;">${_compQty2>0?'(🔒'+_compQty2+')':''}</span></td>
       <td class="${etClass} stock-cell" id="et-${p.r}">${existTotal}</td>
       <td style="text-align:center;font-size:.75rem;" title="Comprometido en pedidos MS">${(()=>{
         var comp=typeof getComprometido==='function'?getComprometido():{};
@@ -9197,6 +9207,12 @@ function _doConfirmImport(ajustarStock) {
 
           <!-- ── Grupo B: Exportar ──────────────────────────────── -->
           <div style="display:flex;align-items:center;gap:4px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);border-radius:10px;padding:4px;">
+            <button id="cat-btn-excl-comp" onclick="catToggleExclComp()"
+              title="Ocultar artículos sin stock disponible (comprometidos al 100%)"
+              style="background:rgba(220,38,38,.15);border:none;color:#f87171;font-size:.7rem;font-weight:700;cursor:pointer;border-radius:7px;padding:5px 10px;letter-spacing:.4px;white-space:nowrap;display:flex;align-items:center;gap:5px;transition:all .2s;">
+              <span style="font-size:.8rem;">🔒</span> Sin disp.
+            </button>
+            <div style="width:1px;height:16px;background:rgba(255,255,255,.12);"></div>
             <button onclick="catDownloadPDF()" id="cat-pdf-btn"
               title="Descargar catálogo en PDF"
               style="background:rgba(34,197,94,.2);border:none;color:#86efac;font-size:.7rem;font-weight:700;cursor:pointer;border-radius:7px;padding:5px 10px;letter-spacing:.4px;white-space:nowrap;display:flex;align-items:center;gap:5px;">
@@ -9626,7 +9642,24 @@ var _refBrandFilter = 'ALL';
 var _catClientMode = false;
 var _refStockFilters = new Set(['ALL']); // selección exclusiva (uno a la vez)
 var _catShowQty   = true;  // mostrar número de existencia en tarjetas
-var _catShowOrden = false; // mostrar cantidad ORDENADA al proveedor en tarjetas
+var _catShowOrden = false;
+var _catExclComp  = false; // ocultar artículos sin disponible (comprometidos 100%)
+
+window.catToggleExclComp = function(){
+  _catExclComp = !_catExclComp;
+  var btn = document.getElementById('cat-btn-excl-comp');
+  if(btn){
+    btn.style.background = _catExclComp ? 'rgba(220,38,38,.35)' : 'rgba(220,38,38,.15)';
+    btn.style.color      = _catExclComp ? '#fff' : '#f87171';
+    btn.style.border     = _catExclComp ? '1px solid rgba(220,38,38,.6)' : 'none';
+    btn.title = _catExclComp ? 'Mostrando SOLO artículos con stock disponible' : 'Ocultar artículos sin stock disponible';
+    btn.querySelector('span').textContent = _catExclComp ? '🔓' : '🔒';
+  }
+  if(typeof doRefSearch==='function') doRefSearch();
+  else if(typeof renderTable==='function') renderTable();
+  if(typeof showToast==='function')
+    showToast(_catExclComp ? 'CATÁLOGO: Ocultando artículos sin disponible' : 'CATÁLOGO: Mostrando todos los artículos','info');
+}; // mostrar cantidad ORDENADA al proveedor en tarjetas
 var _catSelection = new Set(); // referencias seleccionadas para descarga parcial
 
 function openSearch() {
@@ -10356,9 +10389,21 @@ function _catDownloadPDFWithImgs(_prodImgsLocal) {
     pool = window._catSelectionOverride;
   } else {
     pool = (_refBrandFilter === 'ALL') ? PRODUCTS.slice() : PRODUCTS.filter(function(p){ return p.br === _refBrandFilter; });
+    // Filtro: ocultar artículos sin disponible (comprometidos al 100%)
+    if(_catExclComp){
+      var _compPool = typeof getComprometido==='function' ? getComprometido() : {};
+      pool = pool.filter(function(p){
+        var _stP  = parseInt((inv[p.r]!==undefined)?inv[p.r]:(p.ex||0))||0;
+        var _cQ   = _compPool[p.r]?(_compPool[p.r].qty||0):0;
+        return Math.max(0,_stP-_cQ) > 0;
+      });
+    }
     if (!_refStockFilters.has('ALL')) {
       pool = pool.filter(function(p){
-        var st = parseInt((inv[p.r] !== undefined) ? inv[p.r] : (p.ex || 0)) || 0;
+        var _stReal = parseInt((inv[p.r] !== undefined) ? inv[p.r] : (p.ex || 0)) || 0;
+      var _compInv = (typeof getComprometido==='function' ? getComprometido() : {})[p.r];
+      var _compInvQty = _compInv ? (_compInv.qty||0) : 0;
+      var st = _stReal; // Stock real en inventario (mostrar real + indicador comprometido)
         // OR multi-selección — mismos umbrales que catálogo visual
         if (_refStockFilters.has('IN')  && st > 10)            return true; // Con stock: >10
         if (_refStockFilters.has('LOW') && st > 0 && st <= 10) return true; // Bajo stock: 1-10
@@ -10413,11 +10458,14 @@ function _catDownloadPDFWithImgs(_prodImgsLocal) {
     var bColor = brandColors[br] || '#475569';
 
     var cards = prods.map(function(p) {
-      var stock      = parseInt((inv[p.r] !== undefined) ? inv[p.r] : (p.ex || 0)) || 0;
+      var _stockReal = parseInt((inv[p.r] !== undefined) ? inv[p.r] : (p.ex || 0)) || 0;
+      var _compCat   = (typeof getComprometido==='function' ? getComprometido() : {})[p.r];
+      var _compQtyCat= _compCat ? (_compCat.qty||0) : 0;
+      var stock      = Math.max(0, _stockReal - _compQtyCat); // DISPONIBLE = real - comprometido
       var exOrden    = (_ptDataPDF[p.r] && _ptDataPDF[p.r].exOrdenada) ? parseInt(_ptDataPDF[p.r].exOrdenada)||0 : 0;
-      var stockLabel = stock > 10 ? '✓ En stock' : stock > 0 ? '⚠ Bajo stock' : '✗ Agotado';
-      var stockColor = stock > 10 ? '#16a34a'    : stock > 0 ? '#d97706'      : '#dc2626';
-      var stockBg    = stock > 10 ? '#f0fdf4'    : stock > 0 ? '#fffbeb'      : '#fef2f2';
+      var stockLabel = stock > 10 ? '✓ Disponible' : stock > 0 ? '⚠ Bajo stock' : '✗ Sin disponible';
+      var stockColor = stock > 10 ? '#16a34a'      : stock > 0 ? '#d97706'      : '#dc2626';
+      var stockBg    = stock > 10 ? '#f0fdf4'      : stock > 0 ? '#fffbeb'      : '#fef2f2';
       var pUSD = p.u  ? '$ ' + p.u.toFixed(2)  : '—';
       var pBCV = p.bv ? '$ ' + p.bv.toFixed(2) : pUSD;
       var pTF  = p.t  ? '$ ' + p.t.toFixed(2)  : pUSD;
@@ -10761,7 +10809,10 @@ function doRefSearch() {
   // Filtro de stock — exclusivo, umbrales unificados con el resto del sistema
   if (!_refStockFilters.has('ALL')) {
     pool = pool.filter(function(p){
-      var st = parseInt((inv[p.r] !== undefined) ? inv[p.r] : (p.ex || 0)) || 0;
+      var _stReal = parseInt((inv[p.r] !== undefined) ? inv[p.r] : (p.ex || 0)) || 0;
+      var _compInv = (typeof getComprometido==='function' ? getComprometido() : {})[p.r];
+      var _compInvQty = _compInv ? (_compInv.qty||0) : 0;
+      var st = _stReal; // Stock real en inventario (mostrar real + indicador comprometido)
       if (_refStockFilters.has('IN')  && st > 10)            return true; // Con stock
       if (_refStockFilters.has('LOW') && st > 0 && st <= 10) return true; // Bajo stock
       if (_refStockFilters.has('OUT') && st === 0)           return true; // Agotados
@@ -11166,7 +11217,7 @@ function doRefSearch() {
                 '<th style="padding:8px 10px;text-align:left;">Referencia</th>' +
                 '<th style="padding:8px 10px;text-align:left;">Descripcion</th>' +
                 '<th style="padding:8px 10px;text-align:center;">Marca</th>' +
-                '<th style="padding:8px 10px;text-align:center;">Stock Actual</th>' +
+                '<th style="padding:8px 10px;text-align:center;">STOCK REAL / DISPONIBLE</th>' +
                 '<th style="padding:8px 10px;text-align:center;">Ajuste</th>' +
                 '<th style="padding:8px 10px;text-align:center;">Preview</th>' +
                 '<th style="padding:8px 10px;text-align:center;">Accion</th>' +
@@ -11290,14 +11341,23 @@ function renderInvTable() {
   if(!tbody) return;
   tbody.innerHTML=filtered.map(function(p,i){
     var ex=inv[p.r]!==undefined?inv[p.r]:(p.ex||0);
+    var _compInvRow=(typeof getComprometido==='function'?getComprometido():{})[p.r];
+    var _compInvQty=_compInvRow?(_compInvRow.qty||0):0;
+    var _dispInv=Math.max(0,ex-_compInvQty);
     var bg=i%2===0?'#fff':'#f8f9ff';
-    var stC=ex>0?'#16a34a':'#dc2626', stBg=ex>0?'#dcfce7':'#fee2e2';
+    var stC=_dispInv>0?'#16a34a':'#dc2626', stBg=_dispInv>0?'#dcfce7':'#fee2e2';
     var safe=p.r.replace(/[^a-zA-Z0-9]/g,'_');
     var row='<tr style="background:'+bg+';border-bottom:1px solid #f0f2f8;">';
     row+='<td style="padding:7px 10px;font-weight:700;color:#1a2050;">'+p.r+'</td>';
     row+='<td style="padding:7px 10px;color:#5a6080;">'+(p.d||'')+'</td>';
     row+='<td style="padding:7px 10px;text-align:center;"><span style="background:#eef0f8;color:#1a2050;padding:2px 8px;border-radius:10px;font-size:.7rem;font-weight:700;">'+(p.br||'')+'</span></td>';
-    row+='<td style="padding:7px 10px;text-align:center;"><span style="background:'+stBg+';color:'+stC+';padding:3px 10px;border-radius:12px;font-weight:700;">'+ex+'</span></td>';
+    row+='<td style="padding:7px 10px;text-align:center;">'
+      +'<div style="display:flex;flex-direction:column;align-items:center;gap:2px;">'
+        +'<span style="background:'+stBg+';color:'+stC+';padding:3px 10px;border-radius:12px;font-weight:700;">'+_dispInv+'</span>'
+        +(_compInvQty>0?'<span style="font-size:.6rem;color:#b45309;background:#fffbeb;padding:1px 6px;border-radius:8px;font-weight:700;">🔒 '+_compInvQty+' comprometido</span>':'')
+        +'<span style="font-size:.58rem;color:#94a3b8;">Real: '+ex+'</span>'
+      +'</div>'
+    +'</td>';
     row+='<td style="padding:7px 10px;text-align:center;"><input type="text" class="inv-adj" data-ref="'+p.r+'" placeholder="+/- o =valor" style="width:95px;padding:5px 8px;border:1.5px solid #e0e4f0;border-radius:7px;text-align:center;font-size:.8rem;outline:none;" oninput="invPreview(this)" onkeydown="invEnterKey(event,this)"></td>';
     row+='<td id="inv-pre-'+safe+'" style="padding:7px 10px;text-align:center;font-weight:700;color:#8892b0;">—</td>';
     row+='<td style="padding:7px 10px;text-align:center;"><button onclick="invApplyRowBtn(this)" style="background:#1a2050;color:white;border:none;border-radius:6px;padding:4px 12px;cursor:pointer;font-size:.72rem;font-weight:700;">&#10003;</button></td>';
@@ -18645,6 +18705,32 @@ window.msAbrirEditorPedido = function(ped) {
 // Se genera al RESERVAR — antes del despacho y la facturación
 // Es un compromiso de entrega, no una venta
 window.msGenerarDocPedido = function(numP, sel) {
+  // ── Cargar datos del pedido desde farmers_ms_pedidos si MS.data está vacío ──
+  var _pedN = numP || MS.numPedido;
+  if((!MS.data || !MS.data.length) && _pedN) {
+    var _peds = typeof getMsPedidos==='function' ? getMsPedidos() : [];
+    var _ped  = _peds.find(function(p){ return p.numP===_pedN; });
+    if(_ped) {
+      if(!sel || !sel.length) sel = _ped.sucursales||[];
+      if(!MS.clientesPorSucursal || !Object.keys(MS.clientesPorSucursal).length)
+        MS.clientesPorSucursal = _ped.clientesPorSucursal||{};
+      if(!MS.moneda) MS.moneda = _ped.moneda||'USD';
+      if(!MS.fechaEmision) MS.fechaEmision = _ped.fecha;
+      MS.sucursales = _ped.sucursales||[];
+      // Reconstruir MS.data desde items del pedido
+      MS.data = (_ped.items||[]).map(function(item){
+        var row = {ref:item.ref, desc:item.desc||item.ref, pedidos:{}, dist:{}, estado:'completo'};
+        (sel||[]).forEach(function(s){
+          var sd = (item.sucursales||{})[s]||{pide:0,desp:0};
+          row.pedidos[s] = parseInt(sd.pide)||0;
+          row.dist[s]    = parseInt(sd.desp)||0;
+        });
+        if(item.precioOverride) row.precioOverride = item.precioOverride;
+        return row;
+      });
+    }
+  }
+
   var clDB   = typeof getClientsDB==='function' ? getClientsDB() : [];
   var moneda = MS.moneda || 'USD';
   var monedaLabel = {USD:'USD $', BCV:'BCV $', TF:'TF $'}[moneda] || moneda;
@@ -19131,6 +19217,59 @@ window.msAbrirOverlayConfirmado = function(numP, sel, hayPendientes){
 };
 
 // ── Módulo Etiquetas de Despacho ─────────────────
+
+// ── Wrapper: abrir etiquetas desde cualquier módulo sin necesitar Paso 3 ──
+window.msAbrirFormEtiquetas = function() {
+  // Buscar el pedido reservado en farmers_ms_pedidos
+  var pedidos = typeof getMsPedidos==='function' ? getMsPedidos() : [];
+  
+  // Si ya tenemos numPedido en MS, usar ese; si no, tomar el último reservado
+  var numP = MS.numPedido;
+  var ped  = null;
+  
+  if(numP) {
+    ped = pedidos.find(function(p){ return p.numP===numP; });
+  }
+  if(!ped) {
+    ped = pedidos.find(function(p){ return p.estado==='RESERVADO'||p.estado==='PARCIAL'; });
+  }
+  
+  if(!ped) {
+    showToast('SIN PEDIDO RESERVADO PARA ETIQUETAR','warn');
+    return;
+  }
+
+  // Cargar todos los datos necesarios en MS
+  MS.numPedido          = ped.numP;
+  MS.fechaEmision       = ped.fecha || new Date().toLocaleDateString('es-VE',{day:'2-digit',month:'2-digit',year:'numeric'});
+  MS.sucursales         = ped.sucursales || [];
+  MS.clientesPorSucursal= ped.clientesPorSucursal || {};
+  MS.moneda             = ped.moneda || 'USD';
+  MS.sucursalesEstado   = ped.sucursalesEstado || {};
+  MS.fase               = 'reservado';
+
+  // Reconstruir MS.data desde los items del pedido si no está cargado
+  if(!MS.data || !MS.data.length) {
+    MS.data = (ped.items||[]).map(function(item){
+      var prod = PRODUCTS.find(function(p){ return p.r===item.ref; });
+      var row  = { ref:item.ref, desc:item.desc||(prod?prod.d:item.ref), pedidos:{}, dist:{} };
+      (ped.sucursales||[]).forEach(function(s){
+        var sd = (item.sucursales||{})[s]||{pide:0,desp:0};
+        row.pedidos[s] = sd.pide||0;
+        row.dist[s]    = sd.desp||0;
+      });
+      return row;
+    });
+  }
+
+  // Abrir el formulario de etiquetas
+  if(typeof msAbrirEtiquetas==='function') {
+    msAbrirEtiquetas();
+  } else {
+    showToast('FUNCIÓN DE ETIQUETAS NO DISPONIBLE','error');
+  }
+};
+
 window.msAbrirEtiquetas = function() {
   var ex=document.getElementById('ms-etiquetas-overlay');if(ex)ex.remove();
 
