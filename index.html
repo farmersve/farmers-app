@@ -3092,6 +3092,62 @@ function goToStep(n) {
 }
 
 function setupStep3() {
+  // ── Restaurar pedido reservado si existe ──────────────────
+  // Busca el último pedido en estado reservado y restaura el botón
+  (function msRestaurarPedidoReservado(){
+    try {
+      // Buscar en farmers_ms_pedidos
+      var pedidos = typeof getMsPedidos==='function' ? getMsPedidos() : [];
+      var ultimo = pedidos.find(function(p){ return p.estado==='RESERVADO' || p.estado==='PARCIAL'; });
+      if(!ultimo) {
+        // Fallback: buscar en localStorage claves ms_reserva_*
+        for(var i=0; i<localStorage.length; i++){
+          var key = localStorage.key(i);
+          if(key && key.startsWith('ms_reserva_')){
+            var numP = key.replace('ms_reserva_','');
+            ultimo = { numP: numP, estado: 'RESERVADO' };
+            break;
+          }
+        }
+      }
+      if(!ultimo) return;
+
+      var numP = ultimo.numP || ultimo.numPedido;
+      var btn = document.getElementById('ms-btn-emitir');
+      if(!btn) return;
+
+      // Restaurar estado visual del botón
+      MS.numPedido = numP;
+      MS.fase = 'reservado';
+      btn.textContent = '🚚 Despachar #' + numP;
+      btn.style.background = '#d97706';
+      btn.style.cursor = 'pointer';
+      btn.disabled = false;
+      btn.onclick = function(){
+        // Obtener sucursales del pedido guardado
+        var reservaRaw = localStorage.getItem('ms_reserva_' + numP);
+        var sucursales = MS.sucursales && MS.sucursales.length ? MS.sucursales : [];
+        if(reservaRaw) {
+          try {
+            var reserva = JSON.parse(reservaRaw);
+            if(reserva.sucursales && reserva.sucursales.length) sucursales = reserva.sucursales;
+            if(reserva.clientesPorSucursal) MS.clientesPorSucursal = reserva.clientesPorSucursal;
+          } catch(e){}
+        }
+        // También intentar desde farmers_ms_pedidos
+        var peds = typeof getMsPedidos==='function' ? getMsPedidos() : [];
+        var ped = peds.find(function(p){ return p.numP===numP; });
+        if(ped) {
+          if(ped.sucursales && ped.sucursales.length) sucursales = ped.sucursales;
+          if(ped.clientesPorSucursal) MS.clientesPorSucursal = ped.clientesPorSucursal;
+          if(ped.moneda) MS.moneda = ped.moneda;
+        }
+        msAbrirOverlayReservado(numP, sucursales, false);
+      };
+      showToast('Pedido ' + numP + ' en estado RESERVADO — pendiente de despacho', 'info');
+    } catch(e){ console.warn('restaurar pedido:', e); }
+  })();
+
   const bf = document.getElementById('brand-filters');
   bf.innerHTML = '';
   const allBtn = document.createElement('button');
@@ -18090,6 +18146,36 @@ window.msAbrirMonitor = function() {
           }
         };})(ped.numP);
         btnRow.appendChild(btnCanc);
+
+        // Botón Retomar — carga el pedido en el Paso 3 para despachar/etiquetar
+        var btnRetomar = document.createElement('button');
+        btnRetomar.textContent = '🚚 Retomar pedido';
+        btnRetomar.style.cssText = 'background:#fffbeb;color:'+AMBER+';border:1px solid #fbbf24;border-radius:6px;padding:6px 14px;font-size:.7rem;font-weight:700;cursor:pointer;';
+        btnRetomar.onclick = (function(pedido){ return function(){
+          ov.remove();
+          // Cerrar ventas si está abierto
+          var vm = document.getElementById('ventas-modal');
+          if(vm) vm.style.display='none';
+          // Cargar el pedido en MS
+          MS.numPedido = pedido.numP;
+          MS.fase = 'reservado';
+          MS.sucursales = pedido.sucursales || [];
+          MS.clientesPorSucursal = pedido.clientesPorSucursal || {};
+          MS.moneda = pedido.moneda || 'USD';
+          MS.sucursalesEstado = pedido.sucursalesEstado || {};
+          // Ir al paso 3
+          if(typeof goToStep==='function'){
+            if(typeof selectedBrands!=='undefined' && selectedBrands.size===0){
+              // Activar EXCALIBUR por defecto si no hay marcas
+              if(typeof selectedBrands!=='undefined') selectedBrands.add('EXCALIBUR');
+              if(typeof selectedMoneda==='undefined'||!selectedMoneda) window.selectedMoneda=pedido.moneda||'TF';
+            }
+            goToStep(3);
+          } else if(typeof homeGoTo==='function') homeGoTo('ms');
+          showToast('Pedido '+pedido.numP+' cargado — listo para despachar','success');
+        };})(ped);
+        btnRow.appendChild(btnRetomar);
+
         card.appendChild(btnRow);
       }
 
@@ -27893,13 +27979,13 @@ window.cxcMostrarReconciliacion = cxcMostrarReconciliacion;
         </div>
       </div>
 
-      <div class="vt-card vt-card-soon">
-        <div class="vt-card-bar" style="background:linear-gradient(90deg,#64748b,#475569);"></div>
+      <div class="vt-card" onclick="vtOpenModule(vtAbrirMonitorPedidos)">
+        <div class="vt-card-bar" style="background:linear-gradient(90deg,#b45309,#d97706);"></div>
         <div class="vt-card-inner">
-          <div class="vt-card-icon" style="background:rgba(100,116,139,.1);color:#64748b;">📦</div>
+          <div class="vt-card-icon" style="background:rgba(180,83,9,.12);color:#d97706;">📦</div>
           <div class="vt-card-name">Pedidos</div>
           <div class="vt-card-desc">Gestión de pedidos pendientes y en proceso.</div>
-          <div class="vt-badge" style="background:rgba(100,116,139,.12);color:#64748b;"><span class="vt-dot" style="background:#64748b;"></span>PRÓXIMAMENTE</div>
+          <div class="vt-badge" style="background:rgba(180,83,9,.12);color:#d97706;"><span class="vt-dot" style="background:#d97706;"></span>ACTIVO</div>
         </div>
       </div>
 
@@ -28046,11 +28132,208 @@ function closeVentas(){
 }
 
 // Abre un sub-módulo desde VENTAS y registra el origen
+// ── PEDIDOS — Panel dentro del hub de Ventas ─────────────────
+function vtAbrirMonitorPedidos() {
+  var body = document.getElementById('ventas-body');
+  if(!body) return;
+
+  var AMBER='#b45309', GREEN='#15803d', RED='#dc2626', GRAY='#64748b', NAVY='#0f1547';
+  var pedidos = typeof getMsPedidos==='function' ? getMsPedidos() : [];
+  var comp    = typeof getComprometido==='function' ? getComprometido() : {};
+  var clDB    = typeof getClientsDB==='function' ? getClientsDB() : [];
+
+  var pedRes  = pedidos.filter(function(p){ return p.estado==='RESERVADO'||p.estado==='PARCIAL'; });
+  var pedDesp = pedidos.filter(function(p){ return p.estado==='DESPACHADO'; });
+  var totalComp = Object.values(comp).reduce(function(s,c){ return s+(c.qty||0); },0);
+
+  body.innerHTML='';
+
+  // Header
+  var hdr=document.createElement('div');
+  hdr.style.cssText='display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;';
+  hdr.innerHTML='<div>'
+    +'<div style="font-family:Barlow Condensed,sans-serif;font-size:26px;font-weight:900;color:#fff;text-transform:uppercase;">📦 Pedidos</div>'
+    +'<div style="font-size:10px;color:rgba(255,255,255,.4);margin-top:2px;">Pendientes · En proceso · Historial</div>'
+    +'</div>';
+  var btnNuevo=document.createElement('button');
+  btnNuevo.textContent='➕ Nuevo Pedido';
+  btnNuevo.style.cssText='background:linear-gradient(135deg,#1B1F6B,#2d35a0);color:#fff;border:none;border-radius:8px;padding:10px 18px;cursor:pointer;font-weight:700;font-size:.75rem;';
+  btnNuevo.onclick=function(){ document.getElementById('ventas-modal').style.display='none'; if(typeof goHome==='function') goHome(); };
+  hdr.appendChild(btnNuevo);
+  body.appendChild(hdr);
+
+  // KPIs
+  var kRow=document.createElement('div');
+  kRow.style.cssText='display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:20px;';
+  [{ico:'⏳',label:'Reservados',val:pedRes.length,col:AMBER},
+   {ico:'✅',label:'Despachados',val:pedDesp.length,col:GREEN},
+   {ico:'🔒',label:'Uds comprometidas',val:totalComp,col:RED},
+   {ico:'📋',label:'Total pedidos',val:pedidos.length,col:'#818cf8'}
+  ].forEach(function(k){
+    var d=document.createElement('div');
+    d.style.cssText='background:rgba(255,255,255,.04);border-radius:10px;padding:14px;border-left:3px solid '+k.col+';';
+    d.innerHTML='<div style="font-size:1.2rem;margin-bottom:4px;">'+k.ico+'</div>'
+      +'<div style="font-size:22px;font-weight:800;color:'+k.col+';">'+k.val+'</div>'
+      +'<div style="font-size:9px;color:rgba(255,255,255,.35);text-transform:uppercase;letter-spacing:.5px;">'+k.label+'</div>';
+    kRow.appendChild(d);
+  });
+  body.appendChild(kRow);
+
+  // ── PENDIENTES ─────────────────────────────────────────────
+  if(pedRes.length){
+    var t1=document.createElement('div');
+    t1.style.cssText='font-size:.62rem;font-weight:800;text-transform:uppercase;letter-spacing:1px;color:'+AMBER+';margin-bottom:10px;';
+    t1.textContent='⏳ Pendientes de despacho ('+pedRes.length+')';
+    body.appendChild(t1);
+
+    pedRes.forEach(function(ped){
+      var card=document.createElement('div');
+      card.style.cssText='background:rgba(255,255,255,.04);border-radius:10px;padding:16px;margin-bottom:10px;border:1px solid rgba(180,83,9,.25);';
+
+      var totalUds=(ped.items||[]).reduce(function(s,item){
+        return s+Object.values(item.sucursales||{}).reduce(function(ss,sd){return ss+(sd.desp||0);},0);
+      },0);
+
+      card.innerHTML='<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">'
+        +'<div style="display:flex;align-items:center;gap:10px;">'
+          +'<span style="font-family:Barlow Condensed,sans-serif;font-size:20px;font-weight:900;color:#fff;">'+ped.numP+'</span>'
+          +'<span style="background:'+AMBER+';color:#fff;font-size:9px;font-weight:800;padding:3px 10px;border-radius:20px;">'+ped.estado+'</span>'
+        +'</div>'
+        +'<div style="text-align:right;font-size:10px;color:rgba(255,255,255,.4);">'
+          +'<div>'+ped.fecha+'</div>'
+          +'<div>'+((ped.items||[]).length)+' refs · '+totalUds+' uds</div>'
+        +'</div>'
+        +'</div>';
+
+      // Sucursales chips
+      var chips='<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px;">';
+      (ped.sucursales||[]).forEach(function(suc){
+        var est=(ped.sucursalesEstado||{})[suc]||'PENDIENTE';
+        var cl=clDB.find(function(x){return x.id===((ped.clientesPorSucursal||{})[suc]||'');});
+        var nombre=cl?cl.nombre.substring(0,18):suc;
+        var col=est==='DESPACHADO'?GREEN:est==='RESERVADO'?AMBER:GRAY;
+        chips+='<div style="background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.08);border-radius:6px;padding:3px 9px;font-size:.65rem;">'
+          +'<span style="color:#fff;font-weight:600;">'+nombre+'</span>'
+          +'<span style="color:'+col+';margin-left:5px;font-size:.6rem;font-weight:700;">'+est+'</span>'
+          +'</div>';
+      });
+      chips+='</div>';
+      card.innerHTML+=chips;
+
+      // Botones
+      var btnRow=document.createElement('div');
+      btnRow.style.cssText='display:flex;gap:8px;flex-wrap:wrap;';
+
+      var btnD=document.createElement('button');
+      btnD.textContent='🚚 Despachar';
+      btnD.style.cssText='background:linear-gradient(135deg,'+AMBER+',#d97706);color:#fff;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:700;font-size:.73rem;';
+      btnD.onclick=(function(p){return function(){
+        document.getElementById('ventas-modal').style.display='none';
+        MS.numPedido=p.numP; MS.fase='reservado';
+        if(p.clientesPorSucursal) MS.clientesPorSucursal=p.clientesPorSucursal;
+        if(p.moneda) MS.moneda=p.moneda;
+        if(p.sucursales&&p.sucursales.length) MS.sucursales=p.sucursales;
+        if(typeof goToStep==='function'&&typeof selectedBrands!=='undefined'&&selectedBrands.size>0){
+          goToStep(3);
+          setTimeout(function(){
+            var btn=document.getElementById('ms-btn-emitir');
+            if(btn){btn.textContent='🚚 Despachar #'+p.numP;btn.style.background='#d97706';btn.disabled=false;
+              btn.onclick=function(){msAbrirOverlayReservado(p.numP,p.sucursales||[],false);};}
+          },300);
+        } else {
+          if(typeof goHome==='function') goHome();
+          showToast('Entra al Paso 3 — el pedido '+p.numP+' ya está cargado','info');
+        }
+      };})(ped);
+      btnRow.appendChild(btnD);
+
+      var btnE=document.createElement('button');
+      btnE.textContent='🏷 Etiquetas';
+      btnE.style.cssText='background:rgba(124,58,237,.15);color:#a78bfa;border:1px solid rgba(124,58,237,.25);border-radius:8px;padding:8px 12px;cursor:pointer;font-weight:700;font-size:.73rem;';
+      btnE.onclick=(function(p){return function(){
+        document.getElementById('ventas-modal').style.display='none';
+        MS.numPedido=p.numP;
+        if(p.clientesPorSucursal) MS.clientesPorSucursal=p.clientesPorSucursal;
+        if(p.sucursales) MS.sucursales=p.sucursales;
+        if(typeof msAbrirFormEtiquetas==='function') msAbrirFormEtiquetas();
+      };})(ped);
+      btnRow.appendChild(btnE);
+
+      var btnPDF=document.createElement('button');
+      btnPDF.textContent='📋 Doc. Pedido';
+      btnPDF.style.cssText='background:rgba(30,27,107,.3);color:#818cf8;border:1px solid rgba(99,102,241,.2);border-radius:8px;padding:8px 12px;cursor:pointer;font-weight:700;font-size:.73rem;';
+      btnPDF.onclick=(function(p){return function(){
+        MS.numPedido=p.numP;
+        if(p.sucursales) MS.sucursales=p.sucursales;
+        if(p.clientesPorSucursal) MS.clientesPorSucursal=p.clientesPorSucursal;
+        if(typeof msGenerarDocPedido==='function') msGenerarDocPedido(p.numP, p.sucursales||[]);
+      };})(ped);
+      btnRow.appendChild(btnPDF);
+
+      var btnC=document.createElement('button');
+      btnC.textContent='❌ Cancelar';
+      btnC.style.cssText='background:rgba(220,38,38,.08);color:#f87171;border:1px solid rgba(220,38,38,.15);border-radius:8px;padding:8px 12px;cursor:pointer;font-weight:700;font-size:.73rem;';
+      btnC.onclick=(function(numP){return function(){
+        if(confirm('¿Cancelar pedido '+numP+'?\nEl inventario comprometido se liberará.')){
+          if(typeof msCancelarPedido==='function') msCancelarPedido(numP);
+          showToast('Pedido '+numP+' cancelado — inventario liberado','success');
+          vtAbrirMonitorPedidos();
+        }
+      };})(ped.numP);
+      btnRow.appendChild(btnC);
+
+      card.appendChild(btnRow);
+      body.appendChild(card);
+    });
+  }
+
+  // ── DESPACHADOS ────────────────────────────────────────────
+  if(pedDesp.length){
+    var t2=document.createElement('div');
+    t2.style.cssText='font-size:.62rem;font-weight:800;text-transform:uppercase;letter-spacing:1px;color:'+GREEN+';margin:18px 0 10px;';
+    t2.textContent='✅ Despachados ('+pedDesp.length+')';
+    body.appendChild(t2);
+    pedDesp.slice(0,8).forEach(function(ped){
+      var uds=(ped.items||[]).reduce(function(s,i){return s+Object.values(i.sucursales||{}).reduce(function(ss,sd){return ss+(sd.desp||0);},0);},0);
+      var row=document.createElement('div');
+      row.style.cssText='background:rgba(255,255,255,.02);border-radius:8px;padding:10px 14px;margin-bottom:6px;border:1px solid rgba(21,128,61,.15);display:flex;justify-content:space-between;align-items:center;';
+      row.innerHTML='<div style="display:flex;align-items:center;gap:10px;">'
+        +'<span style="font-family:Barlow Condensed,sans-serif;font-size:16px;font-weight:900;color:rgba(255,255,255,.6);">'+ped.numP+'</span>'
+        +'<span style="background:rgba(21,128,61,.2);color:#86efac;font-size:9px;font-weight:800;padding:2px 8px;border-radius:20px;">DESPACHADO</span>'
+        +'</div>'
+        +'<div style="font-size:10px;color:rgba(255,255,255,.3);">'+(ped.fechaDespacho||ped.fecha)+' · '+uds+' uds</div>';
+      body.appendChild(row);
+    });
+  }
+
+  // Sin pedidos
+  if(!pedidos.length){
+    var emp=document.createElement('div');
+    emp.style.cssText='text-align:center;padding:60px;color:rgba(255,255,255,.3);font-size:.85rem;line-height:2;';
+    emp.innerHTML='📦<br>Sin pedidos registrados.<br>'
+      +'<button id="vt-btn-nuevo-pedido" style="background:linear-gradient(135deg,#1B1F6B,#2d35a0);color:#fff;border:none;border-radius:8px;padding:10px 20px;cursor:pointer;font-weight:700;margin-top:12px;font-size:.75rem;">➕ Crear primer pedido</button>'
+    body.appendChild(emp);
+  }
+}
+window.vtAbrirMonitorPedidos = vtAbrirMonitorPedidos;
+
 function vtOpenModule(fn){
   document.getElementById('ventas-modal').style.display = 'none';
   _vtOrigin = true;
   fn();
 }
+
+// ── Monitor de Pedidos desde hub Ventas ──────────────────────
+function vtAbrirMonitorPedidos(){
+  // Si msAbrirMonitor existe, abrirlo directamente
+  if(typeof msAbrirMonitor === 'function'){
+    msAbrirMonitor();
+    return;
+  }
+  // Fallback: ir al módulo MS con el monitor
+  if(typeof homeGoTo === 'function') homeGoTo('ms');
+}
+window.vtAbrirMonitorPedidos = vtAbrirMonitorPedidos;
 
 // Llamado por closeXxx() de sub-módulos para volver a VENTAS
 function vtGoBack(){
