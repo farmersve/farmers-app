@@ -16717,7 +16717,78 @@ function msParsearExcel(file, input) {
       var wb  = XLSX.read(arr, {type:'array'});
       var ws  = wb.Sheets[wb.SheetNames[0]];
       var rows = XLSX.utils.sheet_to_json(ws, {header:1, defval:null});
-      // Tomar máximo 130 filas para no saturar el contexto
+
+      // ── Detección formato QuickSell ───────────────
+      // Indicadores: fila 1 = "Order ID", fila 5 = "Customer Name",
+      // encabezado en fila 14 con "Product SKU" y "Quantity"
+      var esQuickSell = false;
+      var r0 = (rows[0]||[]).map(function(c){return String(c||'').trim();});
+      var r13 = (rows[13]||[]).map(function(c){return String(c||'').toLowerCase().trim();});
+      if(r0[0]==='Order ID' && r13.indexOf('quantity')>=0) esQuickSell = true;
+
+      if(esQuickSell) {
+        msSetProgress(40, 'Formato QuickSell detectado — leyendo directamente...');
+        // Extraer cliente desde fila 5
+        var clienteNombre = String((rows[4]||[])[1]||'').trim();
+        var clienteRIF    = String((rows[11]||[])[1]||'').trim(); // fila 12 = RIF
+        // Columnas en fila 14: B=Product Name, C=Product SKU, D=Price, I=Quantity
+        var headerRow = rows[13]||[];
+        var colNombre = 1, colSKU = 2, colPrecio = 3, colQty = 8;
+        // Buscar columnas por nombre por si cambian
+        headerRow.forEach(function(h,i){
+          var hn = String(h||'').toLowerCase().trim();
+          if(hn==='product name') colNombre=i;
+          if(hn==='product sku'||hn==='sku') colSKU=i;
+          if(hn==='product price'||hn==='price') colPrecio=i;
+          if(hn==='quantity') colQty=i;
+        });
+        var productos = [];
+        for(var ri=14; ri<rows.length; ri++) {
+          var row = rows[ri]||[];
+          var rawNombre = String(row[colNombre]||'').trim();
+          if(!rawNombre) continue;
+          // REF: extraer la parte antes del primer " - "
+          var ref = rawNombre.split(' - ')[0].trim();
+          if(ref.length < 3) continue;
+          // Descripción: primera línea del nombre (ignorar \r\n del QuickSell)
+          var desc = rawNombre.replace(/_x000D_/g,'').split('\n')[0].trim();
+          // Precio
+          var precio = parseFloat(row[colPrecio])||0;
+          // Cantidad
+          var qtyRaw = String(row[colQty]||'').replace(/\[Quantity:\s*/i,'').replace(/\]/,'').trim();
+          var qty = parseInt(qtyRaw)||0;
+          if(qty<=0) continue;
+          productos.push({r:ref, d:desc, s:0, precio:precio, q:[qty]});
+        }
+        if(!productos.length) throw new Error('No se encontraron productos en el archivo QuickSell.');
+        // Nombre de sucursal = nombre del cliente
+        var nomSuc = (MS._clienteUnica && MS._clienteUnica.nombre) || clienteNombre || 'CLIENTE';
+        MS.sucursales = [nomSuc];
+        MS.data = productos.map(function(p){
+          var prod = (typeof PRODUCTS!=='undefined'?PRODUCTS:[]).find(function(x){return x.r===p.r;});
+          var stock = (typeof getDisponible==='function') ? getDisponible(p.r) : (prod?prod.ex||0:0);
+          var pedidosObj={}, distObj={};
+          pedidosObj[nomSuc]=p.q[0];
+          distObj[nomSuc]=Math.min(stock,p.q[0]);
+          return {
+            ref:p.r, desc:p.d||p.r,
+            stock:stock, pedidos:pedidosObj, dist:distObj,
+            estado: stock>=p.q[0]?'completo':stock>0?'parcial':'sinstock',
+            enSistema: !!(prod && prod.r),
+            precioUSD: p.precio
+          };
+        });
+        MS.moneda = 'USD';
+        MS._modoUnica = true;
+        if(!MS._clienteUnica && clienteNombre) {
+          MS._clienteUnica = {nombre:clienteNombre, rif:clienteRIF};
+        }
+        msSetProgress(100, 'Listo');
+        msRenderResultados();
+        showToast('✅ QuickSell procesado — '+productos.length+' productos · '+nomSuc, 'ok');
+        return;
+      }
+      // ── Fin QuickSell — continuar flujo normal ────
       var muestra = rows.slice(0, 130);
       msSetProgress(35, 'Enviando datos a la IA para análisis...');
       msAnalizarConIA(muestra, null, input);
@@ -16958,7 +17029,16 @@ async function msAnalizarConIA(rows, pdfBase64, input) {
       var dataRows = rows.slice(estructura.headerRow + 1).filter(function(r){
         return r && r[estructura.refCol] && String(r[estructura.refCol]).trim().length >= 3;
       });
-      if(!dataRows.length) throw new Error('No se encontraron filas de productos.');
+      if(!dataRows.length) {
+        // Diagnóstico: mostrar qué detectó la IA
+        var headerRow = rows[estructura.headerRow] || [];
+        var muestra3 = rows.slice(estructura.headerRow+1, estructura.headerRow+4)
+          .map(function(r){ return (r||[]).slice(0,8).join(' | '); }).join('\n');
+        throw new Error('No se encontraron filas de productos.\n'
+          + 'Estructura detectada: refCol='+estructura.refCol+', headerRow='+estructura.headerRow+'\n'
+          + 'Encabezados: '+headerRow.slice(0,8).join(' | ')+'\n'
+          + 'Primeras filas:\n'+muestra3);
+      }
 
       // Lectura DIRECTA — una sola pasada, sin lotes, sin IA leyendo números
       msSetProgress(70, 'Leyendo ' + dataRows.length + ' productos directamente del Excel...');
@@ -20415,6 +20495,8 @@ window.msAbrirEtiquetas = function() {
     var estSuc = ((MS.sucursalesEstado && MS.sucursalesEstado[suc]) || 'PENDIENTE').toUpperCase();
     var esEmbalado = estSuc==='EMBALADO';
     var esDesp     = estSuc==='DESPACHADO';
+    var badgeEtiq = document.createElement('div');
+    badgeEtiq.id = 'badge-estado-etiq-'+idKey;
     badgeEtiq.textContent = esDesp ? '🚚 DESPACHADO' : esEmbalado ? '📦 EMBALADO' : '⏳ PENDIENTE';
     badgeEtiq.style.cssText = 'font-size:.62rem;font-weight:800;letter-spacing:.5px;border-radius:5px;padding:3px 8px;border:1.5px solid;white-space:nowrap;'
       + (esDesp ? 'background:#dbeafe;color:#1e40af;border-color:#93c5fd;'
