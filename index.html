@@ -18651,10 +18651,10 @@ window.msAbrirMonitor = function() {
 
   // ── KPI ROW ────────────────────────────────────────────────────
   var kpis = [
-    {ico:'🔒', val:totalComp,           lbl:'Uds. comprometidas',   col:RED,    bg:REDBG},
-    {ico:'📋', val:Object.keys(comp).length, lbl:'Referencias activas', col:AMBER,  bg:AMBERBG},
-    {ico:'📦', val:totalEmbaladas,       lbl:'Sucursales embaladas', col:'#059669', bg:'rgba(5,150,105,.12)'},
-    {ico:'⏳', val:totalPendSucs,        lbl:'Sucs. pendientes',     col:AMBER,  bg:AMBERBG},
+    {ico:'🔒', val:totalComp,                lbl:'Uds. comprometidas', col:RED,   bg:REDBG},
+    {ico:'📋', val:Object.keys(comp).length, lbl:'Referencias activas', col:AMBER, bg:AMBERBG},
+    {ico:'⏳', val:pedRes.length,             lbl:'Pedidos pendientes',  col:AMBER, bg:AMBERBG},
+    {ico:'✅', val:pedDesp.length,            lbl:'Despachados',         col:GREEN, bg:GREENBG},
   ];
   var kRow = document.createElement('div');
   kRow.style.cssText = 'display:grid;grid-template-columns:repeat(4,1fr);border-bottom:1px solid '+BORDER+';';
@@ -20530,49 +20530,35 @@ window.msAbrirEtiquetas = function() {
     cajasInput.onchange=function(){_guardarEtiq();};
     ocInput.onchange=function(){_guardarEtiq();};
 
-    box.appendChild(card);
-  });
-
-  // ── Checkboxes + botón individual por tarjeta ────
-  // Los añadimos a cada card ya construida
-  var _checkboxes = {};
-  var allCards = box.querySelectorAll('div[data-suc]');
-  // (la asignación de data-suc la hacemos abajo al construir)
-  // Re-recorremos MS.sucursales para agregar los controles
-  MS.sucursales.forEach(function(suc) {
-    var idKey = suc.replace(/\W/g,'_');
-    var card  = document.getElementById('etiq-card-'+idKey);
-    if(!card) return;
-
-    // Checkbox en el header de la tarjeta
+    // ── Checkbox + botón "Solo esta" (dentro del loop, antes de appendChild) ──
     var chkWrap = document.createElement('div');
     chkWrap.style.cssText = 'display:flex;align-items:center;justify-content:space-between;'
       +'background:#f8fafc;border-radius:8px;padding:6px 10px;margin-top:10px;border:1px solid #e2e8f0;';
 
     var chkLabel = document.createElement('label');
-    chkLabel.style.cssText = 'display:flex;align-items:center;gap:7px;cursor:pointer;font-size:.75rem;font-weight:700;color:#475569;';
+    chkLabel.style.cssText = 'display:flex;align-items:center;gap:7px;cursor:pointer;font-size:.75rem;font-weight:700;color:#475569;user-select:none;';
     var chk = document.createElement('input');
     chk.type = 'checkbox';
     chk.id   = 'chk-etiq-'+idKey;
-    chk.checked = true;
-    chk.style.cssText = 'width:15px;height:15px;accent-color:#7c3aed;cursor:pointer;';
-    _checkboxes[suc] = chk;
-    chk.onchange = function() {
-      card.style.opacity = chk.checked ? '1' : '.45';
-      _actualizarContadorSel();
-    };
+    chk.checked = !esDesp;
+    chk.style.cssText = 'width:15px;height:15px;accent-color:#7c3aed;cursor:pointer;flex-shrink:0;';
+    if(esDesp){ chk.disabled=true; card.style.opacity='.5'; }
+    (function(ck, cd){
+      ck.onchange = function(){ cd.style.opacity = ck.checked ? '1' : '.45'; _actualizarContadorSel(); };
+    })(chk, card);
     chkLabel.appendChild(chk);
     chkLabel.appendChild(document.createTextNode('Incluir en impresión'));
     chkWrap.appendChild(chkLabel);
 
-    // Botón imprimir solo esta
     var btnSolo = document.createElement('button');
-    btnSolo.textContent = '🖨 Solo esta';
+    btnSolo.innerHTML = '🖨 Solo esta';
     btnSolo.style.cssText = 'background:#ede9fe;color:#7c3aed;border:1.5px solid #c4b5fd;'
       +'border-radius:6px;padding:4px 12px;cursor:pointer;font-weight:700;font-size:.72rem;';
-    btnSolo.onclick = function() { msImprimirSucursalUnica(suc); };
+    (function(s){ btnSolo.onclick = function(){ msGenerarEtiquetasPDF([s]); }; })(suc);
     chkWrap.appendChild(btnSolo);
     card.appendChild(chkWrap);
+
+    box.appendChild(card);
   });
 
   // Contador de seleccionadas
@@ -20584,8 +20570,7 @@ window.msAbrirEtiquetas = function() {
   function _actualizarContadorSel() {
     var total = MS.sucursales.length;
     var sel   = MS.sucursales.filter(function(s){
-      var idK = s.replace(/\W/g,'_');
-      var c   = document.getElementById('chk-etiq-'+idK);
+      var c = document.getElementById('chk-etiq-'+s.replace(/\W/g,'_'));
       return c && c.checked;
     }).length;
     var el = document.getElementById('etiq-sel-info');
