@@ -16979,16 +16979,22 @@ async function msAnalizarConIA(rows, pdfBase64, input) {
 
     if(pdfBase64) {
       // ── PDF: una sola llamada con documento ──
+      var clienteUnicaNombre = (MS._clienteUnica && MS._clienteUnica.nombre) || '';
       var prompt =
-        'Este es un PDF de pedido multi-sucursal de Inversiones Oriente (cliente mayorista venezolano).\n' +
-        'El documento contiene una tabla con filas de productos y columnas por sucursal con cantidades pedidas.\n' +
-        'Cada fila tiene: código/referencia del producto, descripción, y cantidades por sucursal.\n' +
-        'Las sucursales pueden llamarse: HIPER, MXM, MAXI, MERCAMAX, ORIENTE, o similares.\n' +
-        'Los códigos de producto son como: EXC001, GEN045, LUM011, MAT030, MAXK006, etc.\n\n' +
-        'TAREA: Extrae TODOS los productos con sus cantidades por sucursal.\n' +
-        'RESPONDE ÚNICAMENTE con JSON válido, sin texto adicional, sin markdown, sin explicaciones:\n' +
-        '{"sucursales":["SUCURSAL1","SUCURSAL2"],"productos":[{"ref":"EXC001","desc":"DESCRIPCION","stock":0,"pedidos":{"SUCURSAL1":15,"SUCURSAL2":4}}]}\n' +
-        'IMPORTANTE: Incluye TODOS los productos aunque algunas cantidades sean 0. No omitas ninguna fila.';
+        'Analiza este PDF de pedido de productos y extrae TODOS los productos.\n' +
+        'Puede ser uno de estos dos formatos:\n\n' +
+        'FORMATO A — Multi-sucursal (tabla con columnas por sucursal):\n' +
+        'Cada fila tiene: referencia del producto, descripción, cantidades por sucursal.\n' +
+        'Las sucursales pueden llamarse: HIPER, MXM, MAXI, MERCAMAX, ORIENTE, etc.\n\n' +
+        'FORMATO B — Factura única QuickSell (una sola tienda, lista de productos):\n' +
+        'Encabezado con Order ID, Customer Name, Total. Tabla con: No., Product (imagen), Item (REF - CODIGO / descripción / SKU), Qty, Price, Total.\n' +
+        'La referencia está al inicio del campo Item, antes del " - " (ej: EXC132 de "EXC132 - A151-KF1904-5BLS").\n' +
+        (clienteUnicaNombre ? 'Cliente: '+clienteUnicaNombre+'\n' : '') +
+        '\nCódigos de producto son como: EXC001, GEN045, LUM011, MAT030, MAXK006, etc.\n\n' +
+        'TAREA: Extrae TODOS los productos. Si es Formato B, usa "'+( clienteUnicaNombre || 'CLIENTE')+'" como única sucursal.\n' +
+        'RESPONDE ÚNICAMENTE con JSON válido, sin texto adicional, sin markdown:\n' +
+        '{"sucursales":["SUC1"],"productos":[{"ref":"EXC001","desc":"DESCRIPCION","stock":0,"precio_usd":1.80,"pedidos":{"SUC1":12}}]}\n' +
+        'IMPORTANTE: Incluye precio_usd por unidad si aparece. Extrae TODOS los productos sin omitir ninguno.';
       var messages = [{
         role: 'user',
         content: [
@@ -17025,10 +17031,22 @@ async function msAnalizarConIA(rows, pdfBase64, input) {
         throw new Error('La IA no reconoció productos. Respuesta IA: ' + textoPDF.substring(0,300));
       }
       sucursales = parsedPDF.sucursales || [];
-      // Normalizar formato PDF al mismo que Excel
+      // Si es factura única (1 sucursal) y tenemos cliente, usar nombre del cliente
+      if(sucursales.length === 1 && MS._clienteUnica && MS._clienteUnica.nombre) {
+        var nomOriginal = sucursales[0];
+        sucursales = [MS._clienteUnica.nombre];
+        parsedPDF.productos.forEach(function(p){
+          if(p.pedidos && p.pedidos[nomOriginal] !== undefined) {
+            p.pedidos[MS._clienteUnica.nombre] = p.pedidos[nomOriginal];
+            delete p.pedidos[nomOriginal];
+          }
+        });
+        MS._modoUnica = true;
+      }
+      // Normalizar formato PDF al mismo que Excel — incluir precio_usd
       parsedPDF.productos.forEach(function(p){
         var q = sucursales.map(function(s){ return parseInt((p.pedidos||{})[s])||0; });
-        todosProductos.push({ r:p.ref, d:p.desc||'', s:parseInt(p.stock)||0, q:q });
+        todosProductos.push({ r:p.ref, d:p.desc||'', s:parseInt(p.stock)||0, q:q, precioUSD:parseFloat(p.precio_usd)||0 });
       });
 
     } else {
