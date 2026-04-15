@@ -18299,35 +18299,36 @@ window.msAbrirMonitor = function() {
     (ped.sucursales||[]).forEach(function(suc){
       var est=(ped.sucursalesEstado||{})[suc]||'PENDIENTE';
       var cl=clDB.find(function(x){return x.id===((ped.clientesPorSucursal||{})[suc]||'');});
-      var nombre=cl?cl.nombre.toUpperCase():suc.toUpperCase();
-      var rif=cl?cl.rif||'':'';
-      var oc=(etiqData[suc]&&etiqData[suc].oc)||'';
-      var nom=(etiqData[suc]&&etiqData[suc].nom)||'';
-      // displayNom: prioridad al nombre editado manualmente; si no, nombre directorio + (suc)
-      var displayNom = nom
-        ? nom+' ('+suc+')'
-        : (nombre && nombre!==suc.toUpperCase())
-          ? nombre+' ('+suc+')'
-          : suc.toUpperCase();
-      var col=est==='DESPACHADO'?GREEN:est==='RESERVADO'?AMBER:GRAY;
-      var bg=est==='DESPACHADO'?GREENBG:est==='RESERVADO'?AMBERBG:'rgba(255,255,255,.03)';
+      // ── Datos del chip ──
+      var nombre  = cl ? cl.nombre.toUpperCase() : suc.toUpperCase(); // Razón social oficial
+      var rif     = cl ? (cl.rif||'') : '';
+      var oc      = (etiqData[suc]&&etiqData[suc].oc)||'';
+      var nomSuc  = (etiqData[suc]&&etiqData[suc].nom)||suc.toUpperCase(); // Nombre editable etiqueta
+      var col     = est==='DESPACHADO'?GREEN:est==='RESERVADO'?AMBER:GRAY;
+      var bg      = est==='DESPACHADO'?GREENBG:est==='RESERVADO'?AMBERBG:'rgba(255,255,255,.03)';
 
-      // Contar uds de esta sucursal
-      var uds=(ped.items||[]).reduce(function(s,i){return s+(parseInt((i.sucursales||{})[suc]&&(i.sucursales[suc].desp||0))||0);},0);
-      var refs=(ped.items||[]).filter(function(i){return ((i.sucursales||{})[suc]&&(i.sucursales[suc].desp||0))>0;}).length;
+      var uds  = (ped.items||[]).reduce(function(s,i){return s+(parseInt((i.sucursales||{})[suc]&&(i.sucursales[suc].desp||0))||0);},0);
+      var refs = (ped.items||[]).filter(function(i){return ((i.sucursales||{})[suc]&&(i.sucursales[suc].desp||0))>0;}).length;
 
       var chip=document.createElement('div');
       chip.style.cssText='background:'+bg+';border:1px solid '+col+'33;border-radius:8px;padding:8px 11px;cursor:pointer;transition:all .15s;';
-      chip.title='Clic para editar OC y nombre';
+      chip.title='Clic para editar nombre de etiqueta y OC';
+
+      // Estructura: Razón Social (directorio) en grande + Nombre sucursal editable abajo
       chip.innerHTML=
-        '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:3px;">'+
-          '<div data-chip-name style="font-size:.66rem;font-weight:900;color:'+WHITE+';line-height:1.2;">'+displayNom+'</div>'+
-          '<div style="font-size:.55rem;font-weight:800;color:'+col+';text-transform:uppercase;border:1px solid '+col+'44;border-radius:3px;padding:1px 5px;flex-shrink:0;margin-left:4px;">'+est+'</div>'+
+        // Fila 1: Razón Social oficial + badge ESTADO
+        '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:4px;margin-bottom:2px;">'+
+          '<div style="font-size:.68rem;font-weight:900;color:'+WHITE+';line-height:1.2;flex:1;">'+nombre+'</div>'+
+          '<div style="font-size:.52rem;font-weight:800;color:'+col+';text-transform:uppercase;border:1px solid '+col+'44;border-radius:3px;padding:1px 5px;flex-shrink:0;">'+est+'</div>'+
         '</div>'+
-        (rif?'<div style="font-size:.52rem;color:'+GRAY+';">'+rif+'</div>':'')+
-        '<div style="display:flex;gap:6px;margin-top:4px;flex-wrap:wrap;align-items:center;">'+
-          '<span style="font-size:.52rem;color:'+DIM+';">'+refs+' refs · '+uds+' uds</span>'+
-          '<span data-chip-oc style="font-size:.52rem;font-weight:800;color:'+(oc?TEAL:GRAY)+';'+(oc?'background:'+TEALBG+';border-radius:3px;padding:1px 5px;':'font-style:italic;')+'">'+(oc?'OC: '+oc:'sin OC')+'</span>'+
+        // Fila 2: Nombre editable de la sucursal (en color, más pequeño)
+        '<div data-chip-name style="font-size:.58rem;font-weight:700;color:'+AMBER+';margin-bottom:3px;">'+nomSuc+'</div>'+
+        // Fila 3: RIF
+        (rif?'<div style="font-size:.5rem;color:'+GRAY+';margin-bottom:2px;">'+rif+'</div>':'')+
+        // Fila 4: refs · uds · OC
+        '<div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center;">'+
+          '<span style="font-size:.5rem;color:'+DIM+';">'+refs+' refs · '+uds+' uds</span>'+
+          '<span data-chip-oc style="font-size:.5rem;font-weight:800;color:'+(oc?TEAL:'rgba(255,255,255,.2)')+';'+(oc?'background:'+TEALBG+';border-radius:3px;padding:1px 5px;':'')+'">'+(oc?'OC: '+oc:'')+'</span>'+
         '</div>';
 
       // Click → editar OC y nombre para esta sucursal
@@ -18336,7 +18337,7 @@ window.msAbrirMonitor = function() {
 
       chip.onclick=(function(s,edat,pedN,chipRef){ return function(){
         var curOC=(edat[s]&&edat[s].oc)||'';
-        var curNom=(edat[s]&&edat[s].nom)||s;
+        var curNom=(edat[s]&&edat[s].nom)||s.toUpperCase(); // nombre editable, sin razón social
         // Modal inline profesional
         var exM=document.getElementById('ms-chip-edit-modal'); if(exM) exM.remove();
         var modal=document.createElement('div');
@@ -18386,7 +18387,7 @@ window.msAbrirMonitor = function() {
           // Actualizar chip inline SIN recargar todo el monitor
           var nd=chipRef.querySelector('[data-chip-name]');
           var od=chipRef.querySelector('[data-chip-oc]');
-          if(nd) nd.textContent=nuevoNom+' ('+s+')';
+          if(nd) nd.textContent=nuevoNom; // nombre editable puro sin paréntesis
           if(od){ od.textContent=nuevoOC?'OC: '+nuevoOC:'sin OC'; od.style.color=nuevoOC?'#5eead4':'rgba(255,255,255,.35)'; od.style.background=nuevoOC?'rgba(20,184,166,.12)':'transparent'; od.style.padding=nuevoOC?'1px 5px':'0'; od.style.borderRadius='3px'; }
           showToast('✅ '+nuevoNom+(nuevoOC?' · OC: '+nuevoOC:''),'success');
         }
