@@ -18613,13 +18613,13 @@ window.msAbrirMonitor = function() {
   var totalEmbaladas = pedRes.reduce(function(sum, p) {
     return sum + (p.sucursales||[]).filter(function(s){
       var e=(p.sucursalesEstado||{})[s]||'';
-      return e==='EMBALADO'||e==='embalado';
+      return e==='EMBALADO';
     }).length;
   }, 0);
   var totalPendSucs = pedRes.reduce(function(sum, p) {
     return sum + (p.sucursales||[]).filter(function(s){
       var e=(p.sucursalesEstado||{})[s]||'';
-      return e!=='EMBALADO'&&e!=='embalado'&&e!=='DESPACHADO'&&e!=='despachado';
+      return e!=='EMBALADO'&&e!=='DESPACHADO';
     }).length;
   }, 0);
 
@@ -18822,9 +18822,10 @@ window.msAbrirMonitor = function() {
       var nombre  = cl ? cl.nombre.toUpperCase() : suc.toUpperCase(); // Razón social oficial
       var rif     = cl ? (cl.rif||'') : '';
       var oc      = (etiqData[suc]&&etiqData[suc].oc)||'';
-      var nomSuc  = (etiqData[suc]&&etiqData[suc].nom)||suc.toUpperCase(); // Nombre editable etiqueta
-      var col = est==='DESPACHADO'?GREEN:est==='RESERVADO'?AMBER:est==='EMBALADO'?'#059669':GRAY;
-      var bg  = est==='DESPACHADO'?GREENBG:est==='RESERVADO'?AMBERBG:est==='EMBALADO'?'rgba(5,150,105,.12)':'rgba(255,255,255,.03)';
+      var nomSuc  = (etiqData[suc]&&etiqData[suc].nom)||suc.toUpperCase();
+      var _estUp  = (est||'').toUpperCase();
+      var col = _estUp==='DESPACHADO'?GREEN:_estUp==='RESERVADO'?AMBER:_estUp==='EMBALADO'?'#059669':GRAY;
+      var bg  = _estUp==='DESPACHADO'?GREENBG:_estUp==='RESERVADO'?AMBERBG:_estUp==='EMBALADO'?'rgba(5,150,105,.12)':'rgba(255,255,255,.03)';
 
       var uds  = (ped.items||[]).reduce(function(s,i){return s+(parseInt((i.sucursales||{})[suc]&&(i.sucursales[suc].desp||0))||0);},0);
       var refs = (ped.items||[]).filter(function(i){return ((i.sucursales||{})[suc]&&(i.sucursales[suc].desp||0))>0;}).length;
@@ -20393,11 +20394,9 @@ window.msAbrirEtiquetas = function() {
     statsDiv.appendChild(statsText);
 
     // Badge de estado
-    var estSuc = (MS.sucursalesEstado && MS.sucursalesEstado[suc]) || 'pendiente';
-    var badgeEtiq = document.createElement('div');
-    badgeEtiq.id = 'badge-estado-etiq-'+idKey;
-    var esEmbalado = estSuc==='embalado'||estSuc==='EMBALADO';
-    var esDesp     = estSuc==='despachado'||estSuc==='DESPACHADO';
+    var estSuc = ((MS.sucursalesEstado && MS.sucursalesEstado[suc]) || 'PENDIENTE').toUpperCase();
+    var esEmbalado = estSuc==='EMBALADO';
+    var esDesp     = estSuc==='DESPACHADO';
     badgeEtiq.textContent = esDesp ? '🚚 DESPACHADO' : esEmbalado ? '📦 EMBALADO' : '⏳ PENDIENTE';
     badgeEtiq.style.cssText = 'font-size:.62rem;font-weight:800;letter-spacing:.5px;border-radius:5px;padding:3px 8px;border:1.5px solid;white-space:nowrap;'
       + (esDesp ? 'background:#dbeafe;color:#1e40af;border-color:#93c5fd;'
@@ -20659,10 +20658,20 @@ window.msGenerarEtiquetasPDF = function(sucsFiltradas) {
 
   // Recolectar cajas por sucursal
   var etiquetas=[];
+  // Pre-cargar etiqData desde localStorage para fallback cuando el formulario no está abierto
+  var _etiqFallback={};
+  try{ _etiqFallback=JSON.parse(localStorage.getItem('ms_etiq_'+numP)||'{}'); }catch(e){}
+  // Complementar con etiqData del pedido guardado en farmers_ms_pedidos
+  if(typeof getMsPedidos==='function'){
+    var _pedFB=(getMsPedidos()||[]).find(function(p){return p.numP===numP;});
+    if(_pedFB&&_pedFB.etiqData) Object.assign(_etiqFallback,_pedFB.etiqData);
+  }
+
   sucsAImprimir.forEach(function(suc) {
-    var idKey=suc.replace(/\s+/g,'_');
+    var idKey=suc.replace(/\W/g,'_'); // UNA sola regla consistente con \W
     var inp=document.getElementById('cajas-'+idKey);
-    var numCajas=inp?parseInt(inp.value)||1:1;
+    var _fb=_etiqFallback[suc]||{};
+    var numCajas=inp?parseInt(inp.value)||1:(parseInt(_fb.cajas)||1);
     var totalRef=0,totalUnd=0,totalVol=0,totalPeso=0;
     var ptD={};
     try{var ptRaw=localStorage.getItem('farmers_pt_data');if(ptRaw){var ptArr=JSON.parse(ptRaw);ptArr.forEach(function(x){ptD[x.r]=x;});}}catch(e){}
@@ -20673,23 +20682,20 @@ window.msGenerarEtiquetasPDF = function(sucsFiltradas) {
       var med=(ptD[p.ref]&&ptD[p.ref].medidas)?ptD[p.ref].medidas:{};
       var vd=parseFloat(med.volDirecto)||0;
       var l=parseFloat(med.largo)||0,a=parseFloat(med.ancho)||0,h=parseFloat(med.alto)||0;
-      // largo/ancho/alto y peso están en medidas POR UNIDAD individual
       var volUnd=vd>0?vd:(l&&a&&h?(l*a*h/28316.85):0);
       var pesoUnd=parseFloat(med.peso)||0;
-      // Multiplicar por unidades despachadas a esta sucursal
       totalVol+=volUnd*d;
       totalPeso+=pesoUnd*d;
     });
-    // Leer valores del formulario (editados manualmente si aplica)
-    var idKey=suc.replace(/\W/g,'_');
+    // Leer inputs del formulario — con fallback completo a localStorage/pedido guardado
     var rifInput  =document.getElementById('rif-'+idKey);
     var rsInput   =document.getElementById('rs-'+idKey);
     var ocInput   =document.getElementById('oc-'+idKey);
     var nomInput2 =document.getElementById('nom-'+idKey);
-    var rifCliente  =(rifInput&&rifInput.value.trim())||'S/RIF';
-    var razonSocial =((rsInput&&rsInput.value.trim())||suc).toUpperCase();
-    var ordenCompra =(ocInput&&ocInput.value.trim())||'';
-    var nomSucursal =(nomInput2&&nomInput2.value.trim())||suc;
+    var rifCliente  =(rifInput&&rifInput.value.trim())||_fb.rif||'S/RIF';
+    var razonSocial =((rsInput&&rsInput.value.trim())||_fb.rs||suc).toUpperCase();
+    var ordenCompra =(ocInput&&ocInput.value.trim())||_fb.oc||'';
+    var nomSucursal =(nomInput2&&nomInput2.value.trim())||_fb.nom||suc;
     // Dirección desde CLIENTS como fallback
     var clienteData=(typeof CLIENTS!=='undefined'?CLIENTS:[]).find(function(cl){
       var n=(cl.nombre||'').toUpperCase().replace(/[^A-Z0-9]/g,' ').trim();
@@ -20707,12 +20713,10 @@ window.msGenerarEtiquetasPDF = function(sucsFiltradas) {
   // ── Marcar sucursales impresas como EMBALADO ────
   if(!MS.sucursalesEstado) MS.sucursalesEstado = {};
   sucsAImprimir.forEach(function(s) {
-    // Solo avanzar si no está ya despachada
-    if(MS.sucursalesEstado[s] !== 'despachado' && MS.sucursalesEstado[s] !== 'DESPACHADO') {
-      MS.sucursalesEstado[s] = 'embalado';
+    if(MS.sucursalesEstado[s] !== 'DESPACHADO' && MS.sucursalesEstado[s] !== 'despachado') {
+      MS.sucursalesEstado[s] = 'EMBALADO';
     }
   });
-  // Persistir en farmers_ms_pedidos
   if(typeof getMsPedidos==='function' && MS.numPedido) {
     var _peds = getMsPedidos();
     var _pidx = _peds.findIndex(function(p){ return p.numP===MS.numPedido; });
@@ -20760,9 +20764,8 @@ window.msGenerarEtiquetasPDF = function(sucsFiltradas) {
   // Construir HTML — 8 etiquetas por página (2 cols x 4 filas)
   var estilos='<style>'
     +'@page{size:A4 portrait;margin:8mm;}'
-    +'*{box-sizing:border-box;margin:0;padding:0;text-transform:uppercase;}'
+    +'*{box-sizing:border-box;margin:0;padding:0;text-transform:uppercase;-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important;}'
     +'body{font-family:Arial,sans-serif;background:white;}'
-    +'print-color-adjust:exact;-webkit-print-color-adjust:exact;'
     +'.grid{display:grid;grid-template-columns:1fr 1fr;gap:7mm;}'
     +'.etq{border:2.5px solid #1a2050;border-radius:7px;padding:7px;height:auto;display:flex;flex-direction:column;overflow:hidden;page-break-inside:avoid;}'
     +'.etq-hdr{background:#1a2050;color:white;padding:5px 10px;border-radius:4px;display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;flex-shrink:0;}'
@@ -20807,7 +20810,7 @@ window.msGenerarEtiquetasPDF = function(sucsFiltradas) {
         +'</div>'
         +'<div class="etq-body">'
         +'<div class="etq-info">'
-        +'<div class="etq-empresa">REMITENTE: FARMERS C.A. · RIF J-XXXXXXXXX</div>'
+        +'<div class="etq-empresa">REMITENTE: FARMERS C.A. · RIF J-401008631</div>'
         +'<div class="etq-dest-lbl">DESTINATARIO:</div>'
         +'<div class="etq-suc">'+e.nom.toUpperCase()+'</div>'
         +'<div class="etq-rs">'+e.rs+'</div>'
