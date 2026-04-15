@@ -16719,22 +16719,35 @@ function msParsearExcel(file, input) {
       var rows = XLSX.utils.sheet_to_json(ws, {header:1, defval:null});
 
       // ── Detección formato QuickSell ───────────────
-      // Indicadores: fila 1 = "Order ID", fila 5 = "Customer Name",
-      // encabezado en fila 14 con "Product SKU" y "Quantity"
+      // Busca "Order ID" en la primera columna Y "Quantity" en cualquier fila de encabezado
       var esQuickSell = false;
+      var qsHeaderRowIdx = -1;
       var r0 = (rows[0]||[]).map(function(c){return String(c||'').trim();});
-      var r13 = (rows[13]||[]).map(function(c){return String(c||'').toLowerCase().trim();});
-      if(r0[0]==='Order ID' && r13.indexOf('quantity')>=0) esQuickSell = true;
+      if(r0[0]==='Order ID') {
+        // Buscar fila de encabezado con "Product Name" y "Quantity"
+        for(var qi=0; qi<Math.min(rows.length,20); qi++) {
+          var qrow = (rows[qi]||[]).map(function(c){return String(c||'').toLowerCase().trim();});
+          if(qrow.indexOf('quantity')>=0 && qrow.indexOf('product name')>=0) {
+            qsHeaderRowIdx = qi;
+            esQuickSell = true;
+            break;
+          }
+        }
+      }
 
       if(esQuickSell) {
         msSetProgress(40, 'Formato QuickSell detectado — leyendo directamente...');
-        // Extraer cliente desde fila 5
-        var clienteNombre = String((rows[4]||[])[1]||'').trim();
-        var clienteRIF    = String((rows[11]||[])[1]||'').trim(); // fila 12 = RIF
-        // Columnas en fila 14: B=Product Name, C=Product SKU, D=Price, I=Quantity
-        var headerRow = rows[13]||[];
-        var colNombre = 1, colSKU = 2, colPrecio = 3, colQty = 8;
-        // Buscar columnas por nombre por si cambian
+        // Extraer cliente desde filas de metadata (antes del encabezado)
+        var clienteNombre = '', clienteRIF = '';
+        for(var mi=0; mi<qsHeaderRowIdx; mi++) {
+          var mrow = rows[mi]||[];
+          var mk = String(mrow[0]||'').trim();
+          if(mk==='Customer Name') clienteNombre = String(mrow[1]||'').trim();
+          if(mk==='RIF:' || mk==='RIF') clienteRIF = String(mrow[1]||'').trim();
+        }
+        // Columnas desde la fila de encabezado dinámica
+        var headerRow = rows[qsHeaderRowIdx]||[];
+        var colNombre=1, colSKU=2, colPrecio=3, colQty=8;
         headerRow.forEach(function(h,i){
           var hn = String(h||'').toLowerCase().trim();
           if(hn==='product name') colNombre=i;
@@ -16743,7 +16756,7 @@ function msParsearExcel(file, input) {
           if(hn==='quantity') colQty=i;
         });
         var productos = [];
-        for(var ri=14; ri<rows.length; ri++) {
+        for(var ri=qsHeaderRowIdx+1; ri<rows.length; ri++) {
           var row = rows[ri]||[];
           var rawNombre = String(row[colNombre]||'').trim();
           if(!rawNombre) continue;
@@ -18731,10 +18744,10 @@ window.msAbrirMonitor = function() {
 
   // ── KPI ROW ────────────────────────────────────────────────────
   var kpis = [
-    {ico:'🔒', val:totalComp,                lbl:'Uds. comprometidas', col:RED,   bg:REDBG},
-    {ico:'📋', val:Object.keys(comp).length, lbl:'Referencias activas', col:AMBER, bg:AMBERBG},
-    {ico:'⏳', val:pedRes.length,             lbl:'Pedidos pendientes',  col:AMBER, bg:AMBERBG},
-    {ico:'✅', val:pedDesp.length,            lbl:'Despachados',         col:GREEN, bg:GREENBG},
+    {ico:'🔒', val:totalComp,                lbl:'Uds. comprometidas',   col:RED,       bg:REDBG},
+    {ico:'📋', val:Object.keys(comp).length, lbl:'Referencias activas',  col:AMBER,     bg:AMBERBG},
+    {ico:'⏳', val:totalPendSucs,             lbl:'Despachos pendientes', col:AMBER,     bg:AMBERBG},
+    {ico:'📦', val:totalEmbaladas,            lbl:'Despachos embalados',  col:'#059669', bg:'rgba(5,150,105,.12)'},
   ];
   var kRow = document.createElement('div');
   kRow.style.cssText = 'display:grid;grid-template-columns:repeat(4,1fr);border-bottom:1px solid '+BORDER+';';
@@ -18859,6 +18872,12 @@ window.msAbrirMonitor = function() {
     var estadoCol={RESERVADO:AMBER,PARCIAL:AMBER,DESPACHADO:GREEN,CANCELADO:GRAY}[ped.estado]||GRAY;
     var estadoBg={RESERVADO:AMBERBG,PARCIAL:AMBERBG,DESPACHADO:GREENBG,CANCELADO:'rgba(100,116,139,.12)'}[ped.estado]||'rgba(100,116,139,.12)';
 
+    // Calcular despachos por estado
+    var sucs = ped.sucursales||[];
+    var numEmbalados  = sucs.filter(function(s){ var e=((ped.sucursalesEstado||{})[s]||'').toUpperCase(); return e==='EMBALADO'; }).length;
+    var numDespachados= sucs.filter(function(s){ var e=((ped.sucursalesEstado||{})[s]||'').toUpperCase(); return e==='DESPACHADO'; }).length;
+    var numPendientes = sucs.length - numEmbalados - numDespachados;
+
     // Leer OC y nombres editados — SIEMPRE fresco desde localStorage (prioridad) + fallback pedido
     var etiqData={};
     try{
@@ -18879,6 +18898,11 @@ window.msAbrirMonitor = function() {
         '<div style="font-family:\'Barlow Condensed\',sans-serif;font-size:1.5rem;font-weight:900;color:'+WHITE+';letter-spacing:1px;text-shadow:0 1px 4px rgba(0,0,0,.3);">'+ped.numP+'</div>' +
         '<div style="background:'+estadoBg+';color:'+estadoCol+';font-size:.58rem;font-weight:900;padding:4px 12px;border-radius:20px;text-transform:uppercase;letter-spacing:.8px;border:1px solid '+estadoCol+'33;">'+ped.estado+'</div>' +
         '<div style="font-size:.6rem;color:'+DIM+';background:rgba(255,255,255,.04);padding:3px 9px;border-radius:5px;">{MON}</div>'.replace('{MON}',{USD:'USD $',BCV:'BCV $',TF:'TF $'}[mon]||mon) +
+        +(sucs.length ? '<div style="display:flex;gap:4px;align-items:center;margin-left:4px;">'
+          +(numPendientes>0 ? '<span style="font-size:.55rem;font-weight:800;background:'+AMBERBG+';color:'+AMBER+';border-radius:4px;padding:2px 7px;border:1px solid '+AMBER+'44;">⏳ '+numPendientes+' pend.</span>' : '')
+          +(numEmbalados>0  ? '<span style="font-size:.55rem;font-weight:800;background:rgba(5,150,105,.15);color:#059669;border-radius:4px;padding:2px 7px;">📦 '+numEmbalados+' embal.</span>' : '')
+          +(numDespachados>0? '<span style="font-size:.55rem;font-weight:800;background:'+GREENBG+';color:'+GREEN+';border-radius:4px;padding:2px 7px;">✅ '+numDespachados+' desp.</span>' : '')
+          +'</div>' : '') +
       '</div>' +
       '<div style="display:flex;align-items:center;gap:20px;">' +
         '<div style="text-align:right;">' +
