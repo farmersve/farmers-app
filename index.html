@@ -18260,13 +18260,14 @@ window.msAbrirMonitor = function() {
     var estadoCol={RESERVADO:AMBER,PARCIAL:AMBER,DESPACHADO:GREEN,CANCELADO:GRAY}[ped.estado]||GRAY;
     var estadoBg={RESERVADO:AMBERBG,PARCIAL:AMBERBG,DESPACHADO:GREENBG,CANCELADO:'rgba(100,116,139,.12)'}[ped.estado]||'rgba(100,116,139,.12)';
 
-    // Leer OC por sucursal desde etiqData
+    // Leer OC y nombres editados — SIEMPRE fresco desde localStorage (prioridad) + fallback pedido
     var etiqData={};
     try{
-      var savedEtiq=JSON.parse(localStorage.getItem('ms_etiq_'+ped.numP)||'{}');
-      if(Object.keys(savedEtiq).length) etiqData=savedEtiq;
-      else if(ped.etiqData) etiqData=ped.etiqData;
-    }catch(e){ if(ped.etiqData) etiqData=ped.etiqData; }
+      var _lsEtiq=localStorage.getItem('ms_etiq_'+ped.numP);
+      var _parsed=_lsEtiq?JSON.parse(_lsEtiq):{};
+      // Fusionar: localStorage gana sobre etiqData del pedido guardado
+      etiqData=Object.assign({},ped.etiqData||{},_parsed);
+    }catch(e){ etiqData=ped.etiqData||{}; }
 
     var card=document.createElement('div');
     card.style.cssText='background:#111638;border-radius:12px;overflow:hidden;border:1.5px solid '+(activo?AMBER+'66':BORDER)+';box-shadow:0 2px 12px rgba(0,0,0,.4);';
@@ -18301,11 +18302,13 @@ window.msAbrirMonitor = function() {
       var nombre=cl?cl.nombre.toUpperCase():suc.toUpperCase();
       var rif=cl?cl.rif||'':'';
       var oc=(etiqData[suc]&&etiqData[suc].oc)||'';
-      var nom=(etiqData[suc]&&etiqData[suc].nom)||nombre;
-      // Mostrar: NOMBRE CLIENTE (SUCURSAL) para diferenciar
-      var displayNom = (nombre && nombre!==suc.toUpperCase())
-        ? nombre+' ('+suc+')'
-        : nom;
+      var nom=(etiqData[suc]&&etiqData[suc].nom)||'';
+      // displayNom: prioridad al nombre editado manualmente; si no, nombre directorio + (suc)
+      var displayNom = nom
+        ? nom+' ('+suc+')'
+        : (nombre && nombre!==suc.toUpperCase())
+          ? nombre+' ('+suc+')'
+          : suc.toUpperCase();
       var col=est==='DESPACHADO'?GREEN:est==='RESERVADO'?AMBER:GRAY;
       var bg=est==='DESPACHADO'?GREENBG:est==='RESERVADO'?AMBERBG:'rgba(255,255,255,.03)';
 
@@ -18318,45 +18321,81 @@ window.msAbrirMonitor = function() {
       chip.title='Clic para editar OC y nombre';
       chip.innerHTML=
         '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:3px;">'+
-          '<div style="font-size:.66rem;font-weight:900;color:'+WHITE+';line-height:1.2;">'+displayNom+'</div>'+
-          '<div style="font-size:.55rem;font-weight:800;color:'+col+';text-transform:uppercase;border:1px solid '+col+'44;border-radius:3px;padding:1px 5px;">'+est+'</div>'+
+          '<div data-chip-name style="font-size:.66rem;font-weight:900;color:'+WHITE+';line-height:1.2;">'+displayNom+'</div>'+
+          '<div style="font-size:.55rem;font-weight:800;color:'+col+';text-transform:uppercase;border:1px solid '+col+'44;border-radius:3px;padding:1px 5px;flex-shrink:0;margin-left:4px;">'+est+'</div>'+
         '</div>'+
         (rif?'<div style="font-size:.52rem;color:'+GRAY+';">'+rif+'</div>':'')+
-        '<div style="display:flex;gap:6px;margin-top:4px;flex-wrap:wrap;">'+
+        '<div style="display:flex;gap:6px;margin-top:4px;flex-wrap:wrap;align-items:center;">'+
           '<span style="font-size:.52rem;color:'+DIM+';">'+refs+' refs · '+uds+' uds</span>'+
-          (oc?'<span style="font-size:.52rem;font-weight:800;color:'+TEAL+';background:'+TEALBG+';border-radius:3px;padding:1px 5px;">OC: '+oc+'</span>':'<span style="font-size:.52rem;color:'+GRAY+';font-style:italic;">sin OC</span>')+
+          '<span data-chip-oc style="font-size:.52rem;font-weight:800;color:'+(oc?TEAL:GRAY)+';'+(oc?'background:'+TEALBG+';border-radius:3px;padding:1px 5px;':'font-style:italic;')+'">'+(oc?'OC: '+oc:'sin OC')+'</span>'+
         '</div>';
 
       // Click → editar OC y nombre para esta sucursal
-      chip.onclick=(function(s,edat,pedN){ return function(){
+      // Agregar atributos data para actualización inline
+      chip.setAttribute('data-suc-key',suc);
+
+      chip.onclick=(function(s,edat,pedN,chipRef){ return function(){
         var curOC=(edat[s]&&edat[s].oc)||'';
         var curNom=(edat[s]&&edat[s].nom)||s;
-        var nuevoOC=prompt('N° ORDEN DE COMPRA para "'+s+'":\n(Dejar vacío para quitar)',curOC);
-        if(nuevoOC===null) return;
-        var nuevoNom=prompt('NOMBRE de la sucursal en etiqueta:',curNom);
-        if(nuevoNom===null) return;
-        // Guardar
-        var d={}; try{d=JSON.parse(localStorage.getItem('ms_etiq_'+pedN)||'{}');}catch(e){}
-        if(!d[s]) d[s]={};
-        d[s].oc=nuevoOC.trim();
-        d[s].nom=nuevoNom.trim()||s;
-        localStorage.setItem('ms_etiq_'+pedN,JSON.stringify(d));
-        // Sincronizar a farmers_ms_pedidos
-        if(typeof getMsPedidos==='function'&&typeof saveMsPedidos==='function'){
-          var peds=getMsPedidos();
-          var pidx=peds.findIndex(function(p){return p.numP===pedN;});
-          if(pidx>=0){
-            if(!peds[pidx].etiqData) peds[pidx].etiqData={};
-            peds[pidx].etiqData[s]=d[s];
-            saveMsPedidos(peds);
+        // Modal inline profesional
+        var exM=document.getElementById('ms-chip-edit-modal'); if(exM) exM.remove();
+        var modal=document.createElement('div');
+        modal.id='ms-chip-edit-modal';
+        modal.style.cssText='position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,.8);display:flex;align-items:center;justify-content:center;font-family:"Barlow Condensed",Arial,sans-serif;';
+        var box=document.createElement('div');
+        box.style.cssText='background:#0f1438;border-radius:14px;padding:28px 32px;width:100%;max-width:440px;border:1.5px solid rgba(255,255,255,.12);box-shadow:0 24px 60px rgba(0,0,0,.7);';
+        box.innerHTML=
+          '<div style="font-size:1.1rem;font-weight:900;color:#fff;text-transform:uppercase;letter-spacing:1px;margin-bottom:4px;">✏️ EDITAR SUCURSAL</div>'+
+          '<div style="font-size:.62rem;color:rgba(255,255,255,.4);margin-bottom:20px;background:rgba(255,255,255,.06);padding:4px 10px;border-radius:6px;display:inline-block;">'+s+'</div>'+
+          '<div style="margin-bottom:14px;">'+
+            '<label style="display:block;font-size:.6rem;font-weight:800;color:rgba(255,255,255,.5);text-transform:uppercase;letter-spacing:.8px;margin-bottom:6px;">NOMBRE EN ETIQUETA</label>'+
+            '<input id="mce-nom" type="text" value="" style="width:100%;padding:10px 12px;background:rgba(255,255,255,.08);border:1.5px solid rgba(255,255,255,.15);border-radius:8px;color:#fff;font-size:.88rem;font-weight:700;font-family:inherit;box-sizing:border-box;outline:none;">'+
+          '</div>'+
+          '<div style="margin-bottom:22px;">'+
+            '<label style="display:block;font-size:.6rem;font-weight:800;color:rgba(255,255,255,.5);text-transform:uppercase;letter-spacing:.8px;margin-bottom:6px;">N° ORDEN DE COMPRA</label>'+
+            '<input id="mce-oc" type="text" value="" style="width:100%;padding:10px 12px;background:rgba(255,255,255,.08);border:1.5px solid rgba(20,184,166,.35);border-radius:8px;color:#5eead4;font-size:.88rem;font-weight:700;font-family:inherit;box-sizing:border-box;outline:none;" placeholder="OC-XXXXX">'+
+          '</div>'+
+          '<div style="display:flex;gap:10px;justify-content:flex-end;">'+
+            '<button id="mce-cancel" style="background:rgba(255,255,255,.07);color:rgba(255,255,255,.6);border:1px solid rgba(255,255,255,.12);border-radius:8px;padding:10px 20px;cursor:pointer;font-weight:800;font-size:.72rem;font-family:inherit;text-transform:uppercase;">CANCELAR</button>'+
+            '<button id="mce-save" style="background:linear-gradient(135deg,#1B1F6B,#252d7a);color:#fff;border:none;border-radius:8px;padding:10px 24px;cursor:pointer;font-weight:900;font-size:.72rem;font-family:inherit;text-transform:uppercase;">💾 GUARDAR</button>'+
+          '</div>';
+        modal.appendChild(box);
+        document.body.appendChild(modal);
+        // Setear valores después de insertar
+        document.getElementById('mce-nom').value=curNom;
+        document.getElementById('mce-oc').value=curOC;
+        document.getElementById('mce-nom').focus();
+        function _guardar(){
+          var nuevoNom=(document.getElementById('mce-nom').value||'').trim()||s;
+          var nuevoOC=(document.getElementById('mce-oc').value||'').trim();
+          modal.remove();
+          var d={}; try{d=JSON.parse(localStorage.getItem('ms_etiq_'+pedN)||'{}');}catch(e){}
+          if(!d[s]) d[s]={};
+          d[s].oc=nuevoOC; d[s].nom=nuevoNom;
+          localStorage.setItem('ms_etiq_'+pedN,JSON.stringify(d));
+          if(typeof getMsPedidos==='function'&&typeof saveMsPedidos==='function'){
+            var peds=getMsPedidos();
+            var pidx=peds.findIndex(function(p){return p.numP===pedN;});
+            if(pidx>=0){
+              if(!peds[pidx].etiqData) peds[pidx].etiqData={};
+              peds[pidx].etiqData[s]=d[s];
+              saveMsPedidos(peds);
+            }
           }
+          edat[s]=edat[s]||{}; edat[s].nom=nuevoNom; edat[s].oc=nuevoOC;
+          // Actualizar chip inline SIN recargar todo el monitor
+          var nd=chipRef.querySelector('[data-chip-name]');
+          var od=chipRef.querySelector('[data-chip-oc]');
+          if(nd) nd.textContent=nuevoNom+' ('+s+')';
+          if(od){ od.textContent=nuevoOC?'OC: '+nuevoOC:'sin OC'; od.style.color=nuevoOC?'#5eead4':'rgba(255,255,255,.35)'; od.style.background=nuevoOC?'rgba(20,184,166,.12)':'transparent'; od.style.padding=nuevoOC?'1px 5px':'0'; od.style.borderRadius='3px'; }
+          showToast('✅ '+nuevoNom+(nuevoOC?' · OC: '+nuevoOC:''),'success');
         }
-        showToast('OC guardada para '+s,'success');
-        // Re-render
-        var exMon=document.getElementById('ms-monitor-ov');
-        if(exMon) exMon.remove();
-        msAbrirMonitor();
-      };})(suc,etiqData,ped.numP);
+        document.getElementById('mce-save').onclick=_guardar;
+        document.getElementById('mce-cancel').onclick=function(){modal.remove();};
+        var _kd=function(e){ if(e.key==='Enter'){_guardar();document.removeEventListener('keydown',_kd);} if(e.key==='Escape'){modal.remove();document.removeEventListener('keydown',_kd);} };
+        document.addEventListener('keydown',_kd);
+        modal.onclick=function(e){if(e.target===modal){modal.remove();document.removeEventListener('keydown',_kd);}};
+      };})(suc,etiqData,ped.numP,chip);
 
       chip.onmouseover=function(){chip.style.borderColor=col+'88';};
       chip.onmouseout=function(){chip.style.borderColor=col+'33';};
