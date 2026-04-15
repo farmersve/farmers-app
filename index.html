@@ -16807,7 +16807,11 @@ function msParsearExcel(file, input) {
       msAnalizarConIA(muestra, null, input);
     } catch(err) {
       msShowStep(1);
-      document.getElementById('ms-upload-status').textContent = '❌ Error leyendo Excel: ' + err.message;
+      var statusEl = document.getElementById('ms-upload-status');
+      if(statusEl) statusEl.textContent = '❌ Error: ' + err.message;
+      // También mostrar en el estado del flujo único si aplica
+      var unicaStatus = document.getElementById('ms-unica-file-status');
+      if(unicaStatus && MS._modoUnica) unicaStatus.innerHTML = '❌ '+err.message;
       input.value = '';
     }
   };
@@ -17024,11 +17028,27 @@ async function msAnalizarConIA(rows, pdfBase64, input) {
           if(dataPDF.content[ci].type === 'text') { textoPDF = dataPDF.content[ci].text; break; }
         }
       }
-      textoPDF = textoPDF.replace(/```json[\s\S]*?```|```/g,'').trim();
+      // Limpieza robusta: quitar backticks, extraer JSON entre { } o [ ]
+      textoPDF = textoPDF
+        .replace(/^[\s\S]*?```(?:json)?[\s]*/,'')  // quitar todo antes del JSON
+        .replace(/```[\s\S]*$/,'')                  // quitar todo después del JSON
+        .trim();
+      // Si aún no empieza con { o [, buscar el primer { o [
+      if(textoPDF && textoPDF[0] !== '{' && textoPDF[0] !== '[') {
+        var idx1 = textoPDF.indexOf('{');
+        var idx2 = textoPDF.indexOf('[');
+        var idx = (idx1>=0 && idx2>=0) ? Math.min(idx1,idx2) : Math.max(idx1,idx2);
+        if(idx >= 0) textoPDF = textoPDF.substring(idx);
+      }
       if(!textoPDF) throw new Error('La IA no devolvió texto. Respuesta: ' + JSON.stringify(dataPDF).substring(0,200));
       var parsedPDF = msRepararJSON(textoPDF);
       if(!parsedPDF || !parsedPDF.productos || !parsedPDF.productos.length) {
-        throw new Error('La IA no reconoció productos. Respuesta IA: ' + textoPDF.substring(0,300));
+        // Intentar si la IA devolvió un array directo en lugar de objeto
+        if(Array.isArray(parsedPDF) && parsedPDF.length) {
+          parsedPDF = { sucursales: parsedPDF[0] && parsedPDF[0].pedidos ? Object.keys(parsedPDF[0].pedidos) : ['CLIENTE'], productos: parsedPDF };
+        } else {
+          throw new Error('La IA no reconoció productos. Respuesta IA: ' + textoPDF.substring(0,300));
+        }
       }
       sucursales = parsedPDF.sucursales || [];
       // Si es factura única (1 sucursal) y tenemos cliente, usar nombre del cliente
