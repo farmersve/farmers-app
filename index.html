@@ -18285,6 +18285,8 @@ window.msAbrirMonitor = function() {
       btnDoc.onclick = (function(p){ return function(){
         MS.numPedido=p.numP; MS.sucursales=p.sucursales||[];
         MS.clientesPorSucursal=p.clientesPorSucursal||{};
+        MS.moneda=p.moneda||'TF';
+        MS.fechaEmision=p.fecha||'';
         if(typeof msGenerarDocPedido==='function') msGenerarDocPedido(p.numP, p.sucursales||[]);
       }; })(ped);
       btnRow.appendChild(btnDoc);
@@ -18794,8 +18796,12 @@ window.msGenerarDocPedido = function(numP, sel) {
   }
 
   var clDB   = typeof getClientsDB==='function' ? getClientsDB() : [];
-  var moneda = MS.moneda || 'USD';
+  var moneda = MS.moneda || 'TF';
+  // Sincronizar MS.moneda para que msGetPrecio use la moneda correcta del pedido
+  var _monedaOrig = MS.moneda;
+  MS.moneda = moneda;
   var monedaLabel = {USD:'USD $', BCV:'BCV $', TF:'TF $'}[moneda] || moneda;
+  var monedaSimbolo = {USD:'USD $', BCV:'BCV $', TF:'TF $'}[moneda] || moneda;
   var fecha  = MS.fechaEmision || new Date().toLocaleDateString('es-VE',{day:'2-digit',month:'2-digit',year:'numeric'});
   var hoy    = new Date().toLocaleDateString('es-VE',{day:'2-digit',month:'long',year:'numeric'}).toUpperCase();
   var numPed = numP || MS.numPedido || 'MS-?';
@@ -18836,21 +18842,26 @@ window.msGenerarDocPedido = function(numP, sel) {
       '</tr>';
     }).join('');
 
+    var _etiqDoc={}; try{_etiqDoc=JSON.parse(localStorage.getItem('ms_etiq_'+numPed)||'{}');}catch(e){}
+    var _esd=_etiqDoc[suc]||{};
+    var _nomSucDoc=_esd.nom||nombreCl;
+    var _ocSucDoc=_esd.oc||'';
     return '<div style="margin-bottom:28px;break-inside:avoid;">'+
       // Header sucursal
       '<div style="background:'+NAVY+';padding:10px 20px;border-radius:6px 6px 0 0;display:flex;justify-content:space-between;align-items:center;">'+
         '<div>'+
-          '<div style="font-family:\'Barlow Condensed\',sans-serif;font-size:16px;font-weight:900;color:#fff;text-transform:uppercase;letter-spacing:.3px;">'+nombreCl+'</div>'+
-          (rifCl?'<div style="font-size:9px;color:rgba(255,255,255,.55);margin-top:2px;">RIF: '+rifCl+(suc!==nombreCl?' · Cód: '+suc:'')+'</div>':'<div style="font-size:9px;color:rgba(255,255,255,.55);">Cód: '+suc+'</div>')+
+          '<div style="font-family:\'Barlow Condensed\',sans-serif;font-size:16px;font-weight:900;color:#fff;text-transform:uppercase;letter-spacing:.3px;">'+_nomSucDoc+'</div>'+
+          (rifCl?'<div style="font-size:9px;color:rgba(255,255,255,.55);margin-top:2px;">'+nombreCl+' · RIF: '+rifCl+'</div>':'')+
+          (_ocSucDoc?'<div style="font-size:10px;font-weight:800;color:#5eead4;margin-top:4px;">📋 OC: '+_ocSucDoc+'</div>':'')+
         '</div>'+
         '<div style="text-align:right;">'+
-          '<div style="font-size:9px;color:rgba(255,255,255,.5);text-transform:uppercase;letter-spacing:.5px;">Subtotal</div>'+
-          '<div style="font-family:\'Barlow Condensed\',sans-serif;font-size:20px;font-weight:900;color:#fff;">$ '+totalSuc.toFixed(2)+'</div>'+
+          '<div style="font-size:9px;color:rgba(255,255,255,.5);text-transform:uppercase;letter-spacing:.5px;">'+monedaLabel+'</div>'+
+          '<div style="font-family:\'Barlow Condensed\',sans-serif;font-size:20px;font-weight:900;color:#fff;">'+totalSuc.toFixed(2)+'</div>'+
           '<div style="font-size:9px;color:rgba(255,255,255,.45);">'+totalUds+' unidades</div>'+
         '</div>'+
       '</div>'+
       // Tabla
-      '<table style="width:100%;border-collapse:collapse;">'+
+      '<table data-suc="'+suc+'" data-oc="'+(_ocSucDoc||'-')+'" style="width:100%;border-collapse:collapse;">'+
         '<thead><tr style="background:#e8eaf6;">'+
           '<th style="padding:7px 12px;text-align:left;font-size:8.5px;font-weight:800;color:'+NAVY+';letter-spacing:.8px;text-transform:uppercase;">Referencia</th>'+
           '<th style="padding:7px 12px;text-align:left;font-size:8.5px;font-weight:800;color:'+NAVY+';text-transform:uppercase;">Descripción</th>'+
@@ -18898,9 +18909,11 @@ window.msGenerarDocPedido = function(numP, sel) {
   +'}'
   +'</style></head><body>'
 
-  // Print btn
-  +'<div class="no-print" style="max-width:794px;margin:14px auto 8px;display:flex;justify-content:flex-end;gap:8px;">'
-  +'<button onclick="window.print()" style="background:'+NAVY+';color:#fff;border:none;padding:9px 22px;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;font-family:\'DM Sans\',sans-serif;">🖨 Imprimir / Guardar PDF</button>'
+  // Barra PDF + Excel
+  +'<div class="no-print" style="max-width:794px;margin:14px auto 8px;display:flex;justify-content:flex-end;gap:8px;align-items:center;">'
+  +'<span style="font-size:10px;color:#64748b;font-family:\'DM Sans\',sans-serif;margin-right:4px;">'+numPed+' &nbsp;·&nbsp; '+monedaLabel+'</span>'
+  +'<button id="_docXlsBtn" style="background:#16a34a;color:#fff;border:none;padding:9px 18px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:\'DM Sans\',sans-serif;">📊 Excel</button>'
+  +'<button onclick="window.print()" style="background:'+NAVY+';color:#fff;border:none;padding:9px 22px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:\'DM Sans\',sans-serif;">🖨 PDF</button>'
   +'</div>'
 
   +'<div class="page" style="max-width:794px;margin:0 auto;padding:0 0 32px;">'
@@ -18965,16 +18978,24 @@ window.msGenerarDocPedido = function(numP, sel) {
     +'<span style="font-size:8.5px;font-weight:700;color:'+NAVY2+';text-transform:uppercase;letter-spacing:.5px;">'+hoy+'</span>'
   +'</div>'
 
-  +'</div></div></body></html>';
+  // Script Excel inline en el doc
+  +'<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"><\/script>'  +'<script>'  +'document.addEventListener(\'DOMContentLoaded\',function(){'  +'  var btn=document.getElementById(\'_docXlsBtn\');'  +'  if(!btn)return;'  +'  btn.onclick=function(){'  +'    var rows=[[\'REF\',\'DESCRIPCION\',\'SUCURSAL\',\'N_OC\',\'PEDIDO\',\'DESPACHO\',\'P_UNIT\',\'TOTAL\']];'  +'    document.querySelectorAll(\'table[data-suc]\').forEach(function(tbl){'  +'      var suc=tbl.getAttribute(\'data-suc\');'  +'      var oc=tbl.getAttribute(\'data-oc\')||\'-\';'  +'      tbl.querySelectorAll(\'tbody tr\').forEach(function(tr){'  +'        var tds=tr.querySelectorAll(\'td\');'  +'        if(tds.length>=6) rows.push([tds[0].textContent.trim(),tds[1].textContent.trim(),suc,oc,tds[2].textContent.trim(),tds[3].textContent.trim(),tds[4].textContent.replace(/[$,]/g,\'\').trim(),tds[5].textContent.replace(/[$,]/g,\'\').trim()]);'  +'      });'  +'    });'  +'    var wb=XLSX.utils.book_new();'  +'    XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(rows),\'Pedido\');'  +'    XLSX.writeFile(wb,document.title.replace(/[^A-Z0-9]/gi,\'_\')+\'.xlsx\');'  +'  };'  +'});'  +'<\/script>'  +'</div></div></body></html>';
 
-  var nombreArch = 'Pedido_'+numPed.replace(/[^A-Z0-9]/gi,'_')+'_'+new Date().toISOString().slice(0,10);
+  // Restaurar moneda original
+  MS.moneda = _monedaOrig || moneda;
+
   var blob = new Blob([html],{type:'text/html;charset=utf-8'});
   var url  = URL.createObjectURL(blob);
-  var a    = document.createElement('a');
-  a.href   = url;
-  a.download = nombreArch+'.html';
-  document.body.appendChild(a); a.click();
-  setTimeout(function(){ URL.revokeObjectURL(url); a.remove(); }, 1200);
+  // Abrir en nueva pestaña para poder imprimir/guardar PDF
+  var win = window.open(url,'_blank');
+  if(!win){
+    // Fallback: descarga directa
+    var a=document.createElement('a');
+    a.href=url;
+    a.download='Pedido_'+numPed.replace(/[^A-Z0-9]/gi,'_')+'.html';
+    document.body.appendChild(a); a.click();
+    setTimeout(function(){ URL.revokeObjectURL(url); a.remove(); },1200);
+  }
 };
 
 
