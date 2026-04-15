@@ -1691,9 +1691,9 @@ tbody td { padding: 8px 10px; vertical-align: middle; }
 
 
 /* LOGIN */
-#ls{position:fixed;inset:0;z-index:99999;display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg,#0a0d26,#1a2050,#252b6b);}
+#ls{position:fixed;inset:0;z-index:99999;display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg,#0a0d26,#1a2050,#252b6b);overflow-y:auto;-webkit-overflow-scrolling:touch;padding:20px;}
 #ls.gone{display:none!important;}
-.lc{background:rgba(255,255,255,.07);backdrop-filter:blur(20px);border:1px solid rgba(255,255,255,.14);border-radius:20px;padding:44px 38px;width:100%;max-width:400px;box-shadow:0 28px 70px rgba(0,0,0,.5);}
+.lc{background:rgba(255,255,255,.07);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border:1px solid rgba(255,255,255,.14);border-radius:20px;padding:44px 38px;width:100%;max-width:400px;box-sizing:border-box;box-shadow:0 28px 70px rgba(0,0,0,.5);}
 .lc img{height:64px;display:block;margin:0 auto 18px;background:#fff;border-radius:12px;padding:8px 18px;box-shadow:0 4px 18px rgba(0,0,0,0.35);object-fit:contain;}
 .lt{font-family:'Barlow Condensed',sans-serif;font-weight:900;font-size:1.45rem;color:#fff;letter-spacing:3px;text-transform:uppercase;text-align:center;}
 .ls2{font-size:.7rem;color:rgba(255,255,255,.4);letter-spacing:3px;text-transform:uppercase;text-align:center;margin:4px 0 28px;}
@@ -4422,6 +4422,7 @@ var _lMax   = 3;
 var _lUsers = [{u:'OGK',p:'Farmersve2026*!'},{u:'GKK',p:'Farmersve2026*!'}];
 
 function lLogin() {
+  try {
   var u = (document.getElementById('l-u').value || '').trim().toUpperCase();
   var p =  document.getElementById('l-p').value || '';
   var ok = _lUsers.some(function(x){ return x.u === u && x.p === p; });
@@ -4430,7 +4431,6 @@ function lLogin() {
     msg.style.display = 'none';
     _lTries = 0;
     lShowApp(u);
-    setTimeout(function(){ if(typeof loadFromFirebase==='function') loadFromFirebase(); }, 300);
   } else {
     _lTries++;
     msg.style.display = 'block';
@@ -4443,6 +4443,7 @@ function lLogin() {
       msg.innerHTML = '❌ Incorrecto. Intentos restantes: ' + (_lMax - _lTries);
     }
   }
+  } catch(e) { console.error('Login error:', e); }
 }
 
 function lShowApp(username) {
@@ -4470,14 +4471,20 @@ function lShowApp(username) {
   // Render inmediato en background
   if (typeof renderHistorial === 'function') renderHistorial();
   if (typeof renderTable === 'function') renderTable();
-  // Firebase sync + re-render + actualizar badge
+  // Firebase sync — timeout más largo en móvil, siempre con try/catch
+  var _isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+  var _delay = _isMobile ? 1200 : 400;
   setTimeout(function(){
-    if (typeof loadFromFirebase === 'function') loadFromFirebase();
+    try {
+      if (typeof loadFromFirebase === 'function') loadFromFirebase();
+    } catch(e) { console.warn('Firebase load error:', e); }
     setTimeout(function(){
-      if (typeof renderHistorial === 'function') renderHistorial();
-      homeUpdateBadges();
-    }, 1500);
-  }, 400);
+      try {
+        if (typeof renderHistorial === 'function') renderHistorial();
+        homeUpdateBadges();
+      } catch(e) {}
+    }, _isMobile ? 2500 : 1500);
+  }, _delay);
 }
 
 // Ir a un módulo desde el home
