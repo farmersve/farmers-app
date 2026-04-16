@@ -20944,28 +20944,39 @@ window.msGenerarEtiquetasPDF = function(sucsFiltradas) {
       totalVol = totalUnd * 0.015; // estimación conservadora
     }
     
-    // ESTRATEGIA 3: Fallback AGRESIVO - extraer del DOM del formulario
+    // ESTRATEGIA 3: Extraer datos REALES específicos para esta sucursal
     if(totalRef === 0 || totalUnd === 0) {
-      // Buscar datos en el texto del formulario de etiquetas
-      var sucTexts = document.querySelectorAll('div');
-      for(var i=0; i<sucTexts.length; i++) {
-        var text = sucTexts[i].textContent || '';
-        if(text.includes(suc) && (text.includes('refs') || text.includes('uds'))) {
-          // Extraer números del texto como "24 refs, 540 uds"
-          var refsMatch = text.match(/(\d+)\s*refs?/i);
-          var udsMatch = text.match(/(\d+)\s*uds?/i);
-          if(refsMatch) totalRef = parseInt(refsMatch[1]) || totalRef;
-          if(udsMatch) totalUnd = parseInt(udsMatch[1]) || totalUnd;
-          if(totalUnd > 0 && totalVol === 0) totalVol = totalUnd * 0.012; // estimación
-          break;
+      // Buscar elementos específicos que muestran datos de esta sucursal
+      var sucElements = document.querySelectorAll('[id*="' + suc.replace(/[()]/g, '') + '"], div, span');
+      for(var i = 0; i < sucElements.length; i++) {
+        var text = sucElements[i].textContent || '';
+        var parentText = sucElements[i].parentElement ? (sucElements[i].parentElement.textContent || '') : '';
+        var fullText = text + ' ' + parentText;
+        
+        // Buscar patrones específicos para esta sucursal
+        if(fullText.includes(suc) || fullText.includes(suc.replace(/[()]/g, ''))) {
+          // Extraer refs y uds del contexto de esta sucursal
+          var refsMatch = fullText.match(/(\d+)\s*refs?/i);
+          var udsMatch = fullText.match(/(\d+)\s*uds?/i);
+          
+          if(refsMatch && parseInt(refsMatch[1]) > 0) {
+            totalRef = parseInt(refsMatch[1]);
+          }
+          if(udsMatch && parseInt(udsMatch[1]) > 0) {
+            totalUnd = parseInt(udsMatch[1]);
+            if(totalVol === 0) totalVol = totalUnd * 0.012; // cálculo basado en datos reales
+          }
+          
+          if(totalRef > 0 && totalUnd > 0) break; // Encontró datos válidos para esta sucursal
         }
       }
     }
     
-    // ESTRATEGIA 4: Valores mínimos garantizados para NUNCA mostrar vacío
-    if(totalRef === 0) totalRef = 10; // mínimo de referencias
-    if(totalUnd === 0) totalUnd = 100; // mínimo de unidades  
-    if(totalVol === 0) totalVol = totalUnd * 0.01; // mínimo de volumen
+    // Solo si NO se encontraron datos específicos, reportar error
+    if(totalRef === 0 && totalUnd === 0) {
+      console.error('ERROR: No se encontraron datos para sucursal: ' + suc);
+      // NO usar valores ficticios - mantener en 0 para detectar el problema
+    }
     // Leer inputs del formulario — con fallback completo a localStorage/pedido guardado
     var rifInput  =document.getElementById('rif-'+idKey);
     var rsInput   =document.getElementById('rs-'+idKey);
