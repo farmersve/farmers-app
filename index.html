@@ -20906,32 +20906,53 @@ window.msGenerarEtiquetasPDF = function(sucsFiltradas) {
     var _fb=_etiqFallback[suc]||{};
     var numCajas=inp?parseInt(inp.value)||1:(parseInt(_fb.cajas)||1);
     var totalRef=0,totalUnd=0,totalVol=0,totalPeso=0;
+    var ptD={};
+    try{var ptRaw=localStorage.getItem('farmers_pt_data');if(ptRaw){var ptArr=JSON.parse(ptRaw);ptArr.forEach(function(x){ptD[x.r]=x;});}}catch(e){}
     
-    // Buscar datos de esta sucursal en MS.clientesPorSucursal que ya está poblado
-    if(typeof MS !== 'undefined' && MS.clientesPorSucursal && MS.clientesPorSucursal[suc]) {
-      var sucInfo = MS.clientesPorSucursal[suc];
-      totalRef = parseInt(sucInfo.refs) || 0;
-      totalUnd = parseInt(sucInfo.uds) || 0;
-      // Si no hay volumen específico, calcular básico
-      totalVol = totalUnd * 0.005; // estimación básica 5cm³ por unidad
-    }
-    
-    // Fallback: calcular desde MS.data si existe
-    if(totalRef === 0 && typeof MS !== 'undefined' && MS.data && MS.data.length > 0) {
-      var ptD={};
-      try{var ptRaw=localStorage.getItem('farmers_pt_data');if(ptRaw){var ptArr=JSON.parse(ptRaw);ptArr.forEach(function(x){ptD[x.r]=x;});}}catch(e){}
+    // Calcular volumen REAL referencia por referencia
+    if(typeof MS !== 'undefined' && MS.data && MS.data.length > 0) {
       MS.data.forEach(function(p){
         var pide=p.pedidos?p.pedidos[suc]||0:0; 
         var d=p.dist?Math.min(p.dist[suc]||0,pide):pide;
-        if(d>0){
-          totalRef++;totalUnd+=d;
-          var med=(ptD[p.ref]&&ptD[p.ref].medidas)?ptD[p.ref].medidas:{};
-          var vd=parseFloat(med.volDirecto)||0;
-          var l=parseFloat(med.largo)||0,a=parseFloat(med.ancho)||0,h=parseFloat(med.alto)||0;
-          var volUnd=vd>0?vd:(l&&a&&h?(l*a*h/28316.85):0);
-          totalVol+=volUnd*d;
+        if(d > 0) {
+          totalRef++;
+          totalUnd += d;
+          
+          // Buscar datos de esta referencia en farmers_pt_data
+          var prodData = ptD[p.ref];
+          if(prodData && prodData.medidas) {
+            var med = prodData.medidas;
+            var volPorBulto = parseFloat(med.volDirecto) || 0;
+            var undPorBulto = parseFloat(prodData.u) || 1; // unidades por bulto
+            
+            if(volPorBulto > 0 && undPorBulto > 0) {
+              // Calcular volumen por unidad
+              var volPorUnidad = volPorBulto / undPorBulto;
+              // Volumen total de esta referencia
+              totalVol += volPorUnidad * d;
+            } else {
+              // Fallback si no hay datos de volumen: 0.01 ft³ por unidad
+              totalVol += 0.01 * d;
+            }
+          } else {
+            // Fallback si no encuentra la referencia: 0.01 ft³ por unidad
+            totalVol += 0.01 * d;
+          }
         }
       });
+    } else {
+      // Fallback para sucursales sin MS.data detallado
+      if(typeof MS !== 'undefined' && MS.clientesPorSucursal && MS.clientesPorSucursal[suc]) {
+        var sucInfo = MS.clientesPorSucursal[suc];
+        totalRef = parseInt(sucInfo.refs) || 0;
+        totalUnd = parseInt(sucInfo.uds) || 0;
+        totalVol = totalUnd * 0.015; // estimación conservadora
+      }
+    }
+    
+    // Garantizar valores mínimos si todo falla
+    if(totalVol === 0 && totalUnd > 0) {
+      totalVol = totalUnd * 0.01; // fallback muy conservador
     }
     // Leer inputs del formulario — con fallback completo a localStorage/pedido guardado
     var rifInput  =document.getElementById('rif-'+idKey);
