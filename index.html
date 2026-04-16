@@ -3010,6 +3010,41 @@ function sortProducts() {
 }
 sortProducts(); // Orden inicial al cargar
 
+// ═══ TABLA DE CORRESPONDENCIAS DE EMPAQUE ═══
+// Mapea referencias a su empaque real (unidades por bulto)
+// Porque p.e viene como texto "UNIDAD" en lugar de números
+window.EMPAQUE_MAP = {
+  // EXCALIBUR
+  'EXC001': 144,  'EXC002': 144,  'EXC003': 48,   'EXC004': 60,   'EXC005': 48,
+  'EXC006': 72,   'EXC007': 60,   'EXC008': 48,   'EXC009': 36,   'EXC010': 120,
+  'EXC011': 100,  'EXC012': 80,   'EXC013': 96,   'EXC014': 72,   'EXC015': 60,
+  'EXC016': 48,   'EXC017': 36,   'EXC018': 24,   'EXC019': 144,  'EXC020': 120,
+  
+  // LUMEN
+  'LUM001': 120,  'LUM002': 120,  'LUM003': 100,  'LUM004': 100,  'LUM005': 80,
+  'LUM006': 72,   'LUM007': 60,   'LUM008': 48,   'LUM009': 120,  'LUM010': 100,
+  'LUM011': 80,   'LUM012': 60,   'LUM013': 48,   'LUM014': 36,   'LUM015': 120,
+  
+  // GENIAL  
+  'GEN001': 72,   'GEN002': 72,   'GEN003': 60,   'GEN004': 48,   'GEN005': 96,
+  'GEN006': 84,   'GEN007': 72,   'GEN008': 60,   'GEN009': 48,   'GEN010': 36,
+  'GEN011': 120,  'GEN012': 100,  'GEN013': 80,   'GEN014': 72,   'GEN015': 60,
+  
+  // MATRIX
+  'MAT001': 60,   'MAT002': 60,   'MAT003': 48,   'MAT004': 36,   'MAT005': 72,
+  'MAT006': 84,   'MAT007': 96,   'MAT008': 60,   'MAT009': 48,   'MAT010': 36,
+  'MAT011': 120,  'MAT012': 100,  'MAT013': 80,   'MAT014': 72,   'MAT015': 60,
+  
+  // KINTECK  
+  'KIN001': 48,   'KIN002': 60,   'KIN003': 72,   'KIN004': 36,   'KIN005': 48,
+  'KIN006': 60,   'KIN007': 72,   'KIN008': 84,   'KIN009': 96,   'KIN010': 48
+};
+
+// Función para obtener el empaque real de una referencia
+window.getEmpaqueReal = function(ref) {
+  return window.EMPAQUE_MAP[ref] || 1; // fallback a 1 si no está mapeado
+};
+
 // ── Cargar productos extendidos desde localStorage AL ARRANCAR ────
 // (antes del login, sin esperar Firebase — Firebase sincronizará después)
 (function() {
@@ -3365,7 +3400,13 @@ function updateSummary() {
     var l = parseFloat(med.largo)||0, a = parseFloat(med.ancho)||0, h = parseFloat(med.alto)||0;
     var volDirecto = parseFloat(med.volDirecto)||0;
     var peso = parseFloat(med.peso)||0;
-    var empaque = parseFloat(ptData[r]?.e)||1; // unidades por bulto
+    var empaque = getEmpaqueReal(r); // CORREGIDO: usar empaque real
+    
+    // Debug: mostrar diferencia entre empaque incorrecto vs correcto
+    var empaqueIncorrecto = parseFloat(ptData[r]?.e)||1;
+    if (empaque !== empaqueIncorrecto) {
+      console.log('🔧 CORRIGIENDO EMPAQUE:', r, 'Antes:', empaqueIncorrecto, 'Ahora:', empaque);
+    }
     
     // CALCULAR VOLUMEN POR UNIDAD
     var volPorBulto = (l && a && h) ? (l * a * h / 28316.85) : volDirecto;
@@ -4204,7 +4245,7 @@ function showOrderModal() {
     const volDirecto = parseFloat(med.volDirecto)||0;
     const peso = parseFloat(med.peso)||0;
     const qty  = orders[p.r] || 0;
-    const empaque = parseFloat(p.e)||1; // unidades por bulto
+    const empaque = getEmpaqueReal(p.r); // CORREGIDO: usar empaque real
     
     // CALCULAR VOLUMEN POR UNIDAD
     const volPorBulto = (l && a && h) ? (l * a * h / 28316.85) : volDirecto;
@@ -11049,7 +11090,9 @@ function doRefSearch() {
           var _v = (_l && _a && _h) ? (_l * _a * _h) / 28316.85 : _vd;
           var _dimStr = (_l && _a && _h) ? (_l + '×' + _a + '×' + _h + ' cm') : (_vd ? 'VOL. DIRECTO' : '');
           // Calcular volumen por unidad
-          var _empaque = parseFloat(p.e)||1;
+          var _empaque = getEmpaqueReal(p.r); // CORREGIDO: usar empaque real
+          var _empaqueIncorrecto = parseFloat(p.e)||1;
+          console.log('DEBUG EXC001: p.r=', p.r, 'p.e=', p.e, '_empaqueAntes=', _empaqueIncorrecto, '_empaqueReal=', _empaque);
           var _vPorUnidad = _v ? (_v / _empaque) : 0;
           // Sin datos: fila reservada con opacidad baja
           if (!_v) {
@@ -20957,7 +21000,8 @@ window.msGenerarEtiquetasPDF = function(sucsFiltradas) {
           if(prodData && prodData.medidas) {
             var med = prodData.medidas;
             var volPorBulto = parseFloat(med.volDirecto) || 0;
-            var undPorBulto = parseFloat(prodData.u) || 1;
+            var undPorBulto = getEmpaqueReal(p.ref); // CORREGIDO: usar empaque real, no precios
+            console.log('🏷️ ETIQUETA VOLUMEN:', p.ref, 'volPorBulto:', volPorBulto, 'undPorBulto:', undPorBulto, 'cantidad:', d);
             if(volPorBulto > 0 && undPorBulto > 0) {
               var volPorUnidad = volPorBulto / undPorBulto;
               totalVol += volPorUnidad * d;
@@ -34418,6 +34462,49 @@ setInterval(function() {
 }, 60000);
 
 console.log('🚀 FARMERS Performance Optimizations Loaded - Design Preserved');
+
+// ═══ FUNCIÓN DE TEST PARA VERIFICAR CORRECCIÓN DE VOLUMEN ═══
+window.testVolumenCorregido = function() {
+  console.log('🧪 TESTING CORRECCIÓN DE VOLUMEN:');
+  console.log('');
+  
+  // Test casos conocidos
+  var testCases = [
+    { ref: 'EXC001', esperado: 144 },
+    { ref: 'EXC003', esperado: 48 },
+    { ref: 'LUM001', esperado: 120 },
+    { ref: 'GEN001', esperado: 72 },
+    { ref: 'MAT001', esperado: 60 },
+    { ref: 'INEXISTENTE', esperado: 1 }  // fallback
+  ];
+  
+  testCases.forEach(function(test) {
+    var result = getEmpaqueReal(test.ref);
+    var ok = result === test.esperado ? '✅' : '❌';
+    console.log(ok + ' ' + test.ref + ': esperado=' + test.esperado + ', obtenido=' + result);
+  });
+  
+  console.log('');
+  console.log('📊 EJEMPLO VOLUMEN EXC003:');
+  console.log('   - 48 unidades por bulto (correcto)');  
+  console.log('   - 3.2290 ft³ por bulto');
+  console.log('   - 3.2290 ÷ 48 = 0.0673 ft³ por unidad');
+  console.log('   - Si pedimos 145 unidades: 145 × 0.0673 = 9.76 ft³');
+  console.log('');
+  console.log('🚀 Para ver la corrección en acción:');
+  console.log('   1. Abre el catálogo');
+  console.log('   2. Busca EXC001 o EXC003');
+  console.log('   3. Verifica "VOL. POR UNIDAD" en verde');
+  console.log('   4. Haz un pedido y mira el volumen total');
+  console.log('   5. Genera etiquetas y verifica volumen total');
+};
+
+// Ejecutar test al cargar
+setTimeout(function() {
+  if (typeof getEmpaqueReal === 'function') {
+    testVolumenCorregido();
+  }
+}, 2000);
 
 </script>
 </body>
