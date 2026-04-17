@@ -9921,21 +9921,12 @@ window.setRefBrand = setRefBrand;
 
 function setRefStock(f) {
   if (f === 'ALL') {
-    // Todos → limpia selección
+    // Todos → limpia selección completamente
     _refStockFilters = new Set(['ALL']);
   } else {
-    // Quitar ALL si estaba
-    _refStockFilters.delete('ALL');
-    // Toggle: si ya está activo → quitarlo, si no → añadirlo
-    if (_refStockFilters.has(f)) {
-      _refStockFilters.delete(f);
-    } else {
-      _refStockFilters.add(f);
-    }
-    // Si quedó vacío → volver a Todos
-    if (_refStockFilters.size === 0) {
-      _refStockFilters = new Set(['ALL']);
-    }
+    // ═══ FILTROS MUTUAMENTE EXCLUSIVOS ═══
+    // Solo uno puede estar activo a la vez
+    _refStockFilters = new Set([f]); // Limpia todo y pone solo el seleccionado
   }
   updateRefStockButtons();
   doRefSearch();
@@ -10007,14 +9998,10 @@ function _catGetStock(p, inv) {
 function _catPasaFiltroStock(p, inv) {
   var filtro = (typeof _refStockFilters !== 'undefined') ? _refStockFilters : new Set(['ALL']);
   if (filtro.has('ALL')) return true;
+  
   var ex = _catGetStock(p, inv);
   
-  // Filtros exclusivos — uno solo activo a la vez
-  if (filtro.has('IN'))  return ex > 10;            // Con stock: más de 10 unidades
-  if (filtro.has('LOW')) return ex > 0 && ex <= 10; // Bajo stock: entre 1 y 10 unidades
-  if (filtro.has('OUT')) return ex === 0;            // Agotados: 0 unidades
-  
-  // ═══ NUEVO: Filtro Con Ordenada ═══
+  // ═══ FILTRO CON ORDENADA (PRIORIDAD) ═══
   if (filtro.has('ORD')) {
     // Leer ptData para verificar exOrdenada
     var _ptDataFiltro = {};
@@ -10027,7 +10014,12 @@ function _catPasaFiltroStock(p, inv) {
     return exOrden > 0;  // Tiene cantidad ordenada
   }
   
-  return true;
+  // ═══ FILTROS DE STOCK NORMAL (SOLO SI NO ES ORD) ═══
+  if (filtro.has('IN'))  return ex > 10;            // Con stock: más de 10 unidades
+  if (filtro.has('LOW')) return ex > 0 && ex <= 10; // Bajo stock: entre 1 y 10 unidades
+  if (filtro.has('OUT')) return ex === 0;            // Agotados: 0 unidades
+  
+  return false; // Si llega aquí, no pasa ningún filtro
 }
 
 function catCerrarModalExcel() {
@@ -11057,17 +11049,22 @@ function doRefSearch() {
                     '</div>' +
                   '</div>'
                 : '<div style="flex-shrink:0;text-align:center;background:rgba(0,0,0,.22);border-radius:9px;padding:7px 11px;min-width:52px;border:1px solid rgba(255,255,255,.12);">' +
-                    '<div style="font-size:.48rem;font-weight:900;color:rgba(255,255,255,.38);text-transform:uppercase;letter-spacing:.8px;margin-bottom:2px;">EXISTENCIA</div>' +
-                    (_catShowQty
-                      ? '<div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;font-size:1.55rem;color:' + stockColor + ';line-height:1;">' + _stReal + '</div>' +
-                        '<div style="font-size:.5rem;color:rgba(255,255,255,.32);font-weight:700;text-transform:uppercase;">UDS</div>'
-                      : '<div style="font-size:.65rem;font-weight:800;color:' + stockColor + ';line-height:1.2;text-transform:uppercase;">' + stockLabel + '</div>') +
-                    (_catShowOrden && exOrden > 0
-                      ? '<div style="margin-top:5px;padding-top:5px;border-top:1px dashed rgba(255,255,255,.15);">' +
-                          '<div style="font-size:.46rem;color:rgba(255,255,255,.28);font-weight:800;text-transform:uppercase;">ORDEN.</div>' +
-                          '<div style="font-family:\'Barlow Condensed\',sans-serif;font-size:1.05rem;font-weight:900;color:#fbbf24;line-height:1;">' + exOrden + '</div>' +
-                        '</div>'
-                      : '') +
+                    // ═══ LÓGICA MEJORADA: ORDENADA TIENE PRIORIDAD (IGUAL QUE PDF) ═══
+                    (exOrden > 0
+                      ? // SI HAY ORDENADA → Prioridad sobre stock normal
+                        (_catShowQty
+                          ? // CANTIDAD: ON → Mostrar número exacto de ordenada
+                            '<div style="font-size:.48rem;font-weight:900;color:#fbbf24;text-transform:uppercase;letter-spacing:.8px;margin-bottom:2px;">ORDENADA</div>' +
+                            '<div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;font-size:1.55rem;color:#fbbf24;line-height:1;">' + exOrden + '</div>' +
+                            '<div style="font-size:.5rem;color:rgba(251,191,36,.7);font-weight:700;text-transform:uppercase;">UDS</div>'
+                          : // CANTIDAD: OFF → Solo etiqueta ORDENADA
+                            '<div style="font-size:.65rem;font-weight:800;color:#fbbf24;line-height:1.2;text-transform:uppercase;background:rgba(251,191,36,.15);padding:4px 8px;border-radius:4px;">📦 ORDENADA</div>')
+                      : // NO HAY ORDENADA → Mostrar stock normal
+                        ('<div style="font-size:.48rem;font-weight:900;color:rgba(255,255,255,.38);text-transform:uppercase;letter-spacing:.8px;margin-bottom:2px;">EXISTENCIA</div>' +
+                        (_catShowQty
+                          ? '<div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;font-size:1.55rem;color:' + stockColor + ';line-height:1;">' + _stReal + '</div>' +
+                            '<div style="font-size:.5rem;color:rgba(255,255,255,.32);font-weight:700;text-transform:uppercase;">UDS</div>'
+                          : '<div style="font-size:.65rem;font-weight:800;color:' + stockColor + ';line-height:1.2;text-transform:uppercase;">' + stockLabel + '</div>'))) +
                   '</div>'
               )
           ) +
