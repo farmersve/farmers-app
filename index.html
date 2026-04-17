@@ -20935,10 +20935,49 @@ window.msImprimirSucursalUnica = function(suc) {
 };
 
 window.msGenerarEtiquetasPDF = function(sucsFiltradas) {
+  // ═══ SISTEMA DE TEST COMPLETO ═══
+  console.log('🧪 INICIANDO TEST COMPLETO DE ETIQUETAS');
+  var erroresEncontrados = [];
+  var warningsEncontrados = [];
+  
   var sucsAImprimir = (sucsFiltradas && sucsFiltradas.length) ? sucsFiltradas : MS.sucursales;
   var logoB64=typeof FARMERS_LOGO_B64!=='undefined'?FARMERS_LOGO_B64:'';
   var numP=MS.numPedido||'MS-?';
   var fecha=new Date().toLocaleDateString('es-VE');
+
+  // Pre-validaciones críticas
+  var pedidosGuardados = typeof getMsPedidos==='function' ? getMsPedidos() : [];
+  var pedidoActual = pedidosGuardados.find(function(p){ return p.numP === numP; });
+  
+  if(!pedidoActual) {
+    erroresEncontrados.push('❌ CRÍTICO: Pedido ' + numP + ' no encontrado en farmers_ms_pedidos');
+  }
+  if(!pedidoActual || !pedidoActual.items || pedidoActual.items.length === 0) {
+    erroresEncontrados.push('❌ CRÍTICO: Pedido sin items válidos');
+  }
+  
+  // Validar farmers_pt_data
+  var ptD={};
+  try{
+    var ptRaw=localStorage.getItem('farmers_pt_data');
+    if(ptRaw){
+      var ptArr=JSON.parse(ptRaw);
+      ptArr.forEach(function(x){ptD[x.r]=x;});
+      console.log('✅ farmers_pt_data cargado:', ptArr.length, 'referencias');
+    } else {
+      erroresEncontrados.push('❌ CRÍTICO: farmers_pt_data no disponible en localStorage');
+    }
+  }catch(e){
+    erroresEncontrados.push('❌ CRÍTICO: Error al cargar farmers_pt_data - ' + e.message);
+  }
+
+  // Mostrar errores críticos y abortar si es necesario
+  if(erroresEncontrados.length > 0) {
+    console.error('🚨 ERRORES CRÍTICOS ENCONTRADOS:');
+    erroresEncontrados.forEach(function(err){ console.error(err); });
+    showToast('Test falló: ' + erroresEncontrados.length + ' errores críticos - revisa la consola', 'error');
+    return;
+  }
 
   // Recolectar cajas por sucursal
   var etiquetas=[];
@@ -20952,71 +20991,93 @@ window.msGenerarEtiquetasPDF = function(sucsFiltradas) {
   }
 
   sucsAImprimir.forEach(function(suc) {
-    var idKey=suc.replace(/\W/g,'_'); // UNA sola regla consistente con \W
+    console.log('🔍 TESTANDO SUCURSAL:', suc);
+    
+    var idKey=suc.replace(/\W/g,'_'); 
     var inp=document.getElementById('cajas-'+idKey);
     var _fb=_etiqFallback[suc]||{};
     var numCajas=inp?parseInt(inp.value)||1:(parseInt(_fb.cajas)||1);
     var totalRef=0,totalUnd=0,totalVol=0,totalPeso=0;
-    var ptD={};
-    try{var ptRaw=localStorage.getItem('farmers_pt_data');if(ptRaw){var ptArr=JSON.parse(ptRaw);ptArr.forEach(function(x){ptD[x.r]=x;});}}catch(e){}
+    var refsConProblemas = [];
+    var refsExitosas = [];
     
-    // ESTRATEGIA 1: Calcular volumen CORRECTO desde MS.data 
-    // Proceso: ref -> vol_por_unidad -> cantidad_despacho -> vol_total
-    var volumenDebugLog = []; // para debug de clientes grandes
-    
-    if(typeof MS !== 'undefined' && MS.data && MS.data.length > 0) {
-      MS.data.forEach(function(p){
-        var pide=p.pedidos?p.pedidos[suc]||0:0; 
-        var d=p.dist?Math.min(p.dist[suc]||0,pide):pide;
-        if(d > 0) {
-          totalRef++;
-          totalUnd += d;
+    // ESTRATEGIA DIRECTA validada
+    if(pedidoActual && pedidoActual.items && pedidoActual.items.length > 0) {
+      console.log('📦 PROCESANDO', pedidoActual.items.length, 'items para sucursal:', suc);
+      
+      pedidoActual.items.forEach(function(item) {
+        var sucData = (item.sucursales || {})[suc];
+        if(sucData && sucData.desp > 0) {
+          var cantidadDesp = parseInt(sucData.desp) || 0;
           
-          // Buscar datos de volumen para esta referencia
-          var prodData = ptD[p.ref];
-          var volPorUnidad = 0;
-          
-          if(prodData && prodData.medidas) {
-            var med = prodData.medidas;
-            // Usar volDirecto si está disponible (ya es por unidad)
-            if(med.volDirecto && parseFloat(med.volDirecto) > 0) {
-              var volDirectoBulto = parseFloat(med.volDirecto);
-              var undPorBulto = getEmpaqueReal(p.ref);
-              if(undPorBulto > 0) {
+          if(cantidadDesp > 0) {
+            totalRef++;
+            totalUnd += cantidadDesp;
+            
+            // Validación detallada de volumen por referencia
+            var prodData = ptD[item.ref];
+            var volPorUnidad = 0;
+            var metodoVolumen = 'NINGUNO';
+            
+            if(prodData && prodData.medidas) {
+              var med = prodData.medidas;
+              // Prioridad 1: volDirecto
+              if(med.volDirecto && parseFloat(med.volDirecto) > 0) {
+                var volDirectoBulto = parseFloat(med.volDirecto);
+                var undPorBulto = getEmpaqueReal(item.ref) || 1;
                 volPorUnidad = volDirectoBulto / undPorBulto;
+                metodoVolumen = 'volDirecto/' + undPorBulto + 'u';
+              }
+              // Prioridad 2: L×A×H
+              else {
+                var l = parseFloat(med.largo) || 0;
+                var a = parseFloat(med.ancho) || 0;
+                var h = parseFloat(med.alto) || 0;
+                if(l > 0 && a > 0 && h > 0) {
+                  volPorUnidad = (l * a * h) / 28316.85; // cm³ a ft³
+                  metodoVolumen = 'L×A×H';
+                }
               }
             }
-            // Si no hay volDirecto, calcular desde L×A×H
-            else if(med.largo && med.ancho && med.alto) {
-              var l = parseFloat(med.largo)||0;
-              var a = parseFloat(med.ancho)||0; 
-              var h = parseFloat(med.alto)||0;
-              if(l > 0 && a > 0 && h > 0) {
-                volPorUnidad = (l * a * h) / 28316.85; // cm³ a ft³ por unidad
-              }
+            
+            // Aplicar tu fórmula: volumen_por_unidad × cantidad_solicitada
+            var volRef = volPorUnidad * cantidadDesp;
+            totalVol += volRef;
+            
+            // Registrar resultado de validación
+            if(volPorUnidad > 0) {
+              refsExitosas.push({
+                ref: item.ref,
+                cantidad: cantidadDesp,
+                vol_unidad: volPorUnidad.toFixed(6),
+                vol_total: volRef.toFixed(4),
+                metodo: metodoVolumen
+              });
+              console.log('✅', item.ref, '- Cant:', cantidadDesp, '- VolUnit:', volPorUnidad.toFixed(6), '- Método:', metodoVolumen);
+            } else {
+              refsConProblemas.push({
+                ref: item.ref,
+                cantidad: cantidadDesp,
+                problema: prodData ? (prodData.medidas ? 'Sin volDirecto ni L×A×H válidos' : 'Sin objeto medidas') : 'Ref no encontrada en farmers_pt_data'
+              });
+              console.warn('⚠️', item.ref, '- Cant:', cantidadDesp, '- VolUnit: 0.0000 - PROBLEMA:', prodData ? 'Sin datos volumen' : 'Ref no existe');
             }
           }
-          
-          // Aplicar fórmula: volumen_por_unidad × cantidad_solicitada
-          var volRef = volPorUnidad * d;
-          totalVol += volRef;
-          
-          // Log para debug (especialmente clientes grandes)
-          volumenDebugLog.push({
-            ref: p.ref,
-            vol_por_unidad: volPorUnidad.toFixed(4),
-            cantidad: d,
-            vol_total_ref: volRef.toFixed(4)
-          });
         }
       });
       
-      // Debug para clientes grandes - mostrar cálculo detallado
-      if(totalRef > 20) { // clientes grandes como Inversiones Oriente
-        console.log('🏷️ VOLUMEN DEBUG CLIENTE GRANDE:', suc);
-        console.log('   Total refs:', totalRef, '| Total uds:', totalUnd, '| Vol ft³:', totalVol.toFixed(4));
-        console.log('   Detalle por referencia:', volumenDebugLog.slice(0, 5)); // primeras 5 refs
+      // Reportar resultados de validación para esta sucursal
+      console.log('📊 RESULTADO FINAL:', suc, '| Refs:', totalRef, '| Uds:', totalUnd, '| Vol ft³:', totalVol.toFixed(4));
+      console.log('✅ REFS EXITOSAS:', refsExitosas.length, '/', (refsExitosas.length + refsConProblemas.length));
+      
+      if(refsConProblemas.length > 0) {
+        warningsEncontrados.push('⚠️ ' + suc + ': ' + refsConProblemas.length + ' refs sin volumen: ' + refsConProblemas.slice(0,3).map(function(r){return r.ref;}).join(', '));
+        console.warn('⚠️ REFS CON PROBLEMAS EN', suc, ':', refsConProblemas);
       }
+      
+    } else {
+      erroresEncontrados.push('❌ ' + suc + ': No se pudo acceder a items del pedido');
+      console.error('❌ FALLO EN', suc, ': pedido no válido');
     }
     
     // ESTRATEGIA 2: Usar datos del formulario si Strategy 1 falló
@@ -21105,7 +21166,26 @@ window.msGenerarEtiquetasPDF = function(sucsFiltradas) {
     }
   });
 
-  if(!etiquetas.length){showToast('No hay etiquetas para generar','warn');return;}
+  // ═══ REPORTE FINAL DEL TEST COMPLETO ═══
+  console.log('📋 REPORTE FINAL DEL TEST COMPLETO:');
+  console.log('   🎯 Pedido:', numP);
+  console.log('   📦 Sucursales procesadas:', sucsAImprimir.length);
+  console.log('   🏷️ Etiquetas a generar:', etiquetas.length);
+  
+  if(warningsEncontrados.length > 0) {
+    console.log('   ⚠️ Warnings encontrados:', warningsEncontrados.length);
+    warningsEncontrados.forEach(function(warn){ console.warn(warn); });
+    showToast('Test completado con ' + warningsEncontrados.length + ' warnings - revisa consola', 'warn');
+  } else {
+    console.log('   ✅ TEST PERFECTO - sin problemas detectados');
+    showToast('✅ Test completo exitoso - todas las etiquetas perfectas', 'success');
+  }
+
+  if(!etiquetas.length){
+    console.error('❌ FALLO CRÍTICO: No hay etiquetas para generar');
+    showToast('Test falló: No hay etiquetas para generar','error');
+    return;
+  }
 
   // ── Marcar sucursales impresas como EMBALADO ────
   if(!MS.sucursalesEstado) MS.sucursalesEstado = {};
