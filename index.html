@@ -20909,8 +20909,8 @@ window.msAbrirEtiquetas = function() {
   btnC.onclick = function(){ov.remove();};
 
   var btnG = document.createElement('button');
-  btnG.innerHTML = '🖨 Imprimir seleccionadas';
-  btnG.style.cssText = 'background:#7c3aed;color:white;border:none;border-radius:8px;padding:10px 22px;cursor:pointer;font-weight:700;font-size:.82rem;';
+  btnG.innerHTML = '🖨 Etiquetas de bulto';
+  btnG.style.cssText = 'background:#7c3aed;color:white;border:none;border-radius:8px;padding:10px 22px;cursor:pointer;font-weight:700;font-size:.82rem;margin-right:8px;';
   btnG.onclick = function(){
     var sucsSel = MS.sucursales.filter(function(s){
       var c=document.getElementById('chk-etiq-'+s.replace(/\W/g,'_'));
@@ -20920,8 +20920,21 @@ window.msAbrirEtiquetas = function() {
     msGenerarEtiquetasPDF(sucsSel);
   };
 
+  var btnD = document.createElement('button');
+  btnD.innerHTML = '📦 Etiquetas de despacho';
+  btnD.style.cssText = 'background:#0d9488;color:white;border:none;border-radius:8px;padding:10px 22px;cursor:pointer;font-weight:700;font-size:.82rem;';
+  btnD.onclick = function(){
+    var sucsSel = MS.sucursales.filter(function(s){
+      var c=document.getElementById('chk-etiq-'+s.replace(/\W/g,'_'));
+      return c && c.checked;
+    });
+    if(!sucsSel.length){ showToast('Selecciona al menos una sucursal','warn'); return; }
+    msGenerarEtiquetasDespacho(sucsSel);
+  };
+
   rightBtns.appendChild(btnC);
   rightBtns.appendChild(btnG);
+  rightBtns.appendChild(btnD);
   footer.appendChild(rightBtns);
 
   box.appendChild(footer);
@@ -20940,23 +20953,6 @@ window.msGenerarEtiquetasPDF = function(sucsFiltradas) {
   var numP=MS.numPedido||'MS-?';
   var fecha=new Date().toLocaleDateString('es-VE');
 
-  console.log('🏷️ GENERANDO ETIQUETAS SIN VALIDACIONES CRÍTICAS (fix rápido)');
-  
-  // Cargar datos básicos sin validaciones que bloqueen
-  var pedidosGuardados = typeof getMsPedidos==='function' ? getMsPedidos() : [];
-  var pedidoActual = pedidosGuardados.find(function(p){ return p.numP === numP; });
-  var ptD={};
-  try{
-    var ptRaw=localStorage.getItem('farmers_pt_data');
-    if(ptRaw){
-      var ptArr=JSON.parse(ptRaw);
-      ptArr.forEach(function(x){ptD[x.r]=x;});
-      console.log('✅ farmers_pt_data cargado:', ptArr.length, 'referencias');
-    }
-  }catch(e){
-    console.warn('⚠️ Error cargando farmers_pt_data:', e.message);
-  }
-
   // Recolectar cajas por sucursal
   var etiquetas=[];
   // Pre-cargar etiqData desde localStorage para fallback cuando el formulario no está abierto
@@ -20969,75 +20965,40 @@ window.msGenerarEtiquetasPDF = function(sucsFiltradas) {
   }
 
   sucsAImprimir.forEach(function(suc) {
-    console.log('📦 PROCESANDO SUCURSAL:', suc);
-    
-    var idKey=suc.replace(/\W/g,'_'); 
+    var idKey=suc.replace(/\W/g,'_'); // UNA sola regla consistente con \W
     var inp=document.getElementById('cajas-'+idKey);
     var _fb=_etiqFallback[suc]||{};
     var numCajas=inp?parseInt(inp.value)||1:(parseInt(_fb.cajas)||1);
     var totalRef=0,totalUnd=0,totalVol=0,totalPeso=0;
+    var ptD={};
+    try{var ptRaw=localStorage.getItem('farmers_pt_data');if(ptRaw){var ptArr=JSON.parse(ptRaw);ptArr.forEach(function(x){ptD[x.r]=x;});}}catch(e){}
     
-    // ESTRATEGIA DIRECTA SIMPLIFICADA
-    if(pedidoActual && pedidoActual.items && pedidoActual.items.length > 0) {
-      pedidoActual.items.forEach(function(item) {
-        var sucData = (item.sucursales || {})[suc];
-        if(sucData && sucData.desp > 0) {
-          var cantidadDesp = parseInt(sucData.desp) || 0;
-          
-          if(cantidadDesp > 0) {
-            totalRef++;
-            totalUnd += cantidadDesp;
-            
-            // Cálculo de volumen simplificado
-            var prodData = ptD[item.ref];
-            var volPorUnidad = 0;
-            
-            if(prodData && prodData.medidas) {
-              var med = prodData.medidas;
-              // volDirecto
-              if(med.volDirecto && parseFloat(med.volDirecto) > 0) {
-                var volDirectoBulto = parseFloat(med.volDirecto);
-                var undPorBulto = getEmpaqueReal(item.ref) || 1;
-                volPorUnidad = volDirectoBulto / undPorBulto;
-              }
-              // L×A×H
-              else {
-                var l = parseFloat(med.largo) || 0;
-                var a = parseFloat(med.ancho) || 0;
-                var h = parseFloat(med.alto) || 0;
-                if(l > 0 && a > 0 && h > 0) {
-                  volPorUnidad = (l * a * h) / 28316.85;
-                }
-              }
-            }
-            
-            // Tu fórmula: volumen_por_unidad × cantidad_solicitada
-            totalVol += volPorUnidad * cantidadDesp;
-          }
-        }
-      });
-      
-      console.log('✅ RESULTADO:', suc, '| Refs:', totalRef, '| Uds:', totalUnd, '| Vol ft³:', totalVol.toFixed(4));
-    } 
-    
-    // FALLBACK para casos problemáticos - usar datos de MS.data si están disponibles
-    if(totalRef === 0 && typeof MS !== 'undefined' && MS.data && MS.data.length > 0) {
-      console.log('📋 USANDO FALLBACK MS.data para', suc);
+    // ESTRATEGIA 1: Calcular desde MS.data (más preciso)
+    if(typeof MS !== 'undefined' && MS.data && MS.data.length > 0) {
       MS.data.forEach(function(p){
-        var d = (p.dist && p.dist[suc]) ? p.dist[suc] : 0;
+        var pide=p.pedidos?p.pedidos[suc]||0:0; 
+        var d=p.dist?Math.min(p.dist[suc]||0,pide):pide;
         if(d > 0) {
           totalRef++;
           totalUnd += d;
-          totalVol += d * 0.015; // estimación conservadora
+          // Buscar datos de esta referencia en farmers_pt_data
+          var prodData = ptD[p.ref];
+          if(prodData && prodData.medidas) {
+            var med = prodData.medidas;
+            var volPorBulto = parseFloat(med.volDirecto) || 0;
+            var undPorBulto = getEmpaqueReal(p.ref); // CORREGIDO: usar empaque real, no precios
+            console.log('🏷️ ETIQUETA VOLUMEN:', p.ref, 'volPorBulto:', volPorBulto, 'undPorBulto:', undPorBulto, 'cantidad:', d);
+            if(volPorBulto > 0 && undPorBulto > 0) {
+              var volPorUnidad = volPorBulto / undPorBulto;
+              totalVol += volPorUnidad * d;
+            } else {
+              totalVol += 0.01 * d; // fallback básico
+            }
+          } else {
+            totalVol += 0.01 * d; // fallback si no encuentra ref
+          }
         }
       });
-      console.log('⚠️ FALLBACK RESULTADO:', suc, '| Refs:', totalRef, '| Uds:', totalUnd, '| Vol estimado:', totalVol.toFixed(4));
-    }
-    
-    // Si aún no hay datos, usar mínimos para evitar crash
-    if(totalRef === 0) {
-      console.warn('⚠️ SIN DATOS para', suc, '- usando valores mínimos');
-      totalRef = 1; totalUnd = 1; totalVol = 0.01;
     }
     
     // ESTRATEGIA 2: Usar datos del formulario si Strategy 1 falló
@@ -21076,34 +21037,10 @@ window.msGenerarEtiquetasPDF = function(sucsFiltradas) {
       }
     }
     
-    // Solo si NO se encontraron datos específicos, usar fallback seguro
+    // Solo si NO se encontraron datos específicos, reportar error
     if(totalRef === 0 && totalUnd === 0) {
-      console.warn('⚠️ FALLBACK ACTIVADO para sucursal:', suc);
-      // Buscar datos alternativos del pedido completo
-      if(typeof MS !== 'undefined' && MS.data && MS.data.length) {
-        // Calcular totales conservadores basados en todo el pedido
-        var totalPedidoRefs = 0, totalPedidoUds = 0;
-        MS.data.forEach(function(p) {
-          var cantSuc = (p.dist && p.dist[suc]) ? p.dist[suc] : ((p.pedidos && p.pedidos[suc]) ? p.pedidos[suc] : 0);
-          if(cantSuc > 0) {
-            totalPedidoRefs++;
-            totalPedidoUds += cantSuc;
-          }
-        });
-        if(totalPedidoRefs > 0) {
-          totalRef = totalPedidoRefs;
-          totalUnd = totalPedidoUds;
-          totalVol = totalPedidoUds * 0.015; // estimación conservadora 0.015 ft³/ud
-          console.log('📦 FALLBACK OK:', suc, '-> refs:', totalRef, 'uds:', totalUnd, 'vol:', totalVol.toFixed(4));
-        }
-      }
-      
-      // Si aún fallan los datos, evitar crash completo
-      if(totalRef === 0 && totalUnd === 0) {
-        console.error('❌ ERROR CRÍTICO: Sin datos para', suc);
-        totalRef = 1; totalUnd = 1; totalVol = 0.01; // mínimos para evitar crash
-        showToast('Datos incompletos para ' + suc + ' - revisa el pedido', 'warn');
-      }
+      console.error('ERROR: No se encontraron datos para sucursal: ' + suc);
+      // NO usar valores ficticios - mantener en 0 para detectar el problema
     }
     // Leer inputs del formulario — con fallback completo a localStorage/pedido guardado
     var rifInput  =document.getElementById('rif-'+idKey);
@@ -21126,19 +21063,7 @@ window.msGenerarEtiquetasPDF = function(sucsFiltradas) {
     }
   });
 
-  console.log('📋 ETIQUETAS GENERADAS CON FIX RÁPIDO');
-  console.log('   🎯 Pedido:', numP);
-  console.log('   📦 Sucursales procesadas:', sucsAImprimir.length);
-  console.log('   🏷️ Total etiquetas:', etiquetas.length);
-
-  if(!etiquetas.length){
-    console.warn('⚠️ No hay etiquetas para generar - usando valores por defecto');
-    // Crear al menos una etiqueta de emergencia
-    etiquetas.push({
-      suc:'DEFAULT',nom:'SUCURSAL DEFAULT',caja:1,total:1,refs:1,uds:1,vol:0.01,peso:0,
-      numP:numP,fecha:fecha,rif:'J-000000000',rs:'CLIENTE DEFAULT',dir:'VENEZUELA',oc:''
-    });
-  }
+  if(!etiquetas.length){showToast('No hay etiquetas para generar','warn');return;}
 
   // ── Marcar sucursales impresas como EMBALADO ────
   if(!MS.sucursalesEstado) MS.sucursalesEstado = {};
@@ -34566,6 +34491,111 @@ setTimeout(function() {
     testVolumenCorregido();
   }
 }, 2000);
+
+// ═══ ETIQUETAS DE DESPACHO (PARA SOBRES) - VERSIÓN LIMPIA ═══
+window.msGenerarEtiquetasDespacho = function(sucsFiltradas) {
+  var sucsAImprimir = (sucsFiltradas && sucsFiltradas.length) ? sucsFiltradas : MS.sucursales;
+  var logoB64=typeof FARMERS_LOGO_B64!=='undefined'?FARMERS_LOGO_B64:'';
+  var numP=MS.numPedido||'MS-?';
+  var fecha=new Date().toLocaleDateString('es-VE');
+
+  console.log('📦 GENERANDO ETIQUETAS DE DESPACHO (SOBRES)');
+  
+  var pedidosGuardados = typeof getMsPedidos==='function' ? getMsPedidos() : [];
+  var pedidoActual = pedidosGuardados.find(function(p){ return p.numP === numP; });
+  var ptD={};
+  try{
+    var ptRaw=localStorage.getItem('farmers_pt_data');
+    if(ptRaw){
+      var ptArr=JSON.parse(ptRaw);
+      ptArr.forEach(function(x){ptD[x.r]=x;});
+    }
+  }catch(e){}
+
+  var _etiqFallback={};
+  try{ _etiqFallback=JSON.parse(localStorage.getItem('ms_etiq_'+numP)||'{}'); }catch(e){}
+  if(typeof getMsPedidos==='function'){
+    var _pedFB=(getMsPedidos()||[]).find(function(p){return p.numP===numP;});
+    if(_pedFB&&_pedFB.etiqData) Object.assign(_etiqFallback,_pedFB.etiqData);
+  }
+
+  var etiquetasDespacho=[];
+  
+  sucsAImprimir.forEach(function(suc) {
+    var idKey=suc.replace(/\W/g,'_'); 
+    var inp=document.getElementById('cajas-'+idKey);
+    var _fb=_etiqFallback[suc]||{};
+    var numBultosTotal=inp?parseInt(inp.value)||1:(parseInt(_fb.cajas)||1);
+    var totalRef=0,totalUnd=0,totalVol=0;
+    
+    if(pedidoActual && pedidoActual.items && pedidoActual.items.length > 0) {
+      pedidoActual.items.forEach(function(item) {
+        var sucData = (item.sucursales || {})[suc];
+        if(sucData && sucData.desp > 0) {
+          var cantidadDesp = parseInt(sucData.desp) || 0;
+          if(cantidadDesp > 0) {
+            totalRef++;
+            totalUnd += cantidadDesp;
+            var prodData = ptD[item.ref];
+            var volPorUnidad = 0;
+            if(prodData && prodData.medidas && prodData.medidas.volDirecto) {
+              var volDirectoBulto = parseFloat(prodData.medidas.volDirecto);
+              var undPorBulto = getEmpaqueReal(item.ref) || 1;
+              volPorUnidad = volDirectoBulto / undPorBulto;
+            }
+            totalVol += volPorUnidad * cantidadDesp;
+          }
+        }
+      });
+    }
+    
+    if(totalRef === 0) {
+      totalRef = 1; totalUnd = 1; totalVol = 0.01;
+    }
+
+    var rifInput  =document.getElementById('rif-'+idKey);
+    var rsInput   =document.getElementById('rs-'+idKey);
+    var ocInput   =document.getElementById('oc-'+idKey);
+    var nomInput2 =document.getElementById('nom-'+idKey);
+    var rifCliente  =(rifInput&&rifInput.value.trim())||_fb.rif||'S/RIF';
+    var razonSocial =((rsInput&&rsInput.value.trim())||_fb.rs||'CLIENTE SIN ESPECIFICAR').toUpperCase();
+    var ordenCompra =(ocInput&&ocInput.value.trim())||_fb.oc||'';
+    var nomSucursal =(nomInput2&&nomInput2.value.trim())||_fb.nom||suc;
+    
+    etiquetasDespacho.push({
+      suc:suc,nom:nomSucursal,totalBultos:numBultosTotal,refs:totalRef,uds:totalUnd,vol:totalVol,
+      numP:numP,fecha:fecha,rif:rifCliente,rs:razonSocial,oc:ordenCompra
+    });
+  });
+
+  if(!etiquetasDespacho.length){
+    showToast('No hay despachos para etiquetar','warn');
+    return;
+  }
+
+  var estilos='<style>@page{size:A4 portrait;margin:8mm;}*{box-sizing:border-box;margin:0;padding:0;text-transform:uppercase;-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important;}body{font-family:Arial,sans-serif;background:white;}.grid{display:grid;grid-template-columns:1fr 1fr;gap:7mm;}.etq{border:2.5px solid #1a2050;border-radius:7px;padding:7px;height:auto;display:flex;flex-direction:column;overflow:hidden;page-break-inside:avoid;}.etq-hdr{background:#1a2050;color:white;padding:5px 10px;border-radius:4px;display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;flex-shrink:0;}.etq-logo{height:22px;}.etq-pedido{font-size:8px;font-weight:900;letter-spacing:1px;color:rgba(255,255,255,.9);background:rgba(255,255,255,.15);border-radius:3px;padding:2px 6px;}.etq-body{display:flex;flex:1;gap:8px;min-height:0;}.etq-info{flex:1;display:flex;flex-direction:column;justify-content:space-between;}.etq-empresa{font-size:7.5px;font-weight:700;color:#F47B3E;letter-spacing:.8px;border-bottom:1px solid #f1f5f9;padding-bottom:3px;margin-bottom:3px;}.etq-dest-lbl{font-size:8px;font-weight:700;color:#94a3b8;letter-spacing:.8px;margin-bottom:2px;}.etq-suc{font-size:10px;font-weight:900;color:#1a2050;letter-spacing:.5px;margin-bottom:3px;}.etq-rs{font-size:8.5px;font-weight:700;color:#1a2050;margin-bottom:2px;}.etq-rif{font-size:7.5px;color:#64748b;font-weight:700;margin-bottom:4px;}.etq-meta{display:flex;flex-direction:column;gap:2px;}.etq-fecha{font-size:9px;color:#475569;font-weight:700;}.etq-totales{display:flex;flex-wrap:wrap;gap:2px;align-items:center;margin-top:2px;}.etq-tot-item{font-size:8.5px;font-weight:900;color:#1a2050;text-transform:uppercase;letter-spacing:.3px;}.etq-tot-sep{font-size:7px;color:#94a3b8;font-weight:700;}.etq-footer{border-top:1.5px solid #1a2050;padding-top:4px;margin-top:4px;display:flex;justify-content:space-between;align-items:center;flex-shrink:0;}.etq-dir{font-size:7px;color:#475569;font-weight:700;}.etq-tel{font-size:8.5px;color:#1a2050;font-weight:900;letter-spacing:.3px;}.noprint{display:block;text-align:center;padding:16px;}@media print{.noprint{display:none!important;}body{margin:0;}@page{size:A4 portrait;margin:8mm;}}</style>';
+
+  var paginas=[];
+  for(var i=0;i<etiquetasDespacho.length;i+=8){
+    paginas.push(etiquetasDespacho.slice(i,i+8));
+  }
+
+  var paginasHtml=paginas.map(function(pag,pi){
+    var items=pag.map(function(e){
+      return '<div class="etq"><div class="etq-hdr">'+(logoB64?'<img class="etq-logo" src="'+logoB64+'" alt="Farmers">':'<span style="font-size:10px;font-weight:900;letter-spacing:1.5px;">FARMERS C.A.</span>')+'<span class="etq-pedido">N° '+e.numP+'</span></div><div class="etq-body"><div class="etq-info"><div class="etq-empresa">REMITENTE: FARMERS C.A. · RIF J-401008631</div><div class="etq-dest-lbl">DESTINATARIO:</div><div class="etq-suc">'+e.nom.toUpperCase()+'</div><div class="etq-rs">'+e.rs+'</div><div class="etq-rif">RIF: '+e.rif+'</div>'+(e.oc?'<div style="font-size:9px;font-weight:800;color:#0d9488;margin-top:2px;letter-spacing:.3px;">N° ORDEN DE COMPRA: '+e.oc+'</div>':'')+'<div class="etq-meta"><div class="etq-fecha">FECHA DESPACHO: '+e.fecha+'</div><div class="etq-totales"><span class="etq-tot-item">'+e.refs+' REF</span><span class="etq-tot-sep">·</span><span class="etq-tot-item">'+e.uds.toLocaleString()+' UDS</span>'+(e.vol>0?'<span class="etq-tot-sep">·</span><span class="etq-tot-item">'+e.vol.toFixed(2)+' FT³</span>':'')+'</div></div></div><div class="etq-qr"><div style="width:95px;height:95px;border:2px solid #1a2050;border-radius:5px;display:flex;flex-direction:column;align-items:center;justify-content:center;background:white;"><div style="font-size:8px;font-weight:800;color:#1a2050;text-transform:uppercase;letter-spacing:1px;margin-bottom:2px;">DESPACHO</div><div style="width:100%;height:1px;background:#1a2050;margin-bottom:6px;"></div><div style="font-size:18px;font-weight:900;color:#1a2050;line-height:1;font-family:Arial Black,sans-serif;margin-bottom:2px;">'+e.totalBultos+'</div><div style="font-size:8px;font-weight:800;color:#1a2050;text-transform:uppercase;letter-spacing:1px;">BULTOS</div></div></div></div><div class="etq-footer"><span class="etq-dir">MARGARITA, NUEVA ESPARTA · FARMERSVE@GMAIL.COM</span><span class="etq-tel">0412-044 5797</span></div></div>';
+    }).join('');
+    var pageBreak=pi>0?'style="page-break-before:always;margin-top:0;"':'';
+    return '<div class="grid" '+pageBreak+'>'+items+'</div>';
+  }).join('');
+
+  var html='<!DOCTYPE html><html><head><meta charset="UTF-8">'+estilos+'</head><body><div class="noprint" style="margin-bottom:12px;"><button onclick="window.print()" style="background:#1a2050;color:white;border:none;border-radius:8px;padding:10px 28px;cursor:pointer;font-size:.9rem;font-weight:700;margin-right:8px;">🖨️ Imprimir etiquetas de despacho ('+etiquetasDespacho.length+')</button><button onclick="window.close()" style="background:#f1f5f9;color:#475569;border:1px solid #cbd5e1;border-radius:8px;padding:10px 18px;cursor:pointer;font-size:.9rem;">Cerrar</button><span style="margin-left:16px;font-size:.8rem;color:#64748b;">'+etiquetasDespacho.length+' etiquetas de despacho</span></div>'+paginasHtml+'</body></html>';
+
+  var ov=document.getElementById('ms-etiquetas-overlay');if(ov)ov.remove();
+  var w=window.open('','_blank','width=900,height=950');
+  if(w){w.document.write(html);w.document.close();}
+  else showToast('Permite ventanas emergentes','warn');
+  showToast('📦 '+etiquetasDespacho.length+' etiquetas de despacho generadas','success');
+};
 
 </script>
 </body>
