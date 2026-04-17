@@ -20449,7 +20449,7 @@ window.msExportarPedidoExcel = function(ped) {
       
       // CABECERA DE PRODUCTOS (Filas 5-6)
       ['PRODUCTOS Y DESPACHO'],
-      ['REFERENCIA','DESCRIPCIÓN','CÓD.BARRA','CÓDIGO','STOCK','PEDIDO','DESPACHO','DIFERENCIA','P.'+monC,'VENTA '+monC],
+      ['REFERENCIA','DESCRIPCIÓN','CÓD.BARRA','CÓDIGO','ESTADO','STOCK','PEDIDO','DESPACHO','DIFERENCIA','P.'+monC,'VENTA '+monC],
     ];
 
     var totalVenta=0;
@@ -20471,20 +20471,33 @@ window.msExportarPedidoExcel = function(ped) {
       var venta=fmt2(precio*desp);
       totalVenta+=venta;
       
+      // ═══ CÁLCULO DEL ESTADO NUEVO SISTEMA (OMAR) ═══
+      var estado;
+      if (desp === 0 && pide > 0) {
+        estado = 'NEGATIVO';  // No se despachó por falta de inventario
+      } else if (desp > 0 && desp < pide) {
+        estado = 'NEUTRO';    // Se despachó parte por falta de stock completo
+      } else if (desp === pide && pide > 0) {
+        estado = 'POSITIVO';  // Se despachó todo lo que pidió
+      } else {
+        estado = 'NEUTRO';    // Casos especiales
+      }
+      
       rows.push([
         item.ref,
         (p?p.d:item.desc||item.ref).toUpperCase(),
         p?p.b||'':'', p?p.c||'':'',
+        estado,
         stockReal, pide, desp, pide-desp,
         fmt2(precio), venta
       ]);
     });
 
     // SECCIÓN DE TOTALES (Mejorada y organizada)
-    rows.push(['','','','','','','','','','']); // Línea separadora
-    rows.push(['','','','','','','','','TOTAL REFERENCIAS:',totalRefs]);
-    rows.push(['','','','','','','','','TOTAL UNIDADES:',totalUnidades]);
-    rows.push(['','','','','','','','','TOTAL '+monC+':',fmt2(totalVenta)]);
+    rows.push(['','','','','','','','','','','']); // Línea separadora (11 columnas)
+    rows.push(['','','','','','','','','TOTAL REFERENCIAS:',totalRefs,'']);
+    rows.push(['','','','','','','','','TOTAL UNIDADES:',totalUnidades,'']);
+    rows.push(['','','','','','','','','TOTAL '+monC+':',fmt2(totalVenta),'']);
 
     var ws=XLSX.utils.aoa_to_sheet(rows);
     
@@ -20494,6 +20507,7 @@ window.msExportarPedidoExcel = function(ped) {
       {wch:45},  // DESCRIPCIÓN  
       {wch:18},  // CÓD.BARRA
       {wch:18},  // CÓDIGO
+      {wch:12},  // ESTADO
       {wch:8},   // STOCK
       {wch:8},   // PEDIDO
       {wch:9},   // DESPACHO
@@ -20541,18 +20555,48 @@ window.msExportarPedidoExcel = function(ped) {
     });
     
     // Cabecera de productos (fila 6)
-    ['A7','B7','C7','D7','E7','F7','G7','H7','I7','J7'].forEach(function(c){
+    ['A7','B7','C7','D7','E7','F7','G7','H7','I7','J7','K7'].forEach(function(c){
       styleCell(ws,c,'1E40AF',mkFont('FFFFFF',true,10),{horizontal:'center',vertical:'center'},mkBorder());
     });
 
     // ═══ MERGES PERFECTAMENTE ORGANIZADOS ═══
     if(!ws['!merges']) ws['!merges']=[];
     // Título principal (fila 0)
-    ws['!merges'].push({s:{r:0,c:0},e:{r:0,c:9}});
+    ws['!merges'].push({s:{r:0,c:0},e:{r:0,c:10}});
     // Secciones de encabezado
-    ws['!merges'].push({s:{r:1,c:0},e:{r:1,c:9}});  // "INFORMACIÓN DEL PEDIDO"
-    ws['!merges'].push({s:{r:3,c:0},e:{r:3,c:9}});  // "DATOS DEL CLIENTE"  
-    ws['!merges'].push({s:{r:5,c:0},e:{r:5,c:9}});  // "PRODUCTOS Y DESPACHO"
+    ws['!merges'].push({s:{r:1,c:0},e:{r:1,c:10}});  // "INFORMACIÓN DEL PEDIDO"
+    ws['!merges'].push({s:{r:3,c:0},e:{r:3,c:10}});  // "DATOS DEL CLIENTE"  
+    ws['!merges'].push({s:{r:5,c:0},e:{r:5,c:10}});  // "PRODUCTOS Y DESPACHO"
+
+    // ═══ ESTILOS PARA LOS ESTADOS (COLORES) ═══
+    // Recorrer las filas de productos para aplicar colores a la columna ESTADO (E)
+    var startRow = 8; // Las filas de productos empiezan en la fila 8 (índice 7)
+    (ped.items||[]).forEach(function(item, index) {
+      var suc = MS.sucursales ? MS.sucursales[0] : null; // Primera sucursal como referencia
+      if (!suc) return;
+      
+      var sd = (item.sucursales||{})[suc]||{pide:0,desp:0};
+      var pide = parseInt(sd.pide)||0;
+      var desp = parseInt(sd.desp)||0;
+      
+      if (!pide && !desp) return;
+      
+      var rowIdx = startRow + index;
+      var estadoCell = 'E' + rowIdx;
+      
+      // Aplicar colores según el estado
+      var estado;
+      if (desp === 0 && pide > 0) {
+        estado = 'NEGATIVO';
+        styleCell(ws, estadoCell, 'FEE2E2', mkFont('991B1B', true, 10), {horizontal:'center',vertical:'center'}, mkBorder());
+      } else if (desp > 0 && desp < pide) {
+        estado = 'NEUTRO';
+        styleCell(ws, estadoCell, 'FEF3C7', mkFont('92400E', true, 10), {horizontal:'center',vertical:'center'}, mkBorder());
+      } else if (desp === pide && pide > 0) {
+        estado = 'POSITIVO';
+        styleCell(ws, estadoCell, 'DCFCE7', mkFont('065F46', true, 10), {horizontal:'center',vertical:'center'}, mkBorder());
+      }
+    });
 
     return ws;
   }
@@ -20590,7 +20634,18 @@ window.msExportarPedidoExcel = function(ped) {
       });
       var ventaTotal=fmt2(precio*totalDesp);
       grandTotal+=ventaTotal; grandDesp+=totalDesp;
-      var estado=item.estado||'COMPLETO';
+      
+      // ═══ CÁLCULO DEL ESTADO NUEVO SISTEMA (OMAR) ═══
+      var estado;
+      if (totalDesp === 0 && totalPide > 0) {
+        estado = 'NEGATIVO';  // No se despachó por falta de inventario
+      } else if (totalDesp > 0 && totalDesp < totalPide) {
+        estado = 'NEUTRO';    // Se despachó parte por falta de stock completo
+      } else if (totalDesp === totalPide && totalPide > 0) {
+        estado = 'POSITIVO';  // Se despachó todo lo que pidió
+      } else {
+        estado = 'NEUTRO';    // Casos especiales
+      }
 
       var row=[item.ref,(p?p.d:item.desc||'').toUpperCase(),p?p.b||'':'',p?p.c||'':'',
                stockReal,fmt2(precio),totalPide,totalDesp,ventaTotal,estado];
