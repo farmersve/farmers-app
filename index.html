@@ -10008,10 +10008,25 @@ function _catPasaFiltroStock(p, inv) {
   var filtro = (typeof _refStockFilters !== 'undefined') ? _refStockFilters : new Set(['ALL']);
   if (filtro.has('ALL')) return true;
   var ex = _catGetStock(p, inv);
+  
   // Filtros exclusivos — uno solo activo a la vez
   if (filtro.has('IN'))  return ex > 10;            // Con stock: más de 10 unidades
   if (filtro.has('LOW')) return ex > 0 && ex <= 10; // Bajo stock: entre 1 y 10 unidades
   if (filtro.has('OUT')) return ex === 0;            // Agotados: 0 unidades
+  
+  // ═══ NUEVO: Filtro Con Ordenada ═══
+  if (filtro.has('ORD')) {
+    // Leer ptData para verificar exOrdenada
+    var _ptDataFiltro = {};
+    try { 
+      _ptDataFiltro = JSON.parse(localStorage.getItem('farmers_pt_data') || '{}'); 
+    } catch(e) {}
+    
+    var exOrden = (_ptDataFiltro[p.r] && _ptDataFiltro[p.r].exOrdenada) ? 
+                  parseInt(_ptDataFiltro[p.r].exOrdenada) : 0;
+    return exOrden > 0;  // Tiene cantidad ordenada
+  }
+  
   return true;
 }
 
@@ -10234,9 +10249,9 @@ function catDownloadExcel(monedasParam) {
       if (!modoCliente) {
         heads  = ['REFERENCIA','COD. BARRAS','COD. INTERNO','DESCRIPCION',
                   'EMPAQUE','MED/CAJA','MARCA',
-                  'PRECIO '+monLabel+' ($)','ORDEN','TOTAL ($)','EXISTENCIA','EXIST. TOTAL'];
-        widths = [13,17,15,48,10,10,12,14,9,14,11,12];
-        colP=8; colO=9; colT=10; ncols=12;
+                  'PRECIO '+monLabel+' ($)','ORDEN','TOTAL ($)','EXISTENCIA','ORDENADA','EXIST. TOTAL'];
+        widths = [13,17,15,48,10,10,12,14,9,14,11,12,12];
+        colP=8; colO=9; colT=10; colOrd=12; ncols=13;
       } else {
         heads  = ['REFERENCIA','COD. BARRAS','DESCRIPCION',
                   'EMPAQUE','MED/CAJA','MARCA',
@@ -10248,13 +10263,22 @@ function catDownloadExcel(monedasParam) {
       var rows = prods.map(function(p, i) {
         var precio = parseFloat((p[campo]||0).toFixed(4));
         var ex     = _catGetStock(p, inv);
+        
+        // ═══ LEER CANTIDAD ORDENADA ═══
+        var ptDataExcel = {};
+        try { 
+          ptDataExcel = JSON.parse(localStorage.getItem('farmers_pt_data') || '{}'); 
+        } catch(e) {}
+        var exOrdenada = (ptDataExcel[p.r] && ptDataExcel[p.r].exOrdenada) ? 
+                         parseInt(ptDataExcel[p.r].exOrdenada) : 0;
+        
         var fila   = i + 6;
         var ordRef = XLSX.utils.encode_col(colO-1) + fila;
         var preRef = XLSX.utils.encode_col(colP-1) + fila;
         if (!modoCliente) {
           return [p.r||'', String(p.b||''), p.c||'', p.d||'',
                   p.e||'UNIDAD', p.m||'', p.br||'',
-                  precio, null, {f: ordRef+'*'+preRef}, ex, ex];  // EXIST.TOTAL se sobreescribe con fórmula abajo
+                  precio, null, {f: ordRef+'*'+preRef}, ex, exOrdenada, ex];  // EXIST.TOTAL se sobreescribe con fórmula abajo
         } else {
           return [p.r||'', String(p.b||''), p.d||'',
                   p.e||'UNIDAD', p.m||'', p.br||'',
@@ -10269,7 +10293,12 @@ function catDownloadExcel(monedasParam) {
       totRow[0]    = 'TOTAL DEL PEDIDO:';
       totRow[colO-1] = {f:'SUM('+ordCol+'6:'+ordCol+lastData+')'};
       totRow[colT-1] = {f:'SUM('+totCol+'6:'+totCol+lastData+')'};
-
+      
+      // ═══ TOTAL PARA ORDENADA (solo modo interno) ═══
+      if (!modoCliente && colOrd) {
+        var ordCol2 = XLSX.utils.encode_col(colOrd-1);  // L = ORDENADA
+        totRow[colOrd-1] = {f:'SUM('+ordCol2+'6:'+ordCol2+lastData+')'};
+      }
       var r1 = new Array(ncols).fill(null);
       r1[0] = 'FARMERS, C.A. - FORMATO DE PEDIDO (' + monLabel + ')';
       var r2 = new Array(ncols).fill(null);
@@ -10281,11 +10310,11 @@ function catDownloadExcel(monedasParam) {
       var aoa = [r1, r2, r3, new Array(ncols).fill(null), heads].concat(rows).concat([totRow]);
       var ws  = XLSX.utils.aoa_to_sheet(aoa);
 
-      // Escribir fórmulas EXIST. TOTAL directamente en cada celda (col L = índice 11)
+      // Escribir fórmulas EXIST. TOTAL directamente en cada celda (col M = índice 12)
       if (!modoCliente) {
         var existCol = XLSX.utils.encode_col(10);  // K = EXISTENCIA
         var ordColL  = XLSX.utils.encode_col(8);   // I = ORDEN
-        var etCol    = XLSX.utils.encode_col(11);  // L = EXIST. TOTAL
+        var etCol    = XLSX.utils.encode_col(12);  // M = EXIST. TOTAL (era 11, ahora 12)
         prods.forEach(function(p, i) {
           var row = i + 6;
           var exVal = _catGetStock(p, inv);
@@ -10579,11 +10608,40 @@ function _catDownloadPDFWithImgs(_prodImgsLocal) {
       var capital = (p.u && stock) ? stock * p.u : 0;
       var imgSrc = _prodImgsLocal[p.r] || _prodImgsLocal[p.c] || _prodImgsLocal[p.b] || '';
 
-      var stockPill = stock>10
-        ? '<span class="stock-pill" style="background:#dcfce7;color:#15803d;">✓ EN STOCK</span>'
-        : stock>0
-          ? '<span class="stock-pill" style="background:#fef3c7;color:#b45309;">⚠ BAJO STOCK</span>'
-          : '<span class="stock-pill" style="background:#fee2e2;color:#dc2626;">✗ AGOTADO</span>';
+      // ═══ LÓGICA NUEVA PARA STOCK/ORDENADA SEGÚN TOGGLE CANTIDAD ═══
+      var stockPill;
+      
+      if (exOrden > 0) {
+        // ✅ TIENE CANTIDAD ORDENADA → Prioridad sobre stock normal
+        if (_catShowQty) {
+          // CANTIDAD: ON → Mostrar número exacto
+          stockPill = '<span class="stock-pill" style="background:#fef3c7;color:#92400e;">ORDENADA: ' + exOrden + ' UDS</span>';
+        } else {
+          // CANTIDAD: OFF → Solo etiqueta
+          stockPill = '<span class="stock-pill" style="background:#fef3c7;color:#92400e;">📦 ORDENADA</span>';
+        }
+      } else {
+        // ✅ STOCK NORMAL → Solo si no hay ordenada
+        if (_catShowQty) {
+          // CANTIDAD: ON → Mostrar número exacto
+          if (stock > 10) {
+            stockPill = '<span class="stock-pill" style="background:#dcfce7;color:#15803d;">EXISTENCIA: ' + _stockReal + ' UDS</span>';
+          } else if (stock > 0) {
+            stockPill = '<span class="stock-pill" style="background:#fef3c7;color:#b45309;">EXISTENCIA: ' + _stockReal + ' UDS</span>';
+          } else {
+            stockPill = '<span class="stock-pill" style="background:#fee2e2;color:#dc2626;">EXISTENCIA: 0 UDS</span>';
+          }
+        } else {
+          // CANTIDAD: OFF → Solo etiquetas de estado
+          if (stock > 10) {
+            stockPill = '<span class="stock-pill" style="background:#dcfce7;color:#15803d;">✓ EN STOCK</span>';
+          } else if (stock > 0) {
+            stockPill = '<span class="stock-pill" style="background:#fef3c7;color:#b45309;">⚠ BAJO STOCK</span>';
+          } else {
+            stockPill = '<span class="stock-pill" style="background:#fee2e2;color:#dc2626;">✗ AGOTADO</span>';
+          }
+        }
+      }
 
       var preciosHTML = !_catClientMode
         ? '<div class="precios-grid">' +
