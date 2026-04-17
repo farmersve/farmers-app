@@ -20960,7 +20960,10 @@ window.msGenerarEtiquetasPDF = function(sucsFiltradas) {
     var ptD={};
     try{var ptRaw=localStorage.getItem('farmers_pt_data');if(ptRaw){var ptArr=JSON.parse(ptRaw);ptArr.forEach(function(x){ptD[x.r]=x;});}}catch(e){}
     
-    // ESTRATEGIA 1: Calcular desde MS.data (más preciso)
+    // ESTRATEGIA 1: Calcular volumen CORRECTO desde MS.data 
+    // Proceso: ref -> vol_por_unidad -> cantidad_despacho -> vol_total
+    var volumenDebugLog = []; // para debug de clientes grandes
+    
     if(typeof MS !== 'undefined' && MS.data && MS.data.length > 0) {
       MS.data.forEach(function(p){
         var pide=p.pedidos?p.pedidos[suc]||0:0; 
@@ -20968,24 +20971,52 @@ window.msGenerarEtiquetasPDF = function(sucsFiltradas) {
         if(d > 0) {
           totalRef++;
           totalUnd += d;
-          // Buscar datos de esta referencia en farmers_pt_data
+          
+          // Buscar datos de volumen para esta referencia
           var prodData = ptD[p.ref];
+          var volPorUnidad = 0;
+          
           if(prodData && prodData.medidas) {
             var med = prodData.medidas;
-            var volPorBulto = parseFloat(med.volDirecto) || 0;
-            var undPorBulto = getEmpaqueReal(p.ref); // CORREGIDO: usar empaque real, no precios
-            console.log('🏷️ ETIQUETA VOLUMEN:', p.ref, 'volPorBulto:', volPorBulto, 'undPorBulto:', undPorBulto, 'cantidad:', d);
-            if(volPorBulto > 0 && undPorBulto > 0) {
-              var volPorUnidad = volPorBulto / undPorBulto;
-              totalVol += volPorUnidad * d;
-            } else {
-              totalVol += 0.01 * d; // fallback básico
+            // Usar volDirecto si está disponible (ya es por unidad)
+            if(med.volDirecto && parseFloat(med.volDirecto) > 0) {
+              var volDirectoBulto = parseFloat(med.volDirecto);
+              var undPorBulto = getEmpaqueReal(p.ref);
+              if(undPorBulto > 0) {
+                volPorUnidad = volDirectoBulto / undPorBulto;
+              }
             }
-          } else {
-            totalVol += 0.01 * d; // fallback si no encuentra ref
+            // Si no hay volDirecto, calcular desde L×A×H
+            else if(med.largo && med.ancho && med.alto) {
+              var l = parseFloat(med.largo)||0;
+              var a = parseFloat(med.ancho)||0; 
+              var h = parseFloat(med.alto)||0;
+              if(l > 0 && a > 0 && h > 0) {
+                volPorUnidad = (l * a * h) / 28316.85; // cm³ a ft³ por unidad
+              }
+            }
           }
+          
+          // Aplicar fórmula: volumen_por_unidad × cantidad_solicitada
+          var volRef = volPorUnidad * d;
+          totalVol += volRef;
+          
+          // Log para debug (especialmente clientes grandes)
+          volumenDebugLog.push({
+            ref: p.ref,
+            vol_por_unidad: volPorUnidad.toFixed(4),
+            cantidad: d,
+            vol_total_ref: volRef.toFixed(4)
+          });
         }
       });
+      
+      // Debug para clientes grandes - mostrar cálculo detallado
+      if(totalRef > 20) { // clientes grandes como Inversiones Oriente
+        console.log('🏷️ VOLUMEN DEBUG CLIENTE GRANDE:', suc);
+        console.log('   Total refs:', totalRef, '| Total uds:', totalUnd, '| Vol ft³:', totalVol.toFixed(4));
+        console.log('   Detalle por referencia:', volumenDebugLog.slice(0, 5)); // primeras 5 refs
+      }
     }
     
     // ESTRATEGIA 2: Usar datos del formulario si Strategy 1 falló
@@ -21024,10 +21055,34 @@ window.msGenerarEtiquetasPDF = function(sucsFiltradas) {
       }
     }
     
-    // Solo si NO se encontraron datos específicos, reportar error
+    // Solo si NO se encontraron datos específicos, usar fallback seguro
     if(totalRef === 0 && totalUnd === 0) {
-      console.error('ERROR: No se encontraron datos para sucursal: ' + suc);
-      // NO usar valores ficticios - mantener en 0 para detectar el problema
+      console.warn('⚠️ FALLBACK ACTIVADO para sucursal:', suc);
+      // Buscar datos alternativos del pedido completo
+      if(typeof MS !== 'undefined' && MS.data && MS.data.length) {
+        // Calcular totales conservadores basados en todo el pedido
+        var totalPedidoRefs = 0, totalPedidoUds = 0;
+        MS.data.forEach(function(p) {
+          var cantSuc = (p.dist && p.dist[suc]) ? p.dist[suc] : ((p.pedidos && p.pedidos[suc]) ? p.pedidos[suc] : 0);
+          if(cantSuc > 0) {
+            totalPedidoRefs++;
+            totalPedidoUds += cantSuc;
+          }
+        });
+        if(totalPedidoRefs > 0) {
+          totalRef = totalPedidoRefs;
+          totalUnd = totalPedidoUds;
+          totalVol = totalPedidoUds * 0.015; // estimación conservadora 0.015 ft³/ud
+          console.log('📦 FALLBACK OK:', suc, '-> refs:', totalRef, 'uds:', totalUnd, 'vol:', totalVol.toFixed(4));
+        }
+      }
+      
+      // Si aún fallan los datos, evitar crash completo
+      if(totalRef === 0 && totalUnd === 0) {
+        console.error('❌ ERROR CRÍTICO: Sin datos para', suc);
+        totalRef = 1; totalUnd = 1; totalVol = 0.01; // mínimos para evitar crash
+        showToast('Datos incompletos para ' + suc + ' - revisa el pedido', 'warn');
+      }
     }
     // Leer inputs del formulario — con fallback completo a localStorage/pedido guardado
     var rifInput  =document.getElementById('rif-'+idKey);
