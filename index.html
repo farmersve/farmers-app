@@ -18984,6 +18984,7 @@ window.msComprometerInventario = function(numP, sel, data, clientesPorSucursal, 
     sucursales: sel,
     clientesPorSucursal: clientesPorSucursal || {},
     items: itemsPedido,
+    data: data,                    // ← estructura completa MS.data (ref, pedidos, dist) — necesaria para calcular totales al recargar
     sucursalesEstado: {}
   });
   sel.forEach(function(s){
@@ -19455,8 +19456,28 @@ window.msAbrirMonitor = function() {
         MS.moneda = ped.moneda || 'USD';
         MS.sucursalesEstado = ped.sucursalesEstado || {};
         MS.fechaEmision = ped.fecha || '';
-        if (ped.data) MS.data = ped.data; // ← crítico: sin esto el overlay sale con totales en 0/NaN
+
+        // Cargar MS.data — prioridad: ped.data (nuevos) → reconstruir desde ped.items (antiguos)
+        if (ped.data && Array.isArray(ped.data) && ped.data.length) {
+          MS.data = ped.data;
+        } else if (ped.items && Array.isArray(ped.items) && ped.items.length) {
+          // Fallback: reconstruir estructura MS.data desde items persistidos
+          MS.data = ped.items.map(function(it){
+            var pedidos = {}, dist = {};
+            Object.keys(it.sucursales||{}).forEach(function(s){
+              pedidos[s] = (it.sucursales[s].pide)||0;
+              dist[s]    = (it.sucursales[s].desp)||0;
+            });
+            return { ref: it.ref, desc: it.desc||'', pedidos: pedidos, dist: dist };
+          });
+          showToast('Pedido antiguo cargado desde histórico · '+MS.data.length+' refs','info');
+        } else {
+          showToast('⚠ Este pedido no tiene datos de referencias guardados','warn');
+        }
         if (ped.colMap) MS.colMap = ped.colMap;
+
+        // Precargar datos fiscales si ya existían
+        if (ped.datosFiscales) MS.datosFiscales = ped.datosFiscales;
 
         if (typeof selectedBrands !== 'undefined' && selectedBrands.size === 0) {
           selectedBrands.add('EXCALIBUR');
@@ -19466,7 +19487,7 @@ window.msAbrirMonitor = function() {
         // Filtrar solo sucursales en estado 'reservado' (las que realmente quedan por despachar)
         var sucReservadas = (ped.sucursales || []).filter(function(s){
           var est = (ped.sucursalesEstado || {})[s];
-          return !est || est === 'reservado';
+          return !est || est === 'reservado' || est === 'RESERVADO';
         });
         if (!sucReservadas.length) sucReservadas = (ped.sucursales || []).slice();
 
@@ -20463,24 +20484,58 @@ window.msAbrirOverlayDespacho = function(numP, sel, hayPendientes) {
     // Recopilar datos fiscales de cada sucursal
     MS.datosFiscales = MS.datosFiscales || {};
     var faltanFacturas = [];
+    var fechaInvalidas = [];
+    var facturasVistas = {}; // Para detectar duplicados entre sucursales
+
     sel.forEach(function(s){
       var datosSuc = {};
       box.querySelectorAll('[data-suc="'+s+'"]').forEach(function(inp){
         datosSuc[inp.getAttribute('data-campo')] = (inp.value||'').trim();
       });
       if (!datosSuc.nFactura) faltanFacturas.push(s);
+
+      // Validación: fecha vencimiento no puede ser anterior a fecha emisión
+      if (datosSuc.fechaEmision && datosSuc.fechaVencimiento) {
+        if (datosSuc.fechaVencimiento < datosSuc.fechaEmision) {
+          fechaInvalidas.push(s);
+        }
+      }
+
+      // Registrar para detectar duplicados
+      if (datosSuc.nFactura) {
+        facturasVistas[datosSuc.nFactura] = (facturasVistas[datosSuc.nFactura]||[]).concat(s);
+      }
+
       MS.datosFiscales[s] = datosSuc;
     });
 
-    // Validación: N° Factura es obligatorio
+    // Validación 1: N° Factura obligatorio
     if (faltanFacturas.length) {
       showToast('⚠️ Falta N° Factura en: '+faltanFacturas.join(', '), 'warn');
-      // Resaltar los campos vacíos
       faltanFacturas.forEach(function(s){
         var inp = box.querySelector('[data-suc="'+s+'"][data-campo="nFactura"]');
         if (inp) { inp.style.borderColor='#dc2626'; inp.style.background='#fef2f2'; inp.focus(); }
       });
       return;
+    }
+
+    // Validación 2: Fecha vencimiento >= emisión
+    if (fechaInvalidas.length) {
+      showToast('⚠️ Fecha vencimiento anterior a emisión en: '+fechaInvalidas.join(', '), 'warn');
+      fechaInvalidas.forEach(function(s){
+        var inp = box.querySelector('[data-suc="'+s+'"][data-campo="fechaVencimiento"]');
+        if (inp) { inp.style.borderColor='#dc2626'; inp.style.background='#fef2f2'; inp.focus(); }
+      });
+      return;
+    }
+
+    // Validación 3 (advertencia): N° Factura duplicado entre sucursales
+    var duplicados = Object.keys(facturasVistas).filter(function(k){ return facturasVistas[k].length > 1; });
+    if (duplicados.length) {
+      var msg = 'El N° Factura '+duplicados[0]+' se repite en varias sucursales.\n\n';
+      msg += 'Sucursales: '+facturasVistas[duplicados[0]].join(', ')+'\n\n';
+      msg += '¿Continuar de todos modos? (confirma solo si es intencional)';
+      if (!confirm(msg)) return;
     }
 
     ov.remove();
