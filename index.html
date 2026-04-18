@@ -18775,15 +18775,16 @@ window.msConfirmarSeleccionadas = function(numP, sel, hayPendientes, ovEmision){
 
 // ── FUNCIÓN: registrar venta + CXC (solo al despachar) ─────────
 function msRegistrarVentaYCXC(numP, sel) {
-  // ── CONFIRMACIÓN obligatoria antes de facturar ──────────────
-  if(!confirm('⚠️ ¿CONFIRMAR DESPACHO Y GENERAR FACTURA?\n\nEsto realizará:\n• Descuento del inventario real\n• Registro de ventas en historial\n• Generación de facturas en CXC\n• Inicio del tiempo de cobranza\n\n¿Estás seguro?')) return;
-
-  if(!confirm('⚠️ ¿CONFIRMAR DESPACHO Y GENERAR FACTURA?\n\nEsto realizará:\n• Descuento del inventario real\n• Registro de ventas en historial\n• Generación de facturas en CXC\n• Inicio del tiempo de cobranza\n\n¿Estás seguro?')) return;
+  // El overlay de despacho ya capturó los datos fiscales y confirmó la intención.
+  // No duplicar confirmación aquí — el usuario ya pulsó 'Confirmar Despacho' en el overlay.
 
   var now=new Date();
   var dateStr=now.toLocaleDateString('es-VE',{day:'2-digit',month:'2-digit',year:'numeric'});
   var timeStr=now.toLocaleTimeString('es-VE',{hour:'2-digit',minute:'2-digit'});
   var tasa=getTasaHoy()||0;
+
+  // Datos fiscales capturados en el overlay (por sucursal)
+  var dFiscales = MS.datosFiscales || {};
 
   // ── FASE 2: Liberar comprometido Y descontar inventario real ──
   // Ahora sí se hace efectivo: real -= comprometido, comp -= comprometido
@@ -18847,8 +18848,29 @@ function msRegistrarVentaYCXC(numP, sel) {
     var totalBs       = tasa>0&&moneda==='BCV'?grandTotal*tasa:tasa>0&&moneda==='TF'?grandTotal*tasaTF:tasa>0?grandTotal*tasa:null;
     var saleId        = Date.now()+Math.floor(Math.random()*9999);
 
+    // ── Leer datos fiscales capturados para esta sucursal ──
+    var df = dFiscales[suc] || {};
+    var nFactura      = df.nFactura      || '';
+    var nControl      = df.nControl      || '';
+    var nNotaEntrega  = df.nNotaEntrega  || '';
+    var fechaEmiFiscal = df.fechaEmision  || ''; // YYYY-MM-DD
+    var fechaVencFiscal= df.fechaVencimiento || '';
+    var condicionPago = df.condicionPago || '';
+    var observaciones = df.observaciones || '';
+
+    // Recalcular diasCred según condición capturada (si la hay)
+    if (condicionPago === 'CONTADO') diasCred = 0;
+    else if (condicionPago && condicionPago.indexOf('CREDITO_')===0) diasCred = parseInt(condicionPago.split('_')[1]) || diasCred;
+
+    // Formato dateStr alineado a la fecha fiscal capturada (si la hay)
+    var dateStrSuc = dateStr;
+    if (fechaEmiFiscal) {
+      var pe = fechaEmiFiscal.split('-');
+      if (pe.length === 3) dateStrSuc = pe[2]+'/'+pe[1]+'/'+pe[0];
+    }
+
     var sale={
-      id:saleId, fecha:dateStr, hora:timeStr,
+      id:saleId, fecha:dateStrSuc, hora:timeStr,
       numpedido:(numP||MS.numPedido)+'-'+suc.replace(/[^A-Z0-9]/gi,'').substring(0,8).toUpperCase(),
       cliente:clienteNombre, rif:clienteRif, vendedor:'OGK',
       sucursal:clienteNombre,       // nombre del cliente del directorio — no el código del Excel
@@ -18857,7 +18879,11 @@ function msRegistrarVentaYCXC(numP, sel) {
       tasa:tasa, tasaFecha:typeof getTasaFechaKey==='function'?getTasaFechaKey():'',
       items:itemsSuc, total:grandTotal, units:grandUnits, totalBs:totalBs,
       clienteId:clienteId, correo:correo, credito:diasCred, tipoPrecio:moneda,
-      fuente:'ms_despachado', msNumPedido:numP||MS.numPedido||''
+      fuente:'ms_despachado', msNumPedido:numP||MS.numPedido||'',
+      // ── Datos fiscales ──
+      nFactura:nFactura, nControl:nControl, nNotaEntrega:nNotaEntrega,
+      fechaEmisionFiscal:fechaEmiFiscal, fechaVencimientoFiscal:fechaVencFiscal,
+      condicionPago:condicionPago, observaciones:observaciones
     };
 
     if(typeof getSales==='function'&&typeof saveSales==='function'){
@@ -18875,8 +18901,23 @@ function msRegistrarVentaYCXC(numP, sel) {
   });
   if(todasDespachadas) MS.fase='despachado';
   MS.formalizado=true;
+
+  // Persistir el pedido actualizado (con estado despachado + datos fiscales)
+  if (typeof getMsPedidos==='function' && typeof saveMsPedidos==='function') {
+    var peds = getMsPedidos();
+    var pidx = peds.findIndex(function(p){return p.numP===(numP||MS.numPedido);});
+    if (pidx >= 0) {
+      peds[pidx].sucursalesEstado = MS.sucursalesEstado;
+      peds[pidx].fase = MS.fase;
+      peds[pidx].datosFiscales = MS.datosFiscales || {};
+      peds[pidx].formalizado = true;
+      saveMsPedidos(peds);
+    }
+  }
+
   if(typeof cxcUpdateBadge==='function') cxcUpdateBadge();
   if(typeof renderHistorial==='function') renderHistorial();
+  showToast('✅ Despacho confirmado · '+sel.length+' factura'+(sel.length>1?'s':'')+' registrada'+(sel.length>1?'s':''),'success');
 }
 
 
@@ -19403,26 +19444,40 @@ window.msAbrirMonitor = function() {
         else showToast('Función Excel no disponible','warn');
       }));
 
-      // 🚚 DESPACHAR
+      // 🚚 DESPACHAR — abre directamente el overlay de confirmación con listado + total + botón 'Confirmar Despacho'
       btnLeft.appendChild(_btn('🚚 DESPACHAR',WHITE,'linear-gradient(135deg,'+AMBER+',#d97706)','transparent',function(){
         ov.remove();
-        var vm=document.getElementById('ventas-modal'); if(vm) vm.style.display='none';
-        MS.numPedido=ped.numP; MS.fase='reservado';
-        MS.sucursales=ped.sucursales||[];
-        MS.clientesPorSucursal=ped.clientesPorSucursal||{};
-        MS.moneda=ped.moneda||'USD';
-        MS.sucursalesEstado=ped.sucursalesEstado||{};
-        if(typeof selectedBrands!=='undefined'&&selectedBrands.size===0){
+        // Cargar TODOS los datos del pedido al estado global MS
+        MS.numPedido = ped.numP;
+        MS.fase = 'reservado';
+        MS.sucursales = ped.sucursales || [];
+        MS.clientesPorSucursal = ped.clientesPorSucursal || {};
+        MS.moneda = ped.moneda || 'USD';
+        MS.sucursalesEstado = ped.sucursalesEstado || {};
+        MS.fechaEmision = ped.fecha || '';
+        if (ped.data) MS.data = ped.data; // ← crítico: sin esto el overlay sale con totales en 0/NaN
+        if (ped.colMap) MS.colMap = ped.colMap;
+
+        if (typeof selectedBrands !== 'undefined' && selectedBrands.size === 0) {
           selectedBrands.add('EXCALIBUR');
-          if(!window.selectedMoneda) window.selectedMoneda=ped.moneda||'TF';
+          if (!window.selectedMoneda) window.selectedMoneda = ped.moneda || 'TF';
         }
-        if(typeof goToStep==='function') goToStep(3);
-        setTimeout(function(){
-          var btn=document.getElementById('ms-btn-emitir');
-          if(btn){ btn.textContent='🚚 DESPACHAR #'+ped.numP; btn.style.background='#d97706'; btn.disabled=false;
-            btn.onclick=function(){msAbrirOverlayReservado(ped.numP,ped.sucursales||[],false);}; }
-        },400);
-        showToast('PEDIDO '+ped.numP+' LISTO PARA DESPACHAR','success');
+
+        // Filtrar solo sucursales en estado 'reservado' (las que realmente quedan por despachar)
+        var sucReservadas = (ped.sucursales || []).filter(function(s){
+          var est = (ped.sucursalesEstado || {})[s];
+          return !est || est === 'reservado';
+        });
+        if (!sucReservadas.length) sucReservadas = (ped.sucursales || []).slice();
+
+        // Abrir overlay de confirmación: muestra listado, totales, y botón 'Confirmar Despacho'
+        // Desde ahí el usuario puede revisar, exportar docs, o cancelar sin ejecutar nada
+        if (typeof msAbrirOverlayReservado === 'function') {
+          msAbrirOverlayReservado(ped.numP, sucReservadas, false);
+          showToast('REVISA EL PEDIDO #'+ped.numP+' ANTES DE CONFIRMAR','info');
+        } else {
+          showToast('Error: overlay de despacho no disponible','warn');
+        }
       }));
     } else {
       // Pedido despachado — solo doc, excel
@@ -20235,7 +20290,7 @@ window.msAbrirOverlayReservado = function(numP, sel, hayPendientes) {
   }
 };
 
-// ── Overlay DESPACHO — confirmar envío físico → genera venta + CXC ──
+// ── Overlay DESPACHO — confirmar envío físico → captura datos fiscales + genera venta + CXC ──
 window.msAbrirOverlayDespacho = function(numP, sel, hayPendientes) {
   var ex=document.getElementById('ms-despacho-ov'); if(ex) ex.remove();
   if(!sel||!sel.length){
@@ -20251,54 +20306,147 @@ window.msAbrirOverlayDespacho = function(numP, sel, hayPendientes) {
   var monedaLabel={USD:'USD $',BCV:'BCV $',TF:'TF $'}[MS.moneda||'USD']||'USD $';
   var clDB2=typeof getClientsDB==='function'?getClientsDB():[];
 
+  // Fecha de hoy en formato YYYY-MM-DD (para inputs type="date")
+  function _hoyYMD(){
+    var d=new Date();
+    var mm=String(d.getMonth()+1).padStart(2,'0');
+    var dd=String(d.getDate()).padStart(2,'0');
+    return d.getFullYear()+'-'+mm+'-'+dd;
+  }
+  function _sumarDias(ymd, dias){
+    var parts=ymd.split('-');
+    var d=new Date(parseInt(parts[0]),parseInt(parts[1])-1,parseInt(parts[2]));
+    d.setDate(d.getDate()+parseInt(dias||0));
+    var mm=String(d.getMonth()+1).padStart(2,'0');
+    var dd=String(d.getDate()).padStart(2,'0');
+    return d.getFullYear()+'-'+mm+'-'+dd;
+  }
+
+  // Precargar datos fiscales existentes (si el usuario ya empezó a llenarlos)
+  MS.datosFiscales = MS.datosFiscales || {};
+
   var ov=document.createElement('div');
   ov.id='ms-despacho-ov';
-  ov.style.cssText='position:fixed;inset:0;z-index:99200;background:rgba(0,0,0,.72);display:flex;align-items:center;justify-content:center;';
+  ov.style.cssText='position:fixed;inset:0;z-index:99200;background:rgba(0,0,0,.78);display:flex;align-items:center;justify-content:center;padding:20px;';
 
   var box=document.createElement('div');
-  box.style.cssText='background:#fff;border-radius:16px;padding:28px 32px;max-width:500px;width:92%;';
+  box.style.cssText='background:#fff;border-radius:16px;padding:24px 28px;max-width:780px;width:100%;max-height:92vh;overflow-y:auto;';
 
-  var html=
-    '<div style="font-size:2rem;margin-bottom:8px;text-align:center;">🚚</div>'+
-    '<div style="font-size:1.1rem;font-weight:900;color:#059669;margin-bottom:4px;text-align:center;">Confirmar Despacho Físico</div>'+
-    '<div style="font-size:.78rem;color:#64748b;margin-bottom:16px;text-align:center;">Al confirmar se generará la venta oficial y la CXC. El tiempo de cobranza empieza ahora.</div>'+
+  // ── HEADER ──
+  var header='<div style="font-size:1.8rem;margin-bottom:6px;text-align:center;">🚚</div>'+
+    '<div style="font-size:1.15rem;font-weight:900;color:#059669;margin-bottom:2px;text-align:center;">Confirmar Despacho Físico</div>'+
+    '<div style="font-size:.78rem;color:#64748b;margin-bottom:14px;text-align:center;">Captura los datos fiscales de cada factura emitida en Valery antes de confirmar</div>'+
 
-    '<div style="background:#f0fdf4;border:1.5px solid #86efac;border-radius:10px;padding:14px;margin-bottom:16px;">'+
-      '<div style="font-size:.65rem;font-weight:800;color:#166534;text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px;">Lo que ocurrirá al confirmar</div>'+
-      '<div style="font-size:.75rem;color:#14532d;line-height:1.9;">'+
-        '✅ Venta registrada en Historial<br>'+
-        '✅ Factura CXC generada (tiempo de cobranza inicia)<br>'+
-        '✅ Notificación de cobranza disponible<br>'+
-        '✅ Todo sincronizado en Firebase'+
+    '<div style="background:#f0fdf4;border:1.5px solid #86efac;border-radius:10px;padding:10px 14px;margin-bottom:16px;">'+
+      '<div style="font-size:.68rem;color:#14532d;line-height:1.7;">'+
+        '✅ Inventario se descontará · Venta se registrará · CXC generará con los datos reales · Firebase sincronizado'+
       '</div>'+
     '</div>'+
 
-    '<div style="margin-bottom:16px;">';
+    '<div style="background:#fef3c7;border:1.5px solid #fbbf24;border-radius:8px;padding:8px 12px;margin-bottom:14px;">'+
+      '<div style="font-size:.68rem;color:#92400e;line-height:1.5;"><strong>📋 Una factura por sucursal.</strong> N° Factura es obligatorio. Los demás campos se guardan si los completas.</div>'+
+    '</div>';
 
-  sel.forEach(function(s){
+  // ── FORMULARIO por cada sucursal ──
+  var formsHTML='<div id="ms-fiscales-forms">';
+  sel.forEach(function(s, idx){
     var t=0;
     MS.data.forEach(function(p){var pide=p.pedidos[s]||0;if(pide>0) t+=msGetPrecio(p.ref)*Math.min(p.dist[s]||0,pide);});
     var clId=(MS.clientesPorSucursal||{})[s]||'';
     var cl=clDB2.find(function(x){return x.id===clId;});
     var nomDesp = cl ? cl.nombre : ('⚠ Sin cliente — '+s);
-    var rifDesp = cl && cl.rif ? ' · '+cl.rif : '';
-    html+='<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:#f8fafc;border-radius:8px;margin-bottom:6px;">'+
-      '<div>'+
-        '<div style="font-size:.82rem;font-weight:800;color:'+(cl?'#1a2050':'#dc2626')+';">'+nomDesp+'</div>'+
-        '<div style="font-size:.68rem;color:#94a3b8;">Cód: '+s+rifDesp+'</div>'+
-      '</div>'+
-      '<span style="font-size:.85rem;font-weight:900;color:#059669;">$ '+t.toFixed(2)+'</span>'+
-    '</div>';
+    var rifDesp = cl && cl.rif ? cl.rif : 'S/RIF';
+    var diasCredDefault = cl && cl.diasCredito ? parseInt(cl.diasCredito)||30 : 30;
+
+    // Valores precargados
+    var df = MS.datosFiscales[s] || {};
+    var vFac = df.nFactura || '';
+    var vCtrl = df.nControl || '';
+    var vNota = df.nNotaEntrega || '';
+    var vEmi = df.fechaEmision || _hoyYMD();
+    var vCond = df.condicionPago || (diasCredDefault===0 ? 'CONTADO' : 'CREDITO_'+diasCredDefault);
+    var vVenc = df.fechaVencimiento || _sumarDias(vEmi, diasCredDefault);
+    var vObs = df.observaciones || '';
+
+    formsHTML +=
+      '<div data-fiscal-suc="'+s+'" style="border:1.5px solid #e2e8f0;border-radius:10px;padding:14px 16px;margin-bottom:12px;background:#fafbfc;">'+
+        // Encabezado de sucursal
+        '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;padding-bottom:10px;border-bottom:1px dashed #cbd5e1;">'+
+          '<div>'+
+            '<div style="font-size:.85rem;font-weight:900;color:'+(cl?'#1a2050':'#dc2626')+';">'+nomDesp+'</div>'+
+            '<div style="font-size:.66rem;color:#64748b;margin-top:1px;">Cód: '+s+' · RIF: '+rifDesp+'</div>'+
+          '</div>'+
+          '<div style="text-align:right;">'+
+            '<div style="font-size:.58rem;color:#94a3b8;text-transform:uppercase;letter-spacing:.5px;">Monto</div>'+
+            '<div style="font-size:1rem;font-weight:900;color:#059669;">$ '+t.toFixed(2)+'</div>'+
+          '</div>'+
+        '</div>'+
+
+        // Fila 1: N° Factura + N° Control + N° Nota Entrega
+        '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:10px;">'+
+          '<div>'+
+            '<label style="display:block;font-size:.62rem;font-weight:800;color:#475569;text-transform:uppercase;letter-spacing:.5px;margin-bottom:3px;">N° Factura <span style="color:#dc2626;">*</span></label>'+
+            '<input type="text" class="ms-fiscal-inp" data-campo="nFactura" data-suc="'+s+'" value="'+vFac+'" placeholder="Ej: 0000004320" '+
+              'style="width:100%;padding:7px 10px;border:1.5px solid #cbd5e1;border-radius:6px;font-size:.82rem;font-weight:700;color:#1a2050;outline:none;">'+
+          '</div>'+
+          '<div>'+
+            '<label style="display:block;font-size:.62rem;font-weight:800;color:#475569;text-transform:uppercase;letter-spacing:.5px;margin-bottom:3px;">N° Control Fiscal</label>'+
+            '<input type="text" class="ms-fiscal-inp" data-campo="nControl" data-suc="'+s+'" value="'+vCtrl+'" placeholder="Ej: 00-0004320" '+
+              'style="width:100%;padding:7px 10px;border:1.5px solid #cbd5e1;border-radius:6px;font-size:.82rem;color:#1a2050;outline:none;">'+
+          '</div>'+
+          '<div>'+
+            '<label style="display:block;font-size:.62rem;font-weight:800;color:#475569;text-transform:uppercase;letter-spacing:.5px;margin-bottom:3px;">N° Nota Entrega</label>'+
+            '<input type="text" class="ms-fiscal-inp" data-campo="nNotaEntrega" data-suc="'+s+'" value="'+vNota+'" placeholder="Ej: NE-001234" '+
+              'style="width:100%;padding:7px 10px;border:1.5px solid #cbd5e1;border-radius:6px;font-size:.82rem;color:#1a2050;outline:none;">'+
+          '</div>'+
+        '</div>'+
+
+        // Fila 2: Fecha Emisión + Condición Pago + Fecha Vencimiento
+        '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:10px;">'+
+          '<div>'+
+            '<label style="display:block;font-size:.62rem;font-weight:800;color:#475569;text-transform:uppercase;letter-spacing:.5px;margin-bottom:3px;">Fecha Emisión</label>'+
+            '<input type="date" class="ms-fiscal-inp ms-fiscal-emi" data-campo="fechaEmision" data-suc="'+s+'" value="'+vEmi+'" '+
+              'style="width:100%;padding:6px 10px;border:1.5px solid #cbd5e1;border-radius:6px;font-size:.82rem;color:#1a2050;outline:none;">'+
+          '</div>'+
+          '<div>'+
+            '<label style="display:block;font-size:.62rem;font-weight:800;color:#475569;text-transform:uppercase;letter-spacing:.5px;margin-bottom:3px;">Condición Pago</label>'+
+            '<select class="ms-fiscal-inp ms-fiscal-cond" data-campo="condicionPago" data-suc="'+s+'" '+
+              'style="width:100%;padding:6px 10px;border:1.5px solid #cbd5e1;border-radius:6px;font-size:.82rem;color:#1a2050;outline:none;background:#fff;">'+
+              '<option value="CONTADO"'+(vCond==='CONTADO'?' selected':'')+'>Contado</option>'+
+              '<option value="CREDITO_7"'+(vCond==='CREDITO_7'?' selected':'')+'>Crédito 7 días</option>'+
+              '<option value="CREDITO_15"'+(vCond==='CREDITO_15'?' selected':'')+'>Crédito 15 días</option>'+
+              '<option value="CREDITO_30"'+(vCond==='CREDITO_30'?' selected':'')+'>Crédito 30 días</option>'+
+              '<option value="CREDITO_45"'+(vCond==='CREDITO_45'?' selected':'')+'>Crédito 45 días</option>'+
+              '<option value="CREDITO_60"'+(vCond==='CREDITO_60'?' selected':'')+'>Crédito 60 días</option>'+
+              '<option value="PERSONALIZADA"'+(vCond==='PERSONALIZADA'?' selected':'')+'>Personalizada</option>'+
+            '</select>'+
+          '</div>'+
+          '<div>'+
+            '<label style="display:block;font-size:.62rem;font-weight:800;color:#475569;text-transform:uppercase;letter-spacing:.5px;margin-bottom:3px;">Fecha Vencimiento</label>'+
+            '<input type="date" class="ms-fiscal-inp ms-fiscal-venc" data-campo="fechaVencimiento" data-suc="'+s+'" value="'+vVenc+'" '+
+              'style="width:100%;padding:6px 10px;border:1.5px solid #cbd5e1;border-radius:6px;font-size:.82rem;color:#1a2050;outline:none;">'+
+          '</div>'+
+        '</div>'+
+
+        // Fila 3: Observaciones
+        '<div>'+
+          '<label style="display:block;font-size:.62rem;font-weight:800;color:#475569;text-transform:uppercase;letter-spacing:.5px;margin-bottom:3px;">Observaciones</label>'+
+          '<textarea class="ms-fiscal-inp" data-campo="observaciones" data-suc="'+s+'" rows="2" placeholder="Notas internas sobre esta factura (opcional)" '+
+            'style="width:100%;padding:7px 10px;border:1.5px solid #cbd5e1;border-radius:6px;font-size:.78rem;color:#1a2050;outline:none;resize:vertical;font-family:inherit;">'+vObs+'</textarea>'+
+        '</div>'+
+      '</div>';
   });
+  formsHTML += '</div>';
 
-  html+='</div>'+
-    '<div style="background:#0f172a;border-radius:8px;padding:12px 16px;margin-bottom:18px;display:flex;justify-content:space-between;align-items:center;">'+
-      '<span style="font-size:.72rem;font-weight:700;color:#475569;text-transform:uppercase;">Total '+monedaLabel+'</span>'+
-      '<span style="font-size:1.2rem;font-weight:900;color:#4ade80;">$ '+total.toFixed(2)+'</span>'+
+  // Total general
+  var totalHTML='<div style="background:#0f172a;border-radius:8px;padding:12px 18px;margin:6px 0 18px;display:flex;justify-content:space-between;align-items:center;">'+
+      '<span style="font-size:.72rem;font-weight:700;color:#94a3b8;text-transform:uppercase;">Total general '+monedaLabel+'</span>'+
+      '<span style="font-size:1.25rem;font-weight:900;color:#4ade80;">$ '+total.toFixed(2)+'</span>'+
     '</div>';
 
-  box.innerHTML=html;
+  box.innerHTML = header + formsHTML + totalHTML;
 
+  // ── BOTONES ──
   var row=document.createElement('div');
   row.style.cssText='display:flex;gap:10px;justify-content:flex-end;';
 
@@ -20312,6 +20460,29 @@ window.msAbrirOverlayDespacho = function(numP, sel, hayPendientes) {
   btnConf.textContent='✅ Confirmar Despacho';
   btnConf.style.cssText='background:linear-gradient(135deg,#059669,#047857);color:white;border:none;border-radius:8px;padding:11px 26px;cursor:pointer;font-weight:900;font-size:.88rem;';
   btnConf.onclick=function(){
+    // Recopilar datos fiscales de cada sucursal
+    MS.datosFiscales = MS.datosFiscales || {};
+    var faltanFacturas = [];
+    sel.forEach(function(s){
+      var datosSuc = {};
+      box.querySelectorAll('[data-suc="'+s+'"]').forEach(function(inp){
+        datosSuc[inp.getAttribute('data-campo')] = (inp.value||'').trim();
+      });
+      if (!datosSuc.nFactura) faltanFacturas.push(s);
+      MS.datosFiscales[s] = datosSuc;
+    });
+
+    // Validación: N° Factura es obligatorio
+    if (faltanFacturas.length) {
+      showToast('⚠️ Falta N° Factura en: '+faltanFacturas.join(', '), 'warn');
+      // Resaltar los campos vacíos
+      faltanFacturas.forEach(function(s){
+        var inp = box.querySelector('[data-suc="'+s+'"][data-campo="nFactura"]');
+        if (inp) { inp.style.borderColor='#dc2626'; inp.style.background='#fef2f2'; inp.focus(); }
+      });
+      return;
+    }
+
     ov.remove();
     msRegistrarVentaYCXC(numP, sel);
 
@@ -20330,6 +20501,32 @@ window.msAbrirOverlayDespacho = function(numP, sel, hayPendientes) {
   box.appendChild(row);
   ov.appendChild(box);
   document.body.appendChild(ov);
+
+  // ── AUTOCÁLCULO: al cambiar Condición Pago o Fecha Emisión, recalcular Vencimiento ──
+  function _recalcVenc(sucCode){
+    var emi = box.querySelector('[data-suc="'+sucCode+'"][data-campo="fechaEmision"]');
+    var cond = box.querySelector('[data-suc="'+sucCode+'"][data-campo="condicionPago"]');
+    var venc = box.querySelector('[data-suc="'+sucCode+'"][data-campo="fechaVencimiento"]');
+    if (!emi || !cond || !venc) return;
+    var v = cond.value;
+    if (v === 'CONTADO') {
+      venc.value = emi.value;
+    } else if (v.indexOf('CREDITO_')===0) {
+      var dias = parseInt(v.split('_')[1])||0;
+      venc.value = _sumarDias(emi.value, dias);
+    }
+    // PERSONALIZADA → no tocar, el usuario la edita manualmente
+  }
+  box.querySelectorAll('.ms-fiscal-cond').forEach(function(el){
+    el.addEventListener('change', function(){ _recalcVenc(el.getAttribute('data-suc')); });
+  });
+  box.querySelectorAll('.ms-fiscal-emi').forEach(function(el){
+    el.addEventListener('change', function(){ _recalcVenc(el.getAttribute('data-suc')); });
+  });
+
+  // Focus inicial en el primer N° Factura
+  var primerFac = box.querySelector('[data-campo="nFactura"]');
+  if (primerFac) setTimeout(function(){ primerFac.focus(); }, 100);
 };
 
 // ── Overlay de pedido confirmado ──────────────────
@@ -26145,15 +26342,43 @@ function cxcCrearDesdePedido(sale) {
   });
   if (yaExiste) return; // Ya fue creada (evitar duplicados)
 
-  // Calcular días de crédito
+  // Datos fiscales capturados en el overlay de despacho (si existen)
+  var tieneFiscal = !!(sale.nFactura || sale.fechaEmisionFiscal || sale.fechaVencimientoFiscal);
+
+  // Calcular días de crédito (prioridad: condición capturada > cliente > default 30)
   var clDB2 = typeof getClientsDB === 'function' ? getClientsDB() : [];
   var clObj  = clDB2.find(function(x){ return x.id === sale.clienteId; });
-  var diasCred = parseInt((clObj && clObj.diasCredito) || sale.credito || '30') || 30;
+  var diasCred = parseInt(sale.credito || (clObj && clObj.diasCredito) || '30') || 30;
 
-  // Calcular fecha de vencimiento
-  var hoy = new Date();
-  var vence = new Date(hoy.getTime() + diasCred * 86400000);
+  // Calcular fechas: usar las capturadas si existen, sino default (hoy + diasCred)
   function fmtDate(d){ return d.toISOString().slice(0,10); }
+  var fEmi, fVenc;
+  if (sale.fechaEmisionFiscal) {
+    fEmi = sale.fechaEmisionFiscal; // ya viene en YYYY-MM-DD
+  } else {
+    fEmi = fmtDate(new Date());
+  }
+  if (sale.fechaVencimientoFiscal) {
+    fVenc = sale.fechaVencimientoFiscal;
+  } else {
+    var hoy = new Date();
+    fVenc = fmtDate(new Date(hoy.getTime() + diasCred * 86400000));
+  }
+
+  // Armar nota descriptiva
+  var notasArr = [];
+  if (sale.nFactura) notasArr.push('Factura N° '+sale.nFactura);
+  if (sale.nControl) notasArr.push('Control: '+sale.nControl);
+  if (sale.nNotaEntrega) notasArr.push('Nota Entrega: '+sale.nNotaEntrega);
+  if (sale.condicionPago) {
+    var condLabel = sale.condicionPago === 'CONTADO' ? 'Contado'
+                   : sale.condicionPago === 'PERSONALIZADA' ? 'Personalizada'
+                   : sale.condicionPago.indexOf('CREDITO_')===0 ? 'Crédito '+sale.condicionPago.split('_')[1]+'d' : sale.condicionPago;
+    notasArr.push(condLabel);
+  }
+  notasArr.push('Desde pedido #' + sale.numpedido);
+  if (sale.observaciones) notasArr.push('Obs: '+sale.observaciones);
+  var notas = notasArr.join(' · ');
 
   // Crear la factura en CXC
   var nuevaFac = {
@@ -26164,14 +26389,19 @@ function cxcCrearDesdePedido(sale) {
     rif:         sale.rif        || '',
     correo:      sale.correo     || (clObj && clObj.correo) || '',
     numpedido:   sale.numpedido  || ('PED-' + sale.id),
+    nFactura:    sale.nFactura   || '',   // N° Factura Valery (fiscal)
+    nControl:    sale.nControl   || '',   // N° Control Fiscal
+    nNotaEntrega: sale.nNotaEntrega || '',
+    condicionPago: sale.condicionPago || '',
+    observaciones: sale.observaciones || '',
     moneda:      sale.moneda || 'USD',
     monto:       sale.total      || 0,  // total en la moneda de la venta
     saldo:       sale.total      || 0,
     totalBs:     sale.totalBs    || 0,
-    fechaEmision:    fmtDate(hoy),
-    fechaVencimiento: fmtDate(vence),
+    fechaEmision:    fEmi,
+    fechaVencimiento: fVenc,
     diasCredito: diasCred,
-    notas:       'Generada automáticamente desde pedido #' + sale.numpedido,
+    notas:       notas,
     pagos:       [],
     origen:      sale.importado ? 'importacion' : 'pedido',
     sucursal:    sale.sucursal   || '',
@@ -26187,7 +26417,8 @@ function cxcCrearDesdePedido(sale) {
 
   // Notificar al usuario
   setTimeout(function(){
-    showToast('💳 Factura CXC creada para ' + nuevaFac.clienteNombre + ' — vence en ' + diasCred + ' días', 'info');
+    var labelFac = sale.nFactura ? 'Factura '+sale.nFactura : 'Factura CXC';
+    showToast('💳 '+labelFac+' creada para ' + nuevaFac.clienteNombre + ' — vence ' + fVenc, 'info');
   }, 800);
 }
 window.cxcCrearDesdePedido = cxcCrearDesdePedido;
