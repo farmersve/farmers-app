@@ -10002,79 +10002,57 @@ function updateClientModeUI() {
 // CATÁLOGO EXCEL — modal de selección + descarga con filtros correctos
 // ══════════════════════════════════════════════════════════════════════
 
-// ══════════════════════════════════════════════════════════════════════
-// FUNCIÓN CENTRAL DE FILTROS - USA ESTA PARA TODO (catálogo, Excel, PDF)
-// ══════════════════════════════════════════════════════════════════════
-
-function _catUnifiedFilter(producto, inventario) {
-  var filtros = (typeof _refStockFilters !== 'undefined') ? _refStockFilters : new Set(['ALL']);
-  
-  // Si está "Todos" activo → mostrar todo sin filtro
-  if (filtros.has('ALL')) return true;
-  
-  // Calcular stock real disponible
-  var stockReal = parseInt((inventario[producto.r] !== undefined) ? inventario[producto.r] : (producto.ex || 0)) || 0;
-  var comprometido = (typeof getComprometido === 'function' ? getComprometido() : {})[producto.r];
-  var comprometidoQty = comprometido ? (comprometido.qty || 0) : 0;
-  var stockDisponible = Math.max(0, stockReal - comprometidoQty);
-  
-  // Verificar cada filtro activo (OR lógico)
-  var resultados = {
-    conStock: false,
-    bajoStock: false,
-    agotado: false,
-    conOrdenada: false
-  };
-  
-  // ✓ Con stock (stock > 10)
-  if (filtros.has('IN')) {
-    resultados.conStock = (stockDisponible > 10);
-  }
-  
-  // ⚠ Bajo stock (stock 1-10)
-  if (filtros.has('LOW')) {
-    resultados.bajoStock = (stockDisponible > 0 && stockDisponible <= 10);
-  }
-  
-  // ✗ Agotados (stock = 0)
-  if (filtros.has('OUT')) {
-    resultados.agotado = (stockDisponible === 0);
-  }
-  
-  // 📦 Con Ordenada (ordenada > 0)
-  if (filtros.has('ORD')) {
-    // Fuente 1: localStorage farmers_pt_data
-    var ptDataLocal = {};
-    try { 
-      ptDataLocal = JSON.parse(localStorage.getItem('farmers_pt_data') || '{}'); 
-    } catch(e) {}
-    
-    var ordenadaLocal = (ptDataLocal[producto.r] && ptDataLocal[producto.r].exOrdenada) ? 
-                        parseInt(ptDataLocal[producto.r].exOrdenada) : 0;
-    
-    if (ordenadaLocal > 0) {
-      resultados.conOrdenada = true;
-    } else {
-      // Fuente 2: p.et (existencias totales) > stock actual
-      var existenciaTotal = parseInt(producto.et) || 0;
-      if (existenciaTotal > stockReal) {
-        resultados.conOrdenada = true;
-      }
-    }
-  }
-  
-  // Resultado final: OR lógico
-  return resultados.conStock || resultados.bajoStock || resultados.agotado || resultados.conOrdenada;
-}
-
 function _catGetStock(p, inv) {
   if (inv && inv[p.r] !== undefined) return parseInt(inv[p.r]) || 0;
   return parseInt(p.ex) || 0;
 }
 
-// ══════════════════════════════════════════════════════════════════════
-// FUNCIONES DE DESCARGA EXCEL - Usan filtros unificados
-// ══════════════════════════════════════════════════════════════════════
+function _catPasaFiltroStock(p, inv) {
+  var filtro = (typeof _refStockFilters !== 'undefined') ? _refStockFilters : new Set(['ALL']);
+  
+  // ═══ FILTRO TODOS → MOSTRAR TODO ═══
+  if (filtro.has('ALL')) return true;
+  
+  var ex = _catGetStock(p, inv);
+  
+  // ═══ AUDITORÍA: VERIFICAR CADA FILTRO ESPECÍFICO ═══
+  var resultados = {
+    conStock: false,
+    bajoStock: false, 
+    agotado: false,
+    conOrdenada: false
+  };
+  
+  // 1️⃣ FILTRO: ✓ Con stock (stock > 10)
+  if (filtro.has('IN')) {
+    resultados.conStock = (ex > 10);
+  }
+  
+  // 2️⃣ FILTRO: ⚠ Bajo stock (stock 1-10)
+  if (filtro.has('LOW')) {
+    resultados.bajoStock = (ex > 0 && ex <= 10);
+  }
+  
+  // 3️⃣ FILTRO: ✗ Agotados (stock = 0)
+  if (filtro.has('OUT')) {
+    resultados.agotado = (ex === 0);
+  }
+  
+  // 4️⃣ FILTRO: 📦 Con Ordenada (cantidad ordenada > 0)
+  if (filtro.has('ORD')) {
+    var _ptDataFiltro = {};
+    try { 
+      _ptDataFiltro = JSON.parse(localStorage.getItem('farmers_pt_data') || '{}'); 
+    } catch(e) {}
+    
+    var exOrden = (_ptDataFiltro[p.r] && _ptDataFiltro[p.r].exOrdenada) ? 
+                  parseInt(_ptDataFiltro[p.r].exOrdenada) : 0;
+    resultados.conOrdenada = (exOrden > 0);
+  }
+  
+  // ═══ RESULTADO FINAL: OR lógico entre filtros activos ═══
+  return resultados.conStock || resultados.bajoStock || resultados.agotado || resultados.conOrdenada;
+}
 
 function catCerrarModalExcel() {
   var m = document.getElementById('modal-cat-excel');
@@ -10087,7 +10065,7 @@ function catAbrirModalExcel() {
   var filtroMarca = (typeof _refBrandFilter !== 'undefined' && _refBrandFilter && _refBrandFilter !== 'ALL') ? _refBrandFilter : 'TODAS';
   var filtroStock = (typeof _refStockFilters !== 'undefined') ? _refStockFilters : new Set(['ALL']);
   var modoCliente = (typeof _catClientMode !== 'undefined') ? _catClientMode : false;
-  var stockLabel  = filtroStock.has('IN') ? 'Con stock' : filtroStock.has('LOW') ? 'Bajo stock' : filtroStock.has('OUT') ? 'Agotados' : 'Todos';
+  var stockLabel  = filtroStock.has('IN') ? 'Con stock' : filtroStock.has('LOW') ? 'Bajo stock' : filtroStock.has('OUT') ? 'Agotados' : filtroStock.has('ORD') ? 'Con Ordenada' : 'Todos';
   var filtroQ     = (document.getElementById('cat-search-input') || {}).value || '';
 
   var count = PRODUCTS.filter(function(p) {
@@ -10097,7 +10075,7 @@ function catAbrirModalExcel() {
       if (!(p.r||'').toUpperCase().includes(q) && !(p.d||'').toUpperCase().includes(q) &&
           !(p.b||'').toUpperCase().includes(q) && !(p.c||'').toUpperCase().includes(q)) return false;
     }
-    return _catUnifiedFilter(p, inv); // ✅ AHORA USA LA FUNCIÓN UNIFICADA
+    return _catPasaFiltroStock(p, inv);
   }).length;
 
   catCerrarModalExcel();
@@ -10275,7 +10253,7 @@ function catDownloadExcel(monedasParam) {
     var monedas     = monedasParam || [{label:'USD',campo:'u'},{label:'BCV',campo:'bv'},{label:'TF',campo:'t'}];
     var filtroStock = (typeof _refStockFilters !== 'undefined') ? _refStockFilters : new Set(['ALL']);
 
-    // ═══ FILTRAR USANDO FUNCIÓN UNIFICADA ═══
+    // Filtrar exactamente igual que la pantalla
     var prods = PRODUCTS.filter(function(p) {
       if (filtroMarca && p.br !== filtroMarca) return false;
       if (filtroQ) {
@@ -10283,7 +10261,7 @@ function catDownloadExcel(monedasParam) {
         if (!(p.r||'').toUpperCase().includes(q) && !(p.d||'').toUpperCase().includes(q) &&
             !(p.b||'').toUpperCase().includes(q) && !(p.c||'').toUpperCase().includes(q)) return false;
       }
-      return _catUnifiedFilter(p, inv); // ✅ FUNCIÓN UNIFICADA
+      return _catPasaFiltroStock(p, inv);
     });
 
     var wb = XLSX.utils.book_new();
@@ -10378,6 +10356,7 @@ function catDownloadExcel(monedasParam) {
     if (filtroStock.has('IN'))  parts.push('CON_STOCK');
     if (filtroStock.has('LOW')) parts.push('BAJO_STOCK');
     if (filtroStock.has('OUT')) parts.push('AGOTADOS');
+    if (filtroStock.has('ORD')) parts.push('CON_ORDENADA');
     if (modoCliente) parts.push('CLIENTE');
     XLSX.writeFile(wb, parts.join('_') + '.xlsx');
 
@@ -10580,10 +10559,28 @@ function _catDownloadPDFWithImgs(_prodImgsLocal) {
         return Math.max(0,_stP-_cQ) > 0;
       });
     }
-    // ═══ FILTROS UNIFICADOS ═══
     if (!_refStockFilters.has('ALL')) {
-      pool = pool.filter(function(p) {
-        return _catUnifiedFilter(p, inv); // ✅ FUNCIÓN UNIFICADA
+      pool = pool.filter(function(p){
+        var _stReal = parseInt((inv[p.r] !== undefined) ? inv[p.r] : (p.ex || 0)) || 0;
+      var _compInv = (typeof getComprometido==='function' ? getComprometido() : {})[p.r];
+      var _compInvQty = _compInv ? (_compInv.qty||0) : 0;
+      var st = _stReal; // Stock real en inventario (mostrar real + indicador comprometido)
+        // OR multi-selección — mismos umbrales que catálogo visual
+        if (_refStockFilters.has('IN')  && st > 10)            return true; // Con stock: >10
+        if (_refStockFilters.has('LOW') && st > 0 && st <= 10) return true; // Bajo stock: 1-10
+        if (_refStockFilters.has('OUT') && st === 0)           return true; // Agotados: 0
+        if (_refStockFilters.has('ORD')) {
+          // Fuente 1: ptData.exOrdenada (seteado manualmente via Actualizar Ordenada)
+          var _ptdOrd = window.ptData || {};
+          if (!Object.keys(_ptdOrd).length) {
+            try { _ptdOrd = JSON.parse(localStorage.getItem('farmers_pt_data')||'{}'); } catch(e2){}
+          }
+          if (_ptdOrd[p.r] && _ptdOrd[p.r].exOrdenada > 0) return true;
+          // Fuente 2: p.et (existencias totales del sistema) > stock actual → hay merma en camino
+          var _etOrd = parseInt(p.et) || 0;
+          if (_etOrd > st) return true;
+        }
+        return false;
       });
     }
   }
@@ -10911,7 +10908,6 @@ function _catDownloadPDFWithImgs(_prodImgsLocal) {
 }
 
 function doRefSearch() {
-  console.log('🔍 EJECUTANDO doRefSearch - PRODUCTS.length:', PRODUCTS ? PRODUCTS.length : 'UNDEFINED');
   var q = (document.getElementById('ref-search-input').value || '').trim().toLowerCase();
   var countEl   = document.getElementById('ref-search-count');
   var resultsEl = document.getElementById('ref-search-results');
@@ -10931,10 +10927,32 @@ function doRefSearch() {
     });
   }
 
-  // ═══ FILTRO DE STOCK UNIFICADO ═══
+  // Filtro de stock — exclusivo, umbrales unificados con el resto del sistema
   if (!_refStockFilters.has('ALL')) {
-    pool = pool.filter(function(p) {
-      return _catUnifiedFilter(p, inv);
+    pool = pool.filter(function(p){
+      var _stReal = parseInt((inv[p.r] !== undefined) ? inv[p.r] : (p.ex || 0)) || 0;
+      var _compInv = (typeof getComprometido==='function' ? getComprometido() : {})[p.r];
+      var _compInvQty = _compInv ? (_compInv.qty||0) : 0;
+      var st = _stReal; // Stock real en inventario (mostrar real + indicador comprometido)
+      
+      if (_refStockFilters.has('IN')  && st > 10)            return true; // Con stock
+      if (_refStockFilters.has('LOW') && st > 0 && st <= 10) return true; // Bajo stock
+      if (_refStockFilters.has('OUT') && st === 0)           return true; // Agotados
+      
+      // ✅ FILTRO "CON ORDENADA" - usar misma lógica que _catPasaFiltroStock
+      if (_refStockFilters.has('ORD')) {
+        var _ptDataFiltro = {};
+        try { 
+          _ptDataFiltro = JSON.parse(localStorage.getItem('farmers_pt_data') || '{}'); 
+        } catch(e) {}
+        
+        var exOrden = (_ptDataFiltro[p.r] && _ptDataFiltro[p.r].exOrdenada) ? 
+                      parseInt(_ptDataFiltro[p.r].exOrdenada) : 0;
+        
+        if (exOrden > 0) return true;
+      }
+      
+      return false;
     });
   }
 
@@ -10981,10 +10999,21 @@ function doRefSearch() {
   if(window._prodImgs && Object.keys(window._prodImgs).length>0){ _prodImgs=window._prodImgs; } else { try{ _prodImgs=JSON.parse(localStorage.getItem('farmers_product_images')||'{}'); if(Object.keys(_prodImgs).length>0) window._prodImgs=_prodImgs; }catch(e){} }
 
   var cards = [];
-  // DEBUG ptData - solo verificar carga inicial
-  var ptDataDebug = {};
+  // DEBUG ROBUSTO - Verificar farmers_pt_data (una sola vez)
+  var _ptDataCat = {};
   try { 
-    ptDataDebug = JSON.parse(localStorage.getItem('farmers_pt_data') || '{}'); 
+    _ptDataCat = JSON.parse(localStorage.getItem('farmers_pt_data') || '{}'); 
+    console.log('📦 farmers_pt_data cargado:', Object.keys(_ptDataCat).length, 'productos total');
+    
+    // Contar productos con ordenada
+    var conOrdenada = 0;
+    Object.keys(_ptDataCat).forEach(function(ref) {
+      if (_ptDataCat[ref] && _ptDataCat[ref].exOrdenada > 0) {
+        conOrdenada++;
+      }
+    });
+    console.log('📦 Productos con ORDENADA:', conOrdenada);
+    
   } catch(e2) {
     console.error('❌ Error cargando farmers_pt_data:', e2);
   }
