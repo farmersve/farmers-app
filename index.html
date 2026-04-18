@@ -19422,7 +19422,9 @@ window.msAbrirMonitor = function() {
         MS.numPedido=ped.numP; MS.sucursales=ped.sucursales||[];
         MS.clientesPorSucursal=ped.clientesPorSucursal||{};
         MS.moneda=ped.moneda||'TF';
-        if(ped.data) MS.data=ped.data;
+        if(typeof msAsegurarDataPedido==='function' && !msAsegurarDataPedido(ped.numP)){
+          showToast('⚠ No se pudo cargar el pedido para etiquetas','warn'); return;
+        }
         if(typeof msAbrirFormEtiquetas==='function') msAbrirFormEtiquetas();
         else showToast('ABRE EL PASO 3 PRIMERO','warn');
       }));
@@ -19433,6 +19435,10 @@ window.msAbrirMonitor = function() {
         MS.clientesPorSucursal=ped.clientesPorSucursal||{};
         MS.moneda=ped.moneda||'TF';
         MS.fechaEmision=ped.fecha||'';
+        // Asegurar MS.data cargado (con fallback a items)
+        if(typeof msAsegurarDataPedido==='function' && !msAsegurarDataPedido(ped.numP)){
+          showToast('⚠ No se pudo cargar el pedido','warn'); return;
+        }
         if(typeof msGenerarDocPedido==='function') msGenerarDocPedido(ped.numP,ped.sucursales||[]);
       }));
 
@@ -19441,6 +19447,10 @@ window.msAbrirMonitor = function() {
         MS.numPedido=ped.numP; MS.sucursales=ped.sucursales||[];
         MS.clientesPorSucursal=ped.clientesPorSucursal||{};
         MS.moneda=ped.moneda||'TF'; MS.fechaEmision=ped.fecha||'';
+        // Asegurar MS.data cargado (con fallback a items)
+        if(typeof msAsegurarDataPedido==='function' && !msAsegurarDataPedido(ped.numP)){
+          showToast('⚠ No se pudo cargar el pedido','warn'); return;
+        }
         if(typeof msExportarPedidoExcel==='function') msExportarPedidoExcel(ped);
         else showToast('Función Excel no disponible','warn');
       }));
@@ -19448,36 +19458,13 @@ window.msAbrirMonitor = function() {
       // 🚚 DESPACHAR — abre directamente el overlay de confirmación con listado + total + botón 'Confirmar Despacho'
       btnLeft.appendChild(_btn('🚚 DESPACHAR',WHITE,'linear-gradient(135deg,'+AMBER+',#d97706)','transparent',function(){
         ov.remove();
-        // Cargar TODOS los datos del pedido al estado global MS
-        MS.numPedido = ped.numP;
-        MS.fase = 'reservado';
-        MS.sucursales = ped.sucursales || [];
-        MS.clientesPorSucursal = ped.clientesPorSucursal || {};
-        MS.moneda = ped.moneda || 'USD';
-        MS.sucursalesEstado = ped.sucursalesEstado || {};
-        MS.fechaEmision = ped.fecha || '';
 
-        // Cargar MS.data — prioridad: ped.data (nuevos) → reconstruir desde ped.items (antiguos)
-        if (ped.data && Array.isArray(ped.data) && ped.data.length) {
-          MS.data = ped.data;
-        } else if (ped.items && Array.isArray(ped.items) && ped.items.length) {
-          // Fallback: reconstruir estructura MS.data desde items persistidos
-          MS.data = ped.items.map(function(it){
-            var pedidos = {}, dist = {};
-            Object.keys(it.sucursales||{}).forEach(function(s){
-              pedidos[s] = (it.sucursales[s].pide)||0;
-              dist[s]    = (it.sucursales[s].desp)||0;
-            });
-            return { ref: it.ref, desc: it.desc||'', pedidos: pedidos, dist: dist };
-          });
-          showToast('Pedido antiguo cargado desde histórico · '+MS.data.length+' refs','info');
-        } else {
+        // Cargar todos los datos del pedido al estado global MS (data + items + fiscales)
+        if (typeof msAsegurarDataPedido === 'function' && !msAsegurarDataPedido(ped.numP)) {
           showToast('⚠ Este pedido no tiene datos de referencias guardados','warn');
+          return;
         }
-        if (ped.colMap) MS.colMap = ped.colMap;
-
-        // Precargar datos fiscales si ya existían
-        if (ped.datosFiscales) MS.datosFiscales = ped.datosFiscales;
+        MS.fase = 'reservado';
 
         if (typeof selectedBrands !== 'undefined' && selectedBrands.size === 0) {
           selectedBrands.add('EXCALIBUR');
@@ -20205,8 +20192,62 @@ window.msGenerarDocPedido = function(numP, sel) {
 };
 
 
+// ════════════════════════════════════════════════════════════════
+// HELPER: Asegurar que MS.data esté cargado antes de exportar/operar
+// ════════════════════════════════════════════════════════════════
+// Si MS.data está vacío, intenta reconstruirlo desde el pedido guardado
+// en farmers_ms_pedidos (usando primero ped.data, luego ped.items como fallback).
+// Retorna true si MS.data quedó con datos, false si no se pudo recuperar.
+window.msAsegurarDataPedido = function(numP) {
+  // Si ya tenemos datos en memoria, listo
+  if (MS.data && MS.data.length > 0) return true;
+
+  var npBusca = numP || MS.numPedido;
+  if (!npBusca) return false;
+  if (typeof getMsPedidos !== 'function') return false;
+
+  var peds = getMsPedidos();
+  var ped = peds.find(function(p){ return p.numP === npBusca; });
+  if (!ped) return false;
+
+  // Cargar metadata del pedido al estado MS
+  MS.numPedido            = ped.numP;
+  MS.sucursales           = ped.sucursales || [];
+  MS.clientesPorSucursal  = ped.clientesPorSucursal || {};
+  MS.moneda               = ped.moneda || MS.moneda || 'USD';
+  MS.sucursalesEstado     = ped.sucursalesEstado || {};
+  MS.fechaEmision         = ped.fecha || '';
+  if (ped.datosFiscales)  MS.datosFiscales = ped.datosFiscales;
+
+  // Prioridad 1: ped.data (pedidos nuevos)
+  if (ped.data && Array.isArray(ped.data) && ped.data.length) {
+    MS.data = ped.data;
+    return true;
+  }
+
+  // Prioridad 2: reconstruir desde ped.items (pedidos antiguos)
+  if (ped.items && Array.isArray(ped.items) && ped.items.length) {
+    MS.data = ped.items.map(function(it){
+      var pedidos = {}, dist = {};
+      Object.keys(it.sucursales || {}).forEach(function(s){
+        pedidos[s] = (it.sucursales[s].pide) || 0;
+        dist[s]    = (it.sucursales[s].desp) || 0;
+      });
+      return { ref: it.ref, desc: it.desc || '', pedidos: pedidos, dist: dist };
+    });
+    return MS.data.length > 0;
+  }
+
+  return false;
+};
+
 window.msAbrirOverlayReservado = function(numP, sel, hayPendientes) {
   var ex=document.getElementById('ms-reservado-ov'); if(ex) ex.remove();
+
+  // Asegurar que MS.data esté cargado (para cálculo de totales y exportaciones)
+  if (!MS.data || MS.data.length === 0) {
+    msAsegurarDataPedido(numP);
+  }
 
   var total=0;
   MS.data.forEach(function(p){
@@ -20271,10 +20312,22 @@ window.msAbrirOverlayReservado = function(numP, sel, hayPendientes) {
     return b;
   }
 
-  row.appendChild(mkBtn('📋 Doc. Pedido','#1B1F6B',function(){msGenerarDocPedido(numP,sel);ov.remove();}));
-  row.appendChild(mkBtn('📊 Excel','#16a34a',function(){msExportarExcel();ov.remove();}));
-  row.appendChild(mkBtn('📄 PDF','#dc2626',function(){msExportarPDF();ov.remove();}));
-  row.appendChild(mkBtn('🏷 Etiquetas','#7c3aed',function(){msAbrirFormEtiquetas();ov.remove();}));
+  row.appendChild(mkBtn('📋 Doc. Pedido','#1B1F6B',function(){
+    if(!msAsegurarDataPedido(numP)){ showToast('⚠ No se pudo cargar el pedido — abre DESPACHAR primero','warn'); return; }
+    msGenerarDocPedido(numP,sel);ov.remove();
+  }));
+  row.appendChild(mkBtn('📊 Excel','#16a34a',function(){
+    if(!msAsegurarDataPedido(numP)){ showToast('⚠ No se pudo cargar el pedido — abre DESPACHAR primero','warn'); return; }
+    msExportarExcel();ov.remove();
+  }));
+  row.appendChild(mkBtn('📄 PDF','#dc2626',function(){
+    if(!msAsegurarDataPedido(numP)){ showToast('⚠ No se pudo cargar el pedido — abre DESPACHAR primero','warn'); return; }
+    msExportarPDF();ov.remove();
+  }));
+  row.appendChild(mkBtn('🏷 Etiquetas','#7c3aed',function(){
+    if(!msAsegurarDataPedido(numP)){ showToast('⚠ No se pudo cargar el pedido','warn'); return; }
+    msAbrirFormEtiquetas();ov.remove();
+  }));
 
   // Botón DESPACHAR — este es el que crea venta y CXC
   var btnDesp=document.createElement('button');
