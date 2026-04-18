@@ -9924,9 +9924,21 @@ function setRefStock(f) {
     // Todos → limpia selección completamente
     _refStockFilters = new Set(['ALL']);
   } else {
-    // ═══ FILTROS MUTUAMENTE EXCLUSIVOS ═══
-    // Solo uno puede estar activo a la vez
-    _refStockFilters = new Set([f]); // Limpia todo y pone solo el seleccionado
+    // ═══ FILTROS COMBINABLES (PUEDEN ESTAR MÚLTIPLES ACTIVOS) ═══
+    // Quitar ALL si estaba
+    _refStockFilters.delete('ALL');
+    
+    // Toggle: si ya está activo → quitarlo, si no → añadirlo
+    if (_refStockFilters.has(f)) {
+      _refStockFilters.delete(f);
+    } else {
+      _refStockFilters.add(f);
+    }
+    
+    // Si quedó vacío → volver a Todos
+    if (_refStockFilters.size === 0) {
+      _refStockFilters = new Set(['ALL']);
+    }
   }
   updateRefStockButtons();
   doRefSearch();
@@ -10001,9 +10013,12 @@ function _catPasaFiltroStock(p, inv) {
   
   var ex = _catGetStock(p, inv);
   
-  // ═══ FILTRO CON ORDENADA (PRIORIDAD) ═══
+  // ═══ FILTROS COMBINABLES (OR LÓGICO) ═══
+  // El producto pasa si cumple CUALQUIERA de los filtros activos
+  
+  // Verificar filtro Con Ordenada
+  var tieneOrdenada = false;
   if (filtro.has('ORD')) {
-    // Leer ptData para verificar exOrdenada
     var _ptDataFiltro = {};
     try { 
       _ptDataFiltro = JSON.parse(localStorage.getItem('farmers_pt_data') || '{}'); 
@@ -10011,15 +10026,18 @@ function _catPasaFiltroStock(p, inv) {
     
     var exOrden = (_ptDataFiltro[p.r] && _ptDataFiltro[p.r].exOrdenada) ? 
                   parseInt(_ptDataFiltro[p.r].exOrdenada) : 0;
-    return exOrden > 0;  // Tiene cantidad ordenada
+    tieneOrdenada = (exOrden > 0);
   }
   
-  // ═══ FILTROS DE STOCK NORMAL (SOLO SI NO ES ORD) ═══
-  if (filtro.has('IN'))  return ex > 10;            // Con stock: más de 10 unidades
-  if (filtro.has('LOW')) return ex > 0 && ex <= 10; // Bajo stock: entre 1 y 10 unidades
-  if (filtro.has('OUT')) return ex === 0;            // Agotados: 0 unidades
+  // Verificar filtros de stock
+  var cumpleStock = false;
+  if (filtro.has('IN') && ex > 10) cumpleStock = true;           // Con stock
+  if (filtro.has('LOW') && ex > 0 && ex <= 10) cumpleStock = true; // Bajo stock
+  if (filtro.has('OUT') && ex === 0) cumpleStock = true;          // Agotados
   
-  return false; // Si llega aquí, no pasa ningún filtro
+  // El producto pasa si cumple CUALQUIER filtro activo
+  return (filtro.has('ORD') && tieneOrdenada) || 
+         ((filtro.has('IN') || filtro.has('LOW') || filtro.has('OUT')) && cumpleStock);
 }
 
 function catCerrarModalExcel() {
@@ -10921,7 +10939,7 @@ function doRefSearch() {
 
   // Counter
   var total = PRODUCTS.length;
-  var sfLabel = !_refStockFilters.has('ALL') ? ' · ' + Array.from(_refStockFilters).map(function(x){ return {IN:'Con stock',LOW:'Bajo stock',OUT:'Agotados'}[x]; }).join(' + ') : '';
+  var sfLabel = !_refStockFilters.has('ALL') ? ' · ' + Array.from(_refStockFilters).map(function(x){ return {IN:'Con stock',LOW:'Bajo stock',OUT:'Agotados',ORD:'Con Ordenada'}[x]; }).join(' + ') : '';
   countEl.textContent = results.length + ' de ' + total + ' referencias' +
     (_refBrandFilter !== 'ALL' ? ' · ' + _refBrandFilter : '') + sfLabel;
 
@@ -10953,7 +10971,18 @@ function doRefSearch() {
   var cards = [];
   // Leer ptData UNA vez fuera del loop para exOrdenada (eficiencia)
   var _ptDataCat = {};
-  try { _ptDataCat = JSON.parse(localStorage.getItem('farmers_pt_data') || '{}'); } catch(e2) {}
+  try { 
+    _ptDataCat = JSON.parse(localStorage.getItem('farmers_pt_data') || '{}'); 
+    console.log('DEBUG - farmers_pt_data cargado:', Object.keys(_ptDataCat).length, 'productos');
+    // Mostrar algunos ejemplos con ordenada
+    Object.keys(_ptDataCat).forEach(function(ref) {
+      if (_ptDataCat[ref] && _ptDataCat[ref].exOrdenada > 0) {
+        console.log('- Producto con ORDENADA:', ref, '→', _ptDataCat[ref].exOrdenada, 'unidades');
+      }
+    });
+  } catch(e2) {
+    console.error('Error cargando farmers_pt_data:', e2);
+  }
 
   results.forEach(function(p) {
     var _stReal    = parseInt((inv[p.r] !== undefined) ? inv[p.r] : (p.ex || 0)) || 0;
@@ -10961,6 +10990,11 @@ function doRefSearch() {
     var _compQtyV  = _compCatV ? (_compCatV.qty||0) : 0;
     var stock      = Math.max(0, _stReal - _compQtyV); // DISPONIBLE
     var exOrden    = (_ptDataCat[p.r] && _ptDataCat[p.r].exOrdenada) ? (parseInt(_ptDataCat[p.r].exOrdenada) || 0) : 0;
+    
+    // DEBUG TEMPORAL - Mostrar en consola si hay datos de ordenada
+    if (exOrden > 0) {
+      console.log('ORDENADA encontrada:', p.r, 'cantidad:', exOrden);
+    }
     var stockColor = stock > 10 ? '#16a34a' : stock > 0 ? '#d97706' : '#dc2626';
     var stockBg    = stock > 10 ? '#f0fdf4' : stock > 0 ? '#fffbeb' : '#fef2f2';
     var stockLabel = stock > 10 ? '✓ DISPONIBLE' : stock > 0 ? '⚠ BAJO STOCK' : '✗ AGOTADO';
