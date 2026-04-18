@@ -10009,33 +10009,68 @@ function _catGetStock(p, inv) {
 
 function _catPasaFiltroStock(p, inv) {
   var filtro = (typeof _refStockFilters !== 'undefined') ? _refStockFilters : new Set(['ALL']);
+  
+  // ═══ FILTRO TODOS → MOSTRAR TODO ═══
   if (filtro.has('ALL')) return true;
   
   var ex = _catGetStock(p, inv);
   
-  // ═══ NUEVA LÓGICA SIMPLIFICADA ═══
+  // ═══ AUDITORÍA: VERIFICAR CADA FILTRO ESPECÍFICO ═══
+  var resultados = {
+    conStock: false,
+    bajoStock: false, 
+    agotado: false,
+    conOrdenada: false
+  };
   
-  // 1. Verificar Con Ordenada
-  var tieneOrdenada = false;
+  // 1️⃣ FILTRO: ✓ Con stock (stock > 10)
+  if (filtro.has('IN')) {
+    resultados.conStock = (ex > 10);
+  }
+  
+  // 2️⃣ FILTRO: ⚠ Bajo stock (stock 1-10)
+  if (filtro.has('LOW')) {
+    resultados.bajoStock = (ex > 0 && ex <= 10);
+  }
+  
+  // 3️⃣ FILTRO: ✗ Agotados (stock = 0)
+  if (filtro.has('OUT')) {
+    resultados.agotado = (ex === 0);
+  }
+  
+  // 4️⃣ FILTRO: 📦 Con Ordenada (cantidad ordenada > 0)
   if (filtro.has('ORD')) {
     var _ptDataFiltro = {};
     try { 
       _ptDataFiltro = JSON.parse(localStorage.getItem('farmers_pt_data') || '{}'); 
-    } catch(e) {}
+    } catch(e) {
+      console.error('❌ Error cargando farmers_pt_data:', e);
+    }
     
     var exOrden = (_ptDataFiltro[p.r] && _ptDataFiltro[p.r].exOrdenada) ? 
                   parseInt(_ptDataFiltro[p.r].exOrdenada) : 0;
-    tieneOrdenada = (exOrden > 0);
+    resultados.conOrdenada = (exOrden > 0);
+    
+    // DEBUG para filtro ORD
+    if (exOrden > 0) {
+      console.log('✅ ORDENADA encontrada:', p.r, '→', exOrden, 'unidades');
+    }
   }
   
-  // 2. Verificar filtros de stock
-  var conStock = filtro.has('IN') && (ex > 10);
-  var bajoStock = filtro.has('LOW') && (ex > 0 && ex <= 10);
-  var agotado = filtro.has('OUT') && (ex === 0);
-  var conOrdenada = filtro.has('ORD') && tieneOrdenada;
+  // ═══ RESULTADO FINAL: OR lógico entre filtros activos ═══
+  var pasa = resultados.conStock || resultados.bajoStock || resultados.agotado || resultados.conOrdenada;
   
-  // 3. El producto pasa si cumple CUALQUIER filtro activo (OR lógico)
-  return conStock || bajoStock || agotado || conOrdenada;
+  // DEBUG detallado para auditoría
+  if (filtro.size > 0 && !filtro.has('ALL')) {
+    console.log('🔍 AUDITORÍA:', p.r, {
+      filtrosActivos: Array.from(filtro),
+      stock: ex,
+      resultados: resultados,
+      pasa: pasa
+    });
+  }
+  
+  return pasa;
 }
 
 function catCerrarModalExcel() {
@@ -10967,54 +11002,24 @@ function doRefSearch() {
   if(window._prodImgs && Object.keys(window._prodImgs).length>0){ _prodImgs=window._prodImgs; } else { try{ _prodImgs=JSON.parse(localStorage.getItem('farmers_product_images')||'{}'); if(Object.keys(_prodImgs).length>0) window._prodImgs=_prodImgs; }catch(e){} }
 
   var cards = [];
-  // DEBUG ROBUSTO - Verificar farmers_pt_data
-  console.log('=== DEBUG ORDENADA ===');
-  
-  // 1. Verificar localStorage directamente
-  var rawData = localStorage.getItem('farmers_pt_data');
-  console.log('1. localStorage raw:', rawData ? 'EXISTE' : 'NO EXISTE');
-  
-  if (rawData) {
-    console.log('2. localStorage length:', rawData.length, 'caracteres');
-    try {
-      var parsed = JSON.parse(rawData);
-      console.log('3. Productos en localStorage:', Object.keys(parsed).length);
-      
-      // Buscar productos con ordenada
-      var conOrdenada = [];
-      Object.keys(parsed).forEach(function(ref) {
-        if (parsed[ref] && parsed[ref].exOrdenada > 0) {
-          conOrdenada.push({
-            ref: ref, 
-            ordenada: parsed[ref].exOrdenada,
-            data: parsed[ref]
-          });
-        }
-      });
-      console.log('4. Productos con ORDENADA:', conOrdenada);
-      
-      // Verificar algunos específicos de EXCALIBUR
-      ['EXC001', 'EXC002', 'EXC003'].forEach(function(ref) {
-        if (parsed[ref]) {
-          console.log('5. ' + ref + ':', parsed[ref]);
-        }
-      });
-      
-    } catch(e) {
-      console.error('ERROR parseando localStorage:', e);
-    }
-  }
-  
-  // Leer ptData UNA vez fuera del loop para exOrdenada (eficiencia)
+  // DEBUG ROBUSTO - Verificar farmers_pt_data (una sola vez)
   var _ptDataCat = {};
   try { 
     _ptDataCat = JSON.parse(localStorage.getItem('farmers_pt_data') || '{}'); 
-    console.log('6. _ptDataCat cargado:', Object.keys(_ptDataCat).length, 'productos');
+    console.log('📦 farmers_pt_data cargado:', Object.keys(_ptDataCat).length, 'productos total');
+    
+    // Contar productos con ordenada
+    var conOrdenada = 0;
+    Object.keys(_ptDataCat).forEach(function(ref) {
+      if (_ptDataCat[ref] && _ptDataCat[ref].exOrdenada > 0) {
+        conOrdenada++;
+      }
+    });
+    console.log('📦 Productos con ORDENADA:', conOrdenada);
+    
   } catch(e2) {
-    console.error('7. Error cargando _ptDataCat:', e2);
+    console.error('❌ Error cargando farmers_pt_data:', e2);
   }
-  
-  console.log('=== FIN DEBUG ===');
 
   results.forEach(function(p) {
     var _stReal    = parseInt((inv[p.r] !== undefined) ? inv[p.r] : (p.ex || 0)) || 0;
