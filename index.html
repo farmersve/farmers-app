@@ -18688,8 +18688,8 @@ window.msAbrirOverlayEmision = function(sel, hayPendientes){
     return b;
   }
 
-  row.appendChild(mkBtn('EXCEL','#16a34a',function(){msExportarExcel();ov.remove();}));
-  row.appendChild(mkBtn('PDF','#dc2626',function(){msExportarPDF();ov.remove();}));
+  row.appendChild(mkBtn('EXCEL','#16a34a',function(){try{msExportarExcel();showToast('📊 Excel descargado','success');}catch(err){console.error(err);showToast('❌ Error Excel: '+err.message,'warn');}}));
+  row.appendChild(mkBtn('PDF','#dc2626',function(){try{msExportarPDF();}catch(err){console.error(err);showToast('❌ Error PDF: '+err.message,'warn');}}));
   row.appendChild(mkBtn('Confirmar','#1a2050',function(){msConfirmarSeleccionadas(MS.numPedido,sel,hayPendientes,ov);}));
 
   var btnC=document.createElement('button');
@@ -20221,19 +20221,62 @@ window.msAsegurarDataPedido = function(numP) {
 
   // Prioridad 1: ped.data (pedidos nuevos)
   if (ped.data && Array.isArray(ped.data) && ped.data.length) {
-    MS.data = ped.data;
+    var _inv1 = (typeof getInventory==='function') ? getInventory() : {};
+    // Asegurar que cada entry tenga los campos requeridos por msExportarPDF/msExportarExcel
+    MS.data = ped.data.map(function(p){
+      var totalPedido = p.totalPedido;
+      var estado = p.estado;
+      var stock = p.stock;
+      if (totalPedido === undefined || estado === undefined || stock === undefined) {
+        var tp = 0, td = 0;
+        Object.keys(p.pedidos || {}).forEach(function(s){
+          tp += (p.pedidos[s])||0;
+          td += (p.dist[s])||0;
+        });
+        if (totalPedido === undefined) totalPedido = tp;
+        if (estado === undefined) {
+          if (tp > 0 && td >= tp) estado = 'completo';
+          else if (tp > 0 && td > 0) estado = 'parcial';
+          else if (tp > 0) estado = 'sinstock';
+          else estado = 'sinpedido';
+        }
+        if (stock === undefined) stock = parseInt(_inv1[p.ref]) || 0;
+      }
+      return Object.assign({}, p, {totalPedido: totalPedido, estado: estado, stock: stock});
+    });
     return true;
   }
 
   // Prioridad 2: reconstruir desde ped.items (pedidos antiguos)
   if (ped.items && Array.isArray(ped.items) && ped.items.length) {
+    var _inv = (typeof getInventory==='function') ? getInventory() : {};
     MS.data = ped.items.map(function(it){
       var pedidos = {}, dist = {};
+      var totalPedido = 0, totalDesp = 0;
       Object.keys(it.sucursales || {}).forEach(function(s){
-        pedidos[s] = (it.sucursales[s].pide) || 0;
-        dist[s]    = (it.sucursales[s].desp) || 0;
+        var pide = (it.sucursales[s].pide) || 0;
+        var desp = (it.sucursales[s].desp) || 0;
+        pedidos[s] = pide;
+        dist[s]    = desp;
+        totalPedido += pide;
+        totalDesp   += desp;
       });
-      return { ref: it.ref, desc: it.desc || '', pedidos: pedidos, dist: dist };
+      // Derivar estado para compat con msExportarPDF / msExportarExcel
+      var estado = 'sinpedido';
+      if (totalPedido > 0 && totalDesp >= totalPedido) estado = 'completo';
+      else if (totalPedido > 0 && totalDesp > 0)       estado = 'parcial';
+      else if (totalPedido > 0)                         estado = 'sinstock';
+      // Stock actual (para columna "Stock" del PDF/Excel)
+      var stock = parseInt(_inv[it.ref]) || 0;
+      return {
+        ref: it.ref,
+        desc: it.desc || '',
+        pedidos: pedidos,
+        dist: dist,
+        stock: stock,
+        totalPedido: totalPedido,
+        estado: estado
+      };
     });
     return MS.data.length > 0;
   }
@@ -20314,19 +20357,23 @@ window.msAbrirOverlayReservado = function(numP, sel, hayPendientes) {
 
   row.appendChild(mkBtn('📋 Doc. Pedido','#1B1F6B',function(){
     if(!msAsegurarDataPedido(numP)){ showToast('⚠ No se pudo cargar el pedido — abre DESPACHAR primero','warn'); return; }
-    msGenerarDocPedido(numP,sel);ov.remove();
+    try { msGenerarDocPedido(numP,sel); }
+    catch(err){ console.error('Error Doc:',err); showToast('❌ Error: '+(err.message||'revisar consola'),'warn'); }
   }));
   row.appendChild(mkBtn('📊 Excel','#16a34a',function(){
     if(!msAsegurarDataPedido(numP)){ showToast('⚠ No se pudo cargar el pedido — abre DESPACHAR primero','warn'); return; }
-    msExportarExcel();ov.remove();
+    try { msExportarExcel(); showToast('📊 Excel descargado','success'); }
+    catch(err){ console.error('Error Excel:',err); showToast('❌ Error Excel: '+(err.message||'revisar consola'),'warn'); }
   }));
   row.appendChild(mkBtn('📄 PDF','#dc2626',function(){
     if(!msAsegurarDataPedido(numP)){ showToast('⚠ No se pudo cargar el pedido — abre DESPACHAR primero','warn'); return; }
-    msExportarPDF();ov.remove();
+    try { msExportarPDF(); }
+    catch(err){ console.error('Error PDF:',err); showToast('❌ Error PDF: '+(err.message||'revisar consola'),'warn'); }
   }));
   row.appendChild(mkBtn('🏷 Etiquetas','#7c3aed',function(){
     if(!msAsegurarDataPedido(numP)){ showToast('⚠ No se pudo cargar el pedido','warn'); return; }
-    msAbrirFormEtiquetas();ov.remove();
+    try { msAbrirFormEtiquetas(); }
+    catch(err){ console.error('Error Etiquetas:',err); showToast('❌ Error Etiquetas: '+(err.message||'revisar consola'),'warn'); }
   }));
 
   // Botón DESPACHAR — este es el que crea venta y CXC
@@ -20714,8 +20761,8 @@ window.msAbrirOverlayConfirmado = function(numP, sel, hayPendientes){
     return b;
   }
 
-  row.appendChild(mkBtn('EXCEL','#16a34a',function(){msExportarExcel();ov.remove();}));
-  row.appendChild(mkBtn('PDF','#dc2626',function(){msExportarPDF();ov.remove();}));
+  row.appendChild(mkBtn('EXCEL','#16a34a',function(){try{msExportarExcel();showToast('📊 Excel descargado','success');}catch(err){console.error(err);showToast('❌ Error Excel: '+err.message,'warn');}}));
+  row.appendChild(mkBtn('PDF','#dc2626',function(){try{msExportarPDF();}catch(err){console.error(err);showToast('❌ Error PDF: '+err.message,'warn');}}));
   row.appendChild(mkBtn('Factura','#1a2050',function(){msGenerarFacturaPDF();}));
   row.appendChild(mkBtn('Etiquetas','#7c3aed',function(){msAbrirEtiquetas();}));
 
