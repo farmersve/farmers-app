@@ -9377,6 +9377,7 @@ function _doConfirmImport(ajustarStock) {
             <option value="USD">USD $</option>
             <option value="BCV">BCV (Bs. al emitir)</option>
             <option value="TF">Tierra Firme (Bs. al emitir)</option>
+            <option value="NONE">🚫 Sin Precio (solo descarga)</option>
           </select>
         </div>
       </div>
@@ -10582,7 +10583,12 @@ function _catDownloadPDFWithImgs(_prodImgsLocal) {
     }
   }
 
-  var _catM   = _catClientMode ? ((document.getElementById('cat-moneda-select') || {value:'USD'}).value) : 'USD';
+  // Moneda: en modo cliente toma lo seleccionado; en modo interno solo se respeta 'NONE' (Sin Precio); resto fuerza USD
+  var _selMonedaVal = (document.getElementById('cat-moneda-select') || {value:'USD'}).value;
+  var _catM = _catClientMode ? _selMonedaVal : (_selMonedaVal === 'NONE' ? 'NONE' : 'USD');
+  // Modo 'Sin Precio' — oculta todos los precios en el PDF. No afecta pantalla.
+  var _catSinPrecio = (_catM === 'NONE');
+  if (_catSinPrecio) _catM = 'USD'; // para cálculos internos de capital, etc., se normaliza a USD
   var tasaHoy = getTasaHoy() || 0;
   var hoy     = new Date().toLocaleDateString('es-VE', {weekday:'long', day:'numeric', month:'long', year:'numeric'});
   var esSeleccion = window._catSelectionOverride && window._catSelectionOverride.length > 0;
@@ -10661,15 +10667,21 @@ function _catDownloadPDFWithImgs(_prodImgsLocal) {
         }
       }
 
-      var preciosHTML = !_catClientMode
-        ? '<div class="precios-grid">' +
+      var preciosHTML;
+      if (_catSinPrecio) {
+        // Modo 'Sin Precio' — omite completamente el bloque de precios
+        preciosHTML = '';
+      } else if (!_catClientMode) {
+        preciosHTML = '<div class="precios-grid">' +
             '<div class="precio-cell"><div class="pcel-label">USD</div><div class="pcel-val">' + pUSD + '</div></div>' +
             '<div class="precio-cell"><div class="pcel-label">BCV</div><div class="pcel-val">' + pBCV + '</div></div>' +
             '<div class="precio-cell"><div class="pcel-label">TF</div><div class="pcel-val">' + pTF + '</div></div>' +
-          '</div>'
-        : '<div class="precio-cliente"><span class="pcel-label">PRECIO ' + monLabel + '</span><span class="pcel-val-big">' + getPrecioStr(p) + '</span></div>';
+          '</div>';
+      } else {
+        preciosHTML = '<div class="precio-cliente"><span class="pcel-label">PRECIO ' + monLabel + '</span><span class="pcel-val-big">' + getPrecioStr(p) + '</span></div>';
+      }
 
-      var capitalHTML = (!_catClientMode && capital > 0)
+      var capitalHTML = (!_catSinPrecio && !_catClientMode && capital > 0)
         ? '<div class="capital-row"><span>💰 CAPITAL</span><strong>$ ' + capital.toFixed(2) + '</strong><span class="cap-det">' + stock + ' uds × ' + pUSD + '</span></div>'
         : '';
 
@@ -10728,7 +10740,7 @@ function _catDownloadPDFWithImgs(_prodImgsLocal) {
     '</div>';
   }).join('');
 
-  var capTotalStr = (!_catClientMode && capTotal > 0) ? ' &nbsp;·&nbsp; 💰 Capital total: <strong style=\"color:#6ee7b7;\">$ ' + capTotal.toFixed(2) + '</strong>' : '';
+  var capTotalStr = (!_catSinPrecio && !_catClientMode && capTotal > 0) ? ' &nbsp;·&nbsp; 💰 Capital total: <strong style=\"color:#6ee7b7;\">$ ' + capTotal.toFixed(2) + '</strong>' : '';
 
   // Serializar imágenes: primero intentar desde memoria/localStorage, luego Firebase en ventana nueva
   var hasImgs = Object.keys(_prodImgsLocal).length > 0;
@@ -10829,7 +10841,7 @@ function _catDownloadPDFWithImgs(_prodImgsLocal) {
     (function(){
       var bColor = ({EXCALIBUR:'#818cf8',GENIAL:'#34d399',MATRIX:'#fbbf24',LUMEN:'#f87171',MAXKILLER:'#c084fc',VARIOS:'#94a3b8'})[_refBrandFilter] || '#f47b3e';
       var brandLabel = _refBrandFilter !== 'ALL' ? _refBrandFilter : 'TODAS LAS MARCAS';
-      var monedaFull = _catM === 'BCV' ? 'Bolívares BCV' : _catM === 'TF' ? 'Tierra Firme' : 'Dólares USD';
+      var monedaFull = _catSinPrecio ? 'Sin Precio' : (_catM === 'BCV' ? 'Bolívares BCV' : _catM === 'TF' ? 'Tierra Firme' : 'Dólares USD');
       var contactHTML = _catClientMode
         ? '<div class="cover-contact-name">FARMERS C.A.</div><div class="cover-contact-info">📞 0412-0445797<br>✉ farmersve@gmail.com</div>'
         : '<div class="cover-contact-name">USO INTERNO</div><div class="cover-contact-info">📞 0412-0445797 &nbsp;·&nbsp; ✉ farmersve@gmail.com<br><span style=\"color:rgba(255,255,255,.3);font-size:.65rem;\">Documento confidencial — No distribuir</span></div>';
@@ -10847,7 +10859,7 @@ function _catDownloadPDFWithImgs(_prodImgsLocal) {
           '</div>' +
           '<div class="cover-stats">' +
             '<div class="cover-stat"><div class="cover-stat-val">' + pool.length + '</div><div class="cover-stat-lbl">Referencias</div></div>' +
-            (!_catClientMode && capTotal > 0 ? '<div class="cover-stat"><div class="cover-stat-val">$ ' + capTotal.toFixed(0) + '</div><div class="cover-stat-lbl">Capital USD</div></div>' : '') +
+            (!_catSinPrecio && !_catClientMode && capTotal > 0 ? '<div class="cover-stat"><div class="cover-stat-val">$ ' + capTotal.toFixed(0) + '</div><div class="cover-stat-lbl">Capital USD</div></div>' : '') +
             '<div class="cover-stat"><div class="cover-stat-val">' + monedaFull + '</div><div class="cover-stat-lbl">Moneda</div></div>' +
           '</div>' +
         '</div>' +
@@ -11032,7 +11044,9 @@ function doRefSearch() {
     var capital    = (p.u && stock) ? stock * p.u : 0;
     var capitalStr = capital > 0 ? '$ ' + capital.toFixed(2) : '—';
     // Modo cliente: mostrar el precio de la moneda seleccionada
+    // 'NONE' (Sin Precio) aplica SOLO al descargar — en pantalla forzamos USD para que nunca falten precios
     var _catM = (document.getElementById('cat-moneda-select') || {value:'USD'}).value;
+    if (_catM === 'NONE') _catM = 'USD';
     var precioMostrar = _catM === 'BCV' ? pBCV : _catM === 'TF' ? pTF : pUSD;
     var monedaLabel   = _catM === 'BCV' ? 'BCV' : _catM === 'TF' ? 'TF' : 'USD';
 
