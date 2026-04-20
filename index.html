@@ -6965,22 +6965,63 @@ function _provCambioRef(item) {
 // IMPORTANTE: esto NO suma ni modifica exOrdenada — solo reporta.
 // Estados: 'coincide' | 'discrepancia' | 'sin_ordenada' | 'sin_ref' | 'no_aplica'
 //
-// CONVERSIÓN AUTOMÁTICA POR UNIDAD:
+// CONVERSIÓN INTELIGENTE POR UNIDAD:
 // El proveedor a veces factura por DOC (docena) o PAR, pero Farmers las
-// administra por unidad. Convertimos automáticamente antes de comparar
-// y reportamos el factor aplicado para transparencia en la UI.
-function _provFactorConversion(unidad) {
-  if (!unidad) return { factor: 1, etiqueta: '' };
-  var u = String(unidad).toUpperCase().trim();
-  // Docena
-  if (u === 'DOC' || u === 'DOC.' || u === 'DOCENA' || u === 'DOZEN') {
+// administra por unidad. La conversión SOLO aplica cuando:
+//   (1) La unidad de la factura es DOC o PAR, Y
+//   (2) La unidad del producto en Farmers (campo `e`) es PZA/UNIDAD
+//
+// Casos reales:
+//   - Cuchillo: proveedor vende DOC, Farmers administra por PZA → ÷12  ✅
+//   - Guantes: proveedor vende PAR, Farmers administra por PAR → SIN cambio ✅
+//   - Zapatos: proveedor vende PAR, Farmers administra por PAR → SIN cambio ✅
+//   - Medias: proveedor vende PAR de 3, Farmers por PAR → SIN cambio ✅
+//
+// Para eso la función ahora recibe refFarmers y consulta el campo `e` del producto.
+function _provFactorConversion(unidadFactura, refFarmers) {
+  if (!unidadFactura) return { factor: 1, etiqueta: '' };
+
+  var uF = String(unidadFactura).toUpperCase().trim();
+
+  // Normalizar unidad de la factura a 3 grupos: DOC, PAR, otro
+  var unidadProveedorEs = null;
+  if (uF === 'DOC' || uF === 'DOC.' || uF === 'DOCENA' || uF === 'DOZEN') unidadProveedorEs = 'DOC';
+  else if (uF === 'PAR' || uF === 'PAIR' || uF === 'PARES') unidadProveedorEs = 'PAR';
+
+  // Si no es DOC ni PAR, no hay conversión posible
+  if (!unidadProveedorEs) return { factor: 1, etiqueta: '' };
+
+  // Consultar unidad del producto en Farmers (campo `e`)
+  var unidadFarmers = 'PZA'; // default si no se encuentra
+  if (refFarmers && typeof PRODUCTS !== 'undefined') {
+    var prod = PRODUCTS.find(function(p){ return p.r === refFarmers; });
+    if (prod && prod.e) {
+      var uFarmers = String(prod.e).toUpperCase().trim();
+      if (uFarmers === 'DOC' || uFarmers === 'DOC.' || uFarmers === 'DOCENA') unidadFarmers = 'DOC';
+      else if (uFarmers === 'PAR' || uFarmers === 'PARES') unidadFarmers = 'PAR';
+      // Para todo lo demás (PZA, UNIDAD, PIEZA, SET, PACK, BOX, CAJA, BAG, CARD, PZA.)
+      // Farmers lo administra como "unidad individual" y aplica conversión si proveedor trae DOC o PAR
+      else unidadFarmers = 'PZA';
+    }
+  }
+
+  // CASO CRÍTICO: si coinciden las unidades, NO convertir
+  // (ej: proveedor factura PAR de guantes, Farmers también tiene PAR → mismo concepto)
+  if (unidadProveedorEs === unidadFarmers) {
+    return { factor: 1, etiqueta: '' };
+  }
+
+  // Caso: proveedor DOC, Farmers PZA → ÷12 (cuchillos clásicos)
+  if (unidadProveedorEs === 'DOC' && unidadFarmers === 'PZA') {
     return { factor: 12, etiqueta: 'DOC' };
   }
-  // Par
-  if (u === 'PAR' || u === 'PAIR' || u === 'PARES') {
+
+  // Caso: proveedor PAR, Farmers PZA → ÷2 (productos que se venden como par pero se administran sueltos)
+  if (unidadProveedorEs === 'PAR' && unidadFarmers === 'PZA') {
     return { factor: 2, etiqueta: 'PAR' };
   }
-  // Todo lo demás se toma tal cual (PZA, UNIDAD, SET, PACK, BOX, CAJA, etc.)
+
+  // Caso raro: proveedor DOC y Farmers PAR, o inverso → no aplicar (inconsistente)
   return { factor: 1, etiqueta: '' };
 }
 
@@ -6994,8 +7035,8 @@ function _provValidarOrdenada(refFarmers, cantidadFactura, unidadFactura) {
   var entry = ptData[refFarmers];
   var exOrdenada = (entry && entry.exOrdenada !== undefined) ? parseInt(entry.exOrdenada) : null;
 
-  // Aplicar factor de conversión según la unidad (DOC ×12, PAR ×2, etc.)
-  var conv = _provFactorConversion(unidadFactura);
+  // Aplicar factor de conversión según la unidad y la configuración del producto Farmers
+  var conv = _provFactorConversion(unidadFactura, refFarmers);
   var cantFacturaOriginal = parseInt(cantidadFactura) || 0;
   var cantFacturaConvertida = cantFacturaOriginal * conv.factor;
 
@@ -7825,7 +7866,9 @@ function _provImpRenderRevisor() {
     valStats[it._valOrdenada.estado]++;
 
     // Aplicar factor para normalizar a precio POR PIEZA (solo una vez)
-    var conv = _provFactorConversion(it.unidad);
+    // IMPORTANTE: la conversión consulta el producto en Farmers para decidir
+    // si realmente hay que convertir (ej: guantes en PAR no se convierten)
+    var conv = _provFactorConversion(it.unidad, it._refFarmersFinal);
     if (conv.factor > 1) {
       _conversionesAplicadas++;
       if (!it._conversionAplicada) {
@@ -8043,7 +8086,20 @@ function _provImpStatMini(label, n, bg, color) {
 // Actualizar ref al escribir en el input
 window.provImpActualizarRef = function(idx, valor) {
   if (!_provImpItems[idx]) return;
-  _provImpItems[idx]._refFarmersFinal = (valor||'').trim().toUpperCase();
+  var it = _provImpItems[idx];
+  it._refFarmersFinal = (valor||'').trim().toUpperCase();
+
+  // IMPORTANTE: si había una conversión aplicada, revertirla antes de reevaluar
+  // con la nueva ref. Ejemplo: el usuario cambia de ref PZA a ref PAR (o viceversa)
+  // y la conversión que se había aplicado automáticamente ya no es correcta.
+  if (it._conversionAplicada && it._precioOriginal !== undefined) {
+    it.precio = it._precioOriginal;   // Restaurar precio original de factura
+    delete it._precioOriginal;
+    delete it._unidadOriginal;
+    delete it._factorPrecio;
+    delete it._conversionAplicada;
+  }
+
   // Re-renderizar tabla tras pequeño debounce
   clearTimeout(window._provImpRerenderTO);
   window._provImpRerenderTO = setTimeout(function(){ _provImpRenderRevisor(); }, 400);
