@@ -6964,7 +6964,27 @@ function _provCambioRef(item) {
 // Omar ya cargó manualmente en ptData. Devuelve un objeto de estado visual.
 // IMPORTANTE: esto NO suma ni modifica exOrdenada — solo reporta.
 // Estados: 'coincide' | 'discrepancia' | 'sin_ordenada' | 'sin_ref' | 'no_aplica'
-function _provValidarOrdenada(refFarmers, cantidadFactura) {
+//
+// CONVERSIÓN AUTOMÁTICA POR UNIDAD:
+// El proveedor a veces factura por DOC (docena) o PAR, pero Farmers las
+// administra por unidad. Convertimos automáticamente antes de comparar
+// y reportamos el factor aplicado para transparencia en la UI.
+function _provFactorConversion(unidad) {
+  if (!unidad) return { factor: 1, etiqueta: '' };
+  var u = String(unidad).toUpperCase().trim();
+  // Docena
+  if (u === 'DOC' || u === 'DOC.' || u === 'DOCENA' || u === 'DOZEN') {
+    return { factor: 12, etiqueta: 'DOC' };
+  }
+  // Par
+  if (u === 'PAR' || u === 'PAIR' || u === 'PARES') {
+    return { factor: 2, etiqueta: 'PAR' };
+  }
+  // Todo lo demás se toma tal cual (PZA, UNIDAD, SET, PACK, BOX, CAJA, etc.)
+  return { factor: 1, etiqueta: '' };
+}
+
+function _provValidarOrdenada(refFarmers, cantidadFactura, unidadFactura) {
   if (!refFarmers) return { estado: 'sin_ref' };
   if (cantidadFactura === undefined || cantidadFactura === null) return { estado: 'no_aplica' };
 
@@ -6974,19 +6994,40 @@ function _provValidarOrdenada(refFarmers, cantidadFactura) {
   var entry = ptData[refFarmers];
   var exOrdenada = (entry && entry.exOrdenada !== undefined) ? parseInt(entry.exOrdenada) : null;
 
+  // Aplicar factor de conversión según la unidad (DOC ×12, PAR ×2, etc.)
+  var conv = _provFactorConversion(unidadFactura);
+  var cantFacturaOriginal = parseInt(cantidadFactura) || 0;
+  var cantFacturaConvertida = cantFacturaOriginal * conv.factor;
+
   if (exOrdenada === null || isNaN(exOrdenada) || exOrdenada === 0) {
-    return { estado: 'sin_ordenada', exOrdenada: 0, cantidadFactura: cantidadFactura };
+    return {
+      estado: 'sin_ordenada',
+      exOrdenada: 0,
+      cantidadFactura: cantFacturaConvertida,
+      cantidadOriginal: cantFacturaOriginal,
+      unidadFactura: conv.etiqueta,
+      factor: conv.factor
+    };
   }
 
-  var cant = parseInt(cantidadFactura) || 0;
-  if (cant === exOrdenada) {
-    return { estado: 'coincide', exOrdenada: exOrdenada, cantidadFactura: cant };
+  if (cantFacturaConvertida === exOrdenada) {
+    return {
+      estado: 'coincide',
+      exOrdenada: exOrdenada,
+      cantidadFactura: cantFacturaConvertida,
+      cantidadOriginal: cantFacturaOriginal,
+      unidadFactura: conv.etiqueta,
+      factor: conv.factor
+    };
   }
   return {
     estado: 'discrepancia',
     exOrdenada: exOrdenada,
-    cantidadFactura: cant,
-    diferencia: cant - exOrdenada
+    cantidadFactura: cantFacturaConvertida,
+    cantidadOriginal: cantFacturaOriginal,
+    unidadFactura: conv.etiqueta,
+    factor: conv.factor,
+    diferencia: cantFacturaConvertida - exOrdenada
   };
 }
 
@@ -7551,13 +7592,14 @@ window.provImpProcesarIA = function(event, tipo) {
       var prompt = 'Este archivo contiene una lista de precios o factura de un proveedor para Farmers C.A. ' +
         'Extrae TODAS las líneas de producto con su código (ref), precio FOB unitario en USD, y descripción si está visible. ' +
         'Devuelve SOLO un array JSON sin ningún texto adicional ni markdown, en el orden exacto en que aparecen en el documento.\n\n' +
-        'Formato estricto: [{"refProveedor":"CODIGO","refFarmers":"CODIGO","descripcion":"...","precio":0.65,"cantidad":4800,"bultos":50}]\n\n' +
+        'Formato estricto: [{"refProveedor":"CODIGO","refFarmers":"CODIGO","descripcion":"...","precio":0.65,"cantidad":4800,"bultos":50,"unidad":"PZA"}]\n\n' +
         'Reglas importantes:\n' +
         '- "refProveedor" es EL CÓDIGO QUE USA EL PROVEEDOR en la columna "Código" o "Product" (ej: "MS-L3884-B", "A151-KT2580", "BBQ-7", códigos de barra tipo "7453010079949", etc.). NO inventes nada.\n' +
         '- "refFarmers" pon el mismo valor que refProveedor — Farmers hará su propio mapeo después.\n' +
         '- "precio" debe ser el PRECIO UNITARIO (columna "Precio" o "Price"), NO el subtotal ni el total de la línea.\n' +
-        '- "cantidad" es la cantidad total de unidades de esa línea (columna "Cantidad" o "Qty"). Si no aparece, omite este campo.\n' +
+        '- "cantidad" es la cantidad total de la línea (columna "Cantidad" o "Qty"). Si no aparece, omite este campo.\n' +
         '- "bultos" es el número de cajas/bultos (columna "Bultos" o "Boxes"). Si no aparece, omite este campo.\n' +
+        '- "unidad" es la unidad de medida de esa línea (columna "Unidad", "Unit", "U.M."). Valores típicos: "PZA" (pieza), "UNIDAD", "DOC" (docena), "PAR", "SETS", "BOX", "CAJA", "PACK". Si no aparece, omite este campo.\n' +
         '- Ignora filas de subtotales, totales, impuestos, descuentos, traspasos, encabezados o saltos de página.\n' +
         '- Si la descripción tiene comillas internas, escápalas correctamente como \\".\n' +
         '- Devuelve TODAS las filas de producto aunque sean 80 o más.';
@@ -7593,12 +7635,14 @@ window.provImpProcesarIA = function(event, tipo) {
           descripcion: String(it.descripcion||it.desc||'').trim(),
           precio: parseFloat(it.precio||it.price||0)
         };
-        // Capturar cantidad y bultos si vienen (para validación cruzada con exOrdenada)
+        // Capturar cantidad, bultos y unidad si vienen (para validación cruzada con exOrdenada)
         // NO se usan para alimentar inventario — solo para comparar
         var cant = parseFloat(it.cantidad||it.qty||it.quantity||0);
         var bult = parseFloat(it.bultos||it.boxes||it.bulk||0);
         if (cant > 0) normalized.cantidad = cant;
         if (bult > 0) normalized.bultos = bult;
+        var unid = String(it.unidad||it.unit||it.um||'').trim().toUpperCase();
+        if (unid) normalized.unidad = unid;
         return normalized;
       }).filter(function(it){ return it.refFarmers && it.precio > 0; });
 
@@ -7762,13 +7806,38 @@ function _provImpRenderRevisor() {
   var stats = {nueva:0, sube:0, baja:0, igual:0, sinmapear:0};
   items.forEach(function(it){ stats[it._accion]++; });
 
-  // ═══ VALIDACIÓN DE ORDENADA (solo lectura, no escribe nada) ═══
+  // ═══ VALIDACIÓN DE ORDENADA + CONVERSIÓN DE PRECIO ═══
   // Si la factura trajo "cantidad" por línea, compara contra ptData[ref].exOrdenada
   // que Omar cargó manualmente por otro lado. Solo reporta, no modifica inventario.
+  // También aplica conversión automática por unidad (DOC ×12, PAR ×2).
+  //
+  // CRÍTICO: cuando hay conversión de cantidad, TAMBIÉN hay que convertir el precio
+  // en la dirección inversa. Ejemplo: 48 DOC × $5.40/DOC = 576 pzas × $0.4500/pza
+  // (mismo total, pero la lista FOB debe guardarse en precio POR PIEZA, no por docena).
+  //
+  // GUARDA ANTI-DOBLE-CONVERSIÓN: el revisor se re-renderiza cuando cambias una ref
+  // manualmente. Sin esta guarda, el precio se dividiría por 12 cada vez que se
+  // re-renderiza. La marca it._conversionAplicada garantiza que solo se haga una vez.
   var valStats = {coincide:0, discrepancia:0, sin_ordenada:0, sin_ref:0, no_aplica:0};
+  var _conversionesAplicadas = 0;
   items.forEach(function(it){
-    it._valOrdenada = _provValidarOrdenada(it._refFarmersFinal, it.cantidad);
+    it._valOrdenada = _provValidarOrdenada(it._refFarmersFinal, it.cantidad, it.unidad);
     valStats[it._valOrdenada.estado]++;
+
+    // Aplicar factor para normalizar a precio POR PIEZA (solo una vez)
+    var conv = _provFactorConversion(it.unidad);
+    if (conv.factor > 1) {
+      _conversionesAplicadas++;
+      if (!it._conversionAplicada) {
+        // Guardar el precio original (tal como venía en factura) para mostrar en UI
+        it._precioOriginal = it.precio;
+        it._unidadOriginal = conv.etiqueta;  // 'DOC' o 'PAR'
+        it._factorPrecio = conv.factor;
+        // Sobreescribir it.precio con el precio POR PIEZA (lo que se guardará en listaFOB)
+        it.precio = it.precio / conv.factor;
+        it._conversionAplicada = true;  // Marca para no volver a dividir en re-renders
+      }
+    }
   });
   // Detectar si al menos una línea trajo cantidad (para decidir si mostrar columna)
   var _hayValidacion = items.some(function(it){ return it.cantidad !== undefined; });
@@ -7782,19 +7851,32 @@ function _provImpRenderRevisor() {
     if (!_hayValidacion) return '';
     var v = val || { estado: 'no_aplica' };
     var html, bg, color, titulo;
+
+    // Sufijo visual cuando hubo conversión (ej: "48 DOC × 12")
+    var sufijoConv = '';
+    var tituloConv = '';
+    if (v.factor && v.factor > 1 && v.cantidadOriginal !== undefined) {
+      sufijoConv = '<div style="font-size:.54rem;font-weight:600;opacity:0.85;margin-top:1px;">' +
+                   v.cantidadOriginal + ' ' + v.unidadFactura + ' × ' + v.factor +
+                   '</div>';
+      tituloConv = '\nConversión aplicada: ' + v.cantidadOriginal + ' ' + v.unidadFactura + ' × ' + v.factor + ' = ' + v.cantidadFactura + ' uds';
+    }
+
     if (v.estado === 'coincide') {
-      html = '✅ ' + v.exOrdenada.toLocaleString();
+      html = '✅ ' + v.exOrdenada.toLocaleString() + sufijoConv;
       bg = '#dcfce7'; color = '#166534';
-      titulo = 'Factura dice ' + v.cantidadFactura + ' · Ordenada cargada: ' + v.exOrdenada + ' · Coinciden exactamente';
+      titulo = 'Factura: ' + v.cantidadFactura + ' uds · Ordenada cargada: ' + v.exOrdenada + ' · Coinciden exactamente' + tituloConv;
     } else if (v.estado === 'discrepancia') {
       var signo = v.diferencia > 0 ? '+' : '';
-      html = '⚠ ' + v.exOrdenada.toLocaleString() + '<br><span style="font-size:.58rem;font-weight:600;">vs ' + v.cantidadFactura.toLocaleString() + ' (' + signo + v.diferencia + ')</span>';
+      html = '⚠ ' + v.exOrdenada.toLocaleString() +
+             '<br><span style="font-size:.58rem;font-weight:600;">vs ' + v.cantidadFactura.toLocaleString() + ' (' + signo + v.diferencia + ')</span>' +
+             sufijoConv;
       bg = '#fee2e2'; color = '#991b1b';
-      titulo = 'DISCREPANCIA\nFactura dice: ' + v.cantidadFactura + '\nOrdenada cargada: ' + v.exOrdenada + '\nDiferencia: ' + signo + v.diferencia;
+      titulo = 'DISCREPANCIA\nFactura: ' + v.cantidadFactura + ' uds\nOrdenada cargada: ' + v.exOrdenada + '\nDiferencia: ' + signo + v.diferencia + tituloConv;
     } else if (v.estado === 'sin_ordenada') {
-      html = '🆕 Sin cargar<br><span style="font-size:.58rem;font-weight:600;">Factura: ' + v.cantidadFactura.toLocaleString() + '</span>';
+      html = '🆕 Sin cargar<br><span style="font-size:.58rem;font-weight:600;">Factura: ' + v.cantidadFactura.toLocaleString() + '</span>' + sufijoConv;
       bg = '#fef3c7'; color = '#78350f';
-      titulo = 'No hay exOrdenada cargada para esta ref. Factura dice ' + v.cantidadFactura;
+      titulo = 'No hay exOrdenada cargada para esta ref. Factura: ' + v.cantidadFactura + ' uds' + tituloConv;
     } else if (v.estado === 'sin_ref') {
       html = '—';
       bg = '#f1f5f9'; color = '#94a3b8';
@@ -7823,7 +7905,14 @@ function _provImpRenderRevisor() {
         (warnNoEnCatalogo ? '<div style="font-size:0.6rem;color:#991b1b;margin-top:2px;">⚠ No existe en catálogo</div>' : '') +
       '</td>' +
       '<td style="padding:8px 12px;font-size:0.74rem;color:#334155;line-height:1.35;" title="' + (it.descripcion||'').replace(/"/g,'&quot;') + '">' + (it.descripcion||'—') + '</td>' +
-      '<td style="padding:8px 12px;text-align:right;font-weight:900;color:#78350f;font-size:0.82rem;white-space:nowrap;">$' + it.precio.toFixed(4) + '</td>' +
+      // Celda de PRECIO (mostrar conversión si aplica)
+      '<td style="padding:8px 12px;text-align:right;white-space:nowrap;" ' +
+          (it._precioOriginal ? 'title="Original: $' + it._precioOriginal.toFixed(4) + ' / ' + it._unidadOriginal + ' ÷ ' + it._factorPrecio + ' = $' + it.precio.toFixed(4) + ' / PZA"' : '') + '>' +
+        '<div style="font-weight:900;color:#78350f;font-size:0.82rem;">$' + it.precio.toFixed(4) + '</div>' +
+        (it._precioOriginal
+          ? '<div style="font-size:0.56rem;color:#64748b;font-weight:600;margin-top:1px;">$' + it._precioOriginal.toFixed(4) + '/' + it._unidadOriginal + ' ÷ ' + it._factorPrecio + '</div>'
+          : '') +
+      '</td>' +
       '<td style="padding:8px 12px;text-align:right;color:#94a3b8;font-size:0.74rem;white-space:nowrap;">' + (it._anterior !== undefined ? '$' + it._anterior.toFixed(4) : '—') + '</td>' +
       '<td style="padding:8px 12px;text-align:center;">' +
         '<span style="background:' + accInfo.bg + ';color:' + accInfo.color + ';padding:3px 9px;border-radius:4px;font-size:0.66rem;font-weight:800;white-space:nowrap;">' + accInfo.label + '</span>' +
@@ -7856,7 +7945,10 @@ function _provImpRenderRevisor() {
         '<div style="padding:12px 24px;background:#fffbeb;border-bottom:1px solid #fde68a;">' +
           '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">' +
             '<div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:800;font-size:0.95rem;color:#78350f;letter-spacing:0.5px;text-transform:uppercase;">📦 Validación cruzada con Existencia Ordenada</div>' +
-            '<div style="font-size:0.68rem;color:#92400e;font-style:italic;">Solo lectura · No modifica inventario</div>' +
+            '<div style="font-size:0.68rem;color:#92400e;font-style:italic;">' +
+              'Solo lectura · No modifica inventario' +
+              (_conversionesAplicadas > 0 ? ' · 🔄 ' + _conversionesAplicadas + ' conversión' + (_conversionesAplicadas!==1?'es':'') + ' automática' + (_conversionesAplicadas!==1?'s':'') + ' (cant ×, precio ÷)' : '') +
+            '</div>' +
           '</div>' +
           '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;">' +
             _provImpStatMini('✅ Coinciden',   valStats.coincide,     '#dcfce7', '#166534') +
