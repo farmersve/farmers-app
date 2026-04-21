@@ -6390,6 +6390,12 @@ window.ocNueva = function() {
 
 // Calcular totales (se llama tras cada edición de items)
 window.ocCalcularTotales = function(oc) {
+  // Si el usuario editó manualmente, NO sobrescribir sus valores
+  // (solo retornar la OC tal como está)
+  if (oc._totalesEditadosManualmente && oc._totalForzado) {
+    return oc;
+  }
+
   var t = {
     subtotal:         0,
     descuento:        parseFloat(oc.totales && oc.totales.descuento) || 0,
@@ -6408,6 +6414,14 @@ window.ocCalcularTotales = function(oc) {
   });
   // Fórmula: subtotal − descuento + traspaso + impuesto = total
   t.total = t.subtotal - t.descuento + t.traspaso + t.impuesto;
+
+  // Si había edición manual previa de vol/peso/cajas sin forzar total, respetarlos
+  if (oc._totalesEditadosManualmente && oc.totales) {
+    if (oc.totales.volumenTotalFt3 > 0) t.volumenTotalFt3 = oc.totales.volumenTotalFt3;
+    if (oc.totales.pesoTotalKg > 0)     t.pesoTotalKg     = oc.totales.pesoTotalKg;
+    if (oc.totales.cajasTotales > 0)    t.cajasTotales    = oc.totales.cajasTotales;
+  }
+
   oc.totales = t;
   return oc;
 };
@@ -8336,6 +8350,7 @@ function ocRenderFicha(oc) {
             ? '<button onclick="ocRecepcionarClick(\'' + oc.id + '\')" style="background:#dcfce7;color:#166534;border:1.5px solid #86efac;border-radius:7px;padding:7px 14px;font-weight:800;cursor:pointer;font-size:0.75rem;">📦 Registrar Recepción</button>'
             : '') +
           '<button onclick="ocRecalcularVolPeso(\'' + oc.id + '\')" style="background:#e0e7ff;color:#4338ca;border:1.5px solid #c7d2fe;border-radius:7px;padding:7px 14px;font-weight:800;cursor:pointer;font-size:0.75rem;" title="Recalcula volumen y peso desde ptData">📐 Recalcular Vol/Peso</button>' +
+          '<button onclick="ocEditarTotalesClick(\'' + oc.id + '\')" style="background:#fef3c7;color:#78350f;border:1.5px solid #fcd34d;border-radius:7px;padding:7px 14px;font-weight:800;cursor:pointer;font-size:0.75rem;" title="Editar manualmente totales, ajustes, volumen, peso, fechas">✏️ Editar Totales</button>' +
           '<button onclick="ocCambiarEstado(\'' + oc.id + '\')" style="background:#dbeafe;color:#1e40af;border:1.5px solid #93c5fd;border-radius:7px;padding:7px 14px;font-weight:800;cursor:pointer;font-size:0.75rem;">🔄 Estado</button>' +
           '<button onclick="ocEliminar(\'' + oc.id + '\')" style="background:#fee2e2;color:#991b1b;border:1.5px solid #fecaca;border-radius:7px;padding:7px 14px;font-weight:800;cursor:pointer;font-size:0.75rem;">🗑</button>' +
         '</div>' +
@@ -8961,7 +8976,8 @@ window.ocWizardConfirmar = function() {
 // Estado transitorio durante la importación
 var _ocImportProvId = null;
 var _ocImportItems = [];
-var _ocImportDatosFactura = {};  // {numeroFactura, fechaFactura, traspaso, impuesto}
+var _ocImportDatosFactura = {};  // Totales del pie de factura
+var _ocImportMetadata = {};      // Metadata del encabezado (N° doc, fechas, contacto, etc.)
 
 window.ocImportarFacturaClick = function() {
   var proveedores = getProveedoresDB().filter(function(p){ return p.estado !== 'Inactivo'; });
@@ -9052,7 +9068,8 @@ window.ocImpProcesarArchivo = function(event, tipo) {
   _ocImportProvId = provId;
 
   // Resetear datos de factura anterior (para que no se arrastren entre importaciones)
-  _ocImportDatosFactura = { subtotal:0, descuento:0, traspaso:0, impuesto:0, total:0 };
+  _ocImportDatosFactura = { subtotal:0, descuento:0, traspaso:0, impuesto:0, total:0, volumenFt3:0, pesoKg:0, cajas:0 };
+  _ocImportMetadata = {};
 
   var file = event.target.files[0];
   if (!file) return;
@@ -9153,28 +9170,67 @@ async function _ocImpProcesarConIA(file, tipo) {
           contentBlock = { type: 'image', source: { type: 'base64', media_type: file.type || 'image/jpeg', data: base64 } };
         }
 
-        var prompt = 'Este archivo es una factura o lista de un proveedor para Farmers C.A. ' +
-          'Extrae TODAS las líneas de producto Y los totales contables del pie de factura. ' +
-          'Devuelve SOLO un objeto JSON sin texto adicional.\n\n' +
-          'Formato exacto:\n' +
+        var prompt = 'Este archivo es una factura comercial de un proveedor para Farmers C.A. ' +
+          '(típicamente Argelia Internacional S.A de Panamá, pero puede ser otro). ' +
+          'Extrae TODOS los datos estructurados siguiendo EXACTAMENTE este formato JSON:\n\n' +
           '{\n' +
-          '  "items": [{"refProveedor":"CODIGO","descripcion":"...","cantidad":4800,"bultos":50,"unidad":"PZA","precio":0.46}],\n' +
-          '  "totales": {"subtotal":23053.16, "descuento":0, "traspaso":20, "impuesto":0, "total":23073.16}\n' +
+          '  "metadata": {\n' +
+          '    "numeroDocumento": "94866",\n' +
+          '    "socioDeNegocio": "VE-906",\n' +
+          '    "tipoDocumento": "Factura",\n' +
+          '    "fechaEmision": "2026-04-10",\n' +
+          '    "fechaVencimiento": "2026-06-09",\n' +
+          '    "condicionPago": "CREDITO 60 DIAS",\n' +
+          '    "marca": "OGK",\n' +
+          '    "agente": "Houssam Kassem",\n' +
+          '    "contacto": "Omar Kassem Taleb",\n' +
+          '    "consignadoA": "LIX LOGISCTICS",\n' +
+          '    "tramite": "Salida"\n' +
+          '  },\n' +
+          '  "items": [\n' +
+          '    {"refProveedor":"CODIGO","descripcion":"...","unidad":"PZA","cantidad":4800,"bultos":50,"precio":0.46,"total":2208.00}\n' +
+          '  ],\n' +
+          '  "totales": {\n' +
+          '    "subtotal": 23053.16,\n' +
+          '    "descuento": 0,\n' +
+          '    "descuentoPct": 0,\n' +
+          '    "traspaso": 20,\n' +
+          '    "impuesto": 0,\n' +
+          '    "total": 23073.16,\n' +
+          '    "volumenFt3": 603.65,\n' +
+          '    "pesoKg": 3388.92,\n' +
+          '    "cajas": 362\n' +
+          '  }\n' +
           '}\n\n' +
-          'Reglas para items:\n' +
-          '- "refProveedor": código del proveedor (ej: "A151-KT2580", "BBQ-7", "7453010079949")\n' +
-          '- "cantidad": cantidad total de la línea\n' +
-          '- "bultos": número de cajas/bultos\n' +
-          '- "unidad": unidad de medida (PZA, DOC, PAR, SETS, BOX, etc.)\n' +
-          '- "precio": precio UNITARIO (no subtotal)\n' +
-          '- Ignora líneas de subtotal/total/impuestos/traspasos/descuentos del pie\n' +
-          '- Devuelve TODAS las líneas (pueden ser 80+)\n\n' +
-          'Reglas para totales (lee del pie de factura, 0 si no aparece):\n' +
-          '- "subtotal": suma de líneas antes de ajustes\n' +
-          '- "descuento": descuento aplicado (monto, no porcentaje)\n' +
-          '- "traspaso": cargo de traspaso, transferencia o gastos adicionales\n' +
-          '- "impuesto": IVA, sales tax u otro impuesto\n' +
-          '- "total": total final de la factura';
+          'REGLAS CRÍTICAS para metadata:\n' +
+          '- "numeroDocumento": el número principal de factura (ej "Número de Documento 94866" o "Factura No. 94865/2026")\n' +
+          '- Fechas en formato ISO YYYY-MM-DD (convertir de DD/MM/YYYY si está así)\n' +
+          '- Campos opcionales: si no aparecen, ponerlos en string vacío "" o 0\n\n' +
+          'REGLAS CRÍTICAS para items:\n' +
+          '- "refProveedor": el CÓDIGO del proveedor de la columna "Código" (ej "MS-L3884-B", "A151-KT2580", "BBQ-7"). NO inventes.\n' +
+          '- "descripcion": nombre del producto de la columna "Producto", sin la unidad entre paréntesis al final.\n' +
+          '  Para descripciones con comillas "..." en el original (ej: \'CUCHILLO 5"\'), escápalas correctamente como \\"\n' +
+          '- "unidad": UNA SOLA palabra en mayúsculas. Ignora el "(1)" que aparece después.\n' +
+          '  Valores válidos: "PZA" (de "PZA."), "SETS", "PAR", "DOC" (de "DOC."), "BOX", "UNIDAD" (de "Unidad")\n' +
+          '  IMPORTANTE: si la factura dice "DOC." con punto, devuelve "DOC" sin punto\n' +
+          '  IMPORTANTE: si dice "PZA." con punto, devuelve "PZA" sin punto\n' +
+          '- "cantidad": número de la columna "Cantidad" (número total de piezas, puede tener decimales)\n' +
+          '- "bultos": número de la columna "Bultos" (cuántas cajas/bultos)\n' +
+          '- "precio": precio UNITARIO de la columna "Precio" (ej 0.46, 5.400)\n' +
+          '- "total": total de la línea (columna "Total") — lo usamos para verificación\n' +
+          '- Extrae TODAS las líneas numeradas (pueden ser 85+). NO te saltes ninguna.\n' +
+          '- NO incluyas en items las líneas de Subtotal/Descuento/Traspaso/Impuesto/Total del pie.\n\n' +
+          'REGLAS CRÍTICAS para totales (leer del pie de factura):\n' +
+          '- "subtotal": suma de líneas (después de "Subtotal")\n' +
+          '- "descuento": MONTO en USD (no porcentaje). Si dice "Descuento (% 0.00) $ 0.00" usa 0\n' +
+          '- "descuentoPct": el porcentaje que aparece entre paréntesis (0 si no hay)\n' +
+          '- "traspaso": valor después de "TRASPASO" (sí, mayúsculas en Argelia)\n' +
+          '- "impuesto": valor después de "Impuesto"\n' +
+          '- "total": valor final después de "Total" (debería ser subtotal − descuento + traspaso + impuesto)\n' +
+          '- "volumenFt3": valor después de "Volumen" (puede decir "Cpi" que significa CFT/ft³)\n' +
+          '- "pesoKg": valor después de "Peso" (en kilogramos)\n' +
+          '- "cajas": valor después de "Cajas" (número de cajas totales)\n\n' +
+          'IMPORTANTE: Devuelve SOLO el objeto JSON, sin markdown, sin explicaciones, sin texto extra.';
 
         var payload = {
           model: 'claude-sonnet-4-20250514',
@@ -9193,9 +9249,10 @@ async function _ocImpProcesarConIA(file, tipo) {
 
         var txt = (data.content && data.content[0] && data.content[0].text) || '';
 
-        // Extraer objeto JSON (acepta tanto {items:[...], totales:{...}} como array crudo legacy)
+        // Extraer objeto JSON completo
         var items = null;
-        var totalesFactura = { subtotal:0, descuento:0, traspaso:0, impuesto:0, total:0 };
+        var totalesFactura = { subtotal:0, descuento:0, traspaso:0, impuesto:0, total:0, volumenFt3:0, pesoKg:0, cajas:0 };
+        var metadataFactura = {};
 
         var objMatch = txt.match(/\{[\s\S]*\}/);
         var arrMatch = txt.match(/\[[\s\S]*\]/);
@@ -9206,11 +9263,18 @@ async function _ocImpProcesarConIA(file, tipo) {
             if (Array.isArray(parsed.items)) {
               items = parsed.items;
               if (parsed.totales) {
-                totalesFactura.subtotal  = parseFloat(parsed.totales.subtotal)  || 0;
-                totalesFactura.descuento = parseFloat(parsed.totales.descuento) || 0;
-                totalesFactura.traspaso  = parseFloat(parsed.totales.traspaso)  || 0;
-                totalesFactura.impuesto  = parseFloat(parsed.totales.impuesto)  || 0;
-                totalesFactura.total     = parseFloat(parsed.totales.total)     || 0;
+                totalesFactura.subtotal    = parseFloat(parsed.totales.subtotal)    || 0;
+                totalesFactura.descuento   = parseFloat(parsed.totales.descuento)   || 0;
+                totalesFactura.descuentoPct= parseFloat(parsed.totales.descuentoPct)|| 0;
+                totalesFactura.traspaso    = parseFloat(parsed.totales.traspaso)    || 0;
+                totalesFactura.impuesto    = parseFloat(parsed.totales.impuesto)    || 0;
+                totalesFactura.total       = parseFloat(parsed.totales.total)       || 0;
+                totalesFactura.volumenFt3  = parseFloat(parsed.totales.volumenFt3)  || 0;
+                totalesFactura.pesoKg      = parseFloat(parsed.totales.pesoKg)      || 0;
+                totalesFactura.cajas       = parseInt(parsed.totales.cajas)         || 0;
+              }
+              if (parsed.metadata) {
+                metadataFactura = parsed.metadata;
               }
             } else if (Array.isArray(parsed)) {
               items = parsed;
@@ -9223,8 +9287,9 @@ async function _ocImpProcesarConIA(file, tipo) {
 
         if (!items || !Array.isArray(items)) throw new Error('La IA no devolvió un array de items');
 
-        // Guardar totales en estado transitorio para el revisor
+        // Guardar datos completos de factura en estado transitorio para el revisor
         _ocImportDatosFactura = totalesFactura;
+        _ocImportMetadata = metadataFactura;
 
         items = items.map(function(it){
           var r = {
@@ -9233,9 +9298,14 @@ async function _ocImpProcesarConIA(file, tipo) {
             descripcion: String(it.descripcion||it.desc||'').trim(),
             precio: parseFloat(it.precio||it.price||0),
             cantidad: parseFloat(it.cantidad||it.qty||0) || 0,
-            bultos: parseFloat(it.bultos||it.boxes||0) || 0
+            bultos: parseFloat(it.bultos||it.boxes||0) || 0,
+            totalLineaFactura: parseFloat(it.total||it.subtotal||0) || 0  // Para verificación cruzada
           };
+          // Normalizar unidad: limpiar puntos y quitar contenido entre paréntesis "(1)"
           var u = String(it.unidad||it.unit||'').trim().toUpperCase();
+          u = u.replace(/\([^)]*\)/g, '').replace(/\./g, '').trim();
+          // Normalizaciones específicas: "UNIDAD" → "PZA" (Argelia usa "Unidad (1)" como pieza)
+          if (u === 'UNIDAD') u = 'PZA';
           if (u) r.unidad = u;
           return r;
         }).filter(function(it){ return it.refProveedor && it.precio > 0; });
@@ -9470,14 +9540,25 @@ function _ocImpRenderRevisor() {
       // Datos de la OC/factura
       '<div style="padding:14px 24px;background:#f8fafc;border-bottom:1px solid #e2e8f0;display:grid;grid-template-columns:repeat(5,1fr);gap:10px;">' +
         _ocImpInput('N° OC *', 'oc-imp-numero', 'text', numeroSugerido, 'font-family:monospace;font-weight:800;') +
-        _ocImpInput('N° Factura Prov.', 'oc-imp-num-factura', 'text', '', '') +
-        _ocImpInput('Fecha Emisión *', 'oc-imp-fecha', 'date', new Date().toISOString().slice(0,10), '') +
+        _ocImpInput('N° Factura Prov.', 'oc-imp-num-factura', 'text', (_ocImportMetadata.numeroDocumento || ''), 'font-family:monospace;font-weight:800;') +
+        _ocImpInput('Fecha Emisión *', 'oc-imp-fecha', 'date', (_ocImportMetadata.fechaEmision || new Date().toISOString().slice(0,10)), '') +
         _ocImpInput('Fecha Llegada Est.', 'oc-imp-fecha-lleg', 'date', _ocImpFechaLlegadaDefault(p), '') +
         '<label style="display:flex;flex-direction:column;gap:3px;">' +
           '<span style="font-size:0.6rem;font-weight:900;color:#7f1d1d;text-transform:uppercase;letter-spacing:0.5px;">Estado Inicial *</span>' +
           '<select id="oc-imp-estado" style="padding:7px 10px;border:1.5px solid #cbd5e1;border-radius:6px;font-size:0.78rem;outline:none;font-weight:700;">' + estadosOpts + '</select>' +
         '</label>' +
       '</div>' +
+
+      // Metadata adicional extraída por IA (solo si detectó algo relevante)
+      ((_ocImportMetadata.agente || _ocImportMetadata.condicionPago || _ocImportMetadata.consignadoA)
+        ? '<div style="padding:10px 24px;background:#eff6ff;border-bottom:1px solid #bfdbfe;font-size:0.7rem;color:#1e40af;line-height:1.4;">' +
+            '📋 <strong>Datos detectados:</strong> ' +
+            (_ocImportMetadata.condicionPago ? '· ' + _ocImportMetadata.condicionPago + ' ' : '') +
+            (_ocImportMetadata.agente ? '· Agente: ' + _ocImportMetadata.agente + ' ' : '') +
+            (_ocImportMetadata.consignadoA ? '· Consignado: ' + _ocImportMetadata.consignadoA + ' ' : '') +
+            (_ocImportMetadata.marca ? '· Marca: ' + _ocImportMetadata.marca : '') +
+          '</div>'
+        : '') +
 
       // Datos contables (traspaso/impuesto/descuento) - detectados por IA, editables
       '<div style="padding:12px 24px;background:#fffbeb;border-bottom:1px solid #fde68a;display:grid;grid-template-columns:0.8fr 1fr 1fr 1fr;gap:10px;align-items:end;">' +
@@ -9489,6 +9570,28 @@ function _ocImpRenderRevisor() {
         _ocImpInput('Traspaso (+)',   'oc-imp-traspaso',  'number', (_ocImportDatosFactura.traspaso ||0).toFixed(2), 'text-align:right;color:#7f1d1d;') +
         _ocImpInput('Impuesto (+)',   'oc-imp-impuesto',  'number', (_ocImportDatosFactura.impuesto ||0).toFixed(2), 'text-align:right;color:#7f1d1d;') +
       '</div>' +
+
+      // Volumetría detectada en el pie de factura - se aplica como valor oficial de la OC
+      ((_ocImportDatosFactura.volumenFt3 > 0 || _ocImportDatosFactura.pesoKg > 0 || _ocImportDatosFactura.cajas > 0)
+        ? '<div style="padding:10px 24px;background:#eff6ff;border-bottom:1px solid #bfdbfe;display:grid;grid-template-columns:0.8fr 1fr 1fr 1fr;gap:10px;align-items:center;">' +
+            '<div style="font-size:0.66rem;color:#1e40af;font-weight:700;line-height:1.35;">' +
+              '📦 <strong>Volumetría de factura</strong><br>' +
+              '<span style="font-size:0.6rem;opacity:0.85;">Valores oficiales del pie</span>' +
+            '</div>' +
+            '<div style="text-align:right;">' +
+              '<div style="font-size:0.58rem;color:#1e40af;font-weight:700;text-transform:uppercase;">Volumen</div>' +
+              '<div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;font-size:1.2rem;color:#1e40af;">' + (_ocImportDatosFactura.volumenFt3||0).toFixed(2) + ' ft³</div>' +
+            '</div>' +
+            '<div style="text-align:right;">' +
+              '<div style="font-size:0.58rem;color:#1e40af;font-weight:700;text-transform:uppercase;">Peso</div>' +
+              '<div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;font-size:1.2rem;color:#1e40af;">' + (_ocImportDatosFactura.pesoKg||0).toFixed(2) + ' Kg</div>' +
+            '</div>' +
+            '<div style="text-align:right;">' +
+              '<div style="font-size:0.58rem;color:#1e40af;font-weight:700;text-transform:uppercase;">Cajas</div>' +
+              '<div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;font-size:1.2rem;color:#1e40af;">' + (_ocImportDatosFactura.cajas||0) + '</div>' +
+            '</div>' +
+          '</div>'
+        : '') +
 
       // Tabla
       '<div style="flex:1;overflow-y:auto;padding:0 4px;">' +
@@ -9782,9 +9885,26 @@ window.ocImpConfirmar = function() {
   oc.items = ocItems;
   oc.notas = numFactura ? ('Factura proveedor N° ' + numFactura) : '';
   oc._numeroFacturaProveedor = numFactura;
-  oc.modoOrdenada = modoOrdenada; // Guarda cómo se manejó Ordenada para posible reversión
+  oc.modoOrdenada = modoOrdenada;
 
-  // Capturar campos contables de factura (traspaso/impuesto/descuento)
+  // ═══ Capturar metadatos completos de la factura original ═══
+  if (_ocImportMetadata && Object.keys(_ocImportMetadata).length > 0) {
+    oc._metadataFactura = {
+      numeroDocumento:    _ocImportMetadata.numeroDocumento || numFactura,
+      socioDeNegocio:     _ocImportMetadata.socioDeNegocio || '',
+      tipoDocumento:      _ocImportMetadata.tipoDocumento || 'Factura',
+      fechaEmisionFactura:_ocImportMetadata.fechaEmision || fechaEmision,
+      fechaVencimiento:   _ocImportMetadata.fechaVencimiento || '',
+      condicionPago:      _ocImportMetadata.condicionPago || '',
+      marca:              _ocImportMetadata.marca || '',
+      agente:             _ocImportMetadata.agente || '',
+      contacto:           _ocImportMetadata.contacto || '',
+      consignadoA:        _ocImportMetadata.consignadoA || '',
+      tramite:            _ocImportMetadata.tramite || ''
+    };
+  }
+
+  // ═══ Capturar campos contables de factura ═══
   var descuento = parseFloat(document.getElementById('oc-imp-descuento').value) || 0;
   var traspaso  = parseFloat(document.getElementById('oc-imp-traspaso').value)  || 0;
   var impuesto  = parseFloat(document.getElementById('oc-imp-impuesto').value)  || 0;
@@ -9792,7 +9912,30 @@ window.ocImpConfirmar = function() {
   oc.totales.traspaso  = traspaso;
   oc.totales.impuesto  = impuesto;
 
+  // ═══ APLICAR VOLUMEN, PESO Y CAJAS DE LA FACTURA (no del cálculo) ═══
+  // La factura trae estos valores oficiales en el pie. Los respetamos sobre
+  // cualquier cálculo automático que pueda estar mal por datos incompletos en ptData.
+  var volFactura   = parseFloat(_ocImportDatosFactura.volumenFt3) || 0;
+  var pesoFactura  = parseFloat(_ocImportDatosFactura.pesoKg)     || 0;
+  var cajasFactura = parseInt(_ocImportDatosFactura.cajas)        || 0;
+
   ocCalcularTotales(oc);
+
+  // Sobreescribir los valores calculados con los de la factura oficial si están presentes
+  if (volFactura > 0)   oc.totales.volumenTotalFt3 = volFactura;
+  if (pesoFactura > 0)  oc.totales.pesoTotalKg     = pesoFactura;
+  if (cajasFactura > 0) oc.totales.cajasTotales    = cajasFactura;
+
+  // Si la factura trajo un total específico y difiere del calculado, respetarlo
+  var totalFactura = parseFloat(_ocImportDatosFactura.total) || 0;
+  if (totalFactura > 0) {
+    var totalCalculado = oc.totales.total;
+    if (Math.abs(totalFactura - totalCalculado) > 0.01) {
+      oc.totales.total = totalFactura;
+      oc._totalForzado = true;
+      oc._totalesEditadosManualmente = true;
+    }
+  }
 
   // Aplicar modo elegido para Ordenada
   if (modoOrdenada === 'sumar' || modoOrdenada === 'reemplazar') {
@@ -9903,6 +10046,219 @@ window.ocRecalcularVolPeso = function(id) {
     }
   } catch(err) {
     alert('Error al recalcular: ' + err.message);
+  }
+};
+
+// ═══════════════════════════════════════════════════════════════
+// EDITAR TOTALES MANUALMENTE — control absoluto del usuario
+// ═══════════════════════════════════════════════════════════════
+// Abre un modal con TODOS los campos editables sin restricciones.
+// Permite corregir manualmente cualquier valor cuando el cálculo
+// automático no coincide con la factura real o con expectativas.
+//
+// Campos editables:
+//   • N° OC, N° Factura Proveedor, Fechas, Estado, Moneda, Incoterms
+//   • Subtotal (forzable, normalmente se calcula de líneas)
+//   • Descuento, Traspaso, Impuesto, TOTAL (forzable)
+//   • Volumen total ft³, Peso total Kg, Cajas totales (forzables)
+//   • Notas
+//
+// Comportamiento:
+//   - Por default, al cambiar descuento/traspaso/impuesto se recalcula el total
+//   - Si el usuario edita TOTAL directamente, se respeta su valor forzado
+//     (se marca la OC con _totalForzado = true para no recalcular)
+//   - Si edita subtotal/vol/peso/cajas directamente se guardan tal cual
+
+window.ocEditarTotalesClick = function(id) {
+  var oc = _ocDB.find(function(x){ return x.id === id; });
+  if (!oc) return;
+
+  var estadosOpts = Object.keys(OC_ESTADOS).map(function(k){
+    return '<option value="' + k + '"' + (k === oc.estado ? ' selected' : '') + '>' + OC_ESTADOS[k].icon + ' ' + OC_ESTADOS[k].label + '</option>';
+  }).join('');
+
+  var monedasOpts = ['USD','EUR','CNY','VES'].map(function(m){
+    return '<option value="' + m + '"' + (m === oc.moneda ? ' selected' : '') + '>' + m + '</option>';
+  }).join('');
+
+  var t = oc.totales || {};
+
+  var html = '<div id="oc-edit-ov" style="position:fixed;inset:0;z-index:99900;background:rgba(0,0,0,0.85);display:flex;align-items:center;justify-content:center;padding:20px;">' +
+    '<div style="background:white;border-radius:14px;width:100%;max-width:900px;max-height:96vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,0.4);">' +
+
+      '<div style="padding:18px 24px;background:linear-gradient(135deg,#b45309,#d97706);color:white;display:flex;justify-content:space-between;align-items:center;border-bottom:2px solid #fbbf24;">' +
+        '<div>' +
+          '<div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;font-size:1.3rem;letter-spacing:1px;">✏️ Editar Totales Manualmente</div>' +
+          '<div style="font-size:0.75rem;opacity:0.9;margin-top:2px;">OC ' + oc.numero + ' · Edita cualquier campo para que coincida con tu factura real</div>' +
+        '</div>' +
+        '<button onclick="document.getElementById(\'oc-edit-ov\').remove();" style="background:rgba(255,255,255,0.15);border:1.5px solid rgba(255,255,255,0.3);border-radius:6px;padding:5px 10px;cursor:pointer;font-weight:800;color:white;">✕</button>' +
+      '</div>' +
+
+      '<div style="flex:1;overflow-y:auto;padding:22px 26px;">' +
+
+        // === DATOS GENERALES ===
+        '<div style="font-size:0.75rem;font-weight:900;color:#b45309;text-transform:uppercase;letter-spacing:0.8px;margin-bottom:10px;">📋 Datos Generales</div>' +
+        '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:20px;">' +
+          _ocEditInput('N° OC', 'oc-ed-numero', 'text', oc.numero, 'font-family:monospace;font-weight:800;') +
+          _ocEditInput('N° Factura Proveedor', 'oc-ed-numfact', 'text', (oc._numeroFacturaProveedor || ''), 'font-family:monospace;') +
+          '<label style="display:flex;flex-direction:column;gap:3px;">' +
+            '<span style="font-size:0.6rem;font-weight:900;color:#b45309;text-transform:uppercase;letter-spacing:0.5px;">Estado</span>' +
+            '<select id="oc-ed-estado" style="padding:8px 10px;border:1.5px solid #cbd5e1;border-radius:6px;font-size:0.82rem;outline:none;font-weight:700;">' + estadosOpts + '</select>' +
+          '</label>' +
+          _ocEditInput('Fecha Emisión', 'oc-ed-fechaemi', 'date', (oc.fechaEmision || ''), '') +
+          _ocEditInput('Fecha Llegada Est.', 'oc-ed-fechalleg', 'date', (oc.fechaEstimadaLlegada || ''), '') +
+          '<label style="display:flex;flex-direction:column;gap:3px;">' +
+            '<span style="font-size:0.6rem;font-weight:900;color:#b45309;text-transform:uppercase;letter-spacing:0.5px;">Moneda</span>' +
+            '<select id="oc-ed-moneda" style="padding:8px 10px;border:1.5px solid #cbd5e1;border-radius:6px;font-size:0.82rem;outline:none;font-weight:700;">' + monedasOpts + '</select>' +
+          '</label>' +
+        '</div>' +
+
+        // === TOTALES FINANCIEROS ===
+        '<div style="font-size:0.75rem;font-weight:900;color:#b45309;text-transform:uppercase;letter-spacing:0.8px;margin-bottom:10px;">💰 Totales Financieros</div>' +
+        '<div style="background:#fffbeb;border:1.5px solid #fde68a;border-radius:10px;padding:14px;margin-bottom:20px;">' +
+          '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:10px;">' +
+            _ocEditInput('Subtotal', 'oc-ed-subtotal', 'number', (t.subtotal||0).toFixed(2), 'text-align:right;color:#475569;font-weight:800;') +
+            _ocEditInput('Descuento (−)', 'oc-ed-descuento', 'number', (t.descuento||0).toFixed(2), 'text-align:right;color:#991b1b;font-weight:800;') +
+            _ocEditInput('Traspaso (+)', 'oc-ed-traspaso', 'number', (t.traspaso||0).toFixed(2), 'text-align:right;color:#7f1d1d;font-weight:800;') +
+            _ocEditInput('Impuesto (+)', 'oc-ed-impuesto', 'number', (t.impuesto||0).toFixed(2), 'text-align:right;color:#7f1d1d;font-weight:800;') +
+          '</div>' +
+          '<div style="border-top:2px solid #fbbf24;padding-top:10px;display:grid;grid-template-columns:auto 1fr auto;align-items:end;gap:12px;">' +
+            '<button onclick="ocEdRecalcularTotal()" style="background:#1a2050;color:white;border:none;border-radius:6px;padding:8px 14px;cursor:pointer;font-weight:800;font-size:0.72rem;">⚡ Recalcular Total</button>' +
+            '<div style="font-size:0.64rem;color:#78350f;line-height:1.35;">' +
+              'Fórmula: Subtotal − Descuento + Traspaso + Impuesto<br>' +
+              '<strong>Puedes forzar el TOTAL manualmente si la factura tiene un valor específico que quieras respetar.</strong>' +
+            '</div>' +
+            _ocEditInput('TOTAL', 'oc-ed-total', 'number', (t.total||0).toFixed(2), 'text-align:right;color:#166534;font-weight:900;font-size:1rem;') +
+          '</div>' +
+        '</div>' +
+
+        // === VOLUMEN Y PESO ===
+        '<div style="font-size:0.75rem;font-weight:900;color:#b45309;text-transform:uppercase;letter-spacing:0.8px;margin-bottom:10px;">📦 Volumetría</div>' +
+        '<div style="background:#eff6ff;border:1.5px solid #bfdbfe;border-radius:10px;padding:14px;margin-bottom:20px;">' +
+          '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;">' +
+            _ocEditInput('Volumen Total (ft³)', 'oc-ed-volumen', 'number', (t.volumenTotalFt3||0).toFixed(2), 'text-align:right;color:#1e40af;font-weight:800;') +
+            _ocEditInput('Peso Total (Kg)', 'oc-ed-peso', 'number', (t.pesoTotalKg||0).toFixed(2), 'text-align:right;color:#1e40af;font-weight:800;') +
+            _ocEditInput('Cajas Totales', 'oc-ed-cajas', 'number', (t.cajasTotales||0), 'text-align:right;color:#1e40af;font-weight:800;') +
+          '</div>' +
+          '<div style="font-size:0.64rem;color:#1e40af;margin-top:8px;line-height:1.35;">' +
+            '💡 Estos valores se calculan desde ptData y el campo m del catálogo. Si no cuadran con tu factura, corrígelos aquí manualmente.' +
+          '</div>' +
+        '</div>' +
+
+        // === NOTAS ===
+        '<label style="display:flex;flex-direction:column;gap:4px;">' +
+          '<span style="font-size:0.6rem;font-weight:900;color:#b45309;text-transform:uppercase;letter-spacing:0.5px;">📝 Notas</span>' +
+          '<textarea id="oc-ed-notas" rows="3" style="padding:9px 12px;border:1.5px solid #cbd5e1;border-radius:7px;font-family:inherit;outline:none;resize:vertical;font-size:0.82rem;">' + (oc.notas || '') + '</textarea>' +
+        '</label>' +
+
+      '</div>' +
+
+      '<div style="padding:14px 24px;border-top:1px solid #e2e8f0;display:flex;justify-content:space-between;align-items:center;background:#f8fafc;">' +
+        '<div style="font-size:0.68rem;color:#64748b;">' +
+          '✏️ Todos los cambios se guardan al confirmar · Los cambios son reversibles eliminando la OC' +
+        '</div>' +
+        '<div style="display:flex;gap:10px;">' +
+          '<button onclick="document.getElementById(\'oc-edit-ov\').remove();" style="background:#f1f5f9;color:#475569;border:none;border-radius:7px;padding:10px 18px;cursor:pointer;font-weight:700;font-size:0.82rem;">Cancelar</button>' +
+          '<button onclick="ocEditarTotalesGuardar(\'' + oc.id + '\')" style="background:linear-gradient(135deg,#b45309,#d97706);color:white;border:none;border-radius:7px;padding:10px 24px;cursor:pointer;font-weight:900;font-size:0.88rem;">✅ Guardar Cambios</button>' +
+        '</div>' +
+      '</div>' +
+
+    '</div>' +
+  '</div>';
+
+  var prev = document.getElementById('oc-edit-ov');
+  if (prev) prev.remove();
+  document.body.insertAdjacentHTML('beforeend', html);
+};
+
+function _ocEditInput(label, id, type, value, extraStyle) {
+  var numberAttrs = (type === 'number') ? ' step="0.01" min="0"' : '';
+  return '<label style="display:flex;flex-direction:column;gap:3px;">' +
+    '<span style="font-size:0.6rem;font-weight:900;color:#b45309;text-transform:uppercase;letter-spacing:0.5px;">' + label + '</span>' +
+    '<input type="' + type + '" id="' + id + '" value="' + value + '"' + numberAttrs + ' style="padding:8px 10px;border:1.5px solid #cbd5e1;border-radius:6px;font-size:0.82rem;outline:none;' + (extraStyle||'') + '">' +
+  '</label>';
+}
+
+// Botón "Recalcular Total": aplica fórmula subtotal − desc + trasp + imp al campo total
+window.ocEdRecalcularTotal = function() {
+  var sub = parseFloat(document.getElementById('oc-ed-subtotal').value) || 0;
+  var des = parseFloat(document.getElementById('oc-ed-descuento').value) || 0;
+  var tra = parseFloat(document.getElementById('oc-ed-traspaso').value) || 0;
+  var imp = parseFloat(document.getElementById('oc-ed-impuesto').value) || 0;
+  var tot = sub - des + tra + imp;
+  document.getElementById('oc-ed-total').value = tot.toFixed(2);
+};
+
+// Guardar todos los cambios
+window.ocEditarTotalesGuardar = function(id) {
+  var oc = _ocDB.find(function(x){ return x.id === id; });
+  if (!oc) return;
+
+  // Leer valores
+  var nuevoNumero      = document.getElementById('oc-ed-numero').value.trim();
+  var nuevoNumFact     = document.getElementById('oc-ed-numfact').value.trim();
+  var nuevoEstado      = document.getElementById('oc-ed-estado').value;
+  var nuevaFechaEmi    = document.getElementById('oc-ed-fechaemi').value;
+  var nuevaFechaLleg   = document.getElementById('oc-ed-fechalleg').value;
+  var nuevaMoneda      = document.getElementById('oc-ed-moneda').value;
+
+  var nuevoSubtotal    = parseFloat(document.getElementById('oc-ed-subtotal').value) || 0;
+  var nuevoDescuento   = parseFloat(document.getElementById('oc-ed-descuento').value) || 0;
+  var nuevoTraspaso    = parseFloat(document.getElementById('oc-ed-traspaso').value)  || 0;
+  var nuevoImpuesto    = parseFloat(document.getElementById('oc-ed-impuesto').value)  || 0;
+  var nuevoTotal       = parseFloat(document.getElementById('oc-ed-total').value)     || 0;
+
+  var nuevoVolumen     = parseFloat(document.getElementById('oc-ed-volumen').value) || 0;
+  var nuevoPeso        = parseFloat(document.getElementById('oc-ed-peso').value)    || 0;
+  var nuevasCajas      = parseInt(document.getElementById('oc-ed-cajas').value)     || 0;
+
+  var nuevasNotas      = document.getElementById('oc-ed-notas').value.trim();
+
+  if (!nuevoNumero) { alert('N° de OC es obligatorio'); return; }
+
+  // Validar si el total forzado difiere de la fórmula
+  var totalCalculado = nuevoSubtotal - nuevoDescuento + nuevoTraspaso + nuevoImpuesto;
+  var totalForzado = Math.abs(nuevoTotal - totalCalculado) > 0.01;
+
+  if (totalForzado) {
+    if (!confirm('⚠ El TOTAL que ingresaste ($' + nuevoTotal.toFixed(2) + ') no coincide con la fórmula (Subtotal − Descuento + Traspaso + Impuesto = $' + totalCalculado.toFixed(2) + ').\n\n¿Forzar el TOTAL manualmente aunque no cuadre con la fórmula?')) return;
+  }
+
+  // Aplicar cambios
+  oc.numero = nuevoNumero;
+  oc._numeroFacturaProveedor = nuevoNumFact;
+  oc.estado = nuevoEstado;
+  oc.fechaEmision = nuevaFechaEmi;
+  oc.fechaEstimadaLlegada = nuevaFechaLleg;
+  oc.moneda = nuevaMoneda;
+  oc.notas = nuevasNotas;
+
+  // Totales
+  oc.totales = oc.totales || {};
+  oc.totales.subtotal         = nuevoSubtotal;
+  oc.totales.descuento        = nuevoDescuento;
+  oc.totales.traspaso         = nuevoTraspaso;
+  oc.totales.impuesto         = nuevoImpuesto;
+  oc.totales.total            = nuevoTotal;
+  oc.totales.volumenTotalFt3  = nuevoVolumen;
+  oc.totales.pesoTotalKg      = nuevoPeso;
+  oc.totales.cajasTotales     = nuevasCajas;
+
+  // Flag anti-recálculo: si el usuario forzó valores manualmente,
+  // las siguientes llamadas a ocCalcularTotales deben respetar esto
+  oc._totalesEditadosManualmente = true;
+  oc._totalForzado = totalForzado;
+
+  saveOrdenesCompraDB(_ocDB);
+
+  document.getElementById('oc-edit-ov').remove();
+  ocRenderList();
+  ocRenderFicha(oc);
+
+  if (typeof showToast === 'function') {
+    var msg = '✏️ Totales actualizados · Total: $' + nuevoTotal.toFixed(2);
+    if (totalForzado) msg += ' (forzado manualmente)';
+    showToast(msg, 'success');
   }
 };
 
