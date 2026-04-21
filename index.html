@@ -8895,12 +8895,15 @@ window.ocWizardConfirmar = function() {
       localStorage.setItem('farmers_pt_data', JSON.stringify(ptData));
       _ocDraft.sumadaAOrdenada = true;
       _ocDraft.ordenadaSumada = sumado;
+      _ocDraft.modoOrdenada = 'sumar';  // Consistencia con eliminar
       // Sincronizar window.ptData si existe
       if (typeof window.ptData !== 'undefined') window.ptData = ptData;
     } catch(err) {
       console.error('Error sumando a ordenada:', err);
       alert('⚠ Error al sumar a ordenada: ' + err.message + '. La OC igual se guardará.');
     }
+  } else {
+    _ocDraft.modoOrdenada = 'no_sumar';
   }
 
   ocCalcularTotales(_ocDraft);
@@ -9262,11 +9265,46 @@ function _ocImpRenderRevisor() {
   var p = _provDB.find(function(x){ return x.id === _ocImportProvId; });
   var items = _ocImportItems;
   var statsMap = { mapeadas: 0, sinmapear: 0, converted: 0, subtotal: 0 };
+
+  // Análisis de duplicación vs ordenada actual
+  var statsOrd = { coinciden: 0, distintas: 0, sin_ordenada: 0 };
+  var ptDataLocal = {};
+  try { ptDataLocal = JSON.parse(localStorage.getItem('farmers_pt_data') || '{}'); } catch(e) {}
+
   items.forEach(function(it){
     if (it._refFarmersFinal) statsMap.mapeadas++; else statsMap.sinmapear++;
     if (it._factorPrecio > 1) statsMap.converted++;
     statsMap.subtotal += (parseFloat(it.precio)||0) * (parseFloat(it.cantidad)||0);
+
+    // Analizar ordenada actual para detectar posible duplicación
+    if (it._refFarmersFinal) {
+      var entry = ptDataLocal[it._refFarmersFinal];
+      var ordActual = (entry && entry.exOrdenada !== undefined) ? parseInt(entry.exOrdenada) : 0;
+      var cantFact = parseInt(it.cantidad) || 0;
+      if (ordActual === 0) statsOrd.sin_ordenada++;
+      else if (ordActual === cantFact) statsOrd.coinciden++;
+      else statsOrd.distintas++;
+    }
   });
+
+  // Decidir modo recomendado según análisis
+  var totalMapeadas = statsMap.mapeadas;
+  var modoSugerido = 'sumar'; // default
+  var razonSugerida = 'Es un pedido nuevo, se debe reflejar en Ordenada';
+  if (totalMapeadas > 0) {
+    var pctCoinciden = statsOrd.coinciden / totalMapeadas;
+    var pctSinOrdenada = statsOrd.sin_ordenada / totalMapeadas;
+    if (pctCoinciden >= 0.7) {
+      modoSugerido = 'no_sumar';
+      razonSugerida = 'Ya tienes estas cantidades en Ordenada (posible duplicación)';
+    } else if (pctSinOrdenada >= 0.7) {
+      modoSugerido = 'sumar';
+      razonSugerida = 'La mayoría de refs no tienen ordenada, es un pedido nuevo';
+    } else {
+      modoSugerido = 'reemplazar';
+      razonSugerida = 'Hay mezcla de datos, reemplazar es más seguro';
+    }
+  }
 
   var filas = items.map(function(it, i){
     var bg = it._refFarmersFinal ? 'transparent' : '#fef3c7';
@@ -9351,20 +9389,74 @@ function _ocImpRenderRevisor() {
         '</table>' +
       '</div>' +
 
-      // Totales + checkbox + confirmar
+      // Totales + panel inteligente de Ordenada + confirmar
       '<div style="padding:14px 24px;background:#f8fafc;border-top:1px solid #e2e8f0;">' +
-        '<div style="display:grid;grid-template-columns:2fr 1fr;gap:16px;align-items:center;">' +
-          '<div>' +
-            '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:0.78rem;color:#1e40af;">' +
-              '<input type="checkbox" id="oc-imp-sumar-ordenada" style="width:17px;height:17px;cursor:pointer;">' +
-              '<span><strong>📦 Sumar cantidades a Existencia Ordenada</strong> — Si esta factura representa mercancía que aún no ha llegado, márcalo para que se refleje en el inventario como "ordenada".</span>' +
-            '</label>' +
-          '</div>' +
-          '<div style="text-align:right;">' +
-            '<div style="font-size:0.64rem;color:#64748b;font-weight:700;text-transform:uppercase;">Subtotal FOB</div>' +
-            '<div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;font-size:1.7rem;color:#7f1d1d;line-height:1;">$' + statsMap.subtotal.toLocaleString('en-US',{maximumFractionDigits:2,minimumFractionDigits:2}) + '</div>' +
+
+        // Panel de análisis de Ordenada
+        '<div style="background:white;border:1.5px solid #93c5fd;border-radius:10px;padding:12px 14px;margin-bottom:10px;">' +
+          '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;">' +
+            '<div style="flex:1;min-width:280px;">' +
+              '<div style="font-size:0.7rem;font-weight:900;color:#1e40af;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;">📊 Análisis de Existencia Ordenada actual</div>' +
+              '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:8px;">' +
+                '<div style="background:#dcfce7;border-radius:6px;padding:6px 8px;text-align:center;">' +
+                  '<div style="font-size:0.56rem;color:#166534;font-weight:700;text-transform:uppercase;">Ya coinciden</div>' +
+                  '<div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;font-size:1.1rem;color:#166534;line-height:1;">' + statsOrd.coinciden + '</div>' +
+                '</div>' +
+                '<div style="background:#fef3c7;border-radius:6px;padding:6px 8px;text-align:center;">' +
+                  '<div style="font-size:0.56rem;color:#78350f;font-weight:700;text-transform:uppercase;">Distintas</div>' +
+                  '<div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;font-size:1.1rem;color:#78350f;line-height:1;">' + statsOrd.distintas + '</div>' +
+                '</div>' +
+                '<div style="background:#f1f5f9;border-radius:6px;padding:6px 8px;text-align:center;">' +
+                  '<div style="font-size:0.56rem;color:#64748b;font-weight:700;text-transform:uppercase;">Sin ordenada</div>' +
+                  '<div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;font-size:1.1rem;color:#64748b;line-height:1;">' + statsOrd.sin_ordenada + '</div>' +
+                '</div>' +
+              '</div>' +
+              '<div style="font-size:0.68rem;color:#1e40af;background:#eff6ff;padding:5px 9px;border-radius:5px;font-weight:600;">' +
+                '💡 <strong>Recomendación del sistema:</strong> ' + razonSugerida +
+              '</div>' +
+            '</div>' +
+            '<div style="text-align:right;min-width:170px;">' +
+              '<div style="font-size:0.62rem;color:#64748b;font-weight:700;text-transform:uppercase;">Subtotal FOB</div>' +
+              '<div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;font-size:1.7rem;color:#7f1d1d;line-height:1;">$' + statsMap.subtotal.toLocaleString('en-US',{maximumFractionDigits:2,minimumFractionDigits:2}) + '</div>' +
+            '</div>' +
           '</div>' +
         '</div>' +
+
+        // Radio buttons de modo (3 opciones)
+        '<div style="background:white;border:1.5px solid #e2e8f0;border-radius:10px;padding:10px 14px;">' +
+          '<div style="font-size:0.65rem;font-weight:900;color:#1a2050;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;">📦 ¿Cómo manejar Existencia Ordenada?</div>' +
+          '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;">' +
+
+            // Opción 1: No sumar
+            '<label style="display:flex;gap:8px;cursor:pointer;padding:9px 10px;border:2px solid ' + (modoSugerido === 'no_sumar' ? '#3b82f6' : '#e2e8f0') + ';border-radius:8px;background:' + (modoSugerido === 'no_sumar' ? '#eff6ff' : 'white') + ';transition:all 0.15s;" onclick="this.style.borderColor=\'#3b82f6\';this.style.background=\'#eff6ff\';ocImpSetModoVisual(\'no_sumar\')">' +
+              '<input type="radio" name="oc-imp-modo" value="no_sumar" ' + (modoSugerido === 'no_sumar' ? 'checked' : '') + ' style="margin-top:3px;cursor:pointer;">' +
+              '<div>' +
+                '<div style="font-weight:800;color:#1e40af;font-size:0.75rem;">🔵 No sumar</div>' +
+                '<div style="font-size:0.64rem;color:#475569;line-height:1.35;margin-top:2px;">La OC es solo documento, no se toca inventario.</div>' +
+              '</div>' +
+            '</label>' +
+
+            // Opción 2: Sumar
+            '<label style="display:flex;gap:8px;cursor:pointer;padding:9px 10px;border:2px solid ' + (modoSugerido === 'sumar' ? '#22c55e' : '#e2e8f0') + ';border-radius:8px;background:' + (modoSugerido === 'sumar' ? '#f0fdf4' : 'white') + ';transition:all 0.15s;" onclick="ocImpSetModoVisual(\'sumar\')">' +
+              '<input type="radio" name="oc-imp-modo" value="sumar" ' + (modoSugerido === 'sumar' ? 'checked' : '') + ' style="margin-top:3px;cursor:pointer;">' +
+              '<div>' +
+                '<div style="font-weight:800;color:#166534;font-size:0.75rem;">🟢 Sumar</div>' +
+                '<div style="font-size:0.64rem;color:#475569;line-height:1.35;margin-top:2px;">Agrega a la ordenada existente (cuidado con duplicar).</div>' +
+              '</div>' +
+            '</label>' +
+
+            // Opción 3: Reemplazar
+            '<label style="display:flex;gap:8px;cursor:pointer;padding:9px 10px;border:2px solid ' + (modoSugerido === 'reemplazar' ? '#f59e0b' : '#e2e8f0') + ';border-radius:8px;background:' + (modoSugerido === 'reemplazar' ? '#fffbeb' : 'white') + ';transition:all 0.15s;" onclick="ocImpSetModoVisual(\'reemplazar\')">' +
+              '<input type="radio" name="oc-imp-modo" value="reemplazar" ' + (modoSugerido === 'reemplazar' ? 'checked' : '') + ' style="margin-top:3px;cursor:pointer;">' +
+              '<div>' +
+                '<div style="font-weight:800;color:#78350f;font-size:0.75rem;">🟡 Reemplazar</div>' +
+                '<div style="font-size:0.64rem;color:#475569;line-height:1.35;margin-top:2px;">Sobreescribe la ordenada con la cantidad de la factura.</div>' +
+              '</div>' +
+            '</label>' +
+
+          '</div>' +
+        '</div>' +
+
       '</div>' +
 
       '<div style="padding:14px 24px;border-top:1px solid #e2e8f0;display:flex;justify-content:space-between;align-items:center;background:white;">' +
@@ -9441,6 +9533,31 @@ window.ocImpEliminarItem = function(idx) {
   _ocImpRenderRevisor();
 };
 
+// Helper visual: al clickear una tarjeta de modo, actualizar estilos
+window.ocImpSetModoVisual = function(modo) {
+  // Marcar el radio correcto
+  document.querySelectorAll('input[name="oc-imp-modo"]').forEach(function(r){
+    r.checked = (r.value === modo);
+  });
+  // Actualizar estilos de las 3 tarjetas
+  var estilos = {
+    'no_sumar':   { border: '#3b82f6', bg: '#eff6ff' },
+    'sumar':      { border: '#22c55e', bg: '#f0fdf4' },
+    'reemplazar': { border: '#f59e0b', bg: '#fffbeb' }
+  };
+  document.querySelectorAll('input[name="oc-imp-modo"]').forEach(function(r){
+    var label = r.closest('label');
+    if (!label) return;
+    if (r.value === modo) {
+      label.style.borderColor = estilos[modo].border;
+      label.style.background  = estilos[modo].bg;
+    } else {
+      label.style.borderColor = '#e2e8f0';
+      label.style.background  = 'white';
+    }
+  });
+};
+
 // Confirmar: crear la OC con todos los datos
 window.ocImpConfirmar = function() {
   // FIX: asegurar que _provDB esté cargado
@@ -9455,7 +9572,10 @@ window.ocImpConfirmar = function() {
   var fechaEmision = document.getElementById('oc-imp-fecha').value;
   var fechaLleg = document.getElementById('oc-imp-fecha-lleg').value;
   var estado = document.getElementById('oc-imp-estado').value;
-  var sumar = document.getElementById('oc-imp-sumar-ordenada').checked;
+
+  // Leer modo de gestión de Ordenada (3 opciones)
+  var modoRadio = document.querySelector('input[name="oc-imp-modo"]:checked');
+  var modoOrdenada = modoRadio ? modoRadio.value : 'no_sumar';
 
   if (!numero) { alert('N° de OC obligatorio'); return; }
 
@@ -9489,28 +9609,42 @@ window.ocImpConfirmar = function() {
   oc.items = ocItems;
   oc.notas = numFactura ? ('Factura proveedor N° ' + numFactura) : '';
   oc._numeroFacturaProveedor = numFactura;
+  oc.modoOrdenada = modoOrdenada; // Guarda cómo se manejó Ordenada para posible reversión
 
   ocCalcularTotales(oc);
 
-  // Sumar a exOrdenada si aplica
-  if (sumar) {
+  // Aplicar modo elegido para Ordenada
+  if (modoOrdenada === 'sumar' || modoOrdenada === 'reemplazar') {
     try {
       var ptData = JSON.parse(localStorage.getItem('farmers_pt_data') || '{}');
-      var sumado = {};
+      var sumado = {}; // Para posible reversión al eliminar
+      var reemplazoAnterior = {}; // Guardamos lo que había antes al reemplazar
+
       ocItems.forEach(function(it){
         if (!ptData[it.refFarmers]) ptData[it.refFarmers] = { exOrdenada: 0 };
         var prev = parseInt(ptData[it.refFarmers].exOrdenada) || 0;
-        ptData[it.refFarmers].exOrdenada = prev + (parseInt(it.cantidad)||0);
-        sumado[it.refFarmers] = parseInt(it.cantidad)||0;
+        var nuevaCant = parseInt(it.cantidad) || 0;
+
+        if (modoOrdenada === 'sumar') {
+          ptData[it.refFarmers].exOrdenada = prev + nuevaCant;
+          sumado[it.refFarmers] = nuevaCant;
+        } else {
+          // Reemplazar: guarda el valor anterior para poder restaurarlo
+          reemplazoAnterior[it.refFarmers] = prev;
+          ptData[it.refFarmers].exOrdenada = nuevaCant;
+          sumado[it.refFarmers] = nuevaCant - prev; // Diferencia neta
+        }
       });
       localStorage.setItem('farmers_pt_data', JSON.stringify(ptData));
       oc.sumadaAOrdenada = true;
       oc.ordenadaSumada = sumado;
+      if (modoOrdenada === 'reemplazar') oc.ordenadaReemplazoAnterior = reemplazoAnterior;
       if (typeof window.ptData !== 'undefined') window.ptData = ptData;
     } catch(err) {
-      console.error('Error sumando a ordenada:', err);
+      console.error('Error aplicando modo de ordenada:', err);
     }
   }
+  // Si modo es 'no_sumar', no se toca inventario — la OC queda solo como documento
 
   _ocDB.unshift(oc);
   saveOrdenesCompraDB(_ocDB);
@@ -9531,8 +9665,9 @@ window.ocImpConfirmar = function() {
   ocRenderFicha(oc);
 
   if (typeof showToast === 'function') {
+    var modoLabel = { 'no_sumar': 'Sin tocar Ordenada', 'sumar': 'Ordenada: sumada', 'reemplazar': 'Ordenada: reemplazada' }[modoOrdenada] || '';
     var msg = '✅ OC ' + oc.numero + ' creada · ' + ocItems.length + ' refs · $' + oc.totales.total.toFixed(2);
-    if (sumar) msg += ' · Sumada a Ordenada';
+    if (modoLabel) msg += ' · ' + modoLabel;
     showToast(msg, 'success');
   }
 };
@@ -9930,20 +10065,60 @@ window.ocEliminar = function(id) {
   if (!oc) return;
   var msg = '¿Eliminar permanentemente la OC "' + oc.numero + '"?';
   if (oc.sumadaAOrdenada) {
-    msg += '\n\n⚠ Esta OC sumó cantidades a Existencia Ordenada. Si la eliminas, también se restará lo sumado.';
+    if (oc.modoOrdenada === 'reemplazar') {
+      msg += '\n\n⚠ Esta OC reemplazó la Existencia Ordenada. Si la eliminas, se restaurará el valor anterior.';
+    } else {
+      msg += '\n\n⚠ Esta OC sumó cantidades a Existencia Ordenada. Si la eliminas, también se restará lo sumado.';
+    }
+  }
+  if (oc.recepciones && oc.recepciones.length) {
+    msg += '\n\n⚠ Esta OC tiene ' + oc.recepciones.length + ' recepción(es) registradas. Si la eliminas, también se revertirá todo lo recibido (restará de inventario real y volverá a sumarse a ordenada).';
   }
   if (!confirm(msg)) return;
 
-  // Revertir suma a ordenada si aplica
-  if (oc.sumadaAOrdenada && oc.ordenadaSumada) {
+  // PASO 1: Revertir recepciones si las hay (esto resta de PRODUCTS.ex y suma a exOrdenada)
+  if (oc.recepciones && oc.recepciones.length) {
+    try {
+      var ptDataR = JSON.parse(localStorage.getItem('farmers_pt_data') || '{}');
+      oc.recepciones.forEach(function(rec){
+        (rec.items || []).forEach(function(ri){
+          // Restar de PRODUCTS.ex
+          if (typeof PRODUCTS !== 'undefined') {
+            var prod = PRODUCTS.find(function(pp){ return pp.r === ri.refFarmers; });
+            if (prod) prod.ex = Math.max(0, (parseInt(prod.ex) || 0) - ri.cantidadRecibida);
+          }
+          // Sumar de vuelta a exOrdenada
+          if (!ptDataR[ri.refFarmers]) ptDataR[ri.refFarmers] = { exOrdenada: 0 };
+          ptDataR[ri.refFarmers].exOrdenada = (parseInt(ptDataR[ri.refFarmers].exOrdenada) || 0) + ri.cantidadRecibida;
+        });
+      });
+      localStorage.setItem('farmers_pt_data', JSON.stringify(ptDataR));
+      if (typeof window.ptData !== 'undefined') window.ptData = ptDataR;
+      if (typeof saveProducts === 'function') saveProducts();
+      if (typeof window.fbSaveProducts === 'function') window.fbSaveProducts(PRODUCTS);
+    } catch(e) { console.error('Error revirtiendo recepciones al eliminar OC:', e); }
+  }
+
+  // PASO 2: Revertir ordenada según el modo
+  if (oc.sumadaAOrdenada) {
     try {
       var ptData = JSON.parse(localStorage.getItem('farmers_pt_data') || '{}');
-      Object.keys(oc.ordenadaSumada).forEach(function(ref){
-        if (ptData[ref]) {
-          var prev = parseInt(ptData[ref].exOrdenada) || 0;
-          ptData[ref].exOrdenada = Math.max(0, prev - oc.ordenadaSumada[ref]);
-        }
-      });
+
+      if (oc.modoOrdenada === 'reemplazar' && oc.ordenadaReemplazoAnterior) {
+        // Restaurar los valores anteriores exactos
+        Object.keys(oc.ordenadaReemplazoAnterior).forEach(function(ref){
+          if (!ptData[ref]) ptData[ref] = { exOrdenada: 0 };
+          ptData[ref].exOrdenada = oc.ordenadaReemplazoAnterior[ref];
+        });
+      } else if (oc.ordenadaSumada) {
+        // Modo sumar: restar lo que se sumó
+        Object.keys(oc.ordenadaSumada).forEach(function(ref){
+          if (ptData[ref]) {
+            var prev = parseInt(ptData[ref].exOrdenada) || 0;
+            ptData[ref].exOrdenada = Math.max(0, prev - oc.ordenadaSumada[ref]);
+          }
+        });
+      }
       localStorage.setItem('farmers_pt_data', JSON.stringify(ptData));
       if (typeof window.ptData !== 'undefined') window.ptData = ptData;
     } catch(e) { console.error('Error revirtiendo ordenada:', e); }
@@ -9954,7 +10129,7 @@ window.ocEliminar = function(id) {
   _ocActiveId = null;
   ocRenderList();
   ocShowEmpty();
-  if (typeof showToast === 'function') showToast('🗑 OC eliminada', 'info');
+  if (typeof showToast === 'function') showToast('🗑 OC eliminada · Inventario revertido', 'info');
 };
 
 // ── Abrir/cerrar modal ───────────────────────────────────────
