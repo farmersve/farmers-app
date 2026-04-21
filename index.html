@@ -8418,6 +8418,9 @@ function ocRenderFicha(oc) {
           '</div>'
         : '') +
 
+      // ─── PANEL DIAGNÓSTICO DE DATOS (vol/peso por ref) ───
+      (typeof ocRenderDiagnosticoHTML === 'function' ? ocRenderDiagnosticoHTML(oc.id) : '') +
+
       // ─── SECCIÓN HISTORIAL DE RECEPCIONES ───
       (_hayRecepciones ? _ocRenderRecepcionesSeccion(oc) : '') +
 
@@ -8437,6 +8440,68 @@ function _ocRenderRecepcionesSeccion(oc) {
   }).map(function(rec){
     var totalRec = (rec.items||[]).reduce(function(t,it){ return t + (parseInt(it.cantidadRecibida)||0); }, 0);
     var refsList = (rec.items||[]).map(function(it){ return it.refFarmers + ' (' + (parseInt(it.cantidadRecibida)||0).toLocaleString() + ')'; }).join(', ');
+    var tieneCIF = rec.cif && rec.cif.totalGastos !== undefined;
+
+    // Panel CIF (si está capturado o con botón para capturar)
+    var cifHTML = '';
+    if (tieneCIF) {
+      var cifItems = rec.cif.items || [];
+      var cifDetalle = cifItems.map(function(ci){
+        return '<tr style="border-bottom:1px solid #f1f5f9;">' +
+          '<td style="padding:5px 8px;font-family:monospace;font-weight:800;color:#1a2050;font-size:0.68rem;">' + ci.refFarmers + '</td>' +
+          '<td style="padding:5px 8px;text-align:right;font-size:0.68rem;">' + (ci.cantidadRecibida||0).toLocaleString() + '</td>' +
+          '<td style="padding:5px 8px;text-align:right;font-size:0.68rem;color:#7f1d1d;font-variant-numeric:tabular-nums;">$' + (ci.precioFOB||0).toFixed(4) + '</td>' +
+          '<td style="padding:5px 8px;text-align:right;font-size:0.68rem;color:#166534;font-weight:800;font-variant-numeric:tabular-nums;">$' + (ci.cifUnitario||0).toFixed(4) + '</td>' +
+          '<td style="padding:5px 8px;text-align:right;font-size:0.68rem;color:#166534;font-weight:900;font-variant-numeric:tabular-nums;">$' + (ci.cifTotal||0).toLocaleString('en-US',{maximumFractionDigits:2,minimumFractionDigits:2}) + '</td>' +
+          '<td style="padding:5px 8px;text-align:right;font-size:0.66rem;color:' + (ci.cifUnitario > ci.precioFOB ? '#d97706' : '#64748b') + ';">' +
+            (ci.precioFOB > 0 ? '+' + ((ci.cifUnitario - ci.precioFOB) / ci.precioFOB * 100).toFixed(1) + '%' : '—') +
+          '</td>' +
+        '</tr>';
+      }).join('');
+
+      cifHTML = '<div style="margin-top:10px;background:#ecfdf5;border:1.5px solid #10b981;border-radius:8px;padding:10px 12px;">' +
+        '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;flex-wrap:wrap;gap:8px;">' +
+          '<div style="font-size:0.7rem;font-weight:900;color:#047857;text-transform:uppercase;letter-spacing:0.8px;">💰 CIF Aplicado</div>' +
+          '<div style="display:flex;gap:6px;">' +
+            '<button onclick="ocCIFAbrir(\'' + oc.id + '\', \'' + rec.id + '\', false)" style="background:white;color:#047857;border:1px solid #10b981;border-radius:5px;padding:4px 10px;cursor:pointer;font-weight:800;font-size:0.64rem;">✏️ Editar</button>' +
+            '<button onclick="ocCIFRevertir(\'' + oc.id + '\', \'' + rec.id + '\')" style="background:#fee2e2;color:#991b1b;border:1px solid #fecaca;border-radius:5px;padding:4px 10px;cursor:pointer;font-weight:800;font-size:0.64rem;">🔄 Revertir</button>' +
+          '</div>' +
+        '</div>' +
+        '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:8px;">' +
+          '<div style="background:white;padding:5px 8px;border-radius:5px;border-left:2px solid #10b981;"><div style="font-size:0.58rem;color:#64748b;text-transform:uppercase;font-weight:700;">Flete</div><div style="font-weight:800;color:#047857;font-size:0.78rem;">$' + (rec.cif.flete||0).toFixed(2) + '</div></div>' +
+          '<div style="background:white;padding:5px 8px;border-radius:5px;border-left:2px solid #10b981;"><div style="font-size:0.58rem;color:#64748b;text-transform:uppercase;font-weight:700;">Seguro</div><div style="font-weight:800;color:#047857;font-size:0.78rem;">$' + (rec.cif.seguro||0).toFixed(2) + '</div></div>' +
+          '<div style="background:white;padding:5px 8px;border-radius:5px;border-left:2px solid #10b981;"><div style="font-size:0.58rem;color:#64748b;text-transform:uppercase;font-weight:700;">Impuestos</div><div style="font-weight:800;color:#047857;font-size:0.78rem;">$' + (rec.cif.impuestos||0).toFixed(2) + '</div></div>' +
+          '<div style="background:white;padding:5px 8px;border-radius:5px;border-left:2px solid #10b981;"><div style="font-size:0.58rem;color:#64748b;text-transform:uppercase;font-weight:700;">Varios</div><div style="font-weight:800;color:#047857;font-size:0.78rem;">$' + (rec.cif.varios||0).toFixed(2) + '</div></div>' +
+        '</div>' +
+        '<div style="background:white;padding:6px 10px;border-radius:5px;display:flex;justify-content:space-between;align-items:center;font-size:0.72rem;">' +
+          '<span style="color:#64748b;">Total gastos: <strong style="color:#047857;">$' + (rec.cif.totalGastos||0).toLocaleString('en-US',{maximumFractionDigits:2,minimumFractionDigits:2}) + '</strong></span>' +
+          '<span style="color:#64748b;">Factor: <strong style="color:#047857;">$' + (rec.cif.factorPorFt3||0).toFixed(4) + '/ft³</strong></span>' +
+          '<span style="color:#64748b;">Volumen: <strong style="color:#047857;">' + (rec.cif.volumenTotal||0).toFixed(2) + ' ft³</strong></span>' +
+        '</div>' +
+        '<details style="margin-top:8px;">' +
+          '<summary style="font-size:0.66rem;color:#047857;cursor:pointer;font-weight:800;">📊 Ver CIF por ref (' + cifItems.length + ')</summary>' +
+          '<div style="margin-top:6px;overflow-x:auto;">' +
+            '<table style="width:100%;border-collapse:collapse;font-size:0.66rem;">' +
+              '<thead><tr style="background:#047857;color:white;">' +
+                '<th style="padding:5px 8px;text-align:left;">Ref</th>' +
+                '<th style="padding:5px 8px;text-align:right;">Cant</th>' +
+                '<th style="padding:5px 8px;text-align:right;">FOB</th>' +
+                '<th style="padding:5px 8px;text-align:right;">CIF unit</th>' +
+                '<th style="padding:5px 8px;text-align:right;">CIF total</th>' +
+                '<th style="padding:5px 8px;text-align:right;">Δ%</th>' +
+              '</tr></thead>' +
+              '<tbody>' + cifDetalle + '</tbody>' +
+            '</table>' +
+          '</div>' +
+        '</details>' +
+      '</div>';
+    } else {
+      cifHTML = '<div style="margin-top:10px;padding:8px 12px;background:#fffbeb;border:1.5px dashed #fbbf24;border-radius:7px;display:flex;justify-content:space-between;align-items:center;gap:8px;">' +
+        '<span style="font-size:0.7rem;color:#78350f;">💰 <strong>CIF no capturado</strong> · El costo real de los productos no incluye gastos de importación</span>' +
+        '<button onclick="ocCIFAbrir(\'' + oc.id + '\', \'' + rec.id + '\', false)" style="background:#047857;color:white;border:none;border-radius:6px;padding:6px 12px;cursor:pointer;font-weight:800;font-size:0.68rem;">💰 Capturar CIF</button>' +
+      '</div>';
+    }
+
     return '<div style="background:white;border:1.5px solid #86efac;border-radius:10px;padding:12px 14px;margin-bottom:8px;">' +
       '<div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px;">' +
         '<div style="flex:1;min-width:200px;">' +
@@ -8445,6 +8510,7 @@ function _ocRenderRecepcionesSeccion(oc) {
             '<div style="font-size:0.68rem;color:#64748b;">' + _fmtFecha(rec.fecha) + '</div>' +
             (rec.numeroContainer ? '<div style="font-size:0.64rem;background:#e0f2fe;color:#075985;padding:2px 7px;border-radius:4px;font-weight:700;">🚢 ' + rec.numeroContainer + '</div>' : '') +
             (rec.numeroBL ? '<div style="font-size:0.64rem;background:#f3e8ff;color:#6b21a8;padding:2px 7px;border-radius:4px;font-weight:700;">📋 BL ' + rec.numeroBL + '</div>' : '') +
+            (tieneCIF ? '<div style="font-size:0.64rem;background:#ecfdf5;color:#047857;padding:2px 7px;border-radius:4px;font-weight:800;border:1px solid #10b981;">💰 CIF</div>' : '') +
           '</div>' +
           '<div style="font-size:0.72rem;color:#334155;margin-top:4px;line-height:1.4;">' +
             '<strong>' + (rec.items||[]).length + ' refs</strong> · ' + totalRec.toLocaleString() + ' unidades' +
@@ -8457,6 +8523,7 @@ function _ocRenderRecepcionesSeccion(oc) {
         '<summary style="font-size:0.66rem;color:#475569;cursor:pointer;font-weight:700;">Ver detalle por ref</summary>' +
         '<div style="font-size:0.66rem;color:#475569;margin-top:6px;line-height:1.5;padding:8px 10px;background:#f8fafc;border-radius:6px;font-family:monospace;">' + refsList + '</div>' +
       '</details>' +
+      cifHTML +
     '</div>';
   }).join('');
 
@@ -10002,6 +10069,969 @@ window.ocImpConfirmar = function() {
 // Cambiar estado de OC
 // Recalcular volumen y peso de una OC (útil para OCs creadas antes de fixes)
 // Lee desde ptData y aplica la fórmula correcta: volPorBulto × bultos (no × piezas)
+// ═══════════════════════════════════════════════════════════════════════════
+// CIF AUTOMÁTICO POR RECEPCIÓN — Costos reales puestos en Margarita
+// ═══════════════════════════════════════════════════════════════════════════
+// Flujo:
+// 1. Al registrar una recepción, se abre modal CIF para capturar gastos
+//    (flete, seguro, impuestos, gastos varios)
+// 2. Sistema calcula volumen total recibido (suma de vol_unitario × cantidad)
+// 3. Factor CIF por ft³ = totalGastos / volumenTotal
+// 4. Por cada ref recibida:
+//    cifUnitario = precioFOB + (volumenUnitario × factorCIF)
+//    cifTotal = cifUnitario × cantidadRecibida
+// 5. Se actualiza PRODUCTS[ref].costoCIF como promedio ponderado con stock previo
+//
+// Persistencia:
+//   recepcion.cif = { flete, seguro, impuestos, varios, totalGastos, factorPorFt3, fechaCaptura }
+//   recepcion.items[i].cifUnitario, cifTotal
+//   PRODUCTS[ref].costoCIF (promedio ponderado histórico)
+//   PRODUCTS[ref].costoCIFHistorial = [{ recepcionId, fecha, cifUnitario, cantidad }]
+
+// ═══════════════════════════════════════════════════════════════════════════
+// IMPORTAR MEDIDAS — Cargar volumen/peso/unidades por bulto masivamente
+// ═══════════════════════════════════════════════════════════════════════════
+// Acepta Excel/CSV del proveedor o imagen/PDF procesable por IA.
+// Formato esperado (columnas flexibles, detecta por keywords):
+//   - Ref Proveedor (ej: A019-DB087)
+//   - Ref Farmers (ej: EXC001)
+//   - Largo, Ancho, Alto (cm) O Volumen directo (ft³/CFT/CBM)
+//   - Peso (Kg)
+//   - Unidades por bulto / Pzas por caja
+// Auto-mapeo con 3 índices: refProv, refFarmers, código de barra.
+// Actualiza ptData[ref].medidas al guardar.
+
+var _ocImpMedItems = [];  // Items parseados pendientes de revisar
+var _ocImpMedOCId  = null;
+
+window.ocImportarMedidasClick = function(ocId) {
+  _ocImpMedOCId = ocId;
+  _ocImpMedItems = [];
+
+  var html = '<div id="oc-impmed-ov" style="position:fixed;inset:0;z-index:99920;background:rgba(0,0,0,0.85);display:flex;align-items:center;justify-content:center;padding:20px;">' +
+    '<div style="background:white;border-radius:14px;width:100%;max-width:700px;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,0.5);">' +
+
+      '<div style="padding:18px 24px;background:linear-gradient(135deg,#059669,#10b981);color:white;display:flex;justify-content:space-between;align-items:center;border-bottom:2px solid #34d399;">' +
+        '<div>' +
+          '<div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;font-size:1.4rem;letter-spacing:1px;">📥 Importar Medidas de Productos</div>' +
+          '<div style="font-size:0.78rem;opacity:0.9;margin-top:2px;">Sube Excel, PDF o imagen del proveedor con las medidas</div>' +
+        '</div>' +
+        '<button onclick="document.getElementById(\'oc-impmed-ov\').remove();" style="background:rgba(255,255,255,0.15);border:1.5px solid rgba(255,255,255,0.3);border-radius:7px;padding:7px 12px;cursor:pointer;font-weight:800;color:white;">✕</button>' +
+      '</div>' +
+
+      '<div style="padding:22px 24px;">' +
+        '<div style="background:#f0fdf4;border:1.5px solid #10b981;border-radius:10px;padding:16px;margin-bottom:16px;">' +
+          '<div style="font-size:0.8rem;color:#047857;font-weight:800;margin-bottom:10px;">📋 Columnas esperadas en el archivo:</div>' +
+          '<ul style="font-size:0.74rem;color:#334155;line-height:1.7;margin-left:18px;">' +
+            '<li><strong>Ref Proveedor</strong> (ej: A019-DB087) — OBLIGATORIO</li>' +
+            '<li><strong>Ref Farmers</strong> (ej: EXC001) — opcional, se auto-mapea si falta</li>' +
+            '<li><strong>Largo × Ancho × Alto</strong> (cm) O <strong>Volumen directo</strong> (ft³/CFT/CBM)</li>' +
+            '<li><strong>Peso</strong> (Kg por bulto)</li>' +
+            '<li><strong>Unidades por bulto</strong> / Pzas por caja</li>' +
+          '</ul>' +
+        '</div>' +
+
+        '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;">' +
+          '<label style="background:#1e40af;color:white;border-radius:8px;padding:16px;text-align:center;cursor:pointer;font-weight:800;">' +
+            '<div style="font-size:1.8rem;margin-bottom:4px;">📊</div>' +
+            '<div style="font-size:0.85rem;">Excel / CSV</div>' +
+            '<div style="font-size:0.64rem;opacity:0.8;font-weight:500;margin-top:2px;">.xlsx, .csv</div>' +
+            '<input type="file" accept=".xlsx,.xls,.csv" onchange="ocImpMedProcesarArchivo(event, \'excel\')" style="display:none;">' +
+          '</label>' +
+          '<label style="background:#991b1b;color:white;border-radius:8px;padding:16px;text-align:center;cursor:pointer;font-weight:800;">' +
+            '<div style="font-size:1.8rem;margin-bottom:4px;">📄</div>' +
+            '<div style="font-size:0.85rem;">PDF</div>' +
+            '<div style="font-size:0.64rem;opacity:0.8;font-weight:500;margin-top:2px;">Procesado por IA</div>' +
+            '<input type="file" accept=".pdf" onchange="ocImpMedProcesarArchivo(event, \'pdf\')" style="display:none;">' +
+          '</label>' +
+          '<label style="background:#7c3aed;color:white;border-radius:8px;padding:16px;text-align:center;cursor:pointer;font-weight:800;">' +
+            '<div style="font-size:1.8rem;margin-bottom:4px;">🖼</div>' +
+            '<div style="font-size:0.85rem;">Imagen</div>' +
+            '<div style="font-size:0.64rem;opacity:0.8;font-weight:500;margin-top:2px;">JPG, PNG</div>' +
+            '<input type="file" accept="image/*" onchange="ocImpMedProcesarArchivo(event, \'imagen\')" style="display:none;">' +
+          '</label>' +
+        '</div>' +
+
+        '<div id="oc-impmed-status" style="margin-top:14px;"></div>' +
+      '</div>' +
+
+    '</div>' +
+  '</div>';
+
+  var prev = document.getElementById('oc-impmed-ov');
+  if (prev) prev.remove();
+  document.body.insertAdjacentHTML('beforeend', html);
+};
+
+window.ocImpMedProcesarArchivo = function(event, tipo) {
+  var file = event.target.files[0];
+  if (!file) return;
+
+  var statusEl = document.getElementById('oc-impmed-status');
+  statusEl.innerHTML = '<div style="padding:12px 16px;background:#fef3c7;border:1.5px solid #fbbf24;border-radius:8px;color:#78350f;font-size:0.82rem;font-weight:700;">⏳ Procesando archivo…</div>';
+
+  if (tipo === 'excel') {
+    _ocImpMedProcesarExcel(file);
+  } else {
+    _ocImpMedProcesarConIA(file, tipo);
+  }
+};
+
+function _ocImpMedProcesarExcel(file) {
+  var reader = new FileReader();
+  reader.onload = function(e){
+    try {
+      var data = new Uint8Array(e.target.result);
+      var wb = XLSX.read(data, { type: 'array' });
+      var ws = wb.Sheets[wb.SheetNames[0]];
+      var rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+
+      if (!rows.length) throw new Error('Archivo Excel vacío');
+
+      // Buscar fila de headers (probar primeras 5 filas)
+      var headerRow = -1;
+      var colIdx = { refProv: -1, refFarmers: -1, largo: -1, ancho: -1, alto: -1, volDirecto: -1, peso: -1, unidadesPorBulto: -1 };
+      for (var r = 0; r < Math.min(5, rows.length); r++) {
+        var row = rows[r].map(function(c){ return String(c||'').toLowerCase().trim(); });
+        var matches = 0;
+        row.forEach(function(cell, i){
+          if (/ref.*(prov|proveedor|supplier)|c[oó]digo.*prov|supplier.*code/.test(cell)) { colIdx.refProv = i; matches++; }
+          else if (/ref.*(farmers|interno|nuestro|propio)|farmers.*ref/.test(cell)) { colIdx.refFarmers = i; matches++; }
+          else if (/^largo$|length|l \(cm\)|l\(cm\)/.test(cell)) { colIdx.largo = i; matches++; }
+          else if (/^ancho$|width|a \(cm\)|w\(cm\)/.test(cell)) { colIdx.ancho = i; matches++; }
+          else if (/^alto$|height|h \(cm\)|h\(cm\)/.test(cell)) { colIdx.alto = i; matches++; }
+          else if (/volumen|vol|cft|cbm|m3|ft3|ft³/.test(cell) && !/largo|ancho|alto/.test(cell)) { colIdx.volDirecto = i; matches++; }
+          else if (/peso|weight|kg/.test(cell)) { colIdx.peso = i; matches++; }
+          else if (/unidades?|uds?.*(bulto|caja)|pzas?.*(bulto|caja)|piezas?.*caja|pcs.*ctn|units.*ctn/.test(cell)) { colIdx.unidadesPorBulto = i; matches++; }
+        });
+        if (matches >= 2) { headerRow = r; break; }
+      }
+
+      if (headerRow === -1) throw new Error('No se detectaron las columnas esperadas. Revisa que el Excel tenga headers claros.');
+
+      var items = [];
+      for (var i = headerRow + 1; i < rows.length; i++) {
+        var row = rows[i];
+        var refProv = colIdx.refProv >= 0 ? String(row[colIdx.refProv]||'').trim() : '';
+        if (!refProv) continue;
+
+        var item = { refProveedor: refProv };
+        if (colIdx.refFarmers >= 0) item.refFarmers = String(row[colIdx.refFarmers]||'').trim().toUpperCase();
+        if (colIdx.largo >= 0) item.largo = parseFloat(row[colIdx.largo]) || 0;
+        if (colIdx.ancho >= 0) item.ancho = parseFloat(row[colIdx.ancho]) || 0;
+        if (colIdx.alto >= 0)  item.alto  = parseFloat(row[colIdx.alto])  || 0;
+        if (colIdx.volDirecto >= 0) item.volDirecto = parseFloat(row[colIdx.volDirecto]) || 0;
+        if (colIdx.peso >= 0) item.peso = parseFloat(row[colIdx.peso]) || 0;
+        if (colIdx.unidadesPorBulto >= 0) item.unidadesPorBulto = parseInt(row[colIdx.unidadesPorBulto]) || 0;
+
+        items.push(item);
+      }
+
+      if (!items.length) throw new Error('No se detectaron filas de productos');
+
+      _ocImpMedAutoMapearYAbrirRevisor(items);
+
+    } catch(err) {
+      document.getElementById('oc-impmed-status').innerHTML =
+        '<div style="padding:12px 16px;background:#fee2e2;border:1.5px solid #fecaca;border-radius:8px;color:#991b1b;font-size:0.82rem;">❌ ' + err.message + '</div>';
+    }
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+function _ocImpMedProcesarConIA(file, tipo) {
+  var reader = new FileReader();
+  reader.onload = async function(e) {
+    try {
+      var base64 = e.target.result.split(',')[1];
+      var contentBlock = tipo === 'pdf'
+        ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: base64 } }
+        : { type: 'image', source: { type: 'base64', media_type: file.type || 'image/jpeg', data: base64 } };
+
+      var prompt = 'Este archivo contiene medidas de productos de un proveedor para Farmers C.A. ' +
+        'Extrae todas las líneas de productos con sus medidas físicas. ' +
+        'Devuelve SOLO un array JSON sin texto adicional.\n\n' +
+        'Formato: [{"refProveedor":"CODIGO","refFarmers":"EXC001","largo":30,"ancho":20,"alto":15,"volDirecto":0,"peso":2.5,"unidadesPorBulto":144}]\n\n' +
+        'Reglas:\n' +
+        '- refProveedor: código del proveedor (obligatorio)\n' +
+        '- refFarmers: código interno Farmers si aparece (opcional)\n' +
+        '- largo/ancho/alto: en CM (0 si no aparece)\n' +
+        '- volDirecto: si hay volumen directo en ft³/CFT/CBM (0 si no aparece)\n' +
+        '- peso: en KG por bulto (0 si no aparece)\n' +
+        '- unidadesPorBulto: piezas por caja/bulto (0 si no aparece)';
+
+      var payload = {
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 16000,
+        messages: [{ role: 'user', content: [contentBlock, { type: 'text', text: prompt }] }]
+      };
+      if (tipo === 'pdf') payload.betas = ['pdfs-2024-09-25'];
+
+      var resp = await fetch('https://farmers-proxy.farmersve.workers.dev/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      var data = await resp.json();
+      if (!resp.ok) throw new Error((data.error && data.error.message) || 'Error del servicio IA');
+
+      var txt = (data.content && data.content[0] && data.content[0].text) || '';
+      var jsonStr = txt.match(/\[[\s\S]*\]/);
+      if (!jsonStr) throw new Error('La IA no devolvió un array válido');
+
+      var items = JSON.parse(jsonStr[0]).filter(function(it){ return it.refProveedor; });
+      if (!items.length) throw new Error('La IA no detectó productos');
+
+      _ocImpMedAutoMapearYAbrirRevisor(items);
+
+    } catch(err) {
+      document.getElementById('oc-impmed-status').innerHTML =
+        '<div style="padding:12px 16px;background:#fee2e2;border:1.5px solid #fecaca;border-radius:8px;color:#991b1b;font-size:0.82rem;">❌ ' + err.message + '</div>';
+    }
+  };
+  reader.readAsDataURL(file);
+}
+
+// Auto-mapeo: si refFarmers vacío, intenta mapear por refProveedor usando proveedor de la OC
+function _ocImpMedAutoMapearYAbrirRevisor(items) {
+  var oc = _ocDB.find(function(x){ return x.id === _ocImpMedOCId; });
+  var provId = oc ? oc.proveedorId : null;
+  var prov = null;
+  if (provId && typeof getProveedoresDB === 'function') {
+    var provs = getProveedoresDB();
+    prov = provs.find(function(p){ return p.id === provId; });
+  }
+
+  items.forEach(function(it){
+    if (!it.refFarmers && prov && prov.mapeoRefs) {
+      var mapped = prov.mapeoRefs[it.refProveedor];
+      if (mapped) it.refFarmers = mapped;
+    }
+    // Normalizar
+    it.refFarmers = String(it.refFarmers||'').trim().toUpperCase();
+  });
+
+  _ocImpMedItems = items;
+  _ocImpMedAbrirRevisor();
+}
+
+function _ocImpMedAbrirRevisor() {
+  document.getElementById('oc-impmed-ov').remove();
+
+  var items = _ocImpMedItems;
+  var mapeadas = items.filter(function(it){ return it.refFarmers; }).length;
+  var sinMapear = items.length - mapeadas;
+
+  var filas = items.map(function(it, i){
+    var volCalc = 0;
+    if (it.volDirecto > 0) volCalc = it.volDirecto;
+    else if (it.largo && it.ancho && it.alto) volCalc = (it.largo * it.ancho * it.alto) / 28316.85;
+
+    return '<tr style="border-bottom:1px solid #f1f5f9;" data-idx="' + i + '">' +
+      '<td style="padding:5px 8px;text-align:center;color:#94a3b8;font-size:0.65rem;">' + (i+1) + '</td>' +
+      '<td style="padding:4px 6px;"><input type="text" value="' + (it.refProveedor||'').replace(/"/g,'&quot;') + '" onchange="ocImpMedEditar(' + i + ',\'refProveedor\',this.value)" style="width:100%;padding:4px 6px;border:1px solid #cbd5e1;border-radius:4px;font-family:monospace;font-size:0.7rem;"></td>' +
+      '<td style="padding:4px 6px;"><input type="text" value="' + (it.refFarmers||'').replace(/"/g,'&quot;') + '" onchange="ocImpMedEditar(' + i + ',\'refFarmers\',this.value)" style="width:100%;padding:4px 6px;border:1.5px solid ' + (it.refFarmers?'#86efac':'#fbbf24') + ';border-radius:4px;font-family:monospace;font-weight:800;font-size:0.7rem;color:#1a2050;"></td>' +
+      '<td style="padding:4px 6px;"><input type="number" min="0" step="0.1" value="' + (parseFloat(it.largo)||0) + '" onchange="ocImpMedEditar(' + i + ',\'largo\',this.value)" style="width:100%;padding:4px 6px;border:1px solid #cbd5e1;border-radius:4px;text-align:right;font-size:0.7rem;"></td>' +
+      '<td style="padding:4px 6px;"><input type="number" min="0" step="0.1" value="' + (parseFloat(it.ancho)||0) + '" onchange="ocImpMedEditar(' + i + ',\'ancho\',this.value)" style="width:100%;padding:4px 6px;border:1px solid #cbd5e1;border-radius:4px;text-align:right;font-size:0.7rem;"></td>' +
+      '<td style="padding:4px 6px;"><input type="number" min="0" step="0.1" value="' + (parseFloat(it.alto)||0) + '" onchange="ocImpMedEditar(' + i + ',\'alto\',this.value)" style="width:100%;padding:4px 6px;border:1px solid #cbd5e1;border-radius:4px;text-align:right;font-size:0.7rem;"></td>' +
+      '<td style="padding:4px 6px;"><input type="number" min="0" step="0.01" value="' + (parseFloat(it.volDirecto)||0).toFixed(2) + '" onchange="ocImpMedEditar(' + i + ',\'volDirecto\',this.value)" style="width:100%;padding:4px 6px;border:1px solid #bfdbfe;border-radius:4px;text-align:right;font-size:0.7rem;color:#1e40af;"></td>' +
+      '<td style="padding:4px 6px;"><input type="number" min="0" step="0.01" value="' + (parseFloat(it.peso)||0).toFixed(2) + '" onchange="ocImpMedEditar(' + i + ',\'peso\',this.value)" style="width:100%;padding:4px 6px;border:1px solid #fca5a5;border-radius:4px;text-align:right;font-size:0.7rem;color:#991b1b;"></td>' +
+      '<td style="padding:4px 6px;"><input type="number" min="0" step="1" value="' + (parseInt(it.unidadesPorBulto)||0) + '" onchange="ocImpMedEditar(' + i + ',\'unidadesPorBulto\',this.value)" style="width:100%;padding:4px 6px;border:1px solid #cbd5e1;border-radius:4px;text-align:right;font-weight:700;font-size:0.7rem;"></td>' +
+      '<td style="padding:5px 8px;text-align:right;font-size:0.68rem;color:#047857;font-weight:800;font-variant-numeric:tabular-nums;">' + volCalc.toFixed(3) + ' ft³</td>' +
+    '</tr>';
+  }).join('');
+
+  var html = '<div id="oc-impmed-rev-ov" style="position:fixed;inset:0;z-index:99920;background:rgba(0,0,0,0.88);display:flex;align-items:center;justify-content:center;padding:14px;">' +
+    '<div style="background:white;border-radius:14px;width:100%;max-width:1500px;height:96vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,0.5);">' +
+      '<div style="padding:16px 24px;background:linear-gradient(135deg,#059669,#10b981);color:white;display:flex;justify-content:space-between;align-items:center;">' +
+        '<div>' +
+          '<div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;font-size:1.4rem;letter-spacing:1px;">📥 Revisar Medidas Importadas</div>' +
+          '<div style="font-size:0.78rem;opacity:0.9;margin-top:2px;">' + items.length + ' items · ' + mapeadas + ' auto-mapeadas · ' + sinMapear + ' por revisar</div>' +
+        '</div>' +
+        '<button onclick="document.getElementById(\'oc-impmed-rev-ov\').remove();" style="background:rgba(255,255,255,0.15);border:1.5px solid rgba(255,255,255,0.3);border-radius:7px;padding:7px 12px;cursor:pointer;font-weight:800;color:white;">✕</button>' +
+      '</div>' +
+      '<div style="padding:10px 24px;background:#f0fdf4;border-bottom:1px solid #86efac;font-size:0.72rem;color:#047857;">' +
+        '💡 Revisa que cada ref tenga medidas correctas. Al guardar se actualiza el catálogo (ptData) para todas estas refs.' +
+      '</div>' +
+      '<div style="flex:1;overflow:auto;padding:0 4px;">' +
+        '<table style="width:100%;border-collapse:collapse;">' +
+          '<thead><tr style="background:#1a2050;color:white;font-size:0.6rem;text-transform:uppercase;letter-spacing:0.3px;position:sticky;top:0;z-index:5;">' +
+            '<th style="padding:8px 6px;text-align:center;width:28px;">#</th>' +
+            '<th style="padding:8px 6px;text-align:left;width:120px;">Ref Prov</th>' +
+            '<th style="padding:8px 6px;text-align:left;width:110px;">Ref Farmers</th>' +
+            '<th style="padding:8px 6px;text-align:center;width:70px;">Largo cm</th>' +
+            '<th style="padding:8px 6px;text-align:center;width:70px;">Ancho cm</th>' +
+            '<th style="padding:8px 6px;text-align:center;width:70px;">Alto cm</th>' +
+            '<th style="padding:8px 6px;text-align:center;width:85px;background:#1e40af;">Vol directo</th>' +
+            '<th style="padding:8px 6px;text-align:center;width:85px;background:#991b1b;">Peso Kg</th>' +
+            '<th style="padding:8px 6px;text-align:center;width:90px;">Uds/bulto</th>' +
+            '<th style="padding:8px 6px;text-align:right;width:85px;">Vol calc</th>' +
+          '</tr></thead>' +
+          '<tbody id="oc-impmed-tbody">' + filas + '</tbody>' +
+        '</table>' +
+      '</div>' +
+      '<div style="padding:14px 24px;border-top:1px solid #e2e8f0;display:flex;justify-content:space-between;align-items:center;background:#f8fafc;">' +
+        '<div style="font-size:0.72rem;color:#64748b;">' +
+          '📐 Se guardarán: largo/ancho/alto, volDirecto, peso y unidadesPorBulto en <strong>ptData</strong>' +
+        '</div>' +
+        '<div style="display:flex;gap:10px;">' +
+          '<button onclick="document.getElementById(\'oc-impmed-rev-ov\').remove();" style="background:#f1f5f9;color:#475569;border:none;border-radius:7px;padding:10px 18px;cursor:pointer;font-weight:700;font-size:0.85rem;">Cancelar</button>' +
+          '<button onclick="ocImpMedGuardar()" style="background:linear-gradient(135deg,#059669,#10b981);color:white;border:none;border-radius:7px;padding:10px 26px;cursor:pointer;font-weight:900;font-size:0.9rem;">✅ Guardar Medidas</button>' +
+        '</div>' +
+      '</div>' +
+    '</div>' +
+  '</div>';
+
+  var prev = document.getElementById('oc-impmed-rev-ov');
+  if (prev) prev.remove();
+  document.body.insertAdjacentHTML('beforeend', html);
+}
+
+window.ocImpMedEditar = function(idx, campo, value) {
+  if (!_ocImpMedItems[idx]) return;
+  if (['largo','ancho','alto','volDirecto','peso'].indexOf(campo) >= 0) {
+    _ocImpMedItems[idx][campo] = parseFloat(value) || 0;
+  } else if (campo === 'unidadesPorBulto') {
+    _ocImpMedItems[idx][campo] = parseInt(value) || 0;
+  } else if (campo === 'refFarmers') {
+    _ocImpMedItems[idx][campo] = String(value||'').trim().toUpperCase();
+  } else {
+    _ocImpMedItems[idx][campo] = value;
+  }
+  // Re-render solo la columna Vol calc de esa fila
+  var row = document.querySelector('tr[data-idx="' + idx + '"]');
+  if (row) {
+    var it = _ocImpMedItems[idx];
+    var volCalc = it.volDirecto > 0 ? it.volDirecto : ((it.largo && it.ancho && it.alto) ? (it.largo*it.ancho*it.alto/28316.85) : 0);
+    var lastCell = row.cells[row.cells.length - 1];
+    if (lastCell) lastCell.textContent = volCalc.toFixed(3) + ' ft³';
+  }
+};
+
+window.ocImpMedGuardar = function() {
+  var items = _ocImpMedItems.filter(function(it){ return it.refFarmers; });
+  if (!items.length) { alert('No hay items con Ref Farmers asignado'); return; }
+
+  var sinMapear = _ocImpMedItems.length - items.length;
+  if (sinMapear > 0) {
+    if (!confirm(sinMapear + ' item(s) sin Ref Farmers serán ignorados.\n\n¿Guardar los ' + items.length + ' que sí están mapeados?')) return;
+  }
+
+  try {
+    var ptData = JSON.parse(localStorage.getItem('farmers_pt_data') || '{}');
+    var actualizadas = 0;
+
+    items.forEach(function(it){
+      var refF = it.refFarmers;
+      if (!ptData[refF]) ptData[refF] = {};
+      if (!ptData[refF].medidas) ptData[refF].medidas = {};
+
+      if (it.largo > 0)            ptData[refF].medidas.largo      = it.largo;
+      if (it.ancho > 0)            ptData[refF].medidas.ancho      = it.ancho;
+      if (it.alto > 0)             ptData[refF].medidas.alto       = it.alto;
+      if (it.volDirecto > 0)       ptData[refF].medidas.volDirecto = it.volDirecto;
+      if (it.peso > 0)             ptData[refF].medidas.peso       = it.peso;
+      if (it.unidadesPorBulto > 0) ptData[refF].unidadesPorBulto   = it.unidadesPorBulto;
+
+      actualizadas++;
+    });
+
+    localStorage.setItem('farmers_pt_data', JSON.stringify(ptData));
+    if (typeof window.ptData !== 'undefined') window.ptData = ptData;
+
+    document.getElementById('oc-impmed-rev-ov').remove();
+
+    // Refrescar ficha OC si aplica
+    var oc = _ocDB.find(function(x){ return x.id === _ocImpMedOCId; });
+    if (oc) ocRenderFicha(oc);
+
+    if (typeof showToast === 'function') {
+      showToast('📐 Medidas actualizadas · ' + actualizadas + ' refs en ptData', 'success');
+    }
+
+    _ocImpMedItems = [];
+    _ocImpMedOCId = null;
+
+  } catch(err) {
+    alert('Error guardando medidas: ' + err.message);
+  }
+};
+
+window.ocCIFAbrir = function(ocId, recepcionId, esAutomatico) {
+  var oc = _ocDB.find(function(x){ return x.id === ocId; });
+  if (!oc) return;
+  var rec = (oc.recepciones || []).find(function(r){ return r.id === recepcionId; });
+  if (!rec) { alert('Recepción no encontrada'); return; }
+
+  // Calcular volumen total recibido (desde items de la recepción + medidas del producto)
+  var ptData = {};
+  try { ptData = JSON.parse(localStorage.getItem('farmers_pt_data') || '{}'); } catch(e){}
+
+  var volumenTotalRecibido = 0;
+  var itemsConVolumen = (rec.items || []).map(function(ri){
+    var refF = ri.refFarmers;
+    var cantRec = parseInt(ri.cantidadRecibida) || 0;
+    var pt = ptData[refF];
+    var volPorBulto = 0;
+    var uPorBulto = 0;
+
+    if (pt && pt.medidas) {
+      volPorBulto = parseFloat(pt.medidas.volDirecto) || 0;
+      if (!volPorBulto && pt.medidas.largo && pt.medidas.ancho && pt.medidas.alto) {
+        volPorBulto = (parseFloat(pt.medidas.largo) * parseFloat(pt.medidas.ancho) * parseFloat(pt.medidas.alto)) / 28316.85;
+      }
+    }
+
+    // Unidades por bulto: primero desde item OC, luego desde PRODUCTS
+    var itemOC = (oc.items || []).find(function(it){ return it.refFarmers === refF; });
+    uPorBulto = (itemOC && parseInt(itemOC.unidadesPorBulto)) || 0;
+    if (!uPorBulto && typeof PRODUCTS !== 'undefined') {
+      var prod = PRODUCTS.find(function(p){ return p.r === refF; });
+      if (prod) uPorBulto = parseInt(prod.m) || 0;
+    }
+
+    var volUnitario = uPorBulto > 0 ? volPorBulto / uPorBulto : 0;
+    var volTotalItem = volUnitario * cantRec;
+    volumenTotalRecibido += volTotalItem;
+
+    // Precio FOB de la OC original
+    var precioFOB = itemOC ? (parseFloat(itemOC.precioFOB) || 0) : 0;
+
+    return {
+      refFarmers: refF,
+      descripcion: (itemOC && itemOC.descripcion) || ri.descripcion || '—',
+      cantidadRecibida: cantRec,
+      precioFOB: precioFOB,
+      volumenUnitario: volUnitario,
+      volumenTotal: volTotalItem
+    };
+  });
+
+  // Datos CIF previos (si ya se capturaron)
+  var cifPrev = rec.cif || { flete:0, seguro:0, impuestos:0, varios:0 };
+
+  _ocCIFRenderModal(oc, rec, itemsConVolumen, volumenTotalRecibido, cifPrev, esAutomatico);
+};
+
+function _ocCIFRenderModal(oc, rec, items, volTotal, cifPrev, esAutomatico) {
+  var fmt = function(n){ return (parseFloat(n)||0).toLocaleString('en-US',{maximumFractionDigits:2,minimumFractionDigits:2}); };
+
+  // Tabla preview de CIF por ref (se actualizará al cambiar gastos)
+  var filasPreview = items.map(function(it, i){
+    return '<tr data-idx="' + i + '" style="border-bottom:1px solid #f1f5f9;">' +
+      '<td style="padding:6px 10px;text-align:center;color:#94a3b8;font-size:0.65rem;">' + (i+1) + '</td>' +
+      '<td style="padding:6px 10px;font-family:monospace;font-weight:800;color:#1a2050;font-size:0.72rem;">' + it.refFarmers + '</td>' +
+      '<td style="padding:6px 10px;font-size:0.68rem;color:#334155;">' + (it.descripcion||'—').substring(0, 50) + '</td>' +
+      '<td style="padding:6px 10px;text-align:right;font-weight:700;font-size:0.72rem;">' + it.cantidadRecibida.toLocaleString() + '</td>' +
+      '<td style="padding:6px 10px;text-align:right;font-size:0.7rem;color:#1e40af;font-variant-numeric:tabular-nums;">' + it.volumenTotal.toFixed(3) + '</td>' +
+      '<td style="padding:6px 10px;text-align:right;font-size:0.72rem;color:#7f1d1d;font-variant-numeric:tabular-nums;">$' + it.precioFOB.toFixed(4) + '</td>' +
+      '<td class="cif-u" style="padding:6px 10px;text-align:right;font-weight:800;font-size:0.74rem;color:#166534;font-variant-numeric:tabular-nums;">—</td>' +
+      '<td class="cif-t" style="padding:6px 10px;text-align:right;font-weight:900;font-size:0.74rem;color:#166534;font-variant-numeric:tabular-nums;">—</td>' +
+      '<td class="cif-m" style="padding:6px 10px;text-align:right;font-size:0.68rem;color:#64748b;">—</td>' +
+    '</tr>';
+  }).join('');
+
+  var html = '<div id="oc-cif-ov" style="position:fixed;inset:0;z-index:99920;background:rgba(0,0,0,0.88);display:flex;align-items:center;justify-content:center;padding:16px;">' +
+    '<div style="background:white;border-radius:14px;width:100%;max-width:1300px;height:96vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,0.5);">' +
+
+      '<div style="padding:16px 24px;background:linear-gradient(135deg,#047857,#059669);color:white;display:flex;justify-content:space-between;align-items:center;border-bottom:2px solid #34d399;">' +
+        '<div>' +
+          '<div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;font-size:1.4rem;letter-spacing:1px;">💰 Capturar Gastos CIF</div>' +
+          '<div style="font-size:0.78rem;opacity:0.9;margin-top:2px;">Recepción ' + rec.numero + ' · OC ' + oc.numero + ' · ' + items.length + ' refs recibidas' +
+            (esAutomatico ? ' · <strong>Paso opcional, puedes saltarlo y capturar después</strong>' : '') + '</div>' +
+        '</div>' +
+        '<button onclick="ocCIFCancelar()" style="background:rgba(255,255,255,0.15);border:1.5px solid rgba(255,255,255,0.3);border-radius:7px;padding:7px 12px;cursor:pointer;font-weight:800;color:white;font-size:0.85rem;">✕</button>' +
+      '</div>' +
+
+      // Sección gastos + resumen volumen
+      '<div style="padding:16px 24px;background:#f0fdf4;border-bottom:1px solid #86efac;">' +
+        '<div style="display:grid;grid-template-columns:1.5fr 1fr;gap:16px;">' +
+          '<div>' +
+            '<div style="font-size:0.7rem;font-weight:900;color:#047857;text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;">💸 Gastos de importación</div>' +
+            '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">' +
+              _ocCIFInput('Flete',          'oc-cif-flete',     (cifPrev.flete     || 0).toFixed(2)) +
+              _ocCIFInput('Seguro',         'oc-cif-seguro',    (cifPrev.seguro    || 0).toFixed(2)) +
+              _ocCIFInput('Impuestos / Aduana','oc-cif-impuestos', (cifPrev.impuestos || 0).toFixed(2)) +
+              _ocCIFInput('Gastos varios',  'oc-cif-varios',    (cifPrev.varios    || 0).toFixed(2)) +
+            '</div>' +
+            '<div style="display:flex;align-items:center;gap:10px;margin-top:10px;padding:8px 12px;background:white;border-radius:7px;border:1.5px solid #10b981;">' +
+              '<span style="font-size:0.72rem;color:#047857;font-weight:800;text-transform:uppercase;letter-spacing:0.5px;">Total gastos:</span>' +
+              '<span id="oc-cif-total" style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;font-size:1.4rem;color:#047857;">$0.00</span>' +
+              '<span style="flex:1;"></span>' +
+              '<button onclick="ocCIFRecalcular()" style="background:#047857;color:white;border:none;border-radius:6px;padding:8px 14px;cursor:pointer;font-weight:800;font-size:0.78rem;">🔄 Recalcular</button>' +
+            '</div>' +
+          '</div>' +
+
+          '<div style="background:white;border:1.5px solid #86efac;border-radius:8px;padding:12px 14px;">' +
+            '<div style="font-size:0.7rem;font-weight:900;color:#047857;text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;">📐 Volumen recibido</div>' +
+            '<div style="text-align:center;margin-bottom:8px;">' +
+              '<div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;font-size:1.8rem;color:#1a2050;line-height:1;">' + volTotal.toFixed(3) + '</div>' +
+              '<div style="font-size:0.64rem;color:#64748b;text-transform:uppercase;font-weight:700;margin-top:1px;">ft³ / CFT total</div>' +
+            '</div>' +
+            '<div style="font-size:0.66rem;color:#64748b;background:#f0fdf4;padding:6px 9px;border-radius:5px;line-height:1.4;">' +
+              '<strong>Factor CIF/ft³:</strong> <span id="oc-cif-factor" style="color:#047857;font-weight:800;">$0.0000</span>' +
+              '<br><span style="font-size:0.6rem;">Prorrateo por volumen</span>' +
+            '</div>' +
+          '</div>' +
+        '</div>' +
+      '</div>' +
+
+      // Tabla preview
+      '<div style="flex:1;overflow-y:auto;padding:0 4px;">' +
+        '<table style="width:100%;border-collapse:collapse;">' +
+          '<thead><tr style="background:#1a2050;color:white;font-size:0.6rem;text-transform:uppercase;letter-spacing:0.5px;position:sticky;top:0;z-index:5;">' +
+            '<th style="padding:9px 4px;text-align:center;width:32px;">#</th>' +
+            '<th style="padding:9px 10px;text-align:left;width:100px;">Ref Farmers</th>' +
+            '<th style="padding:9px 10px;text-align:left;">Descripción</th>' +
+            '<th style="padding:9px 10px;text-align:right;width:80px;">Cantidad</th>' +
+            '<th style="padding:9px 10px;text-align:right;width:85px;">Vol. ft³</th>' +
+            '<th style="padding:9px 10px;text-align:right;width:90px;">FOB unit</th>' +
+            '<th style="padding:9px 10px;text-align:right;width:95px;background:#047857;">CIF unit</th>' +
+            '<th style="padding:9px 10px;text-align:right;width:105px;background:#047857;">CIF total</th>' +
+            '<th style="padding:9px 10px;text-align:right;width:85px;">Margen</th>' +
+          '</tr></thead>' +
+          '<tbody id="oc-cif-tbody">' + filasPreview + '</tbody>' +
+        '</table>' +
+      '</div>' +
+
+      '<div style="padding:14px 24px;border-top:1px solid #e2e8f0;display:flex;justify-content:space-between;align-items:center;background:#f8fafc;">' +
+        '<div style="font-size:0.72rem;color:#64748b;line-height:1.5;">' +
+          '💡 <strong>CIF = FOB + prorrateo de gastos por volumen</strong> · Se actualiza el costo real por producto · Afecta el cálculo de margen' +
+        '</div>' +
+        '<div style="display:flex;gap:10px;">' +
+          (esAutomatico
+            ? '<button onclick="ocCIFCancelar()" style="background:#f1f5f9;color:#475569;border:none;border-radius:7px;padding:10px 18px;cursor:pointer;font-weight:700;font-size:0.82rem;">Saltar por ahora</button>'
+            : '<button onclick="ocCIFCancelar()" style="background:#f1f5f9;color:#475569;border:none;border-radius:7px;padding:10px 18px;cursor:pointer;font-weight:700;font-size:0.85rem;">Cancelar</button>') +
+          '<button onclick="ocCIFGuardar(\'' + oc.id + '\', \'' + rec.id + '\')" style="background:linear-gradient(135deg,#047857,#059669);color:white;border:none;border-radius:7px;padding:10px 26px;cursor:pointer;font-weight:900;font-size:0.9rem;">✅ Aplicar CIF</button>' +
+        '</div>' +
+      '</div>' +
+
+    '</div>' +
+  '</div>';
+
+  var prev = document.getElementById('oc-cif-ov');
+  if (prev) prev.remove();
+  document.body.insertAdjacentHTML('beforeend', html);
+
+  // Guardar items en estado transitorio para recalcular en vivo
+  window._ocCIFItems = items;
+  window._ocCIFVolTotal = volTotal;
+
+  // Calcular preview inicial con valores previos (si los hay)
+  setTimeout(ocCIFRecalcular, 50);
+}
+
+function _ocCIFInput(label, id, value) {
+  return '<label style="display:flex;flex-direction:column;gap:3px;">' +
+    '<span style="font-size:0.62rem;font-weight:800;color:#047857;text-transform:uppercase;letter-spacing:0.6px;">' + label + '</span>' +
+    '<div style="position:relative;">' +
+      '<span style="position:absolute;left:10px;top:50%;transform:translateY(-50%);font-weight:800;color:#64748b;font-size:0.82rem;">$</span>' +
+      '<input type="number" min="0" step="0.01" id="' + id + '" value="' + value + '" oninput="ocCIFRecalcular()" style="width:100%;padding:8px 10px 8px 22px;border:1.5px solid #cbd5e1;border-radius:6px;font-size:0.85rem;outline:none;font-weight:700;text-align:right;">' +
+    '</div>' +
+  '</label>';
+}
+
+// Recalcular CIF en vivo al cambiar gastos
+window.ocCIFRecalcular = function() {
+  var flete     = parseFloat(document.getElementById('oc-cif-flete').value)     || 0;
+  var seguro    = parseFloat(document.getElementById('oc-cif-seguro').value)    || 0;
+  var impuestos = parseFloat(document.getElementById('oc-cif-impuestos').value) || 0;
+  var varios    = parseFloat(document.getElementById('oc-cif-varios').value)    || 0;
+  var total     = flete + seguro + impuestos + varios;
+
+  var volTotal = window._ocCIFVolTotal || 0;
+  var factor = volTotal > 0 ? (total / volTotal) : 0;
+
+  document.getElementById('oc-cif-total').textContent = '$' + total.toLocaleString('en-US',{maximumFractionDigits:2,minimumFractionDigits:2});
+  document.getElementById('oc-cif-factor').textContent = '$' + factor.toFixed(4);
+
+  // Actualizar cada fila de la tabla preview
+  var tbody = document.getElementById('oc-cif-tbody');
+  if (!tbody || !window._ocCIFItems) return;
+
+  window._ocCIFItems.forEach(function(it, i){
+    var cifUnit = it.precioFOB + (it.volumenUnitario * factor);
+    var cifTot  = cifUnit * it.cantidadRecibida;
+    var margen  = it.precioFOB > 0 ? ((cifUnit - it.precioFOB) / it.precioFOB * 100) : 0;
+
+    var row = tbody.querySelector('tr[data-idx="' + i + '"]');
+    if (!row) return;
+    var cUnit = row.querySelector('.cif-u');
+    var cTot  = row.querySelector('.cif-t');
+    var cMar  = row.querySelector('.cif-m');
+    if (cUnit) cUnit.textContent = '$' + cifUnit.toFixed(4);
+    if (cTot)  cTot.textContent  = '$' + cifTot.toLocaleString('en-US',{maximumFractionDigits:2,minimumFractionDigits:2});
+    if (cMar)  cMar.textContent  = (margen > 0 ? '+' : '') + margen.toFixed(1) + '%';
+  });
+};
+
+window.ocCIFCancelar = function() {
+  var el = document.getElementById('oc-cif-ov');
+  if (el) el.remove();
+  window._ocCIFItems = null;
+  window._ocCIFVolTotal = 0;
+};
+
+window.ocCIFGuardar = function(ocId, recepcionId) {
+  var oc = _ocDB.find(function(x){ return x.id === ocId; });
+  if (!oc) return;
+  var rec = (oc.recepciones || []).find(function(r){ return r.id === recepcionId; });
+  if (!rec) return;
+
+  var flete     = parseFloat(document.getElementById('oc-cif-flete').value)     || 0;
+  var seguro    = parseFloat(document.getElementById('oc-cif-seguro').value)    || 0;
+  var impuestos = parseFloat(document.getElementById('oc-cif-impuestos').value) || 0;
+  var varios    = parseFloat(document.getElementById('oc-cif-varios').value)    || 0;
+  var totalGastos = flete + seguro + impuestos + varios;
+
+  if (totalGastos === 0) {
+    if (!confirm('No ingresaste ningún gasto. ¿Guardar con gastos en 0? (el CIF será igual al FOB)')) return;
+  }
+
+  var volTotal = window._ocCIFVolTotal || 0;
+  var factor = volTotal > 0 ? (totalGastos / volTotal) : 0;
+
+  // Aplicar CIF a cada item de la recepción
+  var items = window._ocCIFItems || [];
+  var itemsCIF = items.map(function(it){
+    var cifUnit = it.precioFOB + (it.volumenUnitario * factor);
+    var cifTot  = cifUnit * it.cantidadRecibida;
+    return {
+      refFarmers:       it.refFarmers,
+      cantidadRecibida: it.cantidadRecibida,
+      precioFOB:        it.precioFOB,
+      volumenUnitario:  it.volumenUnitario,
+      cifUnitario:      cifUnit,
+      cifTotal:         cifTot
+    };
+  });
+
+  // Guardar CIF en la recepción
+  rec.cif = {
+    flete:         flete,
+    seguro:        seguro,
+    impuestos:     impuestos,
+    varios:        varios,
+    totalGastos:   totalGastos,
+    volumenTotal:  volTotal,
+    factorPorFt3:  factor,
+    items:         itemsCIF,
+    fechaCaptura:  new Date().toISOString()
+  };
+
+  // Actualizar PRODUCTS[ref].costoCIF con promedio ponderado
+  if (typeof PRODUCTS !== 'undefined') {
+    itemsCIF.forEach(function(it){
+      var prod = PRODUCTS.find(function(p){ return p.r === it.refFarmers; });
+      if (!prod) return;
+
+      // Stock actual después de la recepción (ya incluye la cantidad recibida)
+      var stockActual = parseInt(prod.ex) || 0;
+      var stockPrevio = Math.max(0, stockActual - it.cantidadRecibida);
+      var costoCIFPrevio = parseFloat(prod.costoCIF) || 0;
+
+      var costoNuevo;
+      if (stockPrevio === 0 || costoCIFPrevio === 0) {
+        // Sin costo previo: usar el CIF nuevo directamente
+        costoNuevo = it.cifUnitario;
+      } else {
+        // Promedio ponderado por stock
+        costoNuevo = (stockPrevio * costoCIFPrevio + it.cantidadRecibida * it.cifUnitario) / stockActual;
+      }
+
+      prod.costoCIF = parseFloat(costoNuevo.toFixed(4));
+
+      // Historial
+      if (!prod.costoCIFHistorial) prod.costoCIFHistorial = [];
+      prod.costoCIFHistorial.push({
+        recepcionId:  recepcionId,
+        recepcionNum: rec.numero,
+        ocNumero:     oc.numero,
+        fecha:        new Date().toISOString(),
+        cifUnitario:  it.cifUnitario,
+        cantidad:     it.cantidadRecibida,
+        precioFOB:    it.precioFOB,
+        factorCIF:    factor
+      });
+    });
+
+    if (typeof saveProducts === 'function') saveProducts();
+    if (typeof window.fbSaveProducts === 'function') window.fbSaveProducts(PRODUCTS);
+  }
+
+  saveOrdenesCompraDB(_ocDB);
+
+  ocCIFCancelar();
+  ocRenderFicha(oc);
+
+  if (typeof showToast === 'function') {
+    showToast('💰 CIF aplicado · Factor: $' + factor.toFixed(4) + '/ft³ · ' + itemsCIF.length + ' refs actualizadas', 'success');
+  }
+};
+
+window.ocCIFRevertir = function(ocId, recepcionId) {
+  var oc = _ocDB.find(function(x){ return x.id === ocId; });
+  if (!oc) return;
+  var rec = (oc.recepciones || []).find(function(r){ return r.id === recepcionId; });
+  if (!rec || !rec.cif) return;
+
+  if (!confirm('¿Revertir el CIF aplicado en ' + rec.numero + '?\n\nSe eliminará esta entrada del historial de costos de cada producto y el costoCIF se recalculará desde los registros restantes.')) return;
+
+  var itemsCIF = rec.cif.items || [];
+
+  if (typeof PRODUCTS !== 'undefined') {
+    itemsCIF.forEach(function(it){
+      var prod = PRODUCTS.find(function(p){ return p.r === it.refFarmers; });
+      if (!prod) return;
+
+      // Eliminar entrada del historial
+      if (prod.costoCIFHistorial) {
+        prod.costoCIFHistorial = prod.costoCIFHistorial.filter(function(h){
+          return h.recepcionId !== recepcionId;
+        });
+      }
+
+      // Recalcular costoCIF desde historial restante (promedio simple ponderado por cantidad)
+      if (!prod.costoCIFHistorial || prod.costoCIFHistorial.length === 0) {
+        prod.costoCIF = 0;
+      } else {
+        var sumCantxCosto = 0, sumCant = 0;
+        prod.costoCIFHistorial.forEach(function(h){
+          sumCantxCosto += (h.cantidad || 0) * (h.cifUnitario || 0);
+          sumCant += (h.cantidad || 0);
+        });
+        prod.costoCIF = sumCant > 0 ? parseFloat((sumCantxCosto / sumCant).toFixed(4)) : 0;
+      }
+    });
+
+    if (typeof saveProducts === 'function') saveProducts();
+    if (typeof window.fbSaveProducts === 'function') window.fbSaveProducts(PRODUCTS);
+  }
+
+  delete rec.cif;
+  saveOrdenesCompraDB(_ocDB);
+  ocRenderFicha(oc);
+
+  if (typeof showToast === 'function') showToast('🔄 CIF revertido en ' + rec.numero, 'info');
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+// DIAGNÓSTICO DE DATOS — Detectar refs con volumen/peso incompletos
+// ═══════════════════════════════════════════════════════════════════════════
+// Analiza todos los items de una OC e identifica refs con datos faltantes
+// en ptData (volumen, peso o unidades por bulto).
+// Retorna: { ok: [...], sinVolumen: [...], sinPeso: [...], sinUnidades: [...] }
+
+window.ocDiagnosticarDatos = function(ocId) {
+  var oc = _ocDB.find(function(x){ return x.id === ocId; });
+  if (!oc || !oc.items) return null;
+
+  var ptData = {};
+  try { ptData = JSON.parse(localStorage.getItem('farmers_pt_data') || '{}'); } catch(e){}
+
+  var diag = {
+    total:        oc.items.length,
+    ok:           [],
+    sinVolumen:   [],
+    sinPeso:      [],
+    sinUnidades:  [],
+    volumenTotal: 0,
+    pesoTotal:    0
+  };
+
+  oc.items.forEach(function(it){
+    var refF = it.refFarmers;
+    var pt = ptData[refF];
+    var medidas = pt && pt.medidas ? pt.medidas : {};
+
+    var volPorBulto = parseFloat(medidas.volDirecto) || 0;
+    if (!volPorBulto && medidas.largo && medidas.ancho && medidas.alto) {
+      volPorBulto = (parseFloat(medidas.largo) * parseFloat(medidas.ancho) * parseFloat(medidas.alto)) / 28316.85;
+    }
+    var pesoPorBulto = parseFloat(medidas.peso) || 0;
+
+    var uPorBulto = parseInt(it.unidadesPorBulto) || 0;
+    if (!uPorBulto && typeof PRODUCTS !== 'undefined') {
+      var prod = PRODUCTS.find(function(p){ return p.r === refF; });
+      if (prod) uPorBulto = parseInt(prod.m) || 0;
+    }
+
+    var cant = parseInt(it.cantidad) || 0;
+    var bultosReales = uPorBulto > 0 ? (cant / uPorBulto) : 0;
+    var volTotalItem = volPorBulto * bultosReales;
+    var pesoTotalItem = pesoPorBulto * bultosReales;
+
+    var info = {
+      refFarmers:    refF,
+      refProveedor:  it.refProveedor,
+      descripcion:   it.descripcion,
+      cantidad:      cant,
+      unidadesPorBulto: uPorBulto,
+      volumenPorBulto: volPorBulto,
+      pesoPorBulto:    pesoPorBulto,
+      volumenTotal:    volTotalItem,
+      pesoTotal:       pesoTotalItem
+    };
+
+    if (!uPorBulto) diag.sinUnidades.push(info);
+    if (volPorBulto === 0) diag.sinVolumen.push(info);
+    if (pesoPorBulto === 0) diag.sinPeso.push(info);
+    if (uPorBulto && volPorBulto > 0 && pesoPorBulto > 0) diag.ok.push(info);
+
+    diag.volumenTotal += volTotalItem;
+    diag.pesoTotal    += pesoTotalItem;
+  });
+
+  return diag;
+};
+
+// Renderizar tarjeta de diagnóstico para la ficha OC
+window.ocRenderDiagnosticoHTML = function(ocId) {
+  var d = window.ocDiagnosticarDatos(ocId);
+  if (!d) return '';
+  if (d.total === 0) return '';
+
+  var oc = _ocDB.find(function(x){ return x.id === ocId; });
+  var volFactura  = (oc._metadataFactura && parseFloat(oc.totales.volumenTotalFt3)) || parseFloat(oc.totales.volumenTotalFt3) || 0;
+  var pesoFactura = parseFloat(oc.totales.pesoTotalKg) || 0;
+
+  var problemasCount = d.sinVolumen.length + d.sinPeso.length + d.sinUnidades.length;
+  var allOK = d.ok.length === d.total;
+
+  // Sin problemas → banner verde compacto
+  if (allOK) {
+    return '<div style="margin-top:12px;background:#ecfdf5;border:1.5px solid #10b981;border-radius:8px;padding:10px 14px;display:flex;justify-content:space-between;align-items:center;gap:10px;">' +
+      '<div style="font-size:0.74rem;color:#047857;font-weight:700;">' +
+        '✅ <strong>Datos completos en todas las refs (' + d.total + '/' + d.total + ')</strong> — El cálculo de CIF será preciso' +
+      '</div>' +
+      '<div style="font-size:0.68rem;color:#047857;">' +
+        'Vol: <strong>' + d.volumenTotal.toFixed(2) + ' ft³</strong> · Peso: <strong>' + d.pesoTotal.toFixed(2) + ' Kg</strong>' +
+      '</div>' +
+    '</div>';
+  }
+
+  // Con problemas → banner amarillo/rojo + acciones
+  var severidad = problemasCount > d.total * 0.3 ? 'alta' : 'media';
+  var bgColor = severidad === 'alta' ? '#fef2f2' : '#fffbeb';
+  var borderColor = severidad === 'alta' ? '#f87171' : '#fbbf24';
+  var textColor = severidad === 'alta' ? '#991b1b' : '#78350f';
+  var icon = severidad === 'alta' ? '🚨' : '⚠';
+
+  var volDiff = volFactura > 0 ? Math.abs(volFactura - d.volumenTotal) / volFactura * 100 : 0;
+  var pesoDiff = pesoFactura > 0 ? Math.abs(pesoFactura - d.pesoTotal) / pesoFactura * 100 : 0;
+
+  return '<div style="margin-top:12px;background:' + bgColor + ';border:1.5px solid ' + borderColor + ';border-radius:10px;padding:12px 16px;">' +
+    '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;">' +
+      '<div style="flex:1;min-width:280px;">' +
+        '<div style="font-size:0.82rem;font-weight:900;color:' + textColor + ';letter-spacing:0.3px;margin-bottom:4px;">' +
+          icon + ' DATOS INCOMPLETOS EN ' + problemasCount + ' REF' + (problemasCount !== 1 ? 'S' : '') +
+        '</div>' +
+        '<div style="font-size:0.72rem;color:' + textColor + ';line-height:1.5;">' +
+          'El cálculo de CIF por volumen será <strong>impreciso</strong> si no se corrigen las medidas faltantes.' +
+        '</div>' +
+      '</div>' +
+      '<div style="display:flex;gap:6px;flex-wrap:wrap;">' +
+        '<button onclick="ocDiagMostrarLista(\'' + ocId + '\')" style="background:white;color:' + textColor + ';border:1.5px solid ' + borderColor + ';border-radius:6px;padding:6px 12px;cursor:pointer;font-weight:800;font-size:0.7rem;">👁 Ver lista</button>' +
+        '<button onclick="ocImportarMedidasClick(\'' + ocId + '\')" style="background:#059669;color:white;border:none;border-radius:6px;padding:6px 12px;cursor:pointer;font-weight:800;font-size:0.7rem;">📥 Importar medidas</button>' +
+      '</div>' +
+    '</div>' +
+
+    // Grid de contadores
+    '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-top:10px;">' +
+      '<div style="background:white;border-radius:6px;padding:6px 10px;text-align:center;border-top:2px solid #10b981;">' +
+        '<div style="font-size:0.58rem;color:#64748b;text-transform:uppercase;font-weight:700;">OK completos</div>' +
+        '<div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;font-size:1.4rem;color:#047857;">' + d.ok.length + '</div>' +
+      '</div>' +
+      '<div style="background:white;border-radius:6px;padding:6px 10px;text-align:center;border-top:2px solid #f59e0b;">' +
+        '<div style="font-size:0.58rem;color:#64748b;text-transform:uppercase;font-weight:700;">Sin volumen</div>' +
+        '<div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;font-size:1.4rem;color:#d97706;">' + d.sinVolumen.length + '</div>' +
+      '</div>' +
+      '<div style="background:white;border-radius:6px;padding:6px 10px;text-align:center;border-top:2px solid #ef4444;">' +
+        '<div style="font-size:0.58rem;color:#64748b;text-transform:uppercase;font-weight:700;">Sin peso</div>' +
+        '<div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;font-size:1.4rem;color:#dc2626;">' + d.sinPeso.length + '</div>' +
+      '</div>' +
+      '<div style="background:white;border-radius:6px;padding:6px 10px;text-align:center;border-top:2px solid #8b5cf6;">' +
+        '<div style="font-size:0.58rem;color:#64748b;text-transform:uppercase;font-weight:700;">Sin uds/bulto</div>' +
+        '<div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;font-size:1.4rem;color:#7c3aed;">' + d.sinUnidades.length + '</div>' +
+      '</div>' +
+    '</div>' +
+
+    // Comparativa si hay factura
+    (volFactura > 0 || pesoFactura > 0
+      ? '<div style="margin-top:10px;background:white;border-radius:6px;padding:8px 12px;display:grid;grid-template-columns:1fr 1fr;gap:10px;font-size:0.68rem;">' +
+          '<div>' +
+            '<strong style="color:#64748b;text-transform:uppercase;font-size:0.6rem;">Volumen:</strong><br>' +
+            'Calculado: <strong>' + d.volumenTotal.toFixed(2) + ' ft³</strong> · ' +
+            'Factura: <strong>' + volFactura.toFixed(2) + ' ft³</strong> · ' +
+            'Diff: <strong style="color:' + (volDiff > 10 ? '#dc2626' : '#047857') + ';">' + volDiff.toFixed(1) + '%</strong>' +
+          '</div>' +
+          '<div>' +
+            '<strong style="color:#64748b;text-transform:uppercase;font-size:0.6rem;">Peso:</strong><br>' +
+            'Calculado: <strong>' + d.pesoTotal.toFixed(2) + ' Kg</strong> · ' +
+            'Factura: <strong>' + pesoFactura.toFixed(2) + ' Kg</strong> · ' +
+            'Diff: <strong style="color:' + (pesoDiff > 10 ? '#dc2626' : '#047857') + ';">' + pesoDiff.toFixed(1) + '%</strong>' +
+          '</div>' +
+        '</div>'
+      : '') +
+  '</div>';
+};
+
+// Modal para mostrar la lista de refs con problemas
+window.ocDiagMostrarLista = function(ocId) {
+  var d = window.ocDiagnosticarDatos(ocId);
+  if (!d) return;
+
+  var listaHTML = '';
+  var fmtItem = function(it, campo){
+    var refProv = it.refProveedor ? ' <span style="color:#64748b;font-size:0.64rem;">(' + it.refProveedor + ')</span>' : '';
+    return '<tr style="border-bottom:1px solid #f1f5f9;">' +
+      '<td style="padding:5px 10px;font-family:monospace;font-weight:800;color:#1a2050;font-size:0.72rem;">' + it.refFarmers + refProv + '</td>' +
+      '<td style="padding:5px 10px;font-size:0.68rem;color:#334155;">' + (it.descripcion||'—').substring(0, 60) + '</td>' +
+      '<td style="padding:5px 10px;text-align:right;font-size:0.7rem;color:#64748b;">' + it.cantidad.toLocaleString() + '</td>' +
+      '<td style="padding:5px 10px;text-align:center;font-size:0.66rem;font-weight:800;">' + (campo === 'vol' ? (it.volumenPorBulto > 0 ? '✓' : '<span style="color:#d97706;">Sin vol</span>') : it.volumenPorBulto.toFixed(3)) + '</td>' +
+      '<td style="padding:5px 10px;text-align:center;font-size:0.66rem;font-weight:800;">' + (campo === 'peso' ? (it.pesoPorBulto > 0 ? '✓' : '<span style="color:#dc2626;">Sin peso</span>') : it.pesoPorBulto.toFixed(2)) + '</td>' +
+      '<td style="padding:5px 10px;text-align:center;font-size:0.66rem;font-weight:800;">' + (it.unidadesPorBulto || '<span style="color:#7c3aed;">?</span>') + '</td>' +
+    '</tr>';
+  };
+
+  if (d.sinVolumen.length > 0) {
+    listaHTML += '<h3 style="margin:14px 0 6px;color:#d97706;font-size:0.85rem;">⚠ ' + d.sinVolumen.length + ' refs sin volumen</h3>' +
+      '<table style="width:100%;border-collapse:collapse;font-size:0.72rem;"><tbody>' +
+      d.sinVolumen.map(function(it){ return fmtItem(it, 'vol'); }).join('') + '</tbody></table>';
+  }
+  if (d.sinPeso.length > 0) {
+    listaHTML += '<h3 style="margin:14px 0 6px;color:#dc2626;font-size:0.85rem;">⚠ ' + d.sinPeso.length + ' refs sin peso</h3>' +
+      '<table style="width:100%;border-collapse:collapse;font-size:0.72rem;"><tbody>' +
+      d.sinPeso.map(function(it){ return fmtItem(it, 'peso'); }).join('') + '</tbody></table>';
+  }
+  if (d.sinUnidades.length > 0) {
+    listaHTML += '<h3 style="margin:14px 0 6px;color:#7c3aed;font-size:0.85rem;">⚠ ' + d.sinUnidades.length + ' refs sin unidades por bulto</h3>' +
+      '<table style="width:100%;border-collapse:collapse;font-size:0.72rem;"><tbody>' +
+      d.sinUnidades.map(function(it){ return fmtItem(it, 'uds'); }).join('') + '</tbody></table>';
+  }
+
+  var html = '<div id="oc-diag-ov" style="position:fixed;inset:0;z-index:99920;background:rgba(0,0,0,0.85);display:flex;align-items:center;justify-content:center;padding:20px;">' +
+    '<div style="background:white;border-radius:14px;width:100%;max-width:1100px;max-height:92vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,0.5);">' +
+      '<div style="padding:16px 24px;background:linear-gradient(135deg,#b45309,#d97706);color:white;display:flex;justify-content:space-between;align-items:center;border-bottom:2px solid #fbbf24;">' +
+        '<div>' +
+          '<div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;font-size:1.3rem;letter-spacing:1px;">⚠ Diagnóstico de Datos</div>' +
+          '<div style="font-size:0.75rem;opacity:0.9;margin-top:2px;">Refs con información incompleta en catálogo</div>' +
+        '</div>' +
+        '<button onclick="document.getElementById(\'oc-diag-ov\').remove();" style="background:rgba(255,255,255,0.15);border:1.5px solid rgba(255,255,255,0.3);border-radius:7px;padding:7px 12px;cursor:pointer;font-weight:800;color:white;">✕</button>' +
+      '</div>' +
+      '<div style="flex:1;overflow-y:auto;padding:16px 24px;">' + listaHTML + '</div>' +
+      '<div style="padding:14px 24px;border-top:1px solid #e2e8f0;background:#f8fafc;display:flex;justify-content:space-between;align-items:center;">' +
+        '<div style="font-size:0.72rem;color:#64748b;">💡 Importa las medidas desde Excel del proveedor para completar todos estos datos de una vez</div>' +
+        '<button onclick="document.getElementById(\'oc-diag-ov\').remove();ocImportarMedidasClick(\'' + ocId + '\')" style="background:#059669;color:white;border:none;border-radius:7px;padding:10px 20px;cursor:pointer;font-weight:800;font-size:0.85rem;">📥 Importar Medidas</button>' +
+      '</div>' +
+    '</div>' +
+  '</div>';
+
+  var prev = document.getElementById('oc-diag-ov');
+  if (prev) prev.remove();
+  document.body.insertAdjacentHTML('beforeend', html);
+};
+
 window.ocRecalcularVolPeso = function(id) {
   var oc = _ocDB.find(function(x){ return x.id === id; });
   if (!oc) return;
@@ -11385,6 +12415,11 @@ window._ocRecepGuardar = function(ocId) {
       showToast(msg, 'success');
     }
 
+    // ═══ Abrir modal CIF automáticamente (opcional, se puede saltar) ═══
+    setTimeout(function(){
+      ocCIFAbrir(oc.id, recepcion.id, true);
+    }, 400);
+
   } catch(err) {
     console.error('Error registrando recepción:', err);
     alert('Error registrando recepción: ' + err.message);
@@ -11405,6 +12440,29 @@ window.ocRecepEliminar = function(ocId, recId) {
     '• El estado de la OC se recalculará')) return;
 
   try {
+    // ═══ Si hay CIF aplicado, revertir PRIMERO ═══
+    if (rec.cif && rec.cif.items && typeof PRODUCTS !== 'undefined') {
+      rec.cif.items.forEach(function(ci){
+        var prod = PRODUCTS.find(function(p){ return p.r === ci.refFarmers; });
+        if (!prod) return;
+        if (prod.costoCIFHistorial) {
+          prod.costoCIFHistorial = prod.costoCIFHistorial.filter(function(h){
+            return h.recepcionId !== recId;
+          });
+        }
+        if (!prod.costoCIFHistorial || prod.costoCIFHistorial.length === 0) {
+          prod.costoCIF = 0;
+        } else {
+          var sumCantxCosto = 0, sumCant = 0;
+          prod.costoCIFHistorial.forEach(function(h){
+            sumCantxCosto += (h.cantidad || 0) * (h.cifUnitario || 0);
+            sumCant += (h.cantidad || 0);
+          });
+          prod.costoCIF = sumCant > 0 ? parseFloat((sumCantxCosto / sumCant).toFixed(4)) : 0;
+        }
+      });
+    }
+
     var ptData = JSON.parse(localStorage.getItem('farmers_pt_data') || '{}');
 
     (rec.items || []).forEach(function(ri){
