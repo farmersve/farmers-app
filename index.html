@@ -8349,6 +8349,7 @@ function ocRenderFicha(oc) {
           (oc.estado !== 'CANCELADA' && oc.estado !== 'BORRADOR'
             ? '<button onclick="ocRecepcionarClick(\'' + oc.id + '\')" style="background:#dcfce7;color:#166534;border:1.5px solid #86efac;border-radius:7px;padding:7px 14px;font-weight:800;cursor:pointer;font-size:0.75rem;">📦 Registrar Recepción</button>'
             : '') +
+          '<button onclick="ocExportarPDF(\'' + oc.id + '\')" style="background:#fee2e2;color:#7f1d1d;border:1.5px solid #fca5a5;border-radius:7px;padding:7px 14px;font-weight:800;cursor:pointer;font-size:0.75rem;" title="Exportar OC como PDF para enviar al proveedor">📄 Exportar PDF</button>' +
           '<button onclick="ocRecalcularVolPeso(\'' + oc.id + '\')" style="background:#e0e7ff;color:#4338ca;border:1.5px solid #c7d2fe;border-radius:7px;padding:7px 14px;font-weight:800;cursor:pointer;font-size:0.75rem;" title="Recalcula volumen y peso desde ptData">📐 Recalcular Vol/Peso</button>' +
           '<button onclick="ocEditarTotalesClick(\'' + oc.id + '\')" style="background:#fef3c7;color:#78350f;border:1.5px solid #fcd34d;border-radius:7px;padding:7px 14px;font-weight:800;cursor:pointer;font-size:0.75rem;" title="Editar manualmente totales, ajustes, volumen, peso, fechas">✏️ Editar Totales</button>' +
           '<button onclick="ocCambiarEstado(\'' + oc.id + '\')" style="background:#dbeafe;color:#1e40af;border:1.5px solid #93c5fd;border-radius:7px;padding:7px 14px;font-weight:800;cursor:pointer;font-size:0.75rem;">🔄 Estado</button>' +
@@ -10260,6 +10261,246 @@ window.ocEditarTotalesGuardar = function(id) {
     if (totalForzado) msg += ' (forzado manualmente)';
     showToast(msg, 'success');
   }
+};
+
+// ═══════════════════════════════════════════════════════════════
+// EXPORT PDF DE OC — Documento para enviar al proveedor
+// ═══════════════════════════════════════════════════════════════
+// Genera un PDF profesional de una página A4 con:
+//   • Header con logo Farmers + datos fiscales + destinatario proveedor
+//   • N° OC grande, fechas, N° Factura proveedor asociada, estado
+//   • Tabla compacta de items ordenados alfanuméricamente por REF
+//   • Totales (subtotal, descuento, traspaso, impuesto, total)
+//   • Volumetría (ft³, Kg, cajas)
+//   • Metadata opcional (agente, condición pago, consignado, etc.)
+//   • Notas
+//   • Botón manual "🖨 Imprimir" (nunca print automático)
+// Filename: "FARMERS - OC (numero) - (proveedor) (fecha).pdf"
+
+window.ocExportarPDF = function(id) {
+  var oc = _ocDB.find(function(x){ return x.id === id; });
+  if (!oc) { alert('OC no encontrada'); return; }
+  if (!oc.items || !oc.items.length) { alert('OC sin items, no se puede exportar'); return; }
+
+  // Ordenar items alfanuméricamente por ref Farmers (regla del sistema)
+  var items = oc.items.slice().sort(function(a,b){
+    return String(a.refFarmers||'').localeCompare(String(b.refFarmers||''), 'es', {numeric:true});
+  });
+
+  var t = oc.totales || {};
+  var meta = oc._metadataFactura || {};
+  var estadoObj = (typeof OC_ESTADOS !== 'undefined' && OC_ESTADOS[oc.estado]) ? OC_ESTADOS[oc.estado] : {icon:'📋', label:oc.estado, color:'#64748b'};
+
+  // Obtener logo Farmers base64 desde el HTML del dashboard
+  var logoBase64 = '';
+  try {
+    var imgInDoc = document.querySelector('img[alt="FARMERS"]');
+    if (imgInDoc && imgInDoc.src && imgInDoc.src.indexOf('data:image') === 0) {
+      logoBase64 = imgInDoc.src;
+    }
+  } catch(e) {}
+
+  var fmt = function(n, dec){ return (parseFloat(n)||0).toLocaleString('en-US',{maximumFractionDigits:(dec===undefined?2:dec),minimumFractionDigits:(dec===undefined?2:dec)}); };
+  var fmtFecha = function(f){ if (!f) return '—'; try { var d=new Date(f); return String(d.getDate()).padStart(2,'0')+'/'+String(d.getMonth()+1).padStart(2,'0')+'/'+d.getFullYear(); } catch(e) { return f; } };
+
+  // Filas de items
+  var filasHTML = items.map(function(it, i){
+    var sub = (parseFloat(it.cantidad)||0) * (parseFloat(it.precioFOB)||0);
+    return '<tr>' +
+      '<td class="nu">' + (i+1) + '</td>' +
+      '<td class="rp">' + (it.refProveedor || '—') + '</td>' +
+      '<td class="rf">' + (it.refFarmers || '—') + '</td>' +
+      '<td class="ds">' + (it.descripcion || '—') + '</td>' +
+      '<td class="un">' + (it.unidad || '—') + '</td>' +
+      '<td class="ca">' + fmt(it.cantidad, 0) + '</td>' +
+      '<td class="bl">' + (parseInt(it.bultosEstimados) || 0) + '</td>' +
+      '<td class="pr">$' + fmt(it.precioFOB, 4) + '</td>' +
+      '<td class="st">$' + fmt(sub) + '</td>' +
+    '</tr>';
+  }).join('');
+
+  // Filename según convención Farmers
+  var hoyStr = (function(){
+    var d = new Date();
+    return String(d.getDate()).padStart(2,'0') + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + d.getFullYear();
+  })();
+  var nombreArchivo = 'FARMERS - OC ' + oc.numero + ' - ' + (oc.proveedorNombre || 'Proveedor').replace(/[^\w\s-]/g,'').trim() + ' (' + hoyStr + ')';
+
+  var html =
+    '<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8">' +
+    '<title>' + nombreArchivo + '</title>' +
+    '<style>' +
+      '* { box-sizing:border-box; margin:0; padding:0; }' +
+      'html, body { print-color-adjust:exact; -webkit-print-color-adjust:exact; }' +
+      'body { font-family: Arial, sans-serif; color:#1e293b; background:#f1f5f9; padding:16px; font-size:11px; }' +
+      '@page { size: A4 portrait; margin: 5mm 6mm; }' +
+      '@media print { body { background:white; padding:0; } .no-print { display:none !important; } }' +
+      '.page { background:white; max-width:210mm; margin:0 auto; padding:10mm 8mm; box-shadow:0 2px 8px rgba(0,0,0,0.1); }' +
+      // Header
+      '.hdr { display:flex; justify-content:space-between; align-items:flex-start; padding-bottom:10px; border-bottom:3px solid #7f1d1d; margin-bottom:10px; }' +
+      '.hdr-left { display:flex; gap:12px; align-items:center; }' +
+      '.hdr-logo { width:52px; height:52px; border-radius:10px; overflow:hidden; background:#7f1d1d; display:flex; align-items:center; justify-content:center; }' +
+      '.hdr-logo img { width:100%; height:100%; object-fit:contain; }' +
+      '.hdr-empresa h1 { font-size:18px; color:#7f1d1d; margin-bottom:2px; letter-spacing:0.5px; }' +
+      '.hdr-empresa .sub { font-size:9px; color:#64748b; line-height:1.4; }' +
+      '.hdr-right { text-align:right; }' +
+      '.hdr-right .tipo { font-size:9px; color:#64748b; text-transform:uppercase; letter-spacing:1px; }' +
+      '.hdr-right .num { font-family:"Courier New",monospace; font-size:20px; color:#7f1d1d; font-weight:900; letter-spacing:0.5px; }' +
+      '.hdr-right .estado { display:inline-block; background:' + (estadoObj.color||'#64748b') + '; color:white; padding:2px 8px; border-radius:4px; font-size:9px; font-weight:700; margin-top:3px; }' +
+      // Grid proveedor y datos
+      '.info-grid { display:grid; grid-template-columns: 1.2fr 1fr; gap:8px; margin-bottom:10px; }' +
+      '.info-box { background:#f8fafc; border-left:3px solid #7f1d1d; padding:6px 10px; border-radius:4px; }' +
+      '.info-box .lbl { font-size:8px; color:#7f1d1d; font-weight:700; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:2px; }' +
+      '.info-box .val { font-size:11px; color:#1e293b; font-weight:700; }' +
+      '.info-box .val2 { font-size:9px; color:#64748b; line-height:1.4; margin-top:2px; }' +
+      // Meta row
+      '.meta-row { display:grid; grid-template-columns:repeat(4,1fr); gap:6px; margin-bottom:10px; font-size:9px; }' +
+      '.meta-item { background:#eff6ff; padding:4px 8px; border-radius:4px; }' +
+      '.meta-item .k { color:#1e40af; font-weight:700; font-size:8px; text-transform:uppercase; }' +
+      '.meta-item .v { color:#1e293b; font-weight:600; }' +
+      // Tabla
+      'table.items { width:100%; border-collapse:collapse; margin-bottom:8px; }' +
+      'table.items thead th { background:#1a2050; color:white; padding:5px 4px; font-size:8.5px; text-transform:uppercase; letter-spacing:0.3px; text-align:left; font-weight:800; }' +
+      'table.items tbody td { padding:3px 4px; border-bottom:1px solid #e2e8f0; font-size:9.5px; }' +
+      'table.items tbody tr:nth-child(even) { background:#f8fafc; }' +
+      'table.items td.nu { text-align:center; color:#94a3b8; width:22px; }' +
+      'table.items td.rp { font-family:"Courier New",monospace; font-size:8.5px; color:#64748b; }' +
+      'table.items td.rf { font-family:"Courier New",monospace; font-weight:800; color:#1e293b; }' +
+      'table.items td.ds { font-size:9px; color:#334155; }' +
+      'table.items td.un { text-align:center; font-size:8.5px; color:#64748b; font-weight:600; }' +
+      'table.items td.ca { text-align:right; font-weight:700; }' +
+      'table.items td.bl { text-align:center; color:#64748b; }' +
+      'table.items td.pr { text-align:right; color:#7f1d1d; font-weight:700; font-family:"Courier New",monospace; }' +
+      'table.items td.st { text-align:right; color:#166534; font-weight:900; font-family:"Courier New",monospace; }' +
+      // Totales + Volumetría
+      '.bottom-grid { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:8px; }' +
+      '.tot-box { background:linear-gradient(135deg,#7f1d1d,#991b1b); color:white; padding:10px 14px; border-radius:8px; }' +
+      '.tot-box .tot-row { display:flex; justify-content:space-between; align-items:center; padding:2px 0; font-size:10px; opacity:0.9; }' +
+      '.tot-box .tot-row.big { border-top:1.5px solid rgba(255,255,255,0.4); padding-top:6px; margin-top:4px; font-size:14px; font-weight:900; opacity:1; }' +
+      '.tot-box .tot-row .v { font-family:"Courier New",monospace; font-weight:900; }' +
+      '.vol-box { background:#eff6ff; border:1.5px solid #bfdbfe; padding:10px 14px; border-radius:8px; }' +
+      '.vol-box .vol-t { font-size:9px; color:#1e40af; font-weight:900; text-transform:uppercase; margin-bottom:6px; letter-spacing:0.5px; }' +
+      '.vol-box .vol-grid { display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; text-align:center; }' +
+      '.vol-box .vol-grid .lbl { font-size:8px; color:#64748b; text-transform:uppercase; font-weight:700; }' +
+      '.vol-box .vol-grid .val { font-size:14px; color:#1e40af; font-weight:900; font-family:"Courier New",monospace; }' +
+      // Footer
+      '.foot { margin-top:10px; font-size:8.5px; color:#64748b; text-align:center; padding-top:6px; border-top:1px solid #e2e8f0; }' +
+      '.notas { margin-top:8px; background:#fffbeb; border-left:3px solid #fbbf24; padding:6px 10px; border-radius:4px; font-size:9px; color:#78350f; }' +
+      // Botón imprimir
+      '.btn-print { position:fixed; top:10px; right:10px; background:#7f1d1d; color:white; border:none; padding:10px 18px; border-radius:8px; font-weight:900; cursor:pointer; font-size:13px; box-shadow:0 4px 12px rgba(0,0,0,0.2); }' +
+      '.btn-print:hover { background:#991b1b; }' +
+    '</style></head><body>' +
+
+    '<button class="btn-print no-print" onclick="window.print()">🖨 Imprimir PDF</button>' +
+
+    '<div class="page">' +
+
+      // Header
+      '<div class="hdr">' +
+        '<div class="hdr-left">' +
+          '<div class="hdr-logo">' + (logoBase64 ? '<img src="' + logoBase64 + '" alt="Farmers">' : '🏢') + '</div>' +
+          '<div class="hdr-empresa">' +
+            '<h1>FARMERS C.A.</h1>' +
+            '<div class="sub">Distribuidora mayorista<br>Margarita, Nueva Esparta, Venezuela<br>0412-0445797 · farmersve@gmail.com</div>' +
+          '</div>' +
+        '</div>' +
+        '<div class="hdr-right">' +
+          '<div class="tipo">Orden de Compra</div>' +
+          '<div class="num">' + oc.numero + '</div>' +
+          '<div class="estado">' + estadoObj.icon + ' ' + estadoObj.label + '</div>' +
+        '</div>' +
+      '</div>' +
+
+      // Datos proveedor y fechas
+      '<div class="info-grid">' +
+        '<div class="info-box">' +
+          '<div class="lbl">Proveedor</div>' +
+          '<div class="val">' + (oc.proveedorNombre || '—') + '</div>' +
+          '<div class="val2">' +
+            (oc.proveedorPais ? oc.proveedorPais + ' · ' : '') +
+            'Incoterms: ' + (oc.incoterms || 'FOB') + ' · ' +
+            'Moneda: ' + (oc.moneda || 'USD') +
+            (oc.puertoOrigen ? '<br>Puerto origen: ' + oc.puertoOrigen : '') +
+          '</div>' +
+        '</div>' +
+        '<div class="info-box">' +
+          '<div class="lbl">Fechas & Factura</div>' +
+          '<div class="val">Emisión: ' + fmtFecha(oc.fechaEmision) + '</div>' +
+          '<div class="val2">' +
+            'Llegada estimada: ' + fmtFecha(oc.fechaEstimadaLlegada) +
+            (oc._numeroFacturaProveedor ? '<br>N° Factura Proveedor: <strong>' + oc._numeroFacturaProveedor + '</strong>' : '') +
+          '</div>' +
+        '</div>' +
+      '</div>' +
+
+      // Metadata adicional si existe
+      ((meta.condicionPago || meta.agente || meta.consignadoA || meta.marca)
+        ? '<div class="meta-row">' +
+            (meta.condicionPago ? '<div class="meta-item"><div class="k">Condición Pago</div><div class="v">' + meta.condicionPago + '</div></div>' : '') +
+            (meta.agente        ? '<div class="meta-item"><div class="k">Agente</div><div class="v">' + meta.agente + '</div></div>' : '') +
+            (meta.consignadoA   ? '<div class="meta-item"><div class="k">Consignado a</div><div class="v">' + meta.consignadoA + '</div></div>' : '') +
+            (meta.marca         ? '<div class="meta-item"><div class="k">Marca</div><div class="v">' + meta.marca + '</div></div>' : '') +
+          '</div>'
+        : '') +
+
+      // Tabla de items
+      '<table class="items">' +
+        '<thead><tr>' +
+          '<th style="width:22px;">#</th>' +
+          '<th style="width:75px;">Ref Prov</th>' +
+          '<th style="width:75px;">Ref Farmers</th>' +
+          '<th>Descripción</th>' +
+          '<th style="width:38px;text-align:center;">Unid</th>' +
+          '<th style="width:48px;text-align:right;">Cant</th>' +
+          '<th style="width:32px;text-align:center;">Bul</th>' +
+          '<th style="width:60px;text-align:right;">FOB</th>' +
+          '<th style="width:65px;text-align:right;">Subtotal</th>' +
+        '</tr></thead>' +
+        '<tbody>' + filasHTML + '</tbody>' +
+      '</table>' +
+
+      // Totales + Volumetría
+      '<div class="bottom-grid">' +
+        '<div class="tot-box">' +
+          '<div class="tot-row"><span>Subtotal</span><span class="v">$' + fmt(t.subtotal) + '</span></div>' +
+          ((t.descuento > 0) ? '<div class="tot-row"><span>Descuento (−)</span><span class="v">−$' + fmt(t.descuento) + '</span></div>' : '') +
+          ((t.traspaso  > 0) ? '<div class="tot-row"><span>Traspaso (+)</span><span class="v">$' + fmt(t.traspaso) + '</span></div>' : '') +
+          ((t.impuesto  > 0) ? '<div class="tot-row"><span>Impuesto (+)</span><span class="v">$' + fmt(t.impuesto) + '</span></div>' : '') +
+          '<div class="tot-row big"><span>TOTAL ' + (oc.moneda || 'USD') + '</span><span class="v">$' + fmt(t.total) + '</span></div>' +
+        '</div>' +
+        '<div class="vol-box">' +
+          '<div class="vol-t">📦 Volumetría</div>' +
+          '<div class="vol-grid">' +
+            '<div><div class="lbl">Volumen</div><div class="val">' + fmt(t.volumenTotalFt3) + '</div><div class="lbl">ft³</div></div>' +
+            '<div><div class="lbl">Peso</div><div class="val">' + fmt(t.pesoTotalKg) + '</div><div class="lbl">Kg</div></div>' +
+            '<div><div class="lbl">Cajas</div><div class="val">' + (t.cajasTotales || 0) + '</div><div class="lbl">bultos</div></div>' +
+          '</div>' +
+        '</div>' +
+      '</div>' +
+
+      // Notas
+      (oc.notas ? '<div class="notas"><strong>📝 Notas:</strong> ' + oc.notas + '</div>' : '') +
+
+      // Footer
+      '<div class="foot">' +
+        'Documento generado el ' + fmtFecha(new Date().toISOString()) + ' · ' + oc.items.length + ' ítems · ' +
+        'FARMERS C.A. — Distribuidora Mayorista · Margarita, Venezuela' +
+      '</div>' +
+
+    '</div>' +
+
+    '<script>document.title = ' + JSON.stringify(nombreArchivo) + ';<\/script>' +
+    '</body></html>';
+
+  // Abrir en nueva ventana
+  var w = window.open('', '_blank');
+  if (!w) {
+    alert('Permite las ventanas emergentes para generar el PDF');
+    return;
+  }
+  w.document.open();
+  w.document.write(html);
+  w.document.close();
 };
 
 window.ocCambiarEstado = function(id) {
