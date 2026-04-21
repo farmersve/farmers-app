@@ -9307,7 +9307,6 @@ function _ocImpRenderRevisor() {
   }
 
   var filas = items.map(function(it, i){
-    var bg = it._refFarmersFinal ? 'transparent' : '#fef3c7';
     var subtotal = (parseFloat(it.precio)||0) * (parseFloat(it.cantidad)||0);
     var sufijoConv = it._factorPrecio > 1
       ? '<div style="font-size:.56rem;color:#64748b;margin-top:1px;">$' + it._precioOriginal.toFixed(4) + '/' + it._unidadOriginal + ' ÷ ' + it._factorPrecio + '</div>'
@@ -9315,7 +9314,49 @@ function _ocImpRenderRevisor() {
     var sufijoCantConv = it._factorPrecio > 1
       ? '<div style="font-size:.56rem;color:#64748b;margin-top:1px;">' + it._cantidadOriginal + ' ' + it._unidadOriginal + ' × ' + it._factorPrecio + '</div>'
       : '';
-    return '<tr style="border-bottom:1px solid #f1f5f9;background:' + bg + ';">' +
+
+    // Calcular estado de ordenada para esta fila
+    var ordActual = 0;
+    var estadoOrd = 'no_mapeada';  // 'coincide' | 'distinta' | 'sin_ordenada' | 'no_mapeada'
+    var cantFactura = parseInt(it.cantidad) || 0;
+    if (it._refFarmersFinal) {
+      var entry = ptDataLocal[it._refFarmersFinal];
+      ordActual = (entry && entry.exOrdenada !== undefined) ? parseInt(entry.exOrdenada) : 0;
+      if (ordActual === 0) estadoOrd = 'sin_ordenada';
+      else if (ordActual === cantFactura) estadoOrd = 'coincide';
+      else estadoOrd = 'distinta';
+    }
+
+    // Definir fondo de fila según estado
+    var bgFila = 'transparent';
+    if (!it._refFarmersFinal) bgFila = '#fef3c7';             // sin mapear
+    else if (estadoOrd === 'coincide') bgFila = '#f0fdf4';    // verde muy claro
+    else if (estadoOrd === 'distinta') bgFila = '#fef3c7';    // amarillo claro (resaltado)
+    // sin_ordenada queda transparent (caso limpio)
+
+    // Renderizar columna "Ordenada Actual"
+    var cellOrd = '';
+    if (!it._refFarmersFinal) {
+      cellOrd = '<td style="padding:7px 10px;text-align:center;color:#94a3b8;font-size:0.66rem;">—</td>';
+    } else if (estadoOrd === 'coincide') {
+      cellOrd = '<td style="padding:7px 10px;text-align:right;font-size:0.72rem;font-weight:800;color:#166534;" ' +
+                'title="Ordenada coincide con factura: ' + ordActual + ' uds">' +
+                '<div style="background:#dcfce7;padding:3px 7px;border-radius:5px;display:inline-block;">✅ ' + ordActual.toLocaleString() + '</div>' +
+                '</td>';
+    } else if (estadoOrd === 'distinta') {
+      var diff = cantFactura - ordActual;
+      var signo = diff > 0 ? '+' : '';
+      cellOrd = '<td style="padding:7px 10px;text-align:right;font-size:0.72rem;font-weight:800;color:#78350f;" ' +
+                'title="⚠ DIFERENCIA\nOrdenada actual: ' + ordActual + '\nFactura: ' + cantFactura + '\nDiferencia: ' + signo + diff + '">' +
+                '<div style="background:#fde68a;padding:3px 7px;border-radius:5px;display:inline-block;">' +
+                  '⚠ ' + ordActual.toLocaleString() +
+                  '<div style="font-size:.56rem;font-weight:700;margin-top:1px;">vs ' + cantFactura.toLocaleString() + ' (' + signo + diff + ')</div>' +
+                '</div></td>';
+    } else {  // sin_ordenada
+      cellOrd = '<td style="padding:7px 10px;text-align:center;color:#94a3b8;font-size:0.66rem;" title="Sin ordenada cargada">—</td>';
+    }
+
+    return '<tr class="oc-imp-row" data-estado-ord="' + estadoOrd + '" style="border-bottom:1px solid #f1f5f9;background:' + bgFila + ';">' +
       '<td style="padding:7px 10px;text-align:center;font-size:0.64rem;color:#94a3b8;">' + (i+1) + '</td>' +
       '<td style="padding:7px 10px;font-family:monospace;font-size:0.7rem;color:#64748b;white-space:nowrap;">' + (it.refProveedor||'—') + '</td>' +
       '<td style="padding:5px 8px;">' +
@@ -9327,6 +9368,7 @@ function _ocImpRenderRevisor() {
         '<input type="number" min="0" step="1" value="' + (parseInt(it.cantidad)||0) + '" onchange="ocImpActualizarItem(' + i + ', \'cantidad\', this.value)" style="width:100%;padding:5px 8px;border:1.5px solid #cbd5e1;border-radius:5px;text-align:right;font-weight:800;outline:none;font-size:0.72rem;">' +
         sufijoCantConv +
       '</td>' +
+      cellOrd +
       '<td style="padding:5px 8px;">' +
         '<input type="number" min="0" step="0.0001" value="' + (parseFloat(it.precio)||0).toFixed(4) + '" onchange="ocImpActualizarItem(' + i + ', \'precio\', this.value)" style="width:100%;padding:5px 8px;border:1.5px solid #cbd5e1;border-radius:5px;text-align:right;font-weight:800;outline:none;font-size:0.72rem;color:#7f1d1d;">' +
         sufijoConv +
@@ -9381,6 +9423,7 @@ function _ocImpRenderRevisor() {
             '<th style="padding:9px 10px;text-align:left;width:140px;">Ref Farmers</th>' +
             '<th style="padding:9px 10px;text-align:left;">Descripción</th>' +
             '<th style="padding:9px 10px;text-align:right;width:130px;">Cantidad</th>' +
+            '<th style="padding:9px 10px;text-align:right;width:120px;">Ordenada</th>' +
             '<th style="padding:9px 10px;text-align:right;width:130px;">FOB USD</th>' +
             '<th style="padding:9px 10px;text-align:right;width:110px;">Subtotal</th>' +
             '<th style="padding:9px 8px;text-align:center;width:44px;"></th>' +
@@ -9397,20 +9440,26 @@ function _ocImpRenderRevisor() {
           '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;">' +
             '<div style="flex:1;min-width:280px;">' +
               '<div style="font-size:0.7rem;font-weight:900;color:#1e40af;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;">📊 Análisis de Existencia Ordenada actual</div>' +
-              '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:8px;">' +
-                '<div style="background:#dcfce7;border-radius:6px;padding:6px 8px;text-align:center;">' +
+              '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:8px;">' +
+                '<div onclick="ocImpFiltrarEstado(\'todos\')" style="background:#e0e7ff;border-radius:6px;padding:6px 8px;text-align:center;cursor:pointer;transition:transform 0.15s;" onmouseover="this.style.transform=\'translateY(-2px)\'" onmouseout="this.style.transform=\'none\'">' +
+                  '<div style="font-size:0.56rem;color:#4338ca;font-weight:700;text-transform:uppercase;">Total</div>' +
+                  '<div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;font-size:1.1rem;color:#4338ca;line-height:1;">' + totalMapeadas + '</div>' +
+                '</div>' +
+                '<div onclick="ocImpFiltrarEstado(\'coincide\')" style="background:#dcfce7;border-radius:6px;padding:6px 8px;text-align:center;cursor:pointer;transition:transform 0.15s;" onmouseover="this.style.transform=\'translateY(-2px)\'" onmouseout="this.style.transform=\'none\'" title="Click para ver solo las coincidentes">' +
                   '<div style="font-size:0.56rem;color:#166534;font-weight:700;text-transform:uppercase;">Ya coinciden</div>' +
                   '<div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;font-size:1.1rem;color:#166534;line-height:1;">' + statsOrd.coinciden + '</div>' +
                 '</div>' +
-                '<div style="background:#fef3c7;border-radius:6px;padding:6px 8px;text-align:center;">' +
-                  '<div style="font-size:0.56rem;color:#78350f;font-weight:700;text-transform:uppercase;">Distintas</div>' +
+                '<div onclick="ocImpFiltrarEstado(\'distinta\')" style="background:#fef3c7;border-radius:6px;padding:6px 8px;text-align:center;cursor:pointer;transition:transform 0.15s;' + (statsOrd.distintas > 0 ? 'border:2px solid #f59e0b;' : '') + '" onmouseover="this.style.transform=\'translateY(-2px)\'" onmouseout="this.style.transform=\'none\'" title="Click para ver SOLO las distintas (filtrar tabla)">' +
+                  '<div style="font-size:0.56rem;color:#78350f;font-weight:700;text-transform:uppercase;">⚠ Distintas' + (statsOrd.distintas > 0 ? ' 👁' : '') + '</div>' +
                   '<div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;font-size:1.1rem;color:#78350f;line-height:1;">' + statsOrd.distintas + '</div>' +
                 '</div>' +
-                '<div style="background:#f1f5f9;border-radius:6px;padding:6px 8px;text-align:center;">' +
+                '<div onclick="ocImpFiltrarEstado(\'sin_ordenada\')" style="background:#f1f5f9;border-radius:6px;padding:6px 8px;text-align:center;cursor:pointer;transition:transform 0.15s;" onmouseover="this.style.transform=\'translateY(-2px)\'" onmouseout="this.style.transform=\'none\'">' +
                   '<div style="font-size:0.56rem;color:#64748b;font-weight:700;text-transform:uppercase;">Sin ordenada</div>' +
                   '<div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;font-size:1.1rem;color:#64748b;line-height:1;">' + statsOrd.sin_ordenada + '</div>' +
                 '</div>' +
               '</div>' +
+              // Aviso de filtro activo
+              '<div id="oc-imp-filtro-activo" style="display:none;background:#fbbf24;color:#78350f;padding:5px 10px;border-radius:5px;font-size:0.7rem;font-weight:700;margin-bottom:6px;text-align:center;"></div>' +
               '<div style="font-size:0.68rem;color:#1e40af;background:#eff6ff;padding:5px 9px;border-radius:5px;font-weight:600;">' +
                 '💡 <strong>Recomendación del sistema:</strong> ' + razonSugerida +
               '</div>' +
@@ -9531,6 +9580,38 @@ window.ocImpActualizarItem = function(idx, campo, valor) {
 window.ocImpEliminarItem = function(idx) {
   _ocImportItems.splice(idx, 1);
   _ocImpRenderRevisor();
+};
+
+// Filtrar tabla del revisor por estado de ordenada
+window.ocImpFiltrarEstado = function(estado) {
+  var filas = document.querySelectorAll('.oc-imp-row');
+  var aviso = document.getElementById('oc-imp-filtro-activo');
+  var labels = {
+    'todos':        'todos los ítems',
+    'coincide':     'solo las coincidencias',
+    'distinta':     'solo las DISTINTAS (discrepancias)',
+    'sin_ordenada': 'solo los que no tienen ordenada cargada',
+    'no_mapeada':   'solo los sin mapear'
+  };
+  var mostradas = 0;
+  filas.forEach(function(f){
+    if (estado === 'todos') {
+      f.style.display = '';
+      mostradas++;
+    } else {
+      var matches = f.dataset.estadoOrd === estado;
+      f.style.display = matches ? '' : 'none';
+      if (matches) mostradas++;
+    }
+  });
+  if (estado === 'todos') {
+    if (aviso) aviso.style.display = 'none';
+  } else {
+    if (aviso) {
+      aviso.style.display = 'block';
+      aviso.innerHTML = '🔍 Filtro activo: mostrando ' + labels[estado] + ' (' + mostradas + ' ítem' + (mostradas!==1?'s':'') + ') · <span onclick="ocImpFiltrarEstado(\'todos\')" style="cursor:pointer;text-decoration:underline;">Ver todo</span>';
+    }
+  }
 };
 
 // Helper visual: al clickear una tarjeta de modo, actualizar estilos
