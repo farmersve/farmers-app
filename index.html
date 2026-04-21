@@ -8270,18 +8270,35 @@ function ocRenderFicha(oc) {
   if (!panel) return;
   var est = OC_ESTADOS[oc.estado] || OC_ESTADOS.BORRADOR;
 
+  // Calcular acumulado de recepciones por ref
+  var _recRecibido = ocCalcularRecibidoTotal(oc);
+  var _hayRecepciones = oc.recepciones && oc.recepciones.length > 0;
+
   var itemsHTML = (oc.items||[]).map(function(it, i){
-    return '<tr style="border-bottom:1px solid #f1f5f9;">' +
+    var pedido = parseInt(it.cantidad) || 0;
+    var recib = _recRecibido[it.refFarmers] || 0;
+    var pend = Math.max(0, pedido - recib);
+    var completo = recib >= pedido && recib > 0;
+    var rowBg = _hayRecepciones ? (completo ? '#f0fdf4' : (recib > 0 ? '#fefce8' : 'transparent')) : 'transparent';
+    return '<tr style="border-bottom:1px solid #f1f5f9;background:' + rowBg + ';">' +
       '<td style="padding:8px 10px;text-align:center;font-size:0.7rem;color:#94a3b8;">' + (i+1) + '</td>' +
       '<td style="padding:8px 10px;font-family:monospace;font-weight:800;color:#1a2050;font-size:0.78rem;">' + it.refFarmers + '</td>' +
       '<td style="padding:8px 10px;font-family:monospace;color:#64748b;font-size:0.7rem;">' + (it.refProveedor||'—') + '</td>' +
       '<td style="padding:8px 10px;font-size:0.74rem;color:#334155;">' + (it.descripcion||'—') + '</td>' +
-      '<td style="padding:8px 10px;text-align:right;font-weight:700;font-size:0.78rem;">' + (parseInt(it.cantidad)||0).toLocaleString() + '</td>' +
+      '<td style="padding:8px 10px;text-align:right;font-weight:700;font-size:0.78rem;">' + pedido.toLocaleString() + '</td>' +
+      (_hayRecepciones ? '<td style="padding:8px 10px;text-align:right;font-weight:800;font-size:0.76rem;color:' + (recib > 0 ? '#166534' : '#94a3b8') + ';">' + (recib > 0 ? recib.toLocaleString() : '—') + '</td>' : '') +
+      (_hayRecepciones ? '<td style="padding:8px 10px;text-align:right;font-weight:800;font-size:0.76rem;color:' + (pend > 0 ? '#b91c1c' : '#166534') + ';">' + (completo ? '✓' : (pend > 0 ? pend.toLocaleString() : '0')) + '</td>' : '') +
       '<td style="padding:8px 10px;text-align:right;font-size:0.7rem;color:#64748b;">' + (it.bultosEstimados||0) + '</td>' +
       '<td style="padding:8px 10px;text-align:right;font-weight:900;color:#7f1d1d;font-size:0.78rem;">$' + (parseFloat(it.precioFOB)||0).toFixed(4) + '</td>' +
       '<td style="padding:8px 10px;text-align:right;font-weight:900;color:#166534;font-size:0.82rem;">$' + (parseFloat(it.subtotal)||0).toLocaleString('en-US',{maximumFractionDigits:2,minimumFractionDigits:2}) + '</td>' +
     '</tr>';
   }).join('');
+
+  // Construir header de tabla dinámicamente según haya recepciones o no
+  var _thExtra = _hayRecepciones
+    ? '<th style="padding:9px 10px;text-align:right;">Recibido</th>' +
+      '<th style="padding:9px 10px;text-align:right;">Pendiente</th>'
+    : '';
 
   panel.innerHTML =
     '<div style="padding:24px 30px;">' +
@@ -8297,6 +8314,9 @@ function ocRenderFicha(oc) {
         '</div>' +
         '<div style="display:flex;gap:8px;flex-wrap:wrap;">' +
           (oc.estado === 'BORRADOR' ? '<button onclick="ocEditar(\'' + oc.id + '\')" style="background:#fbbf24;color:#78350f;border:1.5px solid #f59e0b;border-radius:7px;padding:7px 14px;font-weight:800;cursor:pointer;font-size:0.75rem;">✏️ Editar</button>' : '') +
+          (oc.estado !== 'CANCELADA' && oc.estado !== 'BORRADOR'
+            ? '<button onclick="ocRecepcionarClick(\'' + oc.id + '\')" style="background:#dcfce7;color:#166534;border:1.5px solid #86efac;border-radius:7px;padding:7px 14px;font-weight:800;cursor:pointer;font-size:0.75rem;">📦 Registrar Recepción</button>'
+            : '') +
           '<button onclick="ocCambiarEstado(\'' + oc.id + '\')" style="background:#dbeafe;color:#1e40af;border:1.5px solid #93c5fd;border-radius:7px;padding:7px 14px;font-weight:800;cursor:pointer;font-size:0.75rem;">🔄 Estado</button>' +
           '<button onclick="ocEliminar(\'' + oc.id + '\')" style="background:#fee2e2;color:#991b1b;border:1.5px solid #fecaca;border-radius:7px;padding:7px 14px;font-weight:800;cursor:pointer;font-size:0.75rem;">🗑</button>' +
         '</div>' +
@@ -8319,11 +8339,12 @@ function ocRenderFicha(oc) {
             '<th style="padding:9px 10px;text-align:left;">Ref Prov</th>' +
             '<th style="padding:9px 10px;text-align:left;">Descripción</th>' +
             '<th style="padding:9px 10px;text-align:right;">Cantidad</th>' +
+            _thExtra +
             '<th style="padding:9px 10px;text-align:right;">Bultos</th>' +
             '<th style="padding:9px 10px;text-align:right;">FOB USD</th>' +
             '<th style="padding:9px 10px;text-align:right;">Subtotal</th>' +
           '</tr></thead>' +
-          '<tbody>' + (itemsHTML || '<tr><td colspan="8" style="padding:20px;text-align:center;color:#94a3b8;font-style:italic;">Sin items cargados</td></tr>') + '</tbody>' +
+          '<tbody>' + (itemsHTML || '<tr><td colspan="' + (_hayRecepciones ? '10' : '8') + '" style="padding:20px;text-align:center;color:#94a3b8;font-style:italic;">Sin items cargados</td></tr>') + '</tbody>' +
         '</table>' +
       '</div>' +
 
@@ -8359,7 +8380,87 @@ function ocRenderFicha(oc) {
           '</div>'
         : '') +
 
+      // ─── SECCIÓN HISTORIAL DE RECEPCIONES ───
+      (_hayRecepciones ? _ocRenderRecepcionesSeccion(oc) : '') +
+
     '</div>';
+}
+
+// Render de la sección de historial de recepciones
+function _ocRenderRecepcionesSeccion(oc) {
+  var totalesRec = ocCalcularRecibidoTotal(oc);
+  var pedidoTotal = (oc.items||[]).reduce(function(t,it){ return t + (parseInt(it.cantidad)||0); }, 0);
+  var recibidoTotal = Object.values(totalesRec).reduce(function(t,v){ return t + v; }, 0);
+  var pendienteTotal = Math.max(0, pedidoTotal - recibidoTotal);
+  var pctCompletado = pedidoTotal > 0 ? Math.round((recibidoTotal / pedidoTotal) * 100) : 0;
+
+  var recepcionesHTML = oc.recepciones.slice().sort(function(a,b){
+    return (b.fecha||'').localeCompare(a.fecha||'');
+  }).map(function(rec){
+    var totalRec = (rec.items||[]).reduce(function(t,it){ return t + (parseInt(it.cantidadRecibida)||0); }, 0);
+    var refsList = (rec.items||[]).map(function(it){ return it.refFarmers + ' (' + (parseInt(it.cantidadRecibida)||0).toLocaleString() + ')'; }).join(', ');
+    return '<div style="background:white;border:1.5px solid #86efac;border-radius:10px;padding:12px 14px;margin-bottom:8px;">' +
+      '<div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px;">' +
+        '<div style="flex:1;min-width:200px;">' +
+          '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">' +
+            '<div style="font-family:monospace;font-weight:900;color:#166534;font-size:0.85rem;">' + rec.numero + '</div>' +
+            '<div style="font-size:0.68rem;color:#64748b;">' + _fmtFecha(rec.fecha) + '</div>' +
+            (rec.numeroContainer ? '<div style="font-size:0.64rem;background:#e0f2fe;color:#075985;padding:2px 7px;border-radius:4px;font-weight:700;">🚢 ' + rec.numeroContainer + '</div>' : '') +
+            (rec.numeroBL ? '<div style="font-size:0.64rem;background:#f3e8ff;color:#6b21a8;padding:2px 7px;border-radius:4px;font-weight:700;">📋 BL ' + rec.numeroBL + '</div>' : '') +
+          '</div>' +
+          '<div style="font-size:0.72rem;color:#334155;margin-top:4px;line-height:1.4;">' +
+            '<strong>' + (rec.items||[]).length + ' refs</strong> · ' + totalRec.toLocaleString() + ' unidades' +
+          '</div>' +
+          (rec.notas ? '<div style="font-size:0.68rem;color:#64748b;margin-top:3px;font-style:italic;">📝 ' + rec.notas + '</div>' : '') +
+        '</div>' +
+        '<button onclick="ocRecepEliminar(\'' + oc.id + '\', \'' + rec.id + '\')" style="background:#fee2e2;color:#991b1b;border:1px solid #fecaca;border-radius:5px;padding:4px 10px;cursor:pointer;font-weight:800;font-size:0.66rem;" title="Eliminar recepción (revierte inventario)">🗑 Deshacer</button>' +
+      '</div>' +
+      '<details style="margin-top:8px;">' +
+        '<summary style="font-size:0.66rem;color:#475569;cursor:pointer;font-weight:700;">Ver detalle por ref</summary>' +
+        '<div style="font-size:0.66rem;color:#475569;margin-top:6px;line-height:1.5;padding:8px 10px;background:#f8fafc;border-radius:6px;font-family:monospace;">' + refsList + '</div>' +
+      '</details>' +
+    '</div>';
+  }).join('');
+
+  var estadoRec = pendienteTotal === 0
+    ? { bg: '#dcfce7', color: '#166534', label: '✓ Recepción completa', pct: 100 }
+    : (recibidoTotal > 0
+        ? { bg: '#fef3c7', color: '#78350f', label: '⚠ Recepción parcial', pct: pctCompletado }
+        : { bg: '#fee2e2', color: '#991b1b', label: 'Sin recepciones', pct: 0 });
+
+  return '<div style="margin-top:18px;">' +
+    '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">' +
+      '<div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;font-size:1.05rem;color:#166534;letter-spacing:0.8px;">📦 HISTORIAL DE RECEPCIONES</div>' +
+      '<div style="font-size:0.68rem;color:#64748b;font-weight:700;">' + oc.recepciones.length + ' recepción' + (oc.recepciones.length !== 1 ? 'es' : '') + '</div>' +
+    '</div>' +
+
+    // Barra de progreso
+    '<div style="background:white;border:1px solid #e2e8f0;border-radius:10px;padding:12px 14px;margin-bottom:10px;">' +
+      '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;font-size:0.72rem;">' +
+        '<span style="color:#64748b;font-weight:700;">' + pctCompletado + '% completado</span>' +
+        '<span style="background:' + estadoRec.bg + ';color:' + estadoRec.color + ';padding:3px 9px;border-radius:4px;font-weight:800;font-size:0.66rem;">' + estadoRec.label + '</span>' +
+      '</div>' +
+      '<div style="background:#e2e8f0;border-radius:6px;height:10px;overflow:hidden;">' +
+        '<div style="background:linear-gradient(90deg,#166534,#15803d);height:100%;width:' + pctCompletado + '%;transition:width 0.3s;"></div>' +
+      '</div>' +
+      '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:10px;">' +
+        '<div style="text-align:center;padding:6px;background:#f8fafc;border-radius:6px;">' +
+          '<div style="font-size:0.56rem;color:#64748b;text-transform:uppercase;font-weight:700;">Pedido</div>' +
+          '<div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;font-size:1.1rem;color:#1a2050;">' + pedidoTotal.toLocaleString() + '</div>' +
+        '</div>' +
+        '<div style="text-align:center;padding:6px;background:#f0fdf4;border-radius:6px;">' +
+          '<div style="font-size:0.56rem;color:#166534;text-transform:uppercase;font-weight:700;">Recibido</div>' +
+          '<div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;font-size:1.1rem;color:#166534;">' + recibidoTotal.toLocaleString() + '</div>' +
+        '</div>' +
+        '<div style="text-align:center;padding:6px;background:' + (pendienteTotal > 0 ? '#fee2e2' : '#f8fafc') + ';border-radius:6px;">' +
+          '<div style="font-size:0.56rem;color:' + (pendienteTotal > 0 ? '#991b1b' : '#64748b') + ';text-transform:uppercase;font-weight:700;">Pendiente</div>' +
+          '<div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;font-size:1.1rem;color:' + (pendienteTotal > 0 ? '#991b1b' : '#64748b') + ';">' + pendienteTotal.toLocaleString() + '</div>' +
+        '</div>' +
+      '</div>' +
+    '</div>' +
+
+    recepcionesHTML +
+  '</div>';
 }
 
 function _ocInfoMini(label, value) {
@@ -8828,6 +8929,602 @@ window.ocWizardConfirmar = function() {
   }
 };
 
+// ═══════════════════════════════════════════════════════════════
+// IMPORTAR FACTURA COMO OC — reutiliza parser IA + auto-mapeo + conversión
+// ═══════════════════════════════════════════════════════════════
+// Estado transitorio durante la importación
+var _ocImportProvId = null;
+var _ocImportItems = [];
+var _ocImportDatosFactura = {};  // {numeroFactura, fechaFactura, traspaso, impuesto}
+
+window.ocImportarFacturaClick = function() {
+  var proveedores = getProveedoresDB().filter(function(p){ return p.estado !== 'Inactivo'; });
+  if (!proveedores.length) {
+    alert('Primero debes registrar al menos un proveedor.');
+    return;
+  }
+  var opts = proveedores.map(function(p){
+    return '<option value="' + p.id + '">' + p.nombreComercial + ' (' + p.pais + ')</option>';
+  }).join('');
+
+  var html = '<div id="oc-imp-ov" style="position:fixed;inset:0;z-index:99800;background:rgba(0,0,0,0.8);display:flex;align-items:center;justify-content:center;padding:20px;">' +
+    '<div style="background:white;border-radius:14px;width:100%;max-width:720px;max-height:92vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,0.4);">' +
+
+      '<div style="padding:18px 24px;border-bottom:2px solid #fca5a5;background:linear-gradient(135deg,#7f1d1d,#991b1b);color:white;display:flex;justify-content:space-between;align-items:center;">' +
+        '<div>' +
+          '<div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;font-size:1.2rem;letter-spacing:1px;">📥 Importar Factura como OC</div>' +
+          '<div style="font-size:0.72rem;opacity:0.9;margin-top:3px;">Sube el PDF o Excel del proveedor · La IA extraerá las líneas</div>' +
+        '</div>' +
+        '<button onclick="document.getElementById(\'oc-imp-ov\').remove();" style="background:rgba(255,255,255,0.15);border:1.5px solid rgba(255,255,255,0.3);border-radius:6px;padding:5px 10px;cursor:pointer;font-weight:800;color:white;">✕</button>' +
+      '</div>' +
+
+      '<div style="padding:22px 26px;flex:1;overflow-y:auto;">' +
+
+        '<label style="display:flex;flex-direction:column;gap:4px;margin-bottom:16px;">' +
+          '<span style="font-size:0.65rem;font-weight:900;color:#7f1d1d;text-transform:uppercase;letter-spacing:0.6px;">Proveedor *</span>' +
+          '<select id="oc-imp-prov" style="padding:10px 12px;border:1.5px solid #cbd5e1;border-radius:7px;font-size:0.85rem;outline:none;font-weight:700;">' +
+            '<option value="">— Selecciona un proveedor —</option>' +
+            opts +
+          '</select>' +
+        '</label>' +
+
+        '<div style="display:flex;gap:6px;margin-bottom:14px;" id="oc-imp-tabs">' +
+          '<button class="oc-imp-tab active" data-tab="pdf" onclick="ocImpSwitchTab(\'pdf\')" style="flex:1;padding:10px;border:2px solid #991b1b;background:#fee2e2;color:#991b1b;border-radius:8px;cursor:pointer;font-weight:800;">📄 PDF</button>' +
+          '<button class="oc-imp-tab" data-tab="excel" onclick="ocImpSwitchTab(\'excel\')" style="flex:1;padding:10px;border:2px solid #cbd5e1;background:white;color:#475569;border-radius:8px;cursor:pointer;font-weight:700;">📊 Excel/CSV</button>' +
+          '<button class="oc-imp-tab" data-tab="imagen" onclick="ocImpSwitchTab(\'imagen\')" style="flex:1;padding:10px;border:2px solid #cbd5e1;background:white;color:#475569;border-radius:8px;cursor:pointer;font-weight:700;">🖼 Imagen</button>' +
+        '</div>' +
+
+        '<div id="oc-imp-tab-content">' +
+          // Default PDF
+          '<div style="padding:18px;border:2px dashed #cbd5e1;border-radius:10px;text-align:center;">' +
+            '<input type="file" id="oc-imp-file" accept=".pdf" style="display:none;" onchange="ocImpProcesarArchivo(event, \'pdf\')">' +
+            '<button onclick="document.getElementById(\'oc-imp-file\').click()" style="background:linear-gradient(135deg,#991b1b,#7f1d1d);color:white;border:none;border-radius:8px;padding:10px 22px;cursor:pointer;font-weight:900;font-size:0.85rem;">Seleccionar archivo PDF</button>' +
+            '<div style="font-size:0.72rem;color:#64748b;margin-top:8px;line-height:1.45;">El sistema usará IA para leer el archivo y extraer: ref proveedor, descripción, cantidad, bultos, unidad y precio unitario.</div>' +
+          '</div>' +
+        '</div>' +
+
+        '<div id="oc-imp-status" style="margin-top:14px;"></div>' +
+
+      '</div>' +
+
+    '</div>' +
+  '</div>';
+
+  var prev = document.getElementById('oc-imp-ov');
+  if (prev) prev.remove();
+  document.body.insertAdjacentHTML('beforeend', html);
+};
+
+// Switch entre tabs (pdf/excel/imagen)
+window.ocImpSwitchTab = function(tab) {
+  document.querySelectorAll('.oc-imp-tab').forEach(function(b){
+    var active = b.dataset.tab === tab;
+    b.style.border = '2px solid ' + (active ? '#991b1b' : '#cbd5e1');
+    b.style.background = active ? '#fee2e2' : 'white';
+    b.style.color = active ? '#991b1b' : '#475569';
+    b.style.fontWeight = active ? '800' : '700';
+    if (active) b.classList.add('active'); else b.classList.remove('active');
+  });
+  var accept = tab === 'pdf' ? '.pdf' : (tab === 'excel' ? '.xlsx,.xls,.csv' : '.png,.jpg,.jpeg,.webp');
+  var label = tab === 'pdf' ? 'PDF' : (tab === 'excel' ? 'Excel/CSV' : 'imagen');
+  document.getElementById('oc-imp-tab-content').innerHTML =
+    '<div style="padding:18px;border:2px dashed #cbd5e1;border-radius:10px;text-align:center;">' +
+      '<input type="file" id="oc-imp-file" accept="' + accept + '" style="display:none;" onchange="ocImpProcesarArchivo(event, \'' + tab + '\')">' +
+      '<button onclick="document.getElementById(\'oc-imp-file\').click()" style="background:linear-gradient(135deg,#991b1b,#7f1d1d);color:white;border:none;border-radius:8px;padding:10px 22px;cursor:pointer;font-weight:900;font-size:0.85rem;">Seleccionar archivo ' + label + '</button>' +
+      '<div style="font-size:0.72rem;color:#64748b;margin-top:8px;line-height:1.45;">' +
+        (tab === 'excel'
+          ? 'El Excel debe tener columnas REF, DESCRIPCIÓN, CANTIDAD, UNIDAD, PRECIO. Se detectan automáticamente.'
+          : 'El sistema usará IA para leer el archivo y extraer: ref proveedor, descripción, cantidad, bultos, unidad y precio unitario.') +
+      '</div>' +
+    '</div>';
+};
+
+// Procesar archivo subido (PDF/Excel/Imagen)
+window.ocImpProcesarArchivo = function(event, tipo) {
+  var provId = document.getElementById('oc-imp-prov').value;
+  if (!provId) { alert('Selecciona primero un proveedor'); return; }
+  _ocImportProvId = provId;
+
+  var file = event.target.files[0];
+  if (!file) return;
+
+  var statusEl = document.getElementById('oc-imp-status');
+  statusEl.innerHTML = '<div style="padding:12px 16px;background:#fef3c7;border:1.5px solid #fbbf24;border-radius:8px;color:#78350f;font-size:0.82rem;font-weight:700;">⏳ Procesando archivo… esto puede tomar 20–60 segundos.</div>';
+
+  if (tipo === 'excel') {
+    _ocImpProcesarExcel(file);
+  } else {
+    _ocImpProcesarConIA(file, tipo);
+  }
+};
+
+// Parser Excel (idéntico al de lista FOB, reutilizado)
+function _ocImpProcesarExcel(file) {
+  var statusEl = document.getElementById('oc-imp-status');
+  var reader = new FileReader();
+  reader.onload = function(e) {
+    try {
+      var wb = XLSX.read(e.target.result, {type:'array'});
+      var sheet = wb.Sheets[wb.SheetNames[0]];
+      var rows = XLSX.utils.sheet_to_json(sheet, {header:1, defval:''});
+      var parsed = _ocImpDetectarColumnasExcel(rows);
+      if (!parsed.length) {
+        statusEl.innerHTML = '<div style="padding:12px 16px;background:#fee2e2;border:1.5px solid #fecaca;border-radius:8px;color:#991b1b;font-size:0.82rem;">❌ No se detectaron columnas REF/PRECIO/CANTIDAD. Verifica los encabezados.</div>';
+        return;
+      }
+      _ocImpAbrirRevisor(parsed);
+    } catch(err) {
+      statusEl.innerHTML = '<div style="padding:12px 16px;background:#fee2e2;border:1.5px solid #fecaca;border-radius:8px;color:#991b1b;font-size:0.82rem;">❌ Error: ' + err.message + '</div>';
+    }
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+function _ocImpDetectarColumnasExcel(rows) {
+  if (!rows.length) return [];
+  // Buscar fila de encabezado (primera con >= 3 strings)
+  var idxHeader = -1;
+  for (var i = 0; i < Math.min(rows.length, 10); i++) {
+    var cntStr = rows[i].filter(function(v){ return typeof v === 'string' && v.trim().length > 1; }).length;
+    if (cntStr >= 3) { idxHeader = i; break; }
+  }
+  if (idxHeader < 0) idxHeader = 0;
+  var headers = rows[idxHeader].map(function(h){ return String(h||'').toLowerCase().trim(); });
+
+  var idxRef = -1, idxDesc = -1, idxCant = -1, idxPrecio = -1, idxUnid = -1, idxBultos = -1;
+  headers.forEach(function(h, i){
+    if (idxRef < 0 && /ref|código|codigo|code|item|producto|product/i.test(h)) idxRef = i;
+    if (idxDesc < 0 && /desc|description|nombre|name|art/i.test(h)) idxDesc = i;
+    if (idxCant < 0 && /cant|qty|quantity|unidades/i.test(h)) idxCant = i;
+    if (idxUnid < 0 && /unid|u\.m|um\b|unit$/i.test(h) && !/unidades/i.test(h)) idxUnid = i;
+    if (idxBultos < 0 && /bult|box|caja/i.test(h)) idxBultos = i;
+    if (idxPrecio < 0 && /precio venta|unit price|sale price|precio$|price$|fob|unit/i.test(h)) idxPrecio = i;
+  });
+  // Fallback: última columna numérica < 1000 para precio
+  if (idxPrecio < 0) {
+    for (var j = headers.length - 1; j >= 0; j--) {
+      var sample = rows[idxHeader + 1] && rows[idxHeader + 1][j];
+      if (typeof sample === 'number' && sample < 1000) { idxPrecio = j; break; }
+    }
+  }
+  if (idxRef < 0 || idxPrecio < 0) return [];
+
+  var items = [];
+  for (var i2 = idxHeader + 1; i2 < rows.length; i2++) {
+    var r = rows[i2];
+    var refV = String(r[idxRef]||'').trim();
+    var priceRaw = r[idxPrecio];
+    var price = parseFloat(String(priceRaw||'').replace(/[,\s$]/g,'').replace(/[^0-9.\-]/g,''));
+    if (!refV || !price || price <= 0) continue;
+    items.push({
+      refProveedor: refV,
+      refFarmers: refV.toUpperCase(),
+      descripcion: idxDesc >= 0 ? String(r[idxDesc]||'').trim() : '',
+      cantidad: idxCant >= 0 ? parseFloat(r[idxCant]) || 0 : 0,
+      bultos: idxBultos >= 0 ? parseFloat(r[idxBultos]) || 0 : 0,
+      unidad: idxUnid >= 0 ? String(r[idxUnid]||'').trim().toUpperCase() : '',
+      precio: price
+    });
+  }
+  return items;
+}
+
+// Parser IA (PDF/Imagen)
+async function _ocImpProcesarConIA(file, tipo) {
+  var statusEl = document.getElementById('oc-imp-status');
+  try {
+    var reader = new FileReader();
+    reader.onload = async function(e) {
+      try {
+        var base64 = e.target.result.split(',')[1];
+        var contentBlock;
+        if (tipo === 'pdf') {
+          contentBlock = { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: base64 } };
+        } else {
+          contentBlock = { type: 'image', source: { type: 'base64', media_type: file.type || 'image/jpeg', data: base64 } };
+        }
+
+        var prompt = 'Este archivo es una factura o lista de un proveedor para Farmers C.A. ' +
+          'Extrae TODAS las líneas de producto con código, cantidad, bultos, unidad, precio unitario y descripción. ' +
+          'Devuelve SOLO un array JSON sin texto adicional.\n\n' +
+          'Formato: [{"refProveedor":"CODIGO","descripcion":"...","cantidad":4800,"bultos":50,"unidad":"PZA","precio":0.46}]\n\n' +
+          'Reglas:\n' +
+          '- "refProveedor": código del proveedor (ej: "A151-KT2580", "BBQ-7", "7453010079949")\n' +
+          '- "cantidad": cantidad total de la línea\n' +
+          '- "bultos": número de cajas/bultos\n' +
+          '- "unidad": unidad de medida (PZA, DOC, PAR, SETS, BOX, etc.)\n' +
+          '- "precio": precio UNITARIO (no subtotal)\n' +
+          '- Ignora subtotales, totales, impuestos, traspasos, encabezados\n' +
+          '- Devuelve TODAS las líneas (pueden ser 80+)';
+
+        var payload = {
+          model: 'claude-sonnet-4-20250514',
+          max_tokens: 16000,
+          messages: [{ role: 'user', content: [contentBlock, { type: 'text', text: prompt }] }]
+        };
+        if (tipo === 'pdf') payload.betas = ['pdfs-2024-09-25'];
+
+        var resp = await fetch('https://farmers-proxy.farmersve.workers.dev/', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        var data = await resp.json();
+        if (!resp.ok) throw new Error((data.error && data.error.message) || 'Error del servicio IA');
+
+        var txt = (data.content && data.content[0] && data.content[0].text) || '';
+        var jsonStr = txt.match(/\[[\s\S]*\]/);
+        if (!jsonStr) throw new Error('No se encontró JSON en la respuesta');
+        var items = JSON.parse(jsonStr[0]);
+
+        items = items.map(function(it){
+          var r = {
+            refProveedor: String(it.refProveedor||it.ref||'').trim(),
+            refFarmers: String(it.refFarmers||it.ref||it.refProveedor||'').trim().toUpperCase(),
+            descripcion: String(it.descripcion||it.desc||'').trim(),
+            precio: parseFloat(it.precio||it.price||0),
+            cantidad: parseFloat(it.cantidad||it.qty||0) || 0,
+            bultos: parseFloat(it.bultos||it.boxes||0) || 0
+          };
+          var u = String(it.unidad||it.unit||'').trim().toUpperCase();
+          if (u) r.unidad = u;
+          return r;
+        }).filter(function(it){ return it.refProveedor && it.precio > 0; });
+
+        if (!items.length) throw new Error('La IA no detectó líneas válidas');
+
+        _ocImpAbrirRevisor(items);
+      } catch(err) {
+        statusEl.innerHTML = '<div style="padding:12px 16px;background:#fee2e2;border:1.5px solid #fecaca;border-radius:8px;color:#991b1b;font-size:0.82rem;">❌ ' + err.message + '</div>';
+      }
+    };
+    reader.readAsDataURL(file);
+  } catch(err) {
+    statusEl.innerHTML = '<div style="padding:12px 16px;background:#fee2e2;border:1.5px solid #fecaca;border-radius:8px;color:#991b1b;font-size:0.82rem;">❌ ' + err.message + '</div>';
+  }
+}
+
+// Abrir revisor de items (auto-mapeo + conversión + edición manual)
+function _ocImpAbrirRevisor(items) {
+  var p = _provDB.find(function(x){ return x.id === _ocImportProvId; });
+  if (!p) { alert('Proveedor no encontrado'); return; }
+
+  // ───── Auto-mapeo 3 índices (reutilizamos la lógica del módulo FOB) ─────
+  var ixRef = {}, ixBarra = {}, ixCodigo = {};
+  if (typeof PRODUCTS !== 'undefined') {
+    PRODUCTS.forEach(function(pr){
+      if (pr.r) ixRef[String(pr.r).trim().toUpperCase()] = pr;
+      if (pr.b) ixBarra[String(pr.b).trim()] = pr;
+      if (pr.c) ixCodigo[String(pr.c).trim().toUpperCase()] = pr;
+    });
+  }
+  function _res(c) {
+    if (!c) return null;
+    var k = String(c).trim(); var kU = k.toUpperCase();
+    if (ixRef[kU])    return { ref: ixRef[kU].r, fuente: 'ref' };
+    if (ixBarra[k])   return { ref: ixBarra[k].r, fuente: 'barra' };
+    if (ixCodigo[kU]) return { ref: ixCodigo[kU].r, fuente: 'codigo' };
+    return null;
+  }
+
+  items.forEach(function(it){
+    // Mapeo previo primero
+    if (p.mapeoRefs && p.mapeoRefs[it.refProveedor]) {
+      it._refFarmersFinal = p.mapeoRefs[it.refProveedor];
+      it._fuenteMapeo = 'previo';
+    } else {
+      var m = _res(it.refProveedor) || _res(it.refFarmers);
+      if (m) {
+        it._refFarmersFinal = m.ref;
+        it._fuenteMapeo = m.fuente;
+        if (it.refProveedor && p.mapeoRefs) p.mapeoRefs[it.refProveedor] = m.ref;
+      } else {
+        it._refFarmersFinal = '';
+      }
+    }
+
+    // Conversión inteligente (misma lógica que FOB)
+    var conv = _provFactorConversion(it.unidad, it._refFarmersFinal);
+    if (conv.factor > 1) {
+      it._precioOriginal = it.precio;
+      it._cantidadOriginal = it.cantidad;
+      it._unidadOriginal = conv.etiqueta;
+      it._factorPrecio = conv.factor;
+      it.precio = it.precio / conv.factor;
+      it.cantidad = it.cantidad * conv.factor;
+    }
+  });
+
+  saveProveedoresDB(_provDB);
+  _ocImportItems = items;
+
+  // Ordenar: mapeadas por ref alfabéticamente, sin mapear al final
+  _ocImportItems.sort(function(a,b){
+    var am = !!a._refFarmersFinal, bm = !!b._refFarmersFinal;
+    if (am && !bm) return -1;
+    if (!am && bm) return 1;
+    if (am) return String(a._refFarmersFinal).localeCompare(String(b._refFarmersFinal), 'es', {numeric:true});
+    return String(a.refProveedor||'').localeCompare(String(b.refProveedor||''), 'es', {numeric:true});
+  });
+
+  _ocImpRenderRevisor();
+}
+
+function _ocImpRenderRevisor() {
+  var p = _provDB.find(function(x){ return x.id === _ocImportProvId; });
+  var items = _ocImportItems;
+  var statsMap = { mapeadas: 0, sinmapear: 0, converted: 0, subtotal: 0 };
+  items.forEach(function(it){
+    if (it._refFarmersFinal) statsMap.mapeadas++; else statsMap.sinmapear++;
+    if (it._factorPrecio > 1) statsMap.converted++;
+    statsMap.subtotal += (parseFloat(it.precio)||0) * (parseFloat(it.cantidad)||0);
+  });
+
+  var filas = items.map(function(it, i){
+    var bg = it._refFarmersFinal ? 'transparent' : '#fef3c7';
+    var subtotal = (parseFloat(it.precio)||0) * (parseFloat(it.cantidad)||0);
+    var sufijoConv = it._factorPrecio > 1
+      ? '<div style="font-size:.56rem;color:#64748b;margin-top:1px;">$' + it._precioOriginal.toFixed(4) + '/' + it._unidadOriginal + ' ÷ ' + it._factorPrecio + '</div>'
+      : '';
+    var sufijoCantConv = it._factorPrecio > 1
+      ? '<div style="font-size:.56rem;color:#64748b;margin-top:1px;">' + it._cantidadOriginal + ' ' + it._unidadOriginal + ' × ' + it._factorPrecio + '</div>'
+      : '';
+    return '<tr style="border-bottom:1px solid #f1f5f9;background:' + bg + ';">' +
+      '<td style="padding:7px 10px;text-align:center;font-size:0.64rem;color:#94a3b8;">' + (i+1) + '</td>' +
+      '<td style="padding:7px 10px;font-family:monospace;font-size:0.7rem;color:#64748b;white-space:nowrap;">' + (it.refProveedor||'—') + '</td>' +
+      '<td style="padding:5px 8px;">' +
+        '<input list="oc-imp-refs-datalist" value="' + (it._refFarmersFinal||'') + '" oninput="ocImpActualizarRef(' + i + ', this.value)" ' +
+        'style="width:100%;padding:5px 8px;border:1.5px solid ' + (it._refFarmersFinal?'#86efac':'#cbd5e1') + ';border-radius:5px;font-family:monospace;font-weight:800;outline:none;font-size:0.72rem;">' +
+      '</td>' +
+      '<td style="padding:7px 10px;font-size:0.68rem;color:#334155;">' + (it.descripcion||'—') + '</td>' +
+      '<td style="padding:5px 8px;">' +
+        '<input type="number" min="0" step="1" value="' + (parseInt(it.cantidad)||0) + '" onchange="ocImpActualizarItem(' + i + ', \'cantidad\', this.value)" style="width:100%;padding:5px 8px;border:1.5px solid #cbd5e1;border-radius:5px;text-align:right;font-weight:800;outline:none;font-size:0.72rem;">' +
+        sufijoCantConv +
+      '</td>' +
+      '<td style="padding:5px 8px;">' +
+        '<input type="number" min="0" step="0.0001" value="' + (parseFloat(it.precio)||0).toFixed(4) + '" onchange="ocImpActualizarItem(' + i + ', \'precio\', this.value)" style="width:100%;padding:5px 8px;border:1.5px solid #cbd5e1;border-radius:5px;text-align:right;font-weight:800;outline:none;font-size:0.72rem;color:#7f1d1d;">' +
+        sufijoConv +
+      '</td>' +
+      '<td style="padding:7px 10px;text-align:right;font-weight:900;color:#166534;font-size:0.76rem;white-space:nowrap;">$' + subtotal.toLocaleString('en-US',{maximumFractionDigits:2,minimumFractionDigits:2}) + '</td>' +
+      '<td style="padding:5px 6px;text-align:center;">' +
+        '<button onclick="ocImpEliminarItem(' + i + ')" style="background:#fee2e2;color:#991b1b;border:none;border-radius:4px;padding:3px 7px;cursor:pointer;font-weight:800;font-size:0.66rem;">🗑</button>' +
+      '</td>' +
+    '</tr>';
+  }).join('');
+
+  var refsOpts = (typeof PRODUCTS !== 'undefined' ? PRODUCTS : [])
+    .slice().sort(function(a,b){ return (a.r||'').localeCompare(b.r||'','es',{numeric:true}); })
+    .map(function(pr){ return '<option value="'+pr.r+'">'; }).join('');
+
+  var estadosOpts = Object.keys(OC_ESTADOS).map(function(k){
+    return '<option value="' + k + '"' + (k === 'BORRADOR' ? ' selected' : '') + '>' + OC_ESTADOS[k].icon + ' ' + OC_ESTADOS[k].label + '</option>';
+  }).join('');
+
+  var numeroSugerido = ocGenerarNumero();
+
+  var html = '<div id="oc-imp-rev-ov" style="position:fixed;inset:0;z-index:99900;background:rgba(0,0,0,0.85);display:flex;align-items:center;justify-content:center;padding:16px;">' +
+    '<div style="background:white;border-radius:14px;width:100%;max-width:1400px;height:96vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,0.4);">' +
+
+      '<div style="padding:16px 24px;background:linear-gradient(135deg,#7f1d1d,#991b1b);color:white;display:flex;justify-content:space-between;align-items:center;border-bottom:2px solid #fca5a5;">' +
+        '<div>' +
+          '<div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;font-size:1.25rem;letter-spacing:1px;">📥 Revisar Factura como OC</div>' +
+          '<div style="font-size:0.75rem;opacity:0.9;margin-top:2px;">' + p.nombreComercial + ' · ' + items.length + ' líneas · ' + statsMap.mapeadas + ' auto-mapeadas' + (statsMap.converted > 0 ? ' · 🔄 ' + statsMap.converted + ' conversiones' : '') + '</div>' +
+        '</div>' +
+        '<button onclick="document.getElementById(\'oc-imp-rev-ov\').remove();_ocImportItems=[];" style="background:rgba(255,255,255,0.15);border:1.5px solid rgba(255,255,255,0.3);border-radius:6px;padding:5px 10px;cursor:pointer;font-weight:800;color:white;">✕</button>' +
+      '</div>' +
+
+      // Datos de la OC/factura
+      '<div style="padding:14px 24px;background:#f8fafc;border-bottom:1px solid #e2e8f0;display:grid;grid-template-columns:repeat(5,1fr);gap:10px;">' +
+        _ocImpInput('N° OC *', 'oc-imp-numero', 'text', numeroSugerido, 'font-family:monospace;font-weight:800;') +
+        _ocImpInput('N° Factura Prov.', 'oc-imp-num-factura', 'text', '', '') +
+        _ocImpInput('Fecha Emisión *', 'oc-imp-fecha', 'date', new Date().toISOString().slice(0,10), '') +
+        _ocImpInput('Fecha Llegada Est.', 'oc-imp-fecha-lleg', 'date', _ocImpFechaLlegadaDefault(p), '') +
+        '<label style="display:flex;flex-direction:column;gap:3px;">' +
+          '<span style="font-size:0.6rem;font-weight:900;color:#7f1d1d;text-transform:uppercase;letter-spacing:0.5px;">Estado Inicial *</span>' +
+          '<select id="oc-imp-estado" style="padding:7px 10px;border:1.5px solid #cbd5e1;border-radius:6px;font-size:0.78rem;outline:none;font-weight:700;">' + estadosOpts + '</select>' +
+        '</label>' +
+      '</div>' +
+
+      // Tabla
+      '<div style="flex:1;overflow-y:auto;padding:0 4px;">' +
+        '<datalist id="oc-imp-refs-datalist">' + refsOpts + '</datalist>' +
+        '<table style="width:100%;border-collapse:collapse;">' +
+          '<thead><tr style="background:#1a2050;color:white;font-size:0.58rem;text-transform:uppercase;letter-spacing:0.5px;position:sticky;top:0;z-index:5;">' +
+            '<th style="padding:9px 8px;text-align:center;width:34px;">#</th>' +
+            '<th style="padding:9px 10px;text-align:left;width:140px;">Ref Prov</th>' +
+            '<th style="padding:9px 10px;text-align:left;width:140px;">Ref Farmers</th>' +
+            '<th style="padding:9px 10px;text-align:left;">Descripción</th>' +
+            '<th style="padding:9px 10px;text-align:right;width:130px;">Cantidad</th>' +
+            '<th style="padding:9px 10px;text-align:right;width:130px;">FOB USD</th>' +
+            '<th style="padding:9px 10px;text-align:right;width:110px;">Subtotal</th>' +
+            '<th style="padding:9px 8px;text-align:center;width:44px;"></th>' +
+          '</tr></thead>' +
+          '<tbody id="oc-imp-tbody">' + filas + '</tbody>' +
+        '</table>' +
+      '</div>' +
+
+      // Totales + checkbox + confirmar
+      '<div style="padding:14px 24px;background:#f8fafc;border-top:1px solid #e2e8f0;">' +
+        '<div style="display:grid;grid-template-columns:2fr 1fr;gap:16px;align-items:center;">' +
+          '<div>' +
+            '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:0.78rem;color:#1e40af;">' +
+              '<input type="checkbox" id="oc-imp-sumar-ordenada" style="width:17px;height:17px;cursor:pointer;">' +
+              '<span><strong>📦 Sumar cantidades a Existencia Ordenada</strong> — Si esta factura representa mercancía que aún no ha llegado, márcalo para que se refleje en el inventario como "ordenada".</span>' +
+            '</label>' +
+          '</div>' +
+          '<div style="text-align:right;">' +
+            '<div style="font-size:0.64rem;color:#64748b;font-weight:700;text-transform:uppercase;">Subtotal FOB</div>' +
+            '<div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;font-size:1.7rem;color:#7f1d1d;line-height:1;">$' + statsMap.subtotal.toLocaleString('en-US',{maximumFractionDigits:2,minimumFractionDigits:2}) + '</div>' +
+          '</div>' +
+        '</div>' +
+      '</div>' +
+
+      '<div style="padding:14px 24px;border-top:1px solid #e2e8f0;display:flex;justify-content:space-between;align-items:center;background:white;">' +
+        '<div style="font-size:0.7rem;color:#64748b;">' +
+          (statsMap.sinmapear > 0
+            ? '<strong style="color:#b91c1c;">⚠ ' + statsMap.sinmapear + ' sin mapear</strong> (no se importarán)'
+            : '<span style="color:#166534;">✅ Todas las líneas mapeadas</span>') +
+        '</div>' +
+        '<div style="display:flex;gap:10px;">' +
+          '<button onclick="document.getElementById(\'oc-imp-rev-ov\').remove();_ocImportItems=[];" style="background:#f1f5f9;color:#475569;border:none;border-radius:7px;padding:10px 18px;cursor:pointer;font-weight:700;font-size:0.82rem;">Cancelar</button>' +
+          '<button onclick="ocImpConfirmar()" style="background:linear-gradient(135deg,#166534,#15803d);color:white;border:none;border-radius:7px;padding:10px 24px;cursor:pointer;font-weight:900;font-size:0.88rem;">✅ Crear Orden de Compra</button>' +
+        '</div>' +
+      '</div>' +
+
+    '</div>' +
+  '</div>';
+
+  // Cerrar el modal de importación anterior si sigue abierto
+  var imp = document.getElementById('oc-imp-ov'); if (imp) imp.remove();
+  var prev = document.getElementById('oc-imp-rev-ov'); if (prev) prev.remove();
+  document.body.insertAdjacentHTML('beforeend', html);
+}
+
+function _ocImpInput(label, id, type, value, extraStyle) {
+  return '<label style="display:flex;flex-direction:column;gap:3px;">' +
+    '<span style="font-size:0.6rem;font-weight:900;color:#7f1d1d;text-transform:uppercase;letter-spacing:0.5px;">' + label + '</span>' +
+    '<input type="' + type + '" id="' + id + '" value="' + value + '" style="padding:7px 10px;border:1.5px solid #cbd5e1;border-radius:6px;font-size:0.78rem;outline:none;' + (extraStyle||'') + '">' +
+  '</label>';
+}
+
+function _ocImpFechaLlegadaDefault(prov) {
+  var lead = (prov && prov.leadTime) ? parseInt(prov.leadTime) : 45;
+  var d = new Date(); d.setDate(d.getDate() + lead);
+  return d.toISOString().slice(0,10);
+}
+
+// Handlers del revisor
+window.ocImpActualizarRef = function(idx, valor) {
+  if (!_ocImportItems[idx]) return;
+  var it = _ocImportItems[idx];
+  it._refFarmersFinal = (valor||'').trim().toUpperCase();
+  // Si se cambia la ref, revertir conversión (puede cambiar según producto)
+  if (it._factorPrecio > 1 && it._precioOriginal !== undefined) {
+    it.precio = it._precioOriginal;
+    it.cantidad = it._cantidadOriginal;
+    delete it._precioOriginal;
+    delete it._cantidadOriginal;
+    delete it._unidadOriginal;
+    delete it._factorPrecio;
+    // Re-aplicar conversión con la nueva ref
+    var conv = _provFactorConversion(it.unidad, it._refFarmersFinal);
+    if (conv.factor > 1) {
+      it._precioOriginal = it.precio;
+      it._cantidadOriginal = it.cantidad;
+      it._unidadOriginal = conv.etiqueta;
+      it._factorPrecio = conv.factor;
+      it.precio = it.precio / conv.factor;
+      it.cantidad = it.cantidad * conv.factor;
+    }
+  }
+  clearTimeout(window._ocImpRerenderTO);
+  window._ocImpRerenderTO = setTimeout(function(){ _ocImpRenderRevisor(); }, 400);
+};
+
+window.ocImpActualizarItem = function(idx, campo, valor) {
+  if (!_ocImportItems[idx]) return;
+  _ocImportItems[idx][campo] = parseFloat(valor) || 0;
+  clearTimeout(window._ocImpRerenderTO);
+  window._ocImpRerenderTO = setTimeout(function(){ _ocImpRenderRevisor(); }, 400);
+};
+
+window.ocImpEliminarItem = function(idx) {
+  _ocImportItems.splice(idx, 1);
+  _ocImpRenderRevisor();
+};
+
+// Confirmar: crear la OC con todos los datos
+window.ocImpConfirmar = function() {
+  var p = _provDB.find(function(x){ return x.id === _ocImportProvId; });
+  if (!p) { alert('Proveedor no encontrado'); return; }
+
+  var numero = document.getElementById('oc-imp-numero').value.trim();
+  var numFactura = document.getElementById('oc-imp-num-factura').value.trim();
+  var fechaEmision = document.getElementById('oc-imp-fecha').value;
+  var fechaLleg = document.getElementById('oc-imp-fecha-lleg').value;
+  var estado = document.getElementById('oc-imp-estado').value;
+  var sumar = document.getElementById('oc-imp-sumar-ordenada').checked;
+
+  if (!numero) { alert('N° de OC obligatorio'); return; }
+
+  // Filtrar solo items con ref mapeada
+  var itemsValidos = _ocImportItems.filter(function(it){ return it._refFarmersFinal; });
+  if (!itemsValidos.length) { alert('No hay líneas mapeadas para importar'); return; }
+
+  // Construir items en formato OC con auto-fill de volumen/peso
+  var ocItems = itemsValidos.map(function(it){
+    var base = ocAutoFillRef(it._refFarmersFinal, parseInt(it.cantidad)||0, p);
+    // Sobreescribir con valores de la factura
+    base.refProveedor = it.refProveedor || base.refProveedor;
+    base.descripcion = it.descripcion || base.descripcion;
+    base.precioFOB = parseFloat(it.precio) || base.precioFOB;
+    base.subtotal = base.cantidad * base.precioFOB;
+    return base;
+  });
+
+  // Construir OC
+  var oc = ocNueva();
+  oc.numero = numero;
+  oc.proveedorId = p.id;
+  oc.proveedorNombre = p.nombreComercial;
+  oc.proveedorPais = p.pais;
+  oc.incoterms = p.incoterms || 'FOB';
+  oc.puertoOrigen = p.puertoOrigen || '';
+  oc.moneda = p.monedaPrincipal || 'USD';
+  oc.fechaEmision = fechaEmision;
+  oc.fechaEstimadaLlegada = fechaLleg;
+  oc.estado = estado;
+  oc.items = ocItems;
+  oc.notas = numFactura ? ('Factura proveedor N° ' + numFactura) : '';
+  oc._numeroFacturaProveedor = numFactura;
+
+  ocCalcularTotales(oc);
+
+  // Sumar a exOrdenada si aplica
+  if (sumar) {
+    try {
+      var ptData = JSON.parse(localStorage.getItem('farmers_pt_data') || '{}');
+      var sumado = {};
+      ocItems.forEach(function(it){
+        if (!ptData[it.refFarmers]) ptData[it.refFarmers] = { exOrdenada: 0 };
+        var prev = parseInt(ptData[it.refFarmers].exOrdenada) || 0;
+        ptData[it.refFarmers].exOrdenada = prev + (parseInt(it.cantidad)||0);
+        sumado[it.refFarmers] = parseInt(it.cantidad)||0;
+      });
+      localStorage.setItem('farmers_pt_data', JSON.stringify(ptData));
+      oc.sumadaAOrdenada = true;
+      oc.ordenadaSumada = sumado;
+      if (typeof window.ptData !== 'undefined') window.ptData = ptData;
+    } catch(err) {
+      console.error('Error sumando a ordenada:', err);
+    }
+  }
+
+  _ocDB.unshift(oc);
+  saveOrdenesCompraDB(_ocDB);
+
+  // También registrar precios en lista FOB del proveedor (aprendizaje)
+  ocItems.forEach(function(it){
+    _provFOBRegistrarPrecio(p, it.refFarmers, it.refProveedor, it.descripcion, it.precioFOB, fechaEmision, 'De factura ' + numero);
+  });
+  saveProveedoresDB(_provDB);
+
+  // Cerrar modales
+  document.getElementById('oc-imp-rev-ov').remove();
+  _ocImportItems = [];
+
+  // Mostrar la OC recién creada
+  _ocActiveId = oc.id;
+  ocRenderList();
+  ocRenderFicha(oc);
+
+  if (typeof showToast === 'function') {
+    var msg = '✅ OC ' + oc.numero + ' creada · ' + ocItems.length + ' refs · $' + oc.totales.total.toFixed(2);
+    if (sumar) msg += ' · Sumada a Ordenada';
+    showToast(msg, 'success');
+  }
+};
+
 // Cambiar estado de OC
 window.ocCambiarEstado = function(id) {
   var oc = _ocDB.find(function(x){ return x.id === id; });
@@ -8849,6 +9546,371 @@ window.ocCambiarEstado = function(id) {
   ocRenderFicha(oc);
   ocRenderList();
   if (typeof showToast === 'function') showToast('🔄 Estado actualizado: ' + OC_ESTADOS[nuevoEstado].label, 'success');
+};
+
+// ═══════════════════════════════════════════════════════════════
+// MÓDULO RECEPCIONES — Registro de mercancía que llega por OC
+// ═══════════════════════════════════════════════════════════════
+// Flujo de negocio:
+// 1. Omar tiene una OC en EN_TRANSITO con 85 refs pedidas
+// 2. Llega un container con PARTE de la mercancía
+// 3. Omar abre la OC y hace clic en "＋ Registrar Recepción"
+// 4. Se abre modal con TODAS las refs: Pedido · Ya Recibido · Pendiente · A Recibir
+// 5. Omar ajusta cantidades (default = todo lo pendiente)
+// 6. Al guardar:
+//    - PRODUCTS[ref].ex += cantidadRecibida  (suma a inventario real)
+//    - ptData[ref].exOrdenada -= cantidadRecibida  (resta de ordenada)
+//    - Se guarda la recepción en oc.recepciones[]
+//    - Estado de la OC se recalcula:
+//      * Si TODO lo pedido fue recibido → RECIBIDA_TOTAL
+//      * Si falta algo → RECIBIDA_PARCIAL
+// 7. Si Omar elimina una recepción, todo lo anterior se revierte
+
+// Helpers
+window.ocCalcularRecibidoTotal = function(oc) {
+  // Devuelve {refFarmers: cantidadRecibidaAcumulada} sumando todas las recepciones
+  var totales = {};
+  if (!oc.recepciones || !oc.recepciones.length) return totales;
+  oc.recepciones.forEach(function(rec){
+    (rec.items || []).forEach(function(it){
+      var r = it.refFarmers;
+      if (!r) return;
+      totales[r] = (totales[r] || 0) + (parseInt(it.cantidadRecibida) || 0);
+    });
+  });
+  return totales;
+};
+
+window.ocRecepGenerarNumero = function(oc) {
+  var recs = oc.recepciones || [];
+  var año = new Date().getFullYear();
+  var prefijo = 'REC-' + año + '-';
+  var max = 0;
+  recs.forEach(function(r){
+    if (r.numero && r.numero.indexOf(prefijo) === 0) {
+      var n = parseInt(r.numero.replace(prefijo, ''));
+      if (!isNaN(n) && n > max) max = n;
+    }
+  });
+  // También considerar recepciones globales para mantener secuencia
+  _ocDB.forEach(function(o){
+    (o.recepciones || []).forEach(function(r){
+      if (r.numero && r.numero.indexOf(prefijo) === 0) {
+        var n = parseInt(r.numero.replace(prefijo, ''));
+        if (!isNaN(n) && n > max) max = n;
+      }
+    });
+  });
+  return prefijo + String(max + 1).padStart(3, '0');
+};
+
+window.ocRecepcionarClick = function(ocId) {
+  var oc = _ocDB.find(function(x){ return x.id === ocId; });
+  if (!oc) return;
+  if (!oc.items || !oc.items.length) {
+    alert('Esta OC no tiene items para recepcionar.');
+    return;
+  }
+  if (oc.estado === 'CANCELADA') {
+    alert('No se pueden registrar recepciones en una OC CANCELADA.');
+    return;
+  }
+  if (oc.estado === 'RECIBIDA_TOTAL' || oc.estado === 'CERRADA') {
+    if (!confirm('Esta OC ya está ' + OC_ESTADOS[oc.estado].label + '. ¿Registrar una recepción adicional de todas formas?')) return;
+  }
+  _ocRecepAbrirModal(oc);
+};
+
+function _ocRecepAbrirModal(oc) {
+  var yaRecibido = ocCalcularRecibidoTotal(oc);
+  var numeroSugerido = ocRecepGenerarNumero(oc);
+
+  var filas = oc.items.map(function(it, i){
+    var pedido = parseInt(it.cantidad) || 0;
+    var recibido = yaRecibido[it.refFarmers] || 0;
+    var pendiente = Math.max(0, pedido - recibido);
+    var completo = recibido >= pedido;
+    var bgRow = completo ? '#f0fdf4' : 'white';
+
+    return '<tr style="border-bottom:1px solid #f1f5f9;background:' + bgRow + ';" data-idx="' + i + '">' +
+      '<td style="padding:7px 10px;text-align:center;font-size:0.62rem;color:#94a3b8;">' + (i+1) + '</td>' +
+      '<td style="padding:7px 10px;font-family:monospace;font-weight:800;color:#1a2050;font-size:0.74rem;">' + it.refFarmers + '</td>' +
+      '<td style="padding:7px 10px;font-size:0.68rem;color:#334155;line-height:1.3;">' + (it.descripcion||'—').substring(0, 60) + '</td>' +
+      '<td style="padding:7px 10px;text-align:right;font-weight:700;font-size:0.75rem;color:#1a2050;">' + pedido.toLocaleString() + '</td>' +
+      '<td style="padding:7px 10px;text-align:right;font-size:0.72rem;color:#166534;font-weight:700;">' + (recibido > 0 ? recibido.toLocaleString() : '—') + '</td>' +
+      '<td style="padding:7px 10px;text-align:right;font-weight:800;font-size:0.75rem;color:' + (pendiente > 0 ? '#991b1b' : '#94a3b8') + ';">' +
+        (pendiente > 0 ? pendiente.toLocaleString() : '✓ completo') +
+      '</td>' +
+      '<td style="padding:5px 8px;">' +
+        (completo
+          ? '<input type="number" min="0" step="1" value="0" data-ref="' + it.refFarmers + '" data-idx="' + i + '" data-pedido="' + pedido + '" data-pendiente="0" class="oc-rec-input" ' +
+            'style="width:100%;padding:6px 8px;border:1.5px solid #e2e8f0;border-radius:5px;text-align:right;font-weight:800;outline:none;font-size:0.75rem;color:#94a3b8;background:#f8fafc;">'
+          : '<input type="number" min="0" step="1" value="' + pendiente + '" data-ref="' + it.refFarmers + '" data-idx="' + i + '" data-pedido="' + pedido + '" data-pendiente="' + pendiente + '" class="oc-rec-input" onchange="_ocRecepValidar(this)" ' +
+            'style="width:100%;padding:6px 8px;border:1.5px solid #86efac;border-radius:5px;text-align:right;font-weight:800;outline:none;font-size:0.75rem;color:#166534;background:#f0fdf4;">'
+        ) +
+      '</td>' +
+    '</tr>';
+  }).join('');
+
+  var html = '<div id="oc-rec-ov" style="position:fixed;inset:0;z-index:99900;background:rgba(0,0,0,0.85);display:flex;align-items:center;justify-content:center;padding:16px;">' +
+    '<div style="background:white;border-radius:14px;width:100%;max-width:1200px;height:96vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,0.4);">' +
+
+      '<div style="padding:16px 24px;background:linear-gradient(135deg,#166534,#15803d);color:white;display:flex;justify-content:space-between;align-items:center;border-bottom:2px solid #86efac;">' +
+        '<div>' +
+          '<div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;font-size:1.3rem;letter-spacing:1px;">📦 Registrar Recepción</div>' +
+          '<div style="font-size:0.75rem;opacity:0.9;margin-top:2px;">OC ' + oc.numero + ' · ' + oc.proveedorNombre + ' · ' + oc.items.length + ' refs pedidas</div>' +
+        '</div>' +
+        '<button onclick="document.getElementById(\'oc-rec-ov\').remove();" style="background:rgba(255,255,255,0.15);border:1.5px solid rgba(255,255,255,0.3);border-radius:6px;padding:5px 10px;cursor:pointer;font-weight:800;color:white;">✕</button>' +
+      '</div>' +
+
+      '<div style="padding:14px 24px;background:#f0fdf4;border-bottom:1px solid #bbf7d0;display:grid;grid-template-columns:repeat(4,1fr);gap:10px;">' +
+        _ocRecInput('N° Recepción', 'oc-rec-numero', 'text', numeroSugerido, 'font-family:monospace;font-weight:800;') +
+        _ocRecInput('Fecha *', 'oc-rec-fecha', 'date', new Date().toISOString().slice(0,10), '') +
+        _ocRecInput('N° Container', 'oc-rec-container', 'text', '', 'font-family:monospace;') +
+        _ocRecInput('N° BL', 'oc-rec-bl', 'text', '', 'font-family:monospace;') +
+      '</div>' +
+
+      '<div style="padding:10px 24px;background:#fefce8;border-bottom:1px solid #fde68a;font-size:0.72rem;color:#78350f;line-height:1.4;">' +
+        '💡 El valor en la columna <strong>A Recibir</strong> viene precargado con lo pendiente. ' +
+        'Ajústalo según lo que realmente llegó en este envío. Si algo no llegó, déjalo en 0 o reduce la cantidad.' +
+      '</div>' +
+
+      '<div style="flex:1;overflow-y:auto;padding:0 4px;">' +
+        '<table style="width:100%;border-collapse:collapse;">' +
+          '<thead><tr style="background:#1a2050;color:white;font-size:0.58rem;text-transform:uppercase;letter-spacing:0.5px;position:sticky;top:0;z-index:5;">' +
+            '<th style="padding:9px 8px;text-align:center;width:34px;">#</th>' +
+            '<th style="padding:9px 10px;text-align:left;width:120px;">Ref Farmers</th>' +
+            '<th style="padding:9px 10px;text-align:left;">Descripción</th>' +
+            '<th style="padding:9px 10px;text-align:right;width:100px;">Pedido</th>' +
+            '<th style="padding:9px 10px;text-align:right;width:110px;">Ya Recibido</th>' +
+            '<th style="padding:9px 10px;text-align:right;width:110px;">Pendiente</th>' +
+            '<th style="padding:9px 10px;text-align:right;width:120px;">A Recibir</th>' +
+          '</tr></thead>' +
+          '<tbody>' + filas + '</tbody>' +
+        '</table>' +
+      '</div>' +
+
+      '<div style="padding:14px 24px;background:#f8fafc;border-top:1px solid #e2e8f0;">' +
+        '<label style="display:flex;flex-direction:column;gap:4px;">' +
+          '<span style="font-size:0.6rem;font-weight:900;color:#166534;text-transform:uppercase;letter-spacing:0.5px;">Notas (opcional)</span>' +
+          '<textarea id="oc-rec-notas" rows="2" placeholder="Ej: Primer lote parcial, faltaron 3 bultos en Panamá" style="padding:8px 10px;border:1.5px solid #cbd5e1;border-radius:6px;font-size:0.78rem;outline:none;font-family:inherit;resize:vertical;"></textarea>' +
+        '</label>' +
+      '</div>' +
+
+      '<div style="padding:14px 24px;border-top:1px solid #e2e8f0;display:flex;justify-content:space-between;align-items:center;background:white;">' +
+        '<div style="font-size:0.72rem;color:#64748b;">' +
+          'El inventario se actualizará automáticamente con lo recibido · <strong>Esta acción es reversible</strong>' +
+        '</div>' +
+        '<div style="display:flex;gap:10px;">' +
+          '<button onclick="document.getElementById(\'oc-rec-ov\').remove();" style="background:#f1f5f9;color:#475569;border:none;border-radius:7px;padding:10px 18px;cursor:pointer;font-weight:700;font-size:0.82rem;">Cancelar</button>' +
+          '<button onclick="_ocRecepGuardar(\'' + oc.id + '\')" style="background:linear-gradient(135deg,#166534,#15803d);color:white;border:none;border-radius:7px;padding:10px 24px;cursor:pointer;font-weight:900;font-size:0.88rem;">✅ Registrar Recepción</button>' +
+        '</div>' +
+      '</div>' +
+
+    '</div>' +
+  '</div>';
+
+  var prev = document.getElementById('oc-rec-ov');
+  if (prev) prev.remove();
+  document.body.insertAdjacentHTML('beforeend', html);
+}
+
+function _ocRecInput(label, id, type, value, extraStyle) {
+  return '<label style="display:flex;flex-direction:column;gap:3px;">' +
+    '<span style="font-size:0.6rem;font-weight:900;color:#166534;text-transform:uppercase;letter-spacing:0.5px;">' + label + '</span>' +
+    '<input type="' + type + '" id="' + id + '" value="' + value + '" style="padding:7px 10px;border:1.5px solid #cbd5e1;border-radius:6px;font-size:0.78rem;outline:none;' + (extraStyle||'') + '">' +
+  '</label>';
+}
+
+window._ocRecepValidar = function(input) {
+  var cant = parseInt(input.value) || 0;
+  var pendiente = parseInt(input.dataset.pendiente) || 0;
+  var pedido = parseInt(input.dataset.pedido) || 0;
+  if (cant < 0) { input.value = 0; return; }
+  if (cant > pendiente && pendiente > 0) {
+    if (!confirm('Estás ingresando ' + cant + ' pero solo quedan ' + pendiente + ' pendientes del pedido (pedido original: ' + pedido + '). ¿Aceptar de todas formas? (Sobrante)')) {
+      input.value = pendiente;
+    }
+  }
+};
+
+window._ocRecepGuardar = function(ocId) {
+  var oc = _ocDB.find(function(x){ return x.id === ocId; });
+  if (!oc) return;
+
+  var numero = document.getElementById('oc-rec-numero').value.trim();
+  var fecha = document.getElementById('oc-rec-fecha').value;
+  var container = document.getElementById('oc-rec-container').value.trim();
+  var bl = document.getElementById('oc-rec-bl').value.trim();
+  var notas = document.getElementById('oc-rec-notas').value.trim();
+
+  if (!numero) { alert('N° de recepción obligatorio'); return; }
+  if (!fecha)  { alert('Fecha obligatoria'); return; }
+
+  // Recolectar cantidades de los inputs
+  var itemsRec = [];
+  var totalRecibidoEnEsteEvento = 0;
+  document.querySelectorAll('.oc-rec-input').forEach(function(inp){
+    var cant = parseInt(inp.value) || 0;
+    if (cant > 0) {
+      itemsRec.push({
+        refFarmers: inp.dataset.ref,
+        cantidadRecibida: cant
+      });
+      totalRecibidoEnEsteEvento += cant;
+    }
+  });
+
+  if (!itemsRec.length) {
+    alert('No has ingresado ninguna cantidad recibida. Cancela si no quieres registrar nada.');
+    return;
+  }
+
+  if (!confirm('¿Registrar recepción de ' + itemsRec.length + ' refs (' + totalRecibidoEnEsteEvento.toLocaleString() + ' unidades)?\n\nEsto:\n• Sumará lo recibido al inventario real (PRODUCTS.ex)\n• Restará lo recibido de Existencia Ordenada\n• Actualizará el estado de la OC')) return;
+
+  var recepcion = {
+    id: 'rec_' + Date.now() + '_' + Math.floor(Math.random()*1000),
+    numero: numero,
+    fecha: fecha,
+    numeroContainer: container,
+    numeroBL: bl,
+    notas: notas,
+    items: itemsRec,
+    fechaCreacion: new Date().toISOString()
+  };
+
+  // Aplicar efectos en inventario
+  try {
+    var ptData = JSON.parse(localStorage.getItem('farmers_pt_data') || '{}');
+    var aplicados = 0, errores = 0;
+
+    itemsRec.forEach(function(ri){
+      // Sumar a PRODUCTS[ref].ex
+      if (typeof PRODUCTS !== 'undefined') {
+        var prod = PRODUCTS.find(function(p){ return p.r === ri.refFarmers; });
+        if (prod) {
+          prod.ex = (parseInt(prod.ex) || 0) + ri.cantidadRecibida;
+          aplicados++;
+        } else {
+          console.warn('Recepción: ref no encontrada en PRODUCTS:', ri.refFarmers);
+          errores++;
+        }
+      }
+      // Restar de exOrdenada
+      if (ptData[ri.refFarmers] && ptData[ri.refFarmers].exOrdenada !== undefined) {
+        var prev = parseInt(ptData[ri.refFarmers].exOrdenada) || 0;
+        ptData[ri.refFarmers].exOrdenada = Math.max(0, prev - ri.cantidadRecibida);
+      }
+    });
+
+    localStorage.setItem('farmers_pt_data', JSON.stringify(ptData));
+    if (typeof window.ptData !== 'undefined') window.ptData = ptData;
+
+    // Persistir PRODUCTS si hay función saveProducts o similar
+    if (typeof saveProducts === 'function') saveProducts();
+    // Firebase sync para productos si existe
+    if (typeof window.fbSaveProducts === 'function') window.fbSaveProducts(PRODUCTS);
+
+    // Guardar recepción en la OC
+    if (!oc.recepciones) oc.recepciones = [];
+    oc.recepciones.push(recepcion);
+
+    // Recalcular estado de la OC
+    var yaRecibido = ocCalcularRecibidoTotal(oc);
+    var todoRecibido = true;
+    var algoRecibido = false;
+    oc.items.forEach(function(it){
+      var r = parseInt(yaRecibido[it.refFarmers]) || 0;
+      var p = parseInt(it.cantidad) || 0;
+      if (r > 0) algoRecibido = true;
+      if (r < p) todoRecibido = false;
+    });
+
+    if (todoRecibido) oc.estado = 'RECIBIDA_TOTAL';
+    else if (algoRecibido) oc.estado = 'RECIBIDA_PARCIAL';
+
+    saveOrdenesCompraDB(_ocDB);
+
+    document.getElementById('oc-rec-ov').remove();
+    ocRenderFicha(oc);
+    ocRenderList();
+
+    if (typeof showToast === 'function') {
+      var msg = '✅ ' + recepcion.numero + ' registrada · ' + aplicados + ' refs actualizadas';
+      if (oc.estado === 'RECIBIDA_TOTAL') msg += ' · OC completada';
+      else if (oc.estado === 'RECIBIDA_PARCIAL') msg += ' · OC parcial';
+      showToast(msg, 'success');
+    }
+
+  } catch(err) {
+    console.error('Error registrando recepción:', err);
+    alert('Error registrando recepción: ' + err.message);
+  }
+};
+
+// Eliminar recepción (revierte todo lo que hizo)
+window.ocRecepEliminar = function(ocId, recId) {
+  var oc = _ocDB.find(function(x){ return x.id === ocId; });
+  if (!oc || !oc.recepciones) return;
+  var rec = oc.recepciones.find(function(r){ return r.id === recId; });
+  if (!rec) return;
+
+  if (!confirm('¿Eliminar la recepción "' + rec.numero + '" del ' + _fmtFecha(rec.fecha) + '?\n\n' +
+    'Esto revertirá:\n' +
+    '• Se restará lo recibido del inventario real (PRODUCTS.ex)\n' +
+    '• Se volverá a sumar a Existencia Ordenada\n' +
+    '• El estado de la OC se recalculará')) return;
+
+  try {
+    var ptData = JSON.parse(localStorage.getItem('farmers_pt_data') || '{}');
+
+    (rec.items || []).forEach(function(ri){
+      // Restar de PRODUCTS.ex
+      if (typeof PRODUCTS !== 'undefined') {
+        var prod = PRODUCTS.find(function(p){ return p.r === ri.refFarmers; });
+        if (prod) {
+          prod.ex = Math.max(0, (parseInt(prod.ex) || 0) - ri.cantidadRecibida);
+        }
+      }
+      // Sumar de vuelta a exOrdenada
+      if (!ptData[ri.refFarmers]) ptData[ri.refFarmers] = { exOrdenada: 0 };
+      ptData[ri.refFarmers].exOrdenada = (parseInt(ptData[ri.refFarmers].exOrdenada) || 0) + ri.cantidadRecibida;
+    });
+
+    localStorage.setItem('farmers_pt_data', JSON.stringify(ptData));
+    if (typeof window.ptData !== 'undefined') window.ptData = ptData;
+    if (typeof saveProducts === 'function') saveProducts();
+    if (typeof window.fbSaveProducts === 'function') window.fbSaveProducts(PRODUCTS);
+
+    // Eliminar recepción del array
+    oc.recepciones = oc.recepciones.filter(function(r){ return r.id !== recId; });
+
+    // Recalcular estado
+    var yaRecibido = ocCalcularRecibidoTotal(oc);
+    var todoRecibido = true;
+    var algoRecibido = false;
+    oc.items.forEach(function(it){
+      var r = parseInt(yaRecibido[it.refFarmers]) || 0;
+      var p = parseInt(it.cantidad) || 0;
+      if (r > 0) algoRecibido = true;
+      if (r < p) todoRecibido = false;
+    });
+
+    if (todoRecibido) oc.estado = 'RECIBIDA_TOTAL';
+    else if (algoRecibido) oc.estado = 'RECIBIDA_PARCIAL';
+    else oc.estado = 'EN_TRANSITO'; // Si no queda nada recibido, vuelve a en tránsito
+
+    saveOrdenesCompraDB(_ocDB);
+    ocRenderFicha(oc);
+    ocRenderList();
+
+    if (typeof showToast === 'function') {
+      showToast('🗑 Recepción eliminada · Inventario revertido', 'info');
+    }
+  } catch(err) {
+    console.error('Error eliminando recepción:', err);
+    alert('Error: ' + err.message);
+  }
 };
 
 window.ocEliminar = function(id) {
@@ -25805,6 +26867,7 @@ document.addEventListener('keydown',function(e){if(e.key==='Escape')closeImgLigh
         </div>
       </div>
       <div class="oc-header-actions">
+        <button class="oc-btn" onclick="ocImportarFacturaClick()" style="background:rgba(252,165,165,0.2);border-color:rgba(252,165,165,0.4);">📥 Importar Factura</button>
         <button class="oc-btn oc-btn-primary" onclick="ocNuevaClick()">＋ Nueva OC</button>
         <button class="oc-btn-close" onclick="closeOrdenesCompra()">✕</button>
       </div>
