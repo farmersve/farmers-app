@@ -6378,7 +6378,7 @@ window.ocNueva = function() {
     puertoOrigen: '',
     items: [],
     totales: {
-      subtotal: 0, traspaso: 0, impuesto: 0, total: 0,
+      subtotal: 0, descuento: 0, traspaso: 0, impuesto: 0, total: 0,
       volumenTotalFt3: 0, pesoTotalKg: 0, cajasTotales: 0
     },
     sumadaAOrdenada: false,
@@ -6390,8 +6390,15 @@ window.ocNueva = function() {
 
 // Calcular totales (se llama tras cada edición de items)
 window.ocCalcularTotales = function(oc) {
-  var t = { subtotal:0, traspaso:oc.totales.traspaso||0, impuesto:oc.totales.impuesto||0,
-            volumenTotalFt3:0, pesoTotalKg:0, cajasTotales:0 };
+  var t = {
+    subtotal:         0,
+    descuento:        parseFloat(oc.totales && oc.totales.descuento) || 0,
+    traspaso:         parseFloat(oc.totales && oc.totales.traspaso)  || 0,
+    impuesto:         parseFloat(oc.totales && oc.totales.impuesto)  || 0,
+    volumenTotalFt3:  0,
+    pesoTotalKg:      0,
+    cajasTotales:     0
+  };
   oc.items.forEach(function(it){
     it.subtotal = (parseFloat(it.cantidad)||0) * (parseFloat(it.precioFOB)||0);
     t.subtotal += it.subtotal;
@@ -6399,7 +6406,8 @@ window.ocCalcularTotales = function(oc) {
     t.pesoTotalKg    += parseFloat(it.pesoKg)     || 0;
     t.cajasTotales   += parseInt(it.bultosEstimados) || 0;
   });
-  t.total = t.subtotal + t.traspaso + t.impuesto;
+  // Fórmula: subtotal − descuento + traspaso + impuesto = total
+  t.total = t.subtotal - t.descuento + t.traspaso + t.impuesto;
   oc.totales = t;
   return oc;
 };
@@ -6448,17 +6456,27 @@ window.ocAutoFillRef = function(refFarmers, cantidad, proveedor) {
   }
 
   // Volumen y peso (desde ptData si está cargado)
+  // CRÍTICO: volDirecto y peso en ptData son POR BULTO (caja master), no por unidad.
+  // Por eso se multiplican por BULTOS, no por piezas.
+  // Ejemplo: producto con volDirecto=0.5 ft³/bulto, bulto=144 pzas, pedido 288 pzas
+  //   Bultos estimados: 288 / 144 = 2 bultos
+  //   Volumen total: 0.5 ft³ × 2 bultos = 1 ft³  ✅
+  //   NO: 0.5 × 288 piezas = 144 ft³  ❌ (bug anterior)
   try {
     var ptData = JSON.parse(localStorage.getItem('farmers_pt_data') || '{}');
     var pt = ptData[refFarmers];
     if (pt && pt.medidas) {
-      var volUnit = parseFloat(pt.medidas.volDirecto) || 0;
-      if (!volUnit && pt.medidas.largo && pt.medidas.ancho && pt.medidas.alto) {
-        volUnit = (parseFloat(pt.medidas.largo) * parseFloat(pt.medidas.ancho) * parseFloat(pt.medidas.alto)) / 28316.85;
+      var volPorBulto = parseFloat(pt.medidas.volDirecto) || 0;
+      if (!volPorBulto && pt.medidas.largo && pt.medidas.ancho && pt.medidas.alto) {
+        volPorBulto = (parseFloat(pt.medidas.largo) * parseFloat(pt.medidas.ancho) * parseFloat(pt.medidas.alto)) / 28316.85;
       }
-      result.volumenFt3 = volUnit * cantidad;
-      var pesoUnit = parseFloat(pt.medidas.peso) || 0;
-      result.pesoKg = pesoUnit * cantidad;
+      var pesoPorBulto = parseFloat(pt.medidas.peso) || 0;
+
+      // Calcular bultos reales (decimal, no redondeado, para precisión)
+      var bultosReales = result.unidadesPorBulto > 0 ? (cantidad / result.unidadesPorBulto) : 0;
+
+      result.volumenFt3 = volPorBulto * bultosReales;
+      result.pesoKg = pesoPorBulto * bultosReales;
     }
   } catch(e) {}
 
@@ -8317,6 +8335,7 @@ function ocRenderFicha(oc) {
           (oc.estado !== 'CANCELADA' && oc.estado !== 'BORRADOR'
             ? '<button onclick="ocRecepcionarClick(\'' + oc.id + '\')" style="background:#dcfce7;color:#166534;border:1.5px solid #86efac;border-radius:7px;padding:7px 14px;font-weight:800;cursor:pointer;font-size:0.75rem;">📦 Registrar Recepción</button>'
             : '') +
+          '<button onclick="ocRecalcularVolPeso(\'' + oc.id + '\')" style="background:#e0e7ff;color:#4338ca;border:1.5px solid #c7d2fe;border-radius:7px;padding:7px 14px;font-weight:800;cursor:pointer;font-size:0.75rem;" title="Recalcula volumen y peso desde ptData">📐 Recalcular Vol/Peso</button>' +
           '<button onclick="ocCambiarEstado(\'' + oc.id + '\')" style="background:#dbeafe;color:#1e40af;border:1.5px solid #93c5fd;border-radius:7px;padding:7px 14px;font-weight:800;cursor:pointer;font-size:0.75rem;">🔄 Estado</button>' +
           '<button onclick="ocEliminar(\'' + oc.id + '\')" style="background:#fee2e2;color:#991b1b;border:1.5px solid #fecaca;border-radius:7px;padding:7px 14px;font-weight:800;cursor:pointer;font-size:0.75rem;">🗑</button>' +
         '</div>' +
@@ -8361,8 +8380,9 @@ function ocRenderFicha(oc) {
         '<div style="background:linear-gradient(135deg,#7f1d1d,#991b1b);border-radius:10px;padding:12px 14px;color:white;">' +
           '<div style="font-size:0.65rem;font-weight:900;text-transform:uppercase;letter-spacing:0.8px;margin-bottom:6px;opacity:0.85;">💰 Totales</div>' +
           _ocTotalRow('Subtotal', oc.totales.subtotal) +
-          (oc.totales.traspaso ? _ocTotalRow('Traspaso', oc.totales.traspaso) : '') +
-          (oc.totales.impuesto ? _ocTotalRow('Impuesto', oc.totales.impuesto) : '') +
+          (oc.totales.descuento ? _ocTotalRow('Descuento', -oc.totales.descuento) : '') +
+          (oc.totales.traspaso  ? _ocTotalRow('Traspaso',  oc.totales.traspaso)   : '') +
+          (oc.totales.impuesto  ? _ocTotalRow('Impuesto',  oc.totales.impuesto)   : '') +
           '<div style="border-top:1px solid rgba(255,255,255,0.3);margin-top:6px;padding-top:6px;">' +
             _ocTotalRow('TOTAL', oc.totales.total, true) +
           '</div>' +
@@ -8476,10 +8496,13 @@ function _ocVolCard(label, value, unit) {
   '</div>';
 }
 function _ocTotalRow(label, val, big) {
-  var v = (parseFloat(val)||0).toLocaleString('en-US',{maximumFractionDigits:2,minimumFractionDigits:2});
+  var numVal = parseFloat(val) || 0;
+  var esNegativo = numVal < 0;
+  var v = Math.abs(numVal).toLocaleString('en-US',{maximumFractionDigits:2,minimumFractionDigits:2});
+  var signo = esNegativo ? '−' : '';
   return '<div style="display:flex;justify-content:space-between;align-items:center;padding:' + (big?'2px':'1px') + ' 0;">' +
     '<span style="font-size:' + (big?'0.85rem':'0.72rem') + ';font-weight:' + (big?'900':'600') + ';opacity:' + (big?'1':'0.85') + ';">' + label + '</span>' +
-    '<span style="font-family:\'Barlow Condensed\',sans-serif;font-size:' + (big?'1.4rem':'0.9rem') + ';font-weight:900;">$' + v + '</span>' +
+    '<span style="font-family:\'Barlow Condensed\',sans-serif;font-size:' + (big?'1.4rem':'0.9rem') + ';font-weight:900;">' + signo + '$' + v + '</span>' +
   '</div>';
 }
 function _fmtFecha(f) {
@@ -9028,6 +9051,9 @@ window.ocImpProcesarArchivo = function(event, tipo) {
   if (!provId) { alert('Selecciona primero un proveedor'); return; }
   _ocImportProvId = provId;
 
+  // Resetear datos de factura anterior (para que no se arrastren entre importaciones)
+  _ocImportDatosFactura = { subtotal:0, descuento:0, traspaso:0, impuesto:0, total:0 };
+
   var file = event.target.files[0];
   if (!file) return;
 
@@ -9128,17 +9154,27 @@ async function _ocImpProcesarConIA(file, tipo) {
         }
 
         var prompt = 'Este archivo es una factura o lista de un proveedor para Farmers C.A. ' +
-          'Extrae TODAS las líneas de producto con código, cantidad, bultos, unidad, precio unitario y descripción. ' +
-          'Devuelve SOLO un array JSON sin texto adicional.\n\n' +
-          'Formato: [{"refProveedor":"CODIGO","descripcion":"...","cantidad":4800,"bultos":50,"unidad":"PZA","precio":0.46}]\n\n' +
-          'Reglas:\n' +
+          'Extrae TODAS las líneas de producto Y los totales contables del pie de factura. ' +
+          'Devuelve SOLO un objeto JSON sin texto adicional.\n\n' +
+          'Formato exacto:\n' +
+          '{\n' +
+          '  "items": [{"refProveedor":"CODIGO","descripcion":"...","cantidad":4800,"bultos":50,"unidad":"PZA","precio":0.46}],\n' +
+          '  "totales": {"subtotal":23053.16, "descuento":0, "traspaso":20, "impuesto":0, "total":23073.16}\n' +
+          '}\n\n' +
+          'Reglas para items:\n' +
           '- "refProveedor": código del proveedor (ej: "A151-KT2580", "BBQ-7", "7453010079949")\n' +
           '- "cantidad": cantidad total de la línea\n' +
           '- "bultos": número de cajas/bultos\n' +
           '- "unidad": unidad de medida (PZA, DOC, PAR, SETS, BOX, etc.)\n' +
           '- "precio": precio UNITARIO (no subtotal)\n' +
-          '- Ignora subtotales, totales, impuestos, traspasos, encabezados\n' +
-          '- Devuelve TODAS las líneas (pueden ser 80+)';
+          '- Ignora líneas de subtotal/total/impuestos/traspasos/descuentos del pie\n' +
+          '- Devuelve TODAS las líneas (pueden ser 80+)\n\n' +
+          'Reglas para totales (lee del pie de factura, 0 si no aparece):\n' +
+          '- "subtotal": suma de líneas antes de ajustes\n' +
+          '- "descuento": descuento aplicado (monto, no porcentaje)\n' +
+          '- "traspaso": cargo de traspaso, transferencia o gastos adicionales\n' +
+          '- "impuesto": IVA, sales tax u otro impuesto\n' +
+          '- "total": total final de la factura';
 
         var payload = {
           model: 'claude-sonnet-4-20250514',
@@ -9156,9 +9192,39 @@ async function _ocImpProcesarConIA(file, tipo) {
         if (!resp.ok) throw new Error((data.error && data.error.message) || 'Error del servicio IA');
 
         var txt = (data.content && data.content[0] && data.content[0].text) || '';
-        var jsonStr = txt.match(/\[[\s\S]*\]/);
-        if (!jsonStr) throw new Error('No se encontró JSON en la respuesta');
-        var items = JSON.parse(jsonStr[0]);
+
+        // Extraer objeto JSON (acepta tanto {items:[...], totales:{...}} como array crudo legacy)
+        var items = null;
+        var totalesFactura = { subtotal:0, descuento:0, traspaso:0, impuesto:0, total:0 };
+
+        var objMatch = txt.match(/\{[\s\S]*\}/);
+        var arrMatch = txt.match(/\[[\s\S]*\]/);
+
+        try {
+          if (objMatch) {
+            var parsed = JSON.parse(objMatch[0]);
+            if (Array.isArray(parsed.items)) {
+              items = parsed.items;
+              if (parsed.totales) {
+                totalesFactura.subtotal  = parseFloat(parsed.totales.subtotal)  || 0;
+                totalesFactura.descuento = parseFloat(parsed.totales.descuento) || 0;
+                totalesFactura.traspaso  = parseFloat(parsed.totales.traspaso)  || 0;
+                totalesFactura.impuesto  = parseFloat(parsed.totales.impuesto)  || 0;
+                totalesFactura.total     = parseFloat(parsed.totales.total)     || 0;
+              }
+            } else if (Array.isArray(parsed)) {
+              items = parsed;
+            }
+          }
+          if (!items && arrMatch) items = JSON.parse(arrMatch[0]);
+        } catch(eParse) {
+          throw new Error('No se pudo parsear JSON de la IA: ' + eParse.message);
+        }
+
+        if (!items || !Array.isArray(items)) throw new Error('La IA no devolvió un array de items');
+
+        // Guardar totales en estado transitorio para el revisor
+        _ocImportDatosFactura = totalesFactura;
 
         items = items.map(function(it){
           var r = {
@@ -9413,6 +9479,17 @@ function _ocImpRenderRevisor() {
         '</label>' +
       '</div>' +
 
+      // Datos contables (traspaso/impuesto/descuento) - detectados por IA, editables
+      '<div style="padding:12px 24px;background:#fffbeb;border-bottom:1px solid #fde68a;display:grid;grid-template-columns:0.8fr 1fr 1fr 1fr;gap:10px;align-items:end;">' +
+        '<div style="font-size:0.66rem;color:#78350f;font-weight:700;line-height:1.35;">' +
+          '💰 <strong>Datos contables de factura</strong><br>' +
+          '<span style="font-size:0.6rem;opacity:0.85;">Detectados por IA · editables si no son correctos</span>' +
+        '</div>' +
+        _ocImpInput('Descuento (-)',  'oc-imp-descuento', 'number', (_ocImportDatosFactura.descuento||0).toFixed(2), 'text-align:right;color:#991b1b;') +
+        _ocImpInput('Traspaso (+)',   'oc-imp-traspaso',  'number', (_ocImportDatosFactura.traspaso ||0).toFixed(2), 'text-align:right;color:#7f1d1d;') +
+        _ocImpInput('Impuesto (+)',   'oc-imp-impuesto',  'number', (_ocImportDatosFactura.impuesto ||0).toFixed(2), 'text-align:right;color:#7f1d1d;') +
+      '</div>' +
+
       // Tabla
       '<div style="flex:1;overflow-y:auto;padding:0 4px;">' +
         '<datalist id="oc-imp-refs-datalist">' + refsOpts + '</datalist>' +
@@ -9464,9 +9541,23 @@ function _ocImpRenderRevisor() {
                 '💡 <strong>Recomendación del sistema:</strong> ' + razonSugerida +
               '</div>' +
             '</div>' +
-            '<div style="text-align:right;min-width:170px;">' +
-              '<div style="font-size:0.62rem;color:#64748b;font-weight:700;text-transform:uppercase;">Subtotal FOB</div>' +
-              '<div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;font-size:1.7rem;color:#7f1d1d;line-height:1;">$' + statsMap.subtotal.toLocaleString('en-US',{maximumFractionDigits:2,minimumFractionDigits:2}) + '</div>' +
+            '<div style="text-align:right;min-width:200px;">' +
+              // Subtotal (suma líneas)
+              '<div style="font-size:0.6rem;color:#64748b;font-weight:700;text-transform:uppercase;">Subtotal</div>' +
+              '<div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:800;font-size:1.1rem;color:#475569;line-height:1;">$' + statsMap.subtotal.toLocaleString('en-US',{maximumFractionDigits:2,minimumFractionDigits:2}) + '</div>' +
+              // Ajustes (si hay)
+              ((_ocImportDatosFactura.descuento > 0 || _ocImportDatosFactura.traspaso > 0 || _ocImportDatosFactura.impuesto > 0)
+                ? '<div id="oc-imp-ajustes-preview" style="font-size:0.6rem;color:#78350f;margin-top:3px;line-height:1.3;">' +
+                    (_ocImportDatosFactura.descuento > 0 ? '−$' + _ocImportDatosFactura.descuento.toFixed(2) + ' desc · ' : '') +
+                    (_ocImportDatosFactura.traspaso  > 0 ? '+$' + _ocImportDatosFactura.traspaso.toFixed(2)  + ' trasp · ' : '') +
+                    (_ocImportDatosFactura.impuesto  > 0 ? '+$' + _ocImportDatosFactura.impuesto.toFixed(2)  + ' imp' : '') +
+                  '</div>'
+                : '') +
+              // Total final
+              '<div style="font-size:0.62rem;color:#7f1d1d;font-weight:700;text-transform:uppercase;margin-top:6px;">Total FOB</div>' +
+              '<div id="oc-imp-total-display" style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;font-size:1.7rem;color:#7f1d1d;line-height:1;">$' +
+                (statsMap.subtotal - (_ocImportDatosFactura.descuento||0) + (_ocImportDatosFactura.traspaso||0) + (_ocImportDatosFactura.impuesto||0)).toLocaleString('en-US',{maximumFractionDigits:2,minimumFractionDigits:2}) +
+              '</div>' +
             '</div>' +
           '</div>' +
         '</div>' +
@@ -9530,9 +9621,10 @@ function _ocImpRenderRevisor() {
 }
 
 function _ocImpInput(label, id, type, value, extraStyle) {
+  var numberAttrs = (type === 'number') ? ' step="0.01" min="0"' : '';
   return '<label style="display:flex;flex-direction:column;gap:3px;">' +
     '<span style="font-size:0.6rem;font-weight:900;color:#7f1d1d;text-transform:uppercase;letter-spacing:0.5px;">' + label + '</span>' +
-    '<input type="' + type + '" id="' + id + '" value="' + value + '" style="padding:7px 10px;border:1.5px solid #cbd5e1;border-radius:6px;font-size:0.78rem;outline:none;' + (extraStyle||'') + '">' +
+    '<input type="' + type + '" id="' + id + '" value="' + value + '"' + numberAttrs + ' style="padding:7px 10px;border:1.5px solid #cbd5e1;border-radius:6px;font-size:0.78rem;outline:none;' + (extraStyle||'') + '">' +
   '</label>';
 }
 
@@ -9692,6 +9784,14 @@ window.ocImpConfirmar = function() {
   oc._numeroFacturaProveedor = numFactura;
   oc.modoOrdenada = modoOrdenada; // Guarda cómo se manejó Ordenada para posible reversión
 
+  // Capturar campos contables de factura (traspaso/impuesto/descuento)
+  var descuento = parseFloat(document.getElementById('oc-imp-descuento').value) || 0;
+  var traspaso  = parseFloat(document.getElementById('oc-imp-traspaso').value)  || 0;
+  var impuesto  = parseFloat(document.getElementById('oc-imp-impuesto').value)  || 0;
+  oc.totales.descuento = descuento;
+  oc.totales.traspaso  = traspaso;
+  oc.totales.impuesto  = impuesto;
+
   ocCalcularTotales(oc);
 
   // Aplicar modo elegido para Ordenada
@@ -9754,6 +9854,58 @@ window.ocImpConfirmar = function() {
 };
 
 // Cambiar estado de OC
+// Recalcular volumen y peso de una OC (útil para OCs creadas antes de fixes)
+// Lee desde ptData y aplica la fórmula correcta: volPorBulto × bultos (no × piezas)
+window.ocRecalcularVolPeso = function(id) {
+  var oc = _ocDB.find(function(x){ return x.id === id; });
+  if (!oc) return;
+  if (!oc.items || !oc.items.length) { alert('OC sin items'); return; }
+
+  if (!confirm('¿Recalcular volumen y peso de los ' + oc.items.length + ' items de ' + oc.numero + '?\n\nEsto lee las medidas desde ptData y aplica la fórmula correcta (volumen por bulto × bultos estimados).')) return;
+
+  try {
+    var ptData = JSON.parse(localStorage.getItem('farmers_pt_data') || '{}');
+    var recalculados = 0, sinMedidas = 0;
+    oc.items.forEach(function(it){
+      var pt = ptData[it.refFarmers];
+      if (!pt || !pt.medidas) { sinMedidas++; return; }
+
+      var volPorBulto = parseFloat(pt.medidas.volDirecto) || 0;
+      if (!volPorBulto && pt.medidas.largo && pt.medidas.ancho && pt.medidas.alto) {
+        volPorBulto = (parseFloat(pt.medidas.largo) * parseFloat(pt.medidas.ancho) * parseFloat(pt.medidas.alto)) / 28316.85;
+      }
+      var pesoPorBulto = parseFloat(pt.medidas.peso) || 0;
+
+      var uPorBulto = parseInt(it.unidadesPorBulto) || 0;
+      // Si no hay unidadesPorBulto guardado en el item, tomarlo del producto
+      if (!uPorBulto && typeof PRODUCTS !== 'undefined') {
+        var prod = PRODUCTS.find(function(p){ return p.r === it.refFarmers; });
+        if (prod) uPorBulto = parseInt(prod.m) || 0;
+        if (uPorBulto) it.unidadesPorBulto = uPorBulto;
+      }
+
+      var bultosReales = uPorBulto > 0 ? (parseInt(it.cantidad) || 0) / uPorBulto : 0;
+      it.volumenFt3 = volPorBulto * bultosReales;
+      it.pesoKg = pesoPorBulto * bultosReales;
+      it.bultosEstimados = Math.ceil(bultosReales);
+      recalculados++;
+    });
+
+    ocCalcularTotales(oc);
+    saveOrdenesCompraDB(_ocDB);
+    ocRenderFicha(oc);
+
+    if (typeof showToast === 'function') {
+      var msg = '📐 ' + recalculados + ' items recalculados';
+      if (sinMedidas > 0) msg += ' · ⚠ ' + sinMedidas + ' sin medidas en ptData';
+      msg += ' · Vol: ' + oc.totales.volumenTotalFt3.toFixed(2) + ' ft³ · Peso: ' + oc.totales.pesoTotalKg.toFixed(2) + ' Kg';
+      showToast(msg, 'success');
+    }
+  } catch(err) {
+    alert('Error al recalcular: ' + err.message);
+  }
+};
+
 window.ocCambiarEstado = function(id) {
   var oc = _ocDB.find(function(x){ return x.id === id; });
   if (!oc) return;
