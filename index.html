@@ -8349,7 +8349,8 @@ function ocRenderFicha(oc) {
           (oc.estado !== 'CANCELADA' && oc.estado !== 'BORRADOR'
             ? '<button onclick="ocRecepcionarClick(\'' + oc.id + '\')" style="background:#dcfce7;color:#166534;border:1.5px solid #86efac;border-radius:7px;padding:7px 14px;font-weight:800;cursor:pointer;font-size:0.75rem;">📦 Registrar Recepción</button>'
             : '') +
-          '<button onclick="ocExportarPDF(\'' + oc.id + '\')" style="background:#fee2e2;color:#7f1d1d;border:1.5px solid #fca5a5;border-radius:7px;padding:7px 14px;font-weight:800;cursor:pointer;font-size:0.75rem;" title="Exportar OC como PDF para enviar al proveedor">📄 Exportar PDF</button>' +
+          '<button onclick="ocExportarPDF(\'' + oc.id + '\')" style="background:#1B1F6B;color:white;border:none;border-radius:7px;padding:7px 14px;font-weight:800;cursor:pointer;font-size:0.75rem;" title="Exportar OC como PDF profesional para enviar al proveedor">📄 Exportar PDF</button>' +
+          '<button onclick="ocExportarExcel(\'' + oc.id + '\')" style="background:#166534;color:white;border:none;border-radius:7px;padding:7px 14px;font-weight:800;cursor:pointer;font-size:0.75rem;" title="Exportar OC como Excel con todos los datos">📊 Exportar Excel</button>' +
           '<button onclick="ocRecalcularVolPeso(\'' + oc.id + '\')" style="background:#e0e7ff;color:#4338ca;border:1.5px solid #c7d2fe;border-radius:7px;padding:7px 14px;font-weight:800;cursor:pointer;font-size:0.75rem;" title="Recalcula volumen y peso desde ptData">📐 Recalcular Vol/Peso</button>' +
           '<button onclick="ocEditarTotalesClick(\'' + oc.id + '\')" style="background:#fef3c7;color:#78350f;border:1.5px solid #fcd34d;border-radius:7px;padding:7px 14px;font-weight:800;cursor:pointer;font-size:0.75rem;" title="Editar manualmente totales, ajustes, volumen, peso, fechas">✏️ Editar Totales</button>' +
           '<button onclick="ocCambiarEstado(\'' + oc.id + '\')" style="background:#dbeafe;color:#1e40af;border:1.5px solid #93c5fd;border-radius:7px;padding:7px 14px;font-weight:800;cursor:pointer;font-size:0.75rem;">🔄 Estado</button>' +
@@ -10263,19 +10264,16 @@ window.ocEditarTotalesGuardar = function(id) {
   }
 };
 
-// ═══════════════════════════════════════════════════════════════
-// EXPORT PDF DE OC — Documento para enviar al proveedor
-// ═══════════════════════════════════════════════════════════════
-// Genera un PDF profesional de una página A4 con:
-//   • Header con logo Farmers + datos fiscales + destinatario proveedor
-//   • N° OC grande, fechas, N° Factura proveedor asociada, estado
-//   • Tabla compacta de items ordenados alfanuméricamente por REF
-//   • Totales (subtotal, descuento, traspaso, impuesto, total)
-//   • Volumetría (ft³, Kg, cajas)
-//   • Metadata opcional (agente, condición pago, consignado, etc.)
-//   • Notas
-//   • Botón manual "🖨 Imprimir" (nunca print automático)
-// Filename: "FARMERS - OC (numero) - (proveedor) (fecha).pdf"
+// ═══════════════════════════════════════════════════════════════════════════
+// EXPORT PDF DE OC — Documento profesional para enviar al proveedor
+// ═══════════════════════════════════════════════════════════════════════════
+// Colores corporativos Farmers:
+//   Navy principal: #1B1F6B  (autoridad, solidez)
+//   Naranja acento: #F47B3E  (acción, calidez comercial)
+//   Violeta detalle: #9B6FD4 (distintivo de marca)
+// Composición: A4 portrait, 1 sola página, márgenes simétricos,
+// tabla centrada, paleta tricolor aplicada con jerarquía.
+// Botón de impresión manual (nunca window.print() automático).
 
 window.ocExportarPDF = function(id) {
   var oc = _ocDB.find(function(x){ return x.id === id; });
@@ -10291,7 +10289,7 @@ window.ocExportarPDF = function(id) {
   var meta = oc._metadataFactura || {};
   var estadoObj = (typeof OC_ESTADOS !== 'undefined' && OC_ESTADOS[oc.estado]) ? OC_ESTADOS[oc.estado] : {icon:'📋', label:oc.estado, color:'#64748b'};
 
-  // Obtener logo Farmers base64 desde el HTML del dashboard
+  // Obtener logo Farmers base64
   var logoBase64 = '';
   try {
     var imgInDoc = document.querySelector('img[alt="FARMERS"]');
@@ -10302,206 +10300,440 @@ window.ocExportarPDF = function(id) {
 
   var fmt = function(n, dec){ return (parseFloat(n)||0).toLocaleString('en-US',{maximumFractionDigits:(dec===undefined?2:dec),minimumFractionDigits:(dec===undefined?2:dec)}); };
   var fmtFecha = function(f){ if (!f) return '—'; try { var d=new Date(f); return String(d.getDate()).padStart(2,'0')+'/'+String(d.getMonth()+1).padStart(2,'0')+'/'+d.getFullYear(); } catch(e) { return f; } };
+  var esc = function(s){ return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); };
 
-  // Filas de items
+  // Filas
   var filasHTML = items.map(function(it, i){
     var sub = (parseFloat(it.cantidad)||0) * (parseFloat(it.precioFOB)||0);
     return '<tr>' +
-      '<td class="nu">' + (i+1) + '</td>' +
-      '<td class="rp">' + (it.refProveedor || '—') + '</td>' +
-      '<td class="rf">' + (it.refFarmers || '—') + '</td>' +
-      '<td class="ds">' + (it.descripcion || '—') + '</td>' +
-      '<td class="un">' + (it.unidad || '—') + '</td>' +
-      '<td class="ca">' + fmt(it.cantidad, 0) + '</td>' +
-      '<td class="bl">' + (parseInt(it.bultosEstimados) || 0) + '</td>' +
-      '<td class="pr">$' + fmt(it.precioFOB, 4) + '</td>' +
-      '<td class="st">$' + fmt(sub) + '</td>' +
+      '<td class="c-num">' + (i+1) + '</td>' +
+      '<td class="c-rp">' + esc(it.refProveedor || '—') + '</td>' +
+      '<td class="c-rf">' + esc(it.refFarmers || '—') + '</td>' +
+      '<td class="c-ds">' + esc(it.descripcion || '—') + '</td>' +
+      '<td class="c-un">' + esc(it.unidad || 'PZA') + '</td>' +
+      '<td class="c-ca">' + fmt(it.cantidad, 0) + '</td>' +
+      '<td class="c-bl">' + (parseInt(it.bultosEstimados) || 0) + '</td>' +
+      '<td class="c-pr">' + fmt(it.precioFOB, 4) + '</td>' +
+      '<td class="c-st">' + fmt(sub) + '</td>' +
     '</tr>';
   }).join('');
 
-  // Filename según convención Farmers
+  // Filename
   var hoyStr = (function(){
     var d = new Date();
     return String(d.getDate()).padStart(2,'0') + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + d.getFullYear();
   })();
-  var nombreArchivo = 'FARMERS - OC ' + oc.numero + ' - ' + (oc.proveedorNombre || 'Proveedor').replace(/[^\w\s-]/g,'').trim() + ' (' + hoyStr + ')';
+  var nombreArchivo = 'FARMERS - OC ' + oc.numero + ' - ' + String(oc.proveedorNombre||'Proveedor').replace(/[^\w\s.,-]/g,'').trim() + ' (' + hoyStr + ')';
 
   var html =
-    '<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8">' +
-    '<title>' + nombreArchivo + '</title>' +
-    '<style>' +
-      '* { box-sizing:border-box; margin:0; padding:0; }' +
-      'html, body { print-color-adjust:exact; -webkit-print-color-adjust:exact; }' +
-      'body { font-family: Arial, sans-serif; color:#1e293b; background:#f1f5f9; padding:16px; font-size:11px; }' +
-      '@page { size: A4 portrait; margin: 5mm 6mm; }' +
-      '@media print { body { background:white; padding:0; } .no-print { display:none !important; } }' +
-      '.page { background:white; max-width:210mm; margin:0 auto; padding:10mm 8mm; box-shadow:0 2px 8px rgba(0,0,0,0.1); }' +
-      // Header
-      '.hdr { display:flex; justify-content:space-between; align-items:flex-start; padding-bottom:10px; border-bottom:3px solid #7f1d1d; margin-bottom:10px; }' +
-      '.hdr-left { display:flex; gap:12px; align-items:center; }' +
-      '.hdr-logo { width:52px; height:52px; border-radius:10px; overflow:hidden; background:#7f1d1d; display:flex; align-items:center; justify-content:center; }' +
-      '.hdr-logo img { width:100%; height:100%; object-fit:contain; }' +
-      '.hdr-empresa h1 { font-size:18px; color:#7f1d1d; margin-bottom:2px; letter-spacing:0.5px; }' +
-      '.hdr-empresa .sub { font-size:9px; color:#64748b; line-height:1.4; }' +
-      '.hdr-right { text-align:right; }' +
-      '.hdr-right .tipo { font-size:9px; color:#64748b; text-transform:uppercase; letter-spacing:1px; }' +
-      '.hdr-right .num { font-family:"Courier New",monospace; font-size:20px; color:#7f1d1d; font-weight:900; letter-spacing:0.5px; }' +
-      '.hdr-right .estado { display:inline-block; background:' + (estadoObj.color||'#64748b') + '; color:white; padding:2px 8px; border-radius:4px; font-size:9px; font-weight:700; margin-top:3px; }' +
-      // Grid proveedor y datos
-      '.info-grid { display:grid; grid-template-columns: 1.2fr 1fr; gap:8px; margin-bottom:10px; }' +
-      '.info-box { background:#f8fafc; border-left:3px solid #7f1d1d; padding:6px 10px; border-radius:4px; }' +
-      '.info-box .lbl { font-size:8px; color:#7f1d1d; font-weight:700; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:2px; }' +
-      '.info-box .val { font-size:11px; color:#1e293b; font-weight:700; }' +
-      '.info-box .val2 { font-size:9px; color:#64748b; line-height:1.4; margin-top:2px; }' +
-      // Meta row
-      '.meta-row { display:grid; grid-template-columns:repeat(4,1fr); gap:6px; margin-bottom:10px; font-size:9px; }' +
-      '.meta-item { background:#eff6ff; padding:4px 8px; border-radius:4px; }' +
-      '.meta-item .k { color:#1e40af; font-weight:700; font-size:8px; text-transform:uppercase; }' +
-      '.meta-item .v { color:#1e293b; font-weight:600; }' +
-      // Tabla
-      'table.items { width:100%; border-collapse:collapse; margin-bottom:8px; }' +
-      'table.items thead th { background:#1a2050; color:white; padding:5px 4px; font-size:8.5px; text-transform:uppercase; letter-spacing:0.3px; text-align:left; font-weight:800; }' +
-      'table.items tbody td { padding:3px 4px; border-bottom:1px solid #e2e8f0; font-size:9.5px; }' +
-      'table.items tbody tr:nth-child(even) { background:#f8fafc; }' +
-      'table.items td.nu { text-align:center; color:#94a3b8; width:22px; }' +
-      'table.items td.rp { font-family:"Courier New",monospace; font-size:8.5px; color:#64748b; }' +
-      'table.items td.rf { font-family:"Courier New",monospace; font-weight:800; color:#1e293b; }' +
-      'table.items td.ds { font-size:9px; color:#334155; }' +
-      'table.items td.un { text-align:center; font-size:8.5px; color:#64748b; font-weight:600; }' +
-      'table.items td.ca { text-align:right; font-weight:700; }' +
-      'table.items td.bl { text-align:center; color:#64748b; }' +
-      'table.items td.pr { text-align:right; color:#7f1d1d; font-weight:700; font-family:"Courier New",monospace; }' +
-      'table.items td.st { text-align:right; color:#166534; font-weight:900; font-family:"Courier New",monospace; }' +
-      // Totales + Volumetría
-      '.bottom-grid { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:8px; }' +
-      '.tot-box { background:linear-gradient(135deg,#7f1d1d,#991b1b); color:white; padding:10px 14px; border-radius:8px; }' +
-      '.tot-box .tot-row { display:flex; justify-content:space-between; align-items:center; padding:2px 0; font-size:10px; opacity:0.9; }' +
-      '.tot-box .tot-row.big { border-top:1.5px solid rgba(255,255,255,0.4); padding-top:6px; margin-top:4px; font-size:14px; font-weight:900; opacity:1; }' +
-      '.tot-box .tot-row .v { font-family:"Courier New",monospace; font-weight:900; }' +
-      '.vol-box { background:#eff6ff; border:1.5px solid #bfdbfe; padding:10px 14px; border-radius:8px; }' +
-      '.vol-box .vol-t { font-size:9px; color:#1e40af; font-weight:900; text-transform:uppercase; margin-bottom:6px; letter-spacing:0.5px; }' +
-      '.vol-box .vol-grid { display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; text-align:center; }' +
-      '.vol-box .vol-grid .lbl { font-size:8px; color:#64748b; text-transform:uppercase; font-weight:700; }' +
-      '.vol-box .vol-grid .val { font-size:14px; color:#1e40af; font-weight:900; font-family:"Courier New",monospace; }' +
-      // Footer
-      '.foot { margin-top:10px; font-size:8.5px; color:#64748b; text-align:center; padding-top:6px; border-top:1px solid #e2e8f0; }' +
-      '.notas { margin-top:8px; background:#fffbeb; border-left:3px solid #fbbf24; padding:6px 10px; border-radius:4px; font-size:9px; color:#78350f; }' +
-      // Botón imprimir
-      '.btn-print { position:fixed; top:10px; right:10px; background:#7f1d1d; color:white; border:none; padding:10px 18px; border-radius:8px; font-weight:900; cursor:pointer; font-size:13px; box-shadow:0 4px 12px rgba(0,0,0,0.2); }' +
-      '.btn-print:hover { background:#991b1b; }' +
-    '</style></head><body>' +
+'<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8">' +
+'<title>' + esc(nombreArchivo) + '</title>' +
+'<link rel="preconnect" href="https://fonts.googleapis.com">' +
+'<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>' +
+'<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700;800;900&family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">' +
+'<style>' +
+  '* { box-sizing:border-box; margin:0; padding:0; }' +
+  ':root {' +
+    '--navy:#1B1F6B; --navy-light:#2d3580; --navy-dark:#141758;' +
+    '--orange:#F47B3E; --orange-light:#f89562; --orange-dark:#d85f20;' +
+    '--violet:#9B6FD4; --violet-light:#b091df;' +
+    '--ink:#1e293b; --slate:#475569; --muted:#64748b; --line:#e2e8f0; --bg:#f8fafc;' +
+  '}' +
+  'html, body { print-color-adjust:exact; -webkit-print-color-adjust:exact; font-family:"Inter",Arial,sans-serif; color:var(--ink); }' +
+  'body { background:#e5e7eb; padding:24px 16px; min-height:100vh; }' +
+  '@page { size: A4 portrait; margin: 6mm 7mm; }' +
+  '@media print {' +
+    'body { background:white; padding:0; }' +
+    '.no-print { display:none !important; }' +
+    '.page { box-shadow:none !important; margin:0 auto !important; }' +
+  '}' +
+  // ═══ CONTENEDOR PÁGINA ═══
+  '.page {' +
+    'background:white; width:210mm; min-height:287mm; margin:0 auto;' +
+    'padding:10mm 10mm 8mm 10mm; box-shadow:0 8px 24px rgba(0,0,0,0.15);' +
+    'position:relative; display:flex; flex-direction:column;' +
+  '}' +
+  // Borde superior corporativo tricolor
+  '.page::before {' +
+    'content:""; position:absolute; top:0; left:0; right:0; height:6px;' +
+    'background:linear-gradient(90deg, var(--navy) 0%, var(--navy) 60%, var(--orange) 60%, var(--orange) 85%, var(--violet) 85%, var(--violet) 100%);' +
+  '}' +
+  // Marca de agua sutil
+  '.page::after {' +
+    'content:""; position:absolute; bottom:0; left:0; right:0; height:3px;' +
+    'background:linear-gradient(90deg, var(--violet) 0%, var(--orange) 50%, var(--navy) 100%);' +
+  '}' +
+  // ═══ HEADER ═══
+  '.hdr { display:flex; justify-content:space-between; align-items:center; padding:14px 4px 14px 4px; border-bottom:2px solid var(--navy); margin-bottom:14px; }' +
+  '.hdr-left { display:flex; gap:14px; align-items:center; }' +
+  '.hdr-logo { width:60px; height:60px; border-radius:10px; background:var(--navy); display:flex; align-items:center; justify-content:center; overflow:hidden; border:2px solid var(--navy); box-shadow:0 2px 6px rgba(27,31,107,0.25); }' +
+  '.hdr-logo img { width:54px; height:54px; object-fit:contain; }' +
+  '.hdr-logo-fallback { color:var(--orange); font-family:"Barlow Condensed",sans-serif; font-weight:900; font-size:30px; letter-spacing:-0.5px; }' +
+  '.hdr-empresa h1 { font-family:"Barlow Condensed",sans-serif; font-size:28px; color:var(--navy); letter-spacing:1px; line-height:1; margin-bottom:3px; font-weight:900; }' +
+  '.hdr-empresa .tagline { font-size:8px; color:var(--orange); text-transform:uppercase; letter-spacing:2.5px; font-weight:800; margin-bottom:4px; }' +
+  '.hdr-empresa .contact { font-size:8.5px; color:var(--slate); line-height:1.5; }' +
+  '.hdr-empresa .contact b { color:var(--navy); font-weight:700; }' +
+  '.hdr-right { text-align:right; }' +
+  '.hdr-right .doc-label { font-size:8px; color:var(--slate); text-transform:uppercase; letter-spacing:2.5px; font-weight:700; }' +
+  '.hdr-right .doc-num { font-family:"Barlow Condensed",sans-serif; font-size:32px; color:var(--navy); font-weight:900; letter-spacing:1.2px; line-height:1; margin:2px 0; }' +
+  '.hdr-right .doc-badge { display:inline-block; background:' + (estadoObj.color||'var(--navy)') + '; color:white; padding:3px 11px; border-radius:11px; font-size:9px; font-weight:800; text-transform:uppercase; letter-spacing:0.8px; margin-top:4px; }' +
+  // ═══ PANELES DE INFO ═══
+  '.info-grid { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-bottom:10px; }' +
+  '.info-card { background:var(--bg); border-radius:6px; padding:9px 12px; border-left:3px solid var(--navy); }' +
+  '.info-card.orange { border-left-color:var(--orange); }' +
+  '.info-card .ic-label { font-size:7.5px; color:var(--navy); font-weight:800; text-transform:uppercase; letter-spacing:1.2px; margin-bottom:3px; }' +
+  '.info-card.orange .ic-label { color:var(--orange-dark); }' +
+  '.info-card .ic-value { font-size:11.5px; color:var(--ink); font-weight:700; line-height:1.3; }' +
+  '.info-card .ic-sub { font-size:8.5px; color:var(--muted); line-height:1.5; margin-top:3px; }' +
+  '.info-card .ic-sub b { color:var(--navy); font-weight:700; }' +
+  // Panel metadata (IA)
+  '.meta-strip { background:linear-gradient(to right, rgba(155,111,212,0.08), rgba(244,123,62,0.08)); border:1px solid rgba(155,111,212,0.25); border-radius:6px; padding:6px 12px; margin-bottom:10px; display:flex; gap:14px; flex-wrap:wrap; font-size:8.5px; }' +
+  '.meta-strip .mi { display:flex; gap:4px; align-items:center; }' +
+  '.meta-strip .mi .k { color:var(--violet); font-weight:800; text-transform:uppercase; letter-spacing:0.8px; font-size:7.5px; }' +
+  '.meta-strip .mi .v { color:var(--ink); font-weight:600; }' +
+  // ═══ TABLA ═══
+  'table.items { width:100%; border-collapse:collapse; margin-bottom:10px; font-size:9px; border-radius:6px; overflow:hidden; box-shadow:0 1px 3px rgba(0,0,0,0.06); }' +
+  'table.items thead { background:var(--navy); }' +
+  'table.items thead th { color:white; padding:7px 4px; font-size:8.5px; text-transform:uppercase; letter-spacing:0.5px; text-align:left; font-weight:800; border-bottom:3px solid var(--orange); }' +
+  'table.items thead th.center { text-align:center; }' +
+  'table.items thead th.right { text-align:right; }' +
+  'table.items tbody td { padding:4.5px 4px; border-bottom:1px solid var(--line); }' +
+  'table.items tbody tr:nth-child(even) { background:#f8fafc; }' +
+  'table.items tbody tr:hover { background:rgba(244,123,62,0.06); }' +
+  'table.items tbody .c-num { text-align:center; color:var(--muted); font-weight:700; width:24px; font-size:8.5px; }' +
+  'table.items tbody .c-rp { font-family:"Barlow Condensed",monospace; font-size:9px; color:var(--slate); font-weight:700; }' +
+  'table.items tbody .c-rf { font-family:"Barlow Condensed",monospace; font-size:10px; color:var(--navy); font-weight:800; }' +
+  'table.items tbody .c-ds { font-size:8.5px; color:var(--ink); font-weight:500; }' +
+  'table.items tbody .c-un { text-align:center; font-size:8px; color:var(--muted); font-weight:700; text-transform:uppercase; }' +
+  'table.items tbody .c-ca { text-align:right; font-weight:800; font-variant-numeric:tabular-nums; color:var(--ink); }' +
+  'table.items tbody .c-bl { text-align:center; color:var(--slate); font-weight:600; }' +
+  'table.items tbody .c-pr { text-align:right; color:var(--orange-dark); font-weight:700; font-variant-numeric:tabular-nums; }' +
+  'table.items tbody .c-pr::before { content:"$"; font-size:7.5px; color:var(--muted); margin-right:1px; }' +
+  'table.items tbody .c-st { text-align:right; color:var(--navy); font-weight:900; font-variant-numeric:tabular-nums; }' +
+  'table.items tbody .c-st::before { content:"$"; font-size:7.5px; color:var(--orange); margin-right:1px; }' +
+  // ═══ RESUMEN INFERIOR ═══
+  '.summary { display:grid; grid-template-columns:1.3fr 1fr; gap:10px; margin-top:6px; }' +
+  // Tarjeta totales
+  '.totals-card { background:linear-gradient(135deg, var(--navy) 0%, var(--navy-light) 100%); color:white; padding:14px 18px; border-radius:8px; position:relative; overflow:hidden; box-shadow:0 4px 10px rgba(27,31,107,0.25); }' +
+  '.totals-card::before { content:""; position:absolute; top:0; right:0; width:3px; height:100%; background:var(--orange); }' +
+  '.totals-card .tc-title { font-size:9px; font-weight:900; text-transform:uppercase; letter-spacing:2px; opacity:0.85; margin-bottom:8px; }' +
+  '.totals-card .tc-row { display:flex; justify-content:space-between; align-items:baseline; padding:2px 0; font-size:10px; opacity:0.92; }' +
+  '.totals-card .tc-row .lbl { font-weight:500; }' +
+  '.totals-card .tc-row .val { font-variant-numeric:tabular-nums; font-weight:700; }' +
+  '.totals-card .tc-row.desc .val { color:var(--orange-light); }' +
+  '.totals-card .tc-row.total { border-top:2px solid rgba(244,123,62,0.6); margin-top:6px; padding-top:8px; font-size:16px; font-weight:900; opacity:1; }' +
+  '.totals-card .tc-row.total .lbl { color:var(--orange-light); letter-spacing:0.5px; }' +
+  '.totals-card .tc-row.total .val { color:white; font-family:"Barlow Condensed",sans-serif; font-size:22px; }' +
+  // Tarjeta volumetría
+  '.vol-card { background:white; border:2px solid var(--navy); border-radius:8px; padding:12px 14px; position:relative; }' +
+  '.vol-card::before { content:""; position:absolute; top:-2px; left:14px; right:14px; height:2px; background:var(--orange); }' +
+  '.vol-card .vc-title { font-size:9px; font-weight:900; color:var(--navy); text-transform:uppercase; letter-spacing:1.5px; margin-bottom:8px; text-align:center; }' +
+  '.vol-card .vc-grid { display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; }' +
+  '.vol-card .vc-cell { text-align:center; padding:6px 4px; background:var(--bg); border-radius:5px; border-top:2px solid var(--violet); }' +
+  '.vol-card .vc-cell:nth-child(2) { border-top-color:var(--orange); }' +
+  '.vol-card .vc-cell:nth-child(3) { border-top-color:var(--navy); }' +
+  '.vol-card .vc-cell .lbl { font-size:7.5px; color:var(--muted); text-transform:uppercase; font-weight:800; letter-spacing:0.5px; margin-bottom:2px; }' +
+  '.vol-card .vc-cell .val { font-family:"Barlow Condensed",sans-serif; font-size:20px; color:var(--navy); font-weight:900; line-height:1; font-variant-numeric:tabular-nums; }' +
+  '.vol-card .vc-cell .unit { font-size:7px; color:var(--orange-dark); text-transform:uppercase; font-weight:700; margin-top:1px; }' +
+  // ═══ NOTAS ═══
+  '.notas-block { margin-top:8px; background:#fffbeb; border-left:3px solid var(--orange); padding:7px 11px; border-radius:4px; font-size:8.5px; color:var(--slate); }' +
+  '.notas-block b { color:var(--navy); }' +
+  // ═══ FOOTER ═══
+  '.foot { margin-top:auto; padding-top:10px; text-align:center; font-size:7.5px; color:var(--muted); border-top:1px solid var(--line); line-height:1.5; }' +
+  '.foot strong { color:var(--navy); font-weight:800; }' +
+  '.foot .brand-line { color:var(--orange); font-weight:700; letter-spacing:1px; margin-top:2px; }' +
+  // ═══ BOTONES FLOTANTES (UI, no imprime) ═══
+  '.floating-actions { position:fixed; top:18px; right:18px; display:flex; gap:8px; z-index:100; }' +
+  '.fa-btn { background:var(--navy); color:white; border:none; padding:11px 18px; border-radius:8px; font-weight:900; cursor:pointer; font-size:13px; box-shadow:0 4px 12px rgba(27,31,107,0.3); font-family:"Inter",sans-serif; transition:transform 0.15s; }' +
+  '.fa-btn:hover { transform:translateY(-2px); }' +
+  '.fa-btn.orange { background:var(--orange); box-shadow:0 4px 12px rgba(244,123,62,0.3); }' +
+  '.fa-btn.orange:hover { background:var(--orange-dark); }' +
+'</style></head><body>' +
 
-    '<button class="btn-print no-print" onclick="window.print()">🖨 Imprimir PDF</button>' +
+'<div class="floating-actions no-print">' +
+  '<button class="fa-btn" onclick="window.print()">🖨 Imprimir / Guardar PDF</button>' +
+  '<button class="fa-btn orange" onclick="window.close()">✕ Cerrar</button>' +
+'</div>' +
 
-    '<div class="page">' +
+'<div class="page">' +
 
-      // Header
-      '<div class="hdr">' +
-        '<div class="hdr-left">' +
-          '<div class="hdr-logo">' + (logoBase64 ? '<img src="' + logoBase64 + '" alt="Farmers">' : '🏢') + '</div>' +
-          '<div class="hdr-empresa">' +
-            '<h1>FARMERS C.A.</h1>' +
-            '<div class="sub">Distribuidora mayorista<br>Margarita, Nueva Esparta, Venezuela<br>0412-0445797 · farmersve@gmail.com</div>' +
-          '</div>' +
-        '</div>' +
-        '<div class="hdr-right">' +
-          '<div class="tipo">Orden de Compra</div>' +
-          '<div class="num">' + oc.numero + '</div>' +
-          '<div class="estado">' + estadoObj.icon + ' ' + estadoObj.label + '</div>' +
-        '</div>' +
-      '</div>' +
-
-      // Datos proveedor y fechas
-      '<div class="info-grid">' +
-        '<div class="info-box">' +
-          '<div class="lbl">Proveedor</div>' +
-          '<div class="val">' + (oc.proveedorNombre || '—') + '</div>' +
-          '<div class="val2">' +
-            (oc.proveedorPais ? oc.proveedorPais + ' · ' : '') +
-            'Incoterms: ' + (oc.incoterms || 'FOB') + ' · ' +
-            'Moneda: ' + (oc.moneda || 'USD') +
-            (oc.puertoOrigen ? '<br>Puerto origen: ' + oc.puertoOrigen : '') +
-          '</div>' +
-        '</div>' +
-        '<div class="info-box">' +
-          '<div class="lbl">Fechas & Factura</div>' +
-          '<div class="val">Emisión: ' + fmtFecha(oc.fechaEmision) + '</div>' +
-          '<div class="val2">' +
-            'Llegada estimada: ' + fmtFecha(oc.fechaEstimadaLlegada) +
-            (oc._numeroFacturaProveedor ? '<br>N° Factura Proveedor: <strong>' + oc._numeroFacturaProveedor + '</strong>' : '') +
-          '</div>' +
-        '</div>' +
-      '</div>' +
-
-      // Metadata adicional si existe
-      ((meta.condicionPago || meta.agente || meta.consignadoA || meta.marca)
-        ? '<div class="meta-row">' +
-            (meta.condicionPago ? '<div class="meta-item"><div class="k">Condición Pago</div><div class="v">' + meta.condicionPago + '</div></div>' : '') +
-            (meta.agente        ? '<div class="meta-item"><div class="k">Agente</div><div class="v">' + meta.agente + '</div></div>' : '') +
-            (meta.consignadoA   ? '<div class="meta-item"><div class="k">Consignado a</div><div class="v">' + meta.consignadoA + '</div></div>' : '') +
-            (meta.marca         ? '<div class="meta-item"><div class="k">Marca</div><div class="v">' + meta.marca + '</div></div>' : '') +
-          '</div>'
-        : '') +
-
-      // Tabla de items
-      '<table class="items">' +
-        '<thead><tr>' +
-          '<th style="width:22px;">#</th>' +
-          '<th style="width:75px;">Ref Prov</th>' +
-          '<th style="width:75px;">Ref Farmers</th>' +
-          '<th>Descripción</th>' +
-          '<th style="width:38px;text-align:center;">Unid</th>' +
-          '<th style="width:48px;text-align:right;">Cant</th>' +
-          '<th style="width:32px;text-align:center;">Bul</th>' +
-          '<th style="width:60px;text-align:right;">FOB</th>' +
-          '<th style="width:65px;text-align:right;">Subtotal</th>' +
-        '</tr></thead>' +
-        '<tbody>' + filasHTML + '</tbody>' +
-      '</table>' +
-
-      // Totales + Volumetría
-      '<div class="bottom-grid">' +
-        '<div class="tot-box">' +
-          '<div class="tot-row"><span>Subtotal</span><span class="v">$' + fmt(t.subtotal) + '</span></div>' +
-          ((t.descuento > 0) ? '<div class="tot-row"><span>Descuento (−)</span><span class="v">−$' + fmt(t.descuento) + '</span></div>' : '') +
-          ((t.traspaso  > 0) ? '<div class="tot-row"><span>Traspaso (+)</span><span class="v">$' + fmt(t.traspaso) + '</span></div>' : '') +
-          ((t.impuesto  > 0) ? '<div class="tot-row"><span>Impuesto (+)</span><span class="v">$' + fmt(t.impuesto) + '</span></div>' : '') +
-          '<div class="tot-row big"><span>TOTAL ' + (oc.moneda || 'USD') + '</span><span class="v">$' + fmt(t.total) + '</span></div>' +
-        '</div>' +
-        '<div class="vol-box">' +
-          '<div class="vol-t">📦 Volumetría</div>' +
-          '<div class="vol-grid">' +
-            '<div><div class="lbl">Volumen</div><div class="val">' + fmt(t.volumenTotalFt3) + '</div><div class="lbl">ft³</div></div>' +
-            '<div><div class="lbl">Peso</div><div class="val">' + fmt(t.pesoTotalKg) + '</div><div class="lbl">Kg</div></div>' +
-            '<div><div class="lbl">Cajas</div><div class="val">' + (t.cajasTotales || 0) + '</div><div class="lbl">bultos</div></div>' +
-          '</div>' +
+  // ═══ HEADER ═══
+  '<div class="hdr">' +
+    '<div class="hdr-left">' +
+      '<div class="hdr-logo">' + (logoBase64 ? '<img src="' + logoBase64 + '" alt="Farmers">' : '<span class="hdr-logo-fallback">F</span>') + '</div>' +
+      '<div class="hdr-empresa">' +
+        '<div class="tagline">Distribuidora Mayorista</div>' +
+        '<h1>FARMERS C.A.</h1>' +
+        '<div class="contact">' +
+          'Margarita, Nueva Esparta, Venezuela<br>' +
+          '<b>Tel:</b> 0412-0445797 · <b>Email:</b> farmersve@gmail.com' +
         '</div>' +
       '</div>' +
-
-      // Notas
-      (oc.notas ? '<div class="notas"><strong>📝 Notas:</strong> ' + oc.notas + '</div>' : '') +
-
-      // Footer
-      '<div class="foot">' +
-        'Documento generado el ' + fmtFecha(new Date().toISOString()) + ' · ' + oc.items.length + ' ítems · ' +
-        'FARMERS C.A. — Distribuidora Mayorista · Margarita, Venezuela' +
-      '</div>' +
-
     '</div>' +
+    '<div class="hdr-right">' +
+      '<div class="doc-label">Orden de Compra</div>' +
+      '<div class="doc-num">' + esc(oc.numero) + '</div>' +
+      '<div class="doc-badge">' + estadoObj.icon + ' ' + esc(estadoObj.label) + '</div>' +
+    '</div>' +
+  '</div>' +
 
-    '<script>document.title = ' + JSON.stringify(nombreArchivo) + ';<\/script>' +
-    '</body></html>';
+  // ═══ PANELES PROVEEDOR / FECHAS ═══
+  '<div class="info-grid">' +
+    '<div class="info-card">' +
+      '<div class="ic-label">📦 Proveedor</div>' +
+      '<div class="ic-value">' + esc(oc.proveedorNombre || '—') + '</div>' +
+      '<div class="ic-sub">' +
+        (oc.proveedorPais ? '<b>País:</b> ' + esc(oc.proveedorPais) + ' · ' : '') +
+        '<b>Incoterms:</b> ' + esc(oc.incoterms || 'FOB') + ' · ' +
+        '<b>Moneda:</b> ' + esc(oc.moneda || 'USD') +
+        (oc.puertoOrigen ? '<br><b>Puerto origen:</b> ' + esc(oc.puertoOrigen) : '') +
+      '</div>' +
+    '</div>' +
+    '<div class="info-card orange">' +
+      '<div class="ic-label">📅 Fechas & Factura</div>' +
+      '<div class="ic-value">Emisión: ' + fmtFecha(oc.fechaEmision) + '</div>' +
+      '<div class="ic-sub">' +
+        '<b>Llegada estimada:</b> ' + fmtFecha(oc.fechaEstimadaLlegada) +
+        (oc._numeroFacturaProveedor ? '<br><b>N° Factura Prov.:</b> #' + esc(oc._numeroFacturaProveedor) : '') +
+      '</div>' +
+    '</div>' +
+  '</div>' +
 
-  // Abrir en nueva ventana
+  // ═══ METADATA IA ═══
+  ((meta.condicionPago || meta.agente || meta.consignadoA || meta.marca || meta.socioDeNegocio)
+    ? '<div class="meta-strip">' +
+        (meta.condicionPago ? '<div class="mi"><span class="k">Pago:</span><span class="v">' + esc(meta.condicionPago) + '</span></div>' : '') +
+        (meta.agente ? '<div class="mi"><span class="k">Agente:</span><span class="v">' + esc(meta.agente) + '</span></div>' : '') +
+        (meta.consignadoA ? '<div class="mi"><span class="k">Consignado:</span><span class="v">' + esc(meta.consignadoA) + '</span></div>' : '') +
+        (meta.marca ? '<div class="mi"><span class="k">Marca:</span><span class="v">' + esc(meta.marca) + '</span></div>' : '') +
+        (meta.socioDeNegocio ? '<div class="mi"><span class="k">Cód. Cliente:</span><span class="v">' + esc(meta.socioDeNegocio) + '</span></div>' : '') +
+      '</div>'
+    : '') +
+
+  // ═══ TABLA ITEMS ═══
+  '<table class="items">' +
+    '<thead><tr>' +
+      '<th style="width:24px;" class="center">#</th>' +
+      '<th style="width:72px;">Ref Prov</th>' +
+      '<th style="width:72px;">Ref Farmers</th>' +
+      '<th>Descripción</th>' +
+      '<th style="width:38px;" class="center">Unid</th>' +
+      '<th style="width:48px;" class="right">Cantidad</th>' +
+      '<th style="width:32px;" class="center">Bul</th>' +
+      '<th style="width:58px;" class="right">FOB</th>' +
+      '<th style="width:68px;" class="right">Subtotal</th>' +
+    '</tr></thead>' +
+    '<tbody>' + filasHTML + '</tbody>' +
+  '</table>' +
+
+  // ═══ RESUMEN: TOTALES + VOLUMETRÍA ═══
+  '<div class="summary">' +
+    '<div class="totals-card">' +
+      '<div class="tc-title">💰 Totales</div>' +
+      '<div class="tc-row"><span class="lbl">Subtotal</span><span class="val">$' + fmt(t.subtotal) + '</span></div>' +
+      ((t.descuento > 0) ? '<div class="tc-row desc"><span class="lbl">Descuento (−)</span><span class="val">−$' + fmt(t.descuento) + '</span></div>' : '') +
+      ((t.traspaso  > 0) ? '<div class="tc-row"><span class="lbl">Traspaso (+)</span><span class="val">$' + fmt(t.traspaso) + '</span></div>' : '') +
+      ((t.impuesto  > 0) ? '<div class="tc-row"><span class="lbl">Impuesto (+)</span><span class="val">$' + fmt(t.impuesto) + '</span></div>' : '') +
+      '<div class="tc-row total"><span class="lbl">TOTAL ' + esc(oc.moneda || 'USD') + '</span><span class="val">$' + fmt(t.total) + '</span></div>' +
+    '</div>' +
+    '<div class="vol-card">' +
+      '<div class="vc-title">📐 Volumetría</div>' +
+      '<div class="vc-grid">' +
+        '<div class="vc-cell"><div class="lbl">Volumen</div><div class="val">' + fmt(t.volumenTotalFt3) + '</div><div class="unit">ft³ / CFT</div></div>' +
+        '<div class="vc-cell"><div class="lbl">Peso</div><div class="val">' + fmt(t.pesoTotalKg) + '</div><div class="unit">Kilogramos</div></div>' +
+        '<div class="vc-cell"><div class="lbl">Cajas</div><div class="val">' + (t.cajasTotales || 0) + '</div><div class="unit">Bultos</div></div>' +
+      '</div>' +
+    '</div>' +
+  '</div>' +
+
+  // ═══ NOTAS ═══
+  (oc.notas ? '<div class="notas-block"><b>📝 Notas:</b> ' + esc(oc.notas) + '</div>' : '') +
+
+  // ═══ FOOTER ═══
+  '<div class="foot">' +
+    'Documento generado el <strong>' + fmtFecha(new Date().toISOString()) + '</strong> · ' +
+    '<strong>' + items.length + ' ítems</strong> · ' +
+    '<strong>OC ' + esc(oc.numero) + '</strong>' +
+    '<div class="brand-line">FARMERS C.A. — DISTRIBUIDORA MAYORISTA · MARGARITA, VENEZUELA</div>' +
+  '</div>' +
+
+'</div>' +
+
+'<script>document.title = ' + JSON.stringify(nombreArchivo) + ';<\/script>' +
+'</body></html>';
+
   var w = window.open('', '_blank');
-  if (!w) {
-    alert('Permite las ventanas emergentes para generar el PDF');
-    return;
-  }
+  if (!w) { alert('Permite las ventanas emergentes para generar el PDF'); return; }
   w.document.open();
   w.document.write(html);
   w.document.close();
 };
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+// EXPORT EXCEL DE OC — Archivo .xlsx con todos los datos detallados
+// ═══════════════════════════════════════════════════════════════════════════
+// Genera un archivo Excel multihoja profesional:
+//   Hoja 1: "Resumen" — datos generales, totales, volumetría, metadata
+//   Hoja 2: "Items" — tabla detallada de todas las líneas de productos
+//   Hoja 3: "Comparativo" — ordenada vs factura (si hay discrepancias)
+// Filename: "FARMERS - OC (numero) - (proveedor) (fecha).xlsx"
+
+window.ocExportarExcel = function(id) {
+  var oc = _ocDB.find(function(x){ return x.id === id; });
+  if (!oc) { alert('OC no encontrada'); return; }
+  if (!oc.items || !oc.items.length) { alert('OC sin items, no se puede exportar'); return; }
+  if (typeof XLSX === 'undefined') { alert('Biblioteca XLSX no cargada'); return; }
+
+  var items = oc.items.slice().sort(function(a,b){
+    return String(a.refFarmers||'').localeCompare(String(b.refFarmers||''), 'es', {numeric:true});
+  });
+
+  var t = oc.totales || {};
+  var meta = oc._metadataFactura || {};
+  var estadoObj = (typeof OC_ESTADOS !== 'undefined' && OC_ESTADOS[oc.estado]) ? OC_ESTADOS[oc.estado] : {label:oc.estado};
+
+  var fmtFecha = function(f){ if (!f) return ''; try { var d=new Date(f); return String(d.getDate()).padStart(2,'0')+'/'+String(d.getMonth()+1).padStart(2,'0')+'/'+d.getFullYear(); } catch(e) { return f; } };
+
+  // ─── Hoja 1: Resumen (key-value) ───
+  var resumenRows = [
+    ['FARMERS C.A. — ORDEN DE COMPRA'],
+    [],
+    ['📋 DATOS GENERALES'],
+    ['N° OC', oc.numero],
+    ['Estado', estadoObj.label],
+    ['Fecha emisión', fmtFecha(oc.fechaEmision)],
+    ['Fecha llegada estimada', fmtFecha(oc.fechaEstimadaLlegada)],
+    ['Moneda', oc.moneda || 'USD'],
+    ['Incoterms', oc.incoterms || 'FOB'],
+    ['Puerto origen', oc.puertoOrigen || ''],
+    [],
+    ['📦 PROVEEDOR'],
+    ['Nombre', oc.proveedorNombre || ''],
+    ['País', oc.proveedorPais || ''],
+    ['N° Factura proveedor', oc._numeroFacturaProveedor || ''],
+    []
+  ];
+
+  if (Object.keys(meta).length > 0) {
+    resumenRows.push(['🗂 METADATA FACTURA']);
+    if (meta.numeroDocumento)     resumenRows.push(['N° Documento',       meta.numeroDocumento]);
+    if (meta.socioDeNegocio)      resumenRows.push(['Socio de negocio',   meta.socioDeNegocio]);
+    if (meta.tipoDocumento)       resumenRows.push(['Tipo documento',     meta.tipoDocumento]);
+    if (meta.fechaEmisionFactura) resumenRows.push(['Fecha emisión',      fmtFecha(meta.fechaEmisionFactura)]);
+    if (meta.fechaVencimiento)    resumenRows.push(['Vencimiento',        fmtFecha(meta.fechaVencimiento)]);
+    if (meta.condicionPago)       resumenRows.push(['Condición pago',     meta.condicionPago]);
+    if (meta.marca)               resumenRows.push(['Marca',              meta.marca]);
+    if (meta.agente)              resumenRows.push(['Agente',             meta.agente]);
+    if (meta.contacto)            resumenRows.push(['Contacto',           meta.contacto]);
+    if (meta.consignadoA)         resumenRows.push(['Consignado a',       meta.consignadoA]);
+    if (meta.tramite)             resumenRows.push(['Trámite',            meta.tramite]);
+    resumenRows.push([]);
+  }
+
+  resumenRows.push(['💰 TOTALES FINANCIEROS (' + (oc.moneda || 'USD') + ')']);
+  resumenRows.push(['Subtotal',  parseFloat(t.subtotal)  || 0]);
+  resumenRows.push(['Descuento', parseFloat(t.descuento) || 0]);
+  resumenRows.push(['Traspaso',  parseFloat(t.traspaso)  || 0]);
+  resumenRows.push(['Impuesto',  parseFloat(t.impuesto)  || 0]);
+  resumenRows.push(['TOTAL',     parseFloat(t.total)     || 0]);
+  resumenRows.push([]);
+  resumenRows.push(['📐 VOLUMETRÍA']);
+  resumenRows.push(['Volumen (ft³)',  parseFloat(t.volumenTotalFt3) || 0]);
+  resumenRows.push(['Peso (Kg)',      parseFloat(t.pesoTotalKg)     || 0]);
+  resumenRows.push(['Cajas totales',  parseInt(t.cajasTotales)      || 0]);
+  resumenRows.push([]);
+  resumenRows.push(['📊 RESUMEN DE ÍTEMS']);
+  resumenRows.push(['Total ítems',       items.length]);
+  var totalUds = items.reduce(function(s,it){ return s + (parseInt(it.cantidad)||0); }, 0);
+  resumenRows.push(['Total unidades',    totalUds]);
+  if (oc.notas) {
+    resumenRows.push([]);
+    resumenRows.push(['📝 NOTAS']);
+    resumenRows.push([oc.notas]);
+  }
+
+  var wsResumen = XLSX.utils.aoa_to_sheet(resumenRows);
+  wsResumen['!cols'] = [ {wch:28}, {wch:50} ];
+  // Ancho del título (merge)
+  wsResumen['!merges'] = [
+    { s:{r:0,c:0}, e:{r:0,c:1} }
+  ];
+
+  // ─── Hoja 2: Items ───
+  var itemsHeader = ['#', 'Ref Proveedor', 'Ref Farmers', 'Descripción', 'Unidad', 'Cantidad', 'Bultos', 'Precio FOB', 'Subtotal', 'Volumen ft³', 'Peso Kg'];
+  var itemsRows = [ itemsHeader ];
+  items.forEach(function(it, i){
+    var sub = (parseFloat(it.cantidad)||0) * (parseFloat(it.precioFOB)||0);
+    itemsRows.push([
+      i+1,
+      it.refProveedor || '',
+      it.refFarmers || '',
+      it.descripcion || '',
+      it.unidad || 'PZA',
+      parseFloat(it.cantidad) || 0,
+      parseInt(it.bultosEstimados) || 0,
+      parseFloat(it.precioFOB) || 0,
+      sub,
+      parseFloat(it.volumenFt3) || 0,
+      parseFloat(it.pesoKg)     || 0
+    ]);
+  });
+  // Fila de totales al final
+  itemsRows.push([]);
+  itemsRows.push(['', '', '', '', 'TOTALES',
+    items.reduce(function(s,it){ return s + (parseFloat(it.cantidad)||0); }, 0),
+    items.reduce(function(s,it){ return s + (parseInt(it.bultosEstimados)||0); }, 0),
+    '',
+    parseFloat(t.subtotal) || 0,
+    parseFloat(t.volumenTotalFt3) || 0,
+    parseFloat(t.pesoTotalKg) || 0
+  ]);
+
+  var wsItems = XLSX.utils.aoa_to_sheet(itemsRows);
+  wsItems['!cols'] = [
+    {wch:6},  {wch:18}, {wch:14}, {wch:55}, {wch:8},
+    {wch:11}, {wch:8},  {wch:12}, {wch:12}, {wch:12}, {wch:12}
+  ];
+
+  // ─── Hoja 3: Comparativo Ordenada (si aplica) ───
+  var wsComp = null;
+  try {
+    var ptData = JSON.parse(localStorage.getItem('farmers_pt_data') || '{}');
+    var compHeader = ['Ref Farmers', 'Descripción', 'Cantidad Factura', 'Ordenada Actual', 'Diferencia', 'Estado'];
+    var compRows = [ compHeader ];
+    items.forEach(function(it){
+      var entry = ptData[it.refFarmers];
+      var ord = (entry && entry.exOrdenada !== undefined) ? parseInt(entry.exOrdenada) : 0;
+      var cant = parseInt(it.cantidad) || 0;
+      var diff = cant - ord;
+      var estado;
+      if (ord === 0) estado = 'Sin ordenada';
+      else if (ord === cant) estado = 'Coincide ✓';
+      else estado = 'DIFERENCIA ⚠';
+      compRows.push([ it.refFarmers, it.descripcion, cant, ord, diff, estado ]);
+    });
+    wsComp = XLSX.utils.aoa_to_sheet(compRows);
+    wsComp['!cols'] = [ {wch:14}, {wch:55}, {wch:16}, {wch:16}, {wch:12}, {wch:18} ];
+  } catch(e) { /* ignore */ }
+
+  // Construir workbook
+  var wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, wsResumen, 'Resumen');
+  XLSX.utils.book_append_sheet(wb, wsItems,   'Items');
+  if (wsComp) XLSX.utils.book_append_sheet(wb, wsComp, 'Comparativo Ordenada');
+
+  var hoyStr = (function(){
+    var d = new Date();
+    return String(d.getDate()).padStart(2,'0') + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + d.getFullYear();
+  })();
+  var filename = 'FARMERS - OC ' + oc.numero + ' - ' + String(oc.proveedorNombre||'Proveedor').replace(/[^\w\s.,-]/g,'').trim() + ' (' + hoyStr + ').xlsx';
+
+  XLSX.writeFile(wb, filename);
+
+  if (typeof showToast === 'function') showToast('📊 Excel generado: ' + oc.numero, 'success');
+};
+
 
 window.ocCambiarEstado = function(id) {
   var oc = _ocDB.find(function(x){ return x.id === id; });
