@@ -20314,6 +20314,7 @@ function doRefSearch() {
           '<button onclick="ptImportarDatosMaestro()" style="background:linear-gradient(135deg,#7c3aed,#6d28d9);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:700;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;" title="Importar y actualizar todos los campos desde Excel">📥 Importar Datos</button>' +
           '<button onclick="ptImportarConIA()" style="background:linear-gradient(135deg,#dc2626,#b91c1c);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:700;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;" title="Usar IA para interpretar catálogo del proveedor (PDF o Excel)">🤖 IA Catálogo</button>' +
           '<button onclick="ptAplicarRefAlFinalMasivo()" style="background:linear-gradient(135deg,#78350f,#a16207);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:700;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;" title="Aplica REF interna al final de TODAS las descripciones del catálogo (necesario para Valery)">✏️ REF al final</button>' +
+          '<button onclick="ptAbrirDiagnosticoInventario()" style="background:linear-gradient(135deg,#7e22ce,#581c87);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:700;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;" title="Ver pedidos reservados, diagnosticar inventario y liberar comprometido huérfano">🔧 Diagnóstico Inventario</button>' +
         '</div>' +
         '<div id="pt-stats" style="padding:8px 20px;background:#fff;border-bottom:1px solid #eef0f8;display:flex;gap:16px;font-size:.72rem;color:#5a6080;flex-wrap:wrap;"></div>' +
         '<div style="overflow-y:auto;max-height:calc(100vh - 260px);">' +
@@ -21828,6 +21829,267 @@ window.ptCopiarReporteRef = function() {
     });
   } else {
     prompt('Copia este reporte (Ctrl+C):', window._ptUltimoReporteRef);
+  }
+};
+
+// ══════════════════════════════════════════════════════════════════
+// DIAGNÓSTICO Y RECUPERACIÓN DE INVENTARIO
+// ══════════════════════════════════════════════════════════════════
+// Permite visualizar el estado del inventario comprometido vs pedidos activos,
+// identificar huérfanos (comprometido sin pedido correspondiente) y liberarlos.
+// También permite cancelar pedidos en estado RESERVADO para liberar su
+// inventario comprometido sin despacharlos.
+window.ptAbrirDiagnosticoInventario = function() {
+  var inv  = (typeof getInventory==='function') ? getInventory() : {};
+  var comp = (typeof getComprometido==='function') ? getComprometido() : {};
+  var peds = (typeof getMsPedidos==='function') ? getMsPedidos() : [];
+
+  // Totales
+  var totalRefsComp = Object.keys(comp).length;
+  var totalQtyComp = 0;
+  Object.keys(comp).forEach(function(r){ totalQtyComp += (comp[r].qty||0); });
+
+  // Pedidos activos (NO despachados): cualquiera con estado RESERVADO o PARCIAL
+  var pedsActivos = peds.filter(function(p){
+    var est = String(p.estado||'').toUpperCase();
+    return est === 'RESERVADO' || est === 'PARCIAL' || (!est && !p.formalizado);
+  });
+
+  // Calcular total comprometido por los pedidos activos
+  var totalQtyEsperado = 0;
+  var refsEsperadas = {};
+  pedsActivos.forEach(function(p){
+    (p.items||[]).forEach(function(it){
+      if (!it || !it.ref) return;
+      var suma = 0;
+      var sucs = it.sucursales || {};
+      Object.keys(sucs).forEach(function(s){
+        var entry = sucs[s] || {};
+        // Estado de la sucursal — solo contar las NO despachadas
+        var estSuc = String((p.sucursalesEstado||{})[s]||'').toUpperCase();
+        if (estSuc === 'DESPACHADO') return;
+        suma += parseInt(entry.despacho||entry.cant||0) || 0;
+      });
+      if (suma > 0) {
+        totalQtyEsperado += suma;
+        refsEsperadas[it.ref] = (refsEsperadas[it.ref]||0) + suma;
+      }
+    });
+  });
+
+  var huerfanos = totalQtyComp - totalQtyEsperado;
+
+  // Construir HTML del diagnóstico
+  var pedsHTML = pedsActivos.length === 0
+    ? '<div style="padding:20px;text-align:center;color:#64748b;font-style:italic;">No hay pedidos activos en estado RESERVADO o PARCIAL</div>'
+    : pedsActivos.map(function(p){
+        var est = (p.estado||'RESERVADO').toUpperCase();
+        var colorEst = est==='RESERVADO'?'#d97706':est==='PARCIAL'?'#7c3aed':'#64748b';
+        var sucs = (p.sucursales||[]).map(function(s){
+          var ests = String((p.sucursalesEstado||{})[s]||'').toUpperCase();
+          var col = ests==='DESPACHADO'?'#16a34a':'#d97706';
+          return '<span style="background:'+col+';color:white;padding:2px 6px;border-radius:3px;font-size:.62rem;font-weight:700;margin-right:4px;">'+s+' · '+(ests||'RES')+'</span>';
+        }).join('');
+        var cntItems = (p.items||[]).length;
+        return '<tr style="border-bottom:1px solid #e2e8f0;">' +
+          '<td style="padding:8px 10px;font-family:monospace;font-weight:700;color:#1a2050;font-size:.78rem;">'+(p.numP||'?')+'</td>' +
+          '<td style="padding:8px 10px;font-size:.72rem;color:#64748b;">'+(p.fecha||'-')+'</td>' +
+          '<td style="padding:8px 10px;"><span style="background:'+colorEst+';color:white;padding:3px 8px;border-radius:4px;font-size:.68rem;font-weight:800;letter-spacing:.3px;">'+est+'</span></td>' +
+          '<td style="padding:8px 10px;font-size:.72rem;">'+sucs+'</td>' +
+          '<td style="padding:8px 10px;text-align:center;font-weight:700;color:#475569;">'+cntItems+'</td>' +
+          '<td style="padding:8px 10px;text-align:center;">' +
+            '<button onclick="ptCancelarPedidoFantasma(\''+p.numP+'\')" style="background:#dc2626;color:white;border:none;border-radius:5px;padding:5px 10px;font-size:.7rem;font-weight:700;cursor:pointer;">🗑️ Cancelar y liberar</button>' +
+          '</td>' +
+        '</tr>';
+      }).join('');
+
+  var estado = huerfanos > 0 ? '⚠️ DESBALANCE DETECTADO' : huerfanos < 0 ? '⚠️ FALTANTE' : '✅ BALANCEADO';
+  var colorEstado = huerfanos > 0 ? '#dc2626' : huerfanos < 0 ? '#7c3aed' : '#16a34a';
+
+  var html =
+  '<div id="pt-diag-ov" style="position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:99900;display:flex;align-items:center;justify-content:center;padding:20px;">' +
+    '<div style="background:white;border-radius:14px;width:100%;max-width:1100px;max-height:92vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,0.5);">' +
+      '<div style="padding:16px 24px;background:linear-gradient(135deg,#7e22ce,#581c87);color:white;display:flex;justify-content:space-between;align-items:center;border-radius:14px 14px 0 0;">' +
+        '<div>' +
+          '<div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;font-size:1.4rem;">🔧 DIAGNÓSTICO DE INVENTARIO</div>' +
+          '<div style="font-size:0.78rem;opacity:0.95;">Pedidos reservados · Inventario comprometido · Recuperación</div>' +
+        '</div>' +
+        '<button onclick="document.getElementById(\'pt-diag-ov\').remove()" style="background:rgba(255,255,255,0.15);border:1.5px solid rgba(255,255,255,0.3);border-radius:8px;padding:7px 12px;cursor:pointer;font-weight:800;color:white;">✕</button>' +
+      '</div>' +
+
+      '<div style="padding:18px 24px;flex:1;overflow:auto;">' +
+
+        '<div style="background:'+colorEstado+';color:white;padding:12px 16px;border-radius:8px;margin-bottom:16px;font-weight:800;font-size:.9rem;text-align:center;">' +
+          estado +
+        '</div>' +
+
+        '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:20px;">' +
+          '<div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:10px 14px;">' +
+            '<div style="font-size:.62rem;font-weight:800;color:#1d4ed8;text-transform:uppercase;letter-spacing:.5px;">REFS COMPROMETIDAS</div>' +
+            '<div style="font-size:1.4rem;font-weight:900;color:#1e3a8a;margin-top:2px;">'+totalRefsComp+'</div>' +
+          '</div>' +
+          '<div style="background:#fef3c7;border:1px solid #fde68a;border-radius:8px;padding:10px 14px;">' +
+            '<div style="font-size:.62rem;font-weight:800;color:#92400e;text-transform:uppercase;letter-spacing:.5px;">UDS COMPROMETIDAS</div>' +
+            '<div style="font-size:1.4rem;font-weight:900;color:#7c2d12;margin-top:2px;">'+totalQtyComp+'</div>' +
+          '</div>' +
+          '<div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:10px 14px;">' +
+            '<div style="font-size:.62rem;font-weight:800;color:#166534;text-transform:uppercase;letter-spacing:.5px;">UDS ESPERADAS (PEDIDOS ACTIVOS)</div>' +
+            '<div style="font-size:1.4rem;font-weight:900;color:#14532d;margin-top:2px;">'+totalQtyEsperado+'</div>' +
+          '</div>' +
+        '</div>' +
+
+        (huerfanos > 0 ?
+          '<div style="background:#fef2f2;border-left:4px solid #dc2626;padding:12px 16px;border-radius:4px;margin-bottom:16px;">' +
+            '<div style="font-weight:800;color:#991b1b;font-size:.85rem;margin-bottom:4px;">⚠️ '+huerfanos+' unidades comprometidas HUÉRFANAS</div>' +
+            '<div style="font-size:.75rem;color:#7f1d1d;line-height:1.5;margin-bottom:8px;">Hay más unidades comprometidas que las que los pedidos activos justifican. Esto significa que algún pedido se canceló o eliminó sin liberar su comprometido, o hubo un bug que duplicó compromisos.</div>' +
+            '<button onclick="ptLimpiarComprometidoHuerfano()" style="background:#dc2626;color:white;border:none;border-radius:6px;padding:7px 14px;font-weight:800;font-size:.78rem;cursor:pointer;">🧹 Limpiar huérfanos (resetear comprometido)</button>' +
+          '</div>' : '') +
+
+        '<div style="font-weight:800;color:#1a2050;font-size:.85rem;margin-bottom:10px;text-transform:uppercase;letter-spacing:.5px;">📦 Pedidos Activos (no despachados)</div>' +
+
+        '<div style="border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;">' +
+          '<table style="width:100%;border-collapse:collapse;">' +
+            '<thead style="background:#f8fafc;">' +
+              '<tr>' +
+                '<th style="padding:8px 10px;text-align:left;font-size:.68rem;color:#475569;text-transform:uppercase;letter-spacing:.4px;">N° PEDIDO</th>' +
+                '<th style="padding:8px 10px;text-align:left;font-size:.68rem;color:#475569;text-transform:uppercase;letter-spacing:.4px;">FECHA</th>' +
+                '<th style="padding:8px 10px;text-align:left;font-size:.68rem;color:#475569;text-transform:uppercase;letter-spacing:.4px;">ESTADO</th>' +
+                '<th style="padding:8px 10px;text-align:left;font-size:.68rem;color:#475569;text-transform:uppercase;letter-spacing:.4px;">SUCURSALES</th>' +
+                '<th style="padding:8px 10px;text-align:center;font-size:.68rem;color:#475569;text-transform:uppercase;letter-spacing:.4px;">ITEMS</th>' +
+                '<th style="padding:8px 10px;text-align:center;font-size:.68rem;color:#475569;text-transform:uppercase;letter-spacing:.4px;">ACCIÓN</th>' +
+              '</tr>' +
+            '</thead>' +
+            '<tbody>'+pedsHTML+'</tbody>' +
+          '</table>' +
+        '</div>' +
+
+      '</div>' +
+
+      '<div style="padding:12px 24px;background:#f8fafc;border-top:1px solid #e2e8f0;display:flex;justify-content:space-between;align-items:center;border-radius:0 0 14px 14px;">' +
+        '<div style="font-size:.72rem;color:#64748b;"><strong>⚠️ Regla de oro:</strong> inventario REAL solo se descuenta al <em>Confirmar Despacho</em>. Cancelar un pedido RESERVADO solo libera el comprometido (el real queda intacto).</div>' +
+        '<button onclick="document.getElementById(\'pt-diag-ov\').remove()" style="background:#1a2050;color:white;border:none;border-radius:6px;padding:8px 16px;font-weight:800;font-size:.78rem;cursor:pointer;">Cerrar</button>' +
+      '</div>' +
+
+    '</div>' +
+  '</div>';
+
+  document.body.insertAdjacentHTML('beforeend', html);
+};
+
+// Cancelar pedido fantasma: libera comprometido, marca pedido como CANCELADO
+window.ptCancelarPedidoFantasma = function(numP) {
+  if (!numP) return;
+  if (!confirm('¿Cancelar pedido '+numP+'?\n\nEsto:\n✅ Libera el inventario comprometido\n✅ Marca el pedido como CANCELADO\n❌ NO recupera ventas/CXC (no las hay en RESERVADO)\n\n¿Continuar?')) return;
+
+  if (typeof msCancelarPedido === 'function') {
+    try {
+      msCancelarPedido(numP);
+      showToast('✅ Pedido '+numP+' cancelado · inventario liberado', 'success');
+      // Refresh UI
+      if (typeof ptRender === 'function') ptRender();
+      // Cerrar y reabrir diagnóstico
+      var ov = document.getElementById('pt-diag-ov');
+      if (ov) ov.remove();
+      setTimeout(function(){ ptAbrirDiagnosticoInventario(); }, 200);
+    } catch(e) {
+      console.error('Error cancelando pedido:', e);
+      showToast('❌ Error: '+e.message, 'warn');
+    }
+  } else {
+    // Fallback manual: limpiar directamente
+    try {
+      var peds = getMsPedidos();
+      var pidx = peds.findIndex(function(p){return p.numP===numP;});
+      if (pidx < 0) { showToast('Pedido no encontrado','warn'); return; }
+      var pedido = peds[pidx];
+
+      // Liberar comprometido
+      var comp = getComprometido();
+      (pedido.items||[]).forEach(function(item){
+        if (!item.ref || !comp[item.ref]) return;
+        var entry = (comp[item.ref].pedidos||[]).find(function(e){return e.numP===numP;});
+        if (entry) {
+          comp[item.ref].qty = Math.max(0, (comp[item.ref].qty||0) - (entry.qty||0));
+          comp[item.ref].pedidos = comp[item.ref].pedidos.filter(function(e){return e.numP!==numP;});
+          if (comp[item.ref].qty <= 0) delete comp[item.ref];
+        }
+      });
+      saveComprometido(comp);
+
+      // Marcar como cancelado
+      peds[pidx].estado = 'CANCELADO';
+      peds[pidx].fechaCancelacion = new Date().toLocaleDateString('es-VE');
+      saveMsPedidos(peds);
+
+      showToast('✅ Pedido '+numP+' cancelado (modo fallback) · inventario liberado', 'success');
+      if (typeof ptRender === 'function') ptRender();
+      var ov2 = document.getElementById('pt-diag-ov');
+      if (ov2) ov2.remove();
+      setTimeout(function(){ ptAbrirDiagnosticoInventario(); }, 200);
+    } catch(e) {
+      console.error(e);
+      showToast('❌ Error: '+e.message, 'warn');
+    }
+  }
+};
+
+// Limpiar comprometido huérfano: reconstruye el comprometido desde cero
+// basado SOLO en los pedidos activos (RESERVADO/PARCIAL)
+window.ptLimpiarComprometidoHuerfano = function() {
+  if (!confirm('⚠️ LIMPIAR COMPROMETIDO HUÉRFANO\n\nEsto reconstruye el inventario comprometido desde cero, basándose en los pedidos RESERVADOS/PARCIALES activos.\n\n' +
+               '✅ El inventario REAL no se toca\n' +
+               '✅ Los pedidos despachados no se afectan\n' +
+               '❌ Cualquier compromiso sin pedido activo se elimina\n\n' +
+               '¿Continuar?')) return;
+
+  try {
+    var peds = getMsPedidos();
+    var compNuevo = {};
+
+    // Reconstruir desde pedidos activos
+    peds.forEach(function(p){
+      var est = String(p.estado||'').toUpperCase();
+      if (est !== 'RESERVADO' && est !== 'PARCIAL') return;
+
+      (p.items||[]).forEach(function(item){
+        if (!item.ref) return;
+        var sumaActiva = 0;
+        var sucs = item.sucursales || {};
+        Object.keys(sucs).forEach(function(s){
+          var estSuc = String((p.sucursalesEstado||{})[s]||'').toUpperCase();
+          if (estSuc === 'DESPACHADO') return; // ya despachada, no cuenta
+          sumaActiva += parseInt((sucs[s]||{}).despacho || (sucs[s]||{}).cant || 0) || 0;
+        });
+        if (sumaActiva <= 0) return;
+
+        if (!compNuevo[item.ref]) compNuevo[item.ref] = { qty: 0, pedidos: [] };
+        compNuevo[item.ref].qty += sumaActiva;
+        compNuevo[item.ref].pedidos.push({
+          numP: p.numP,
+          cliente: p.cliente || '',
+          fecha: p.fecha || '',
+          qty: sumaActiva
+        });
+      });
+    });
+
+    // Diferencia
+    var compViejo = getComprometido();
+    var diffRefs = 0;
+    Object.keys(compViejo).forEach(function(r){
+      if (!compNuevo[r] || compNuevo[r].qty !== compViejo[r].qty) diffRefs++;
+    });
+
+    saveComprometido(compNuevo);
+
+    showToast('🧹 Comprometido reconstruido · '+diffRefs+' refs ajustadas', 'success');
+    if (typeof ptRender === 'function') ptRender();
+    var ov = document.getElementById('pt-diag-ov');
+    if (ov) ov.remove();
+    setTimeout(function(){ ptAbrirDiagnosticoInventario(); }, 300);
+  } catch(e) {
+    console.error(e);
+    showToast('❌ Error: '+e.message, 'warn');
   }
 };
 
@@ -25964,26 +26226,27 @@ window.msImagenConfirmar = function() {
     }
   } catch(e){}
 
-  // Si encontramos cliente en el directorio, usarlo (completa datos fiscales)
+  // DECIDIR el nombre FINAL ANTES de armar MS.data
+  // Regla: si hay match con directorio, usar EXACTAMENTE ese nombre (para evitar divergencia con _clienteUnica.nombre)
+  var sucName;
   if (clMatch) {
     MS._clienteUnica = clMatch;
-    nomCli = clMatch.nombre;
+    sucName = clMatch.nombre;  // ← EXACTO del directorio
   } else if (nomCli) {
-    // No está en directorio pero la IA detectó el nombre — crear objeto básico
+    // No está en directorio pero la IA detectó el nombre — crear objeto con el MISMO nombre
     MS._clienteUnica = {
       nombre: nomCli,
       rif: rifCli,
       sucursales: [{ nombre: nomCli, direccion: '', despacho: '' }]
     };
+    sucName = nomCli;  // ← mismo string
   } else {
-    // Sin cliente detectado → usar nombre genérico
-    nomCli = 'PEDIDO IMAGEN';
+    // Sin cliente detectado → usar nombre genérico SIN _clienteUnica
+    sucName = 'PEDIDO IMAGEN';
     MS._clienteUnica = null;
   }
 
-  var sucName = nomCli; // usar el nombre del cliente como nombre de sucursal
-
-  // Convertir al formato MS.data
+  // Convertir al formato MS.data con el sucName YA DEFINITIVO
   MS.data = lineas.map(function(l){
     var prod = (PRODUCTS||[]).find(function(p){return p.r===l.ref;}) || {};
     var stock = (typeof getDisponible==='function') ? getDisponible(l.ref) : (prod.ex||0);
@@ -26006,7 +26269,9 @@ window.msImagenConfirmar = function() {
   MS.sucursales = [sucName];
   MS.moneda = 'USD';
   MS._modoImagen = true;
-  MS._modoUnica = true;  // Tratar como factura única para reutilizar el flujo completo de venta
+  // IMPORTANTE: NO activar _modoUnica aquí — eso dispara el renombrado de msRenderResultados
+  // que descoloca pedidos/dist si el nombre no matchea exacto con _clienteUnica.nombre
+  MS._modoUnica = false;
   msRenderResultados();
   var matchInfo = clMatch ? ' · ✅ cliente vinculado al directorio' : '';
   showToast('✅ Pedido creado desde imagen — '+lineas.length+' líneas'+matchInfo,'ok');
