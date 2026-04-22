@@ -4034,21 +4034,15 @@ function downloadExcel() {
     { v:'',s:S.norm }, { v:'',s:S.norm }
   ]});
 
-  // Direcciones fiscal y despacho
-  // Buscar la sucursal activa dentro del cliente cargado para obtener ambas direcciones
-  var _cliAct = window._activeClientObj || {};
-  var _sucAct = null;
-  if (_cliAct.sucursales && _cliAct.sucursales.length) {
-    var _sucBuscar = String(cd.sucursal||'').toUpperCase().trim();
-    if (_sucBuscar) {
-      _sucAct = _cliAct.sucursales.find(function(s){
-        return String(s.nombre||'').toUpperCase().trim() === _sucBuscar;
-      });
-    }
-    if (!_sucAct) _sucAct = _cliAct.sucursales[0];
+  // Direcciones fiscal y despacho — sincronización automática con directorio
+  var _Rnp = null;
+  if (typeof resolverCliente === 'function') {
+    // Buscar primero por sucursal, si no por cliente principal
+    _Rnp = resolverCliente(cd.sucursal || cd.cliente, { rif: cd.rif });
+    if (!_Rnp || !_Rnp.matched) _Rnp = resolverCliente(cd.cliente, { rif: cd.rif });
   }
-  var _dirFis  = (_sucAct && _sucAct.direccion) || cd.direccion || '';
-  var _dirDesp = (_sucAct && _sucAct.despacho)  || (_sucAct && _sucAct.direccion) || cd.direccion || '';
+  var _dirFis  = (_Rnp && _Rnp.direccionFiscal)   || cd.direccion || '';
+  var _dirDesp = (_Rnp && _Rnp.direccionDespacho) || cd.direccion || '';
 
   rowsDesp.push({ h:18, cells:[
     { v:'📋 Dir. FISCAL:',  s:S.norm }, { v:_dirFis  || '(sin dato)', s:S.norm }
@@ -6432,6 +6426,163 @@ function saveClientsDB(data) {
   localStorage.setItem('farmers_clients_v2', JSON.stringify(data));
   if (window.fbSaveClients) window.fbSaveClients(data);
 }
+
+// ══════════════════════════════════════════════════════════════════
+// RESOLVER CLIENTE — Helper unificado de matching cliente↔sucursal
+// ══════════════════════════════════════════════════════════════════
+// Busca un cliente en el directorio usando toda la información disponible.
+// Prioridad:
+//   1) ID vinculado manualmente (MS.clientesPorSucursal[suc])
+//   2) Match exacto por nombre normalizado
+//   3) Match exacto por RIF
+//   4) Match por tokens del nombre (≥1 palabra ≥4 chars coincide)
+//
+// Uso:
+//   resolverCliente('TOMMY SHOES, C.A.')  → {cliente completo del directorio o null}
+//   resolverCliente(sucName, {rif: 'J-...'}) → usa también el RIF como pista
+//
+// Siempre retorna un objeto consistente:
+//   {cli, sucObj, nombre, rif, telefono, correo, direccionFiscal, direccionDespacho,
+//    diasCredito, vendedor, estado, ciudad, municipio, matched}
+//
+// Si no encuentra, retorna el mismo objeto con cli=null y matched=false,
+// pero con nombre=suc para que siempre se pueda usar sin crashear.
+window.resolverCliente = function(suc, opts) {
+  opts = opts || {};
+  var result = {
+    cli: null,
+    sucObj: null,
+    matched: false,
+    nombre: String(suc||''),
+    rif: opts.rif || '',
+    telefono: '',
+    correo: '',
+    direccionFiscal: '',
+    direccionDespacho: '',
+    diasCredito: '',
+    vendedor: '',
+    estado: '',
+    ciudad: '',
+    municipio: '',
+    ubicacion: ''
+  };
+
+  if (!suc && !opts.rif) return result;
+
+  try {
+    var clDB = (typeof getClientsDB === 'function') ? getClientsDB() : [];
+    if (!clDB.length) return result;
+
+    // Normalizador para matching tolerante
+    function norm(s){
+      return String(s||'').toUpperCase()
+        .replace(/[ÁÀÄÂ]/g,'A').replace(/[ÉÈËÊ]/g,'E')
+        .replace(/[ÍÌÏÎ]/g,'I').replace(/[ÓÒÖÔ]/g,'O')
+        .replace(/[ÚÙÜÛ]/g,'U').replace(/Ñ/g,'N')
+        .replace(/[^A-Z0-9]/g,' ')
+        .replace(/\s+/g,' ').trim();
+    }
+
+    var cli = null;
+    var sucN = norm(suc);
+    var rifN = norm(opts.rif);
+
+    // 1) ID vinculado (si se proveyó MS.clientesPorSucursal)
+    if (typeof MS !== 'undefined' && MS.clientesPorSucursal) {
+      var preId = MS.clientesPorSucursal[suc];
+      if (preId) cli = clDB.find(function(c){ return c.id === preId; });
+    }
+
+    // 2) Match exacto por RIF
+    if (!cli && rifN) {
+      cli = clDB.find(function(c){ return norm(c.rif) === rifN; });
+    }
+
+    // 3) Match exacto por nombre
+    if (!cli && sucN) {
+      cli = clDB.find(function(c){ return norm(c.nombre) === sucN; });
+    }
+
+    // 4) Match por nombre contenido (ej. "TOMMY SHOES" ⊂ "TOMMY SHOES, C.A.")
+    if (!cli && sucN) {
+      cli = clDB.find(function(c){
+        var cn = norm(c.nombre);
+        return cn && (sucN.indexOf(cn) >= 0 || cn.indexOf(sucN) >= 0);
+      });
+    }
+
+    // 5) Match por nombre de SUCURSAL dentro del cliente
+    if (!cli && sucN) {
+      cli = clDB.find(function(c){
+        if (!c.sucursales || !c.sucursales.length) return false;
+        return c.sucursales.some(function(s){
+          var sn = norm(s.nombre);
+          return sn && (sn === sucN || sucN.indexOf(sn) >= 0 || sn.indexOf(sucN) >= 0);
+        });
+      });
+    }
+
+    // 6) Match por tokens (≥1 palabra significativa coincide)
+    if (!cli && sucN) {
+      var sucTokens = sucN.split(' ').filter(function(w){ return w.length >= 4; });
+      if (sucTokens.length) {
+        cli = clDB.find(function(c){
+          var cn = norm(c.nombre);
+          if (!cn) return false;
+          return sucTokens.some(function(t){ return cn.indexOf(t) >= 0; });
+        });
+      }
+    }
+
+    if (!cli) return result;
+
+    // Encontramos cliente — poblar result
+    result.cli = cli;
+    result.matched = true;
+    result.nombre = cli.nombre || suc;
+    result.rif = cli.rif || '';
+    result.telefono = cli.telefono || '';
+    result.correo = cli.correo || '';
+    result.diasCredito = cli.diasCredito || '';
+    result.vendedor = cli.vendedor || '';
+    result.estado = cli.estado || '';
+    result.ciudad = cli.ciudad || '';
+    result.municipio = cli.municipio || '';
+    result.ubicacion = [cli.municipio, cli.ciudad, cli.estado].filter(Boolean).join(', ');
+
+    // Buscar la sucursal específica dentro del cliente
+    if (cli.sucursales && cli.sucursales.length) {
+      var sucObj = null;
+      // 1) Match exacto
+      sucObj = cli.sucursales.find(function(s){ return norm(s.nombre) === sucN; });
+      // 2) Match parcial
+      if (!sucObj) {
+        sucObj = cli.sucursales.find(function(s){
+          var n = norm(s.nombre);
+          return n && (sucN.indexOf(n) >= 0 || n.indexOf(sucN) >= 0);
+        });
+      }
+      // 3) Única sucursal
+      if (!sucObj && cli.sucursales.length === 1) sucObj = cli.sucursales[0];
+      // 4) Fallback: primera
+      if (!sucObj) sucObj = cli.sucursales[0];
+
+      if (sucObj) {
+        result.sucObj = sucObj;
+        result.direccionFiscal = sucObj.direccion || '';
+        result.direccionDespacho = sucObj.despacho || sucObj.direccion || '';
+        // Si la sucursal tiene sus propios datos, prefiérelos
+        if (sucObj.telefono) result.telefono = sucObj.telefono;
+        if (sucObj.correo) result.correo = sucObj.correo;
+      }
+    }
+
+  } catch(e) {
+    console.warn('[resolverCliente] error:', e);
+  }
+
+  return result;
+};
 
 // ════════════════════════════════════════════════════════════════
 // MÓDULO PROVEEDORES — Persistencia
@@ -26204,77 +26355,76 @@ window.msImagenConfirmar = function() {
   var rifCli = cliDetectado.rif || '';
 
   // Intentar match con directorio CL (para obtener dirección, sucursales, crédito)
+  // Usamos resolverCliente si está disponible para consistencia con el resto del sistema
   var clMatch = null;
   try {
-    var clDB = (typeof getClientsDB==='function') ? getClientsDB() : [];
-    if (nomCli || rifCli) {
-      function norm(s){return String(s||'').toUpperCase().replace(/[^A-Z0-9]/g,' ').replace(/\s+/g,' ').trim();}
-      var nomN = norm(nomCli);
-      var rifN = norm(rifCli);
-      // 1) Match por RIF exacto
-      if (rifN) clMatch = clDB.find(function(c){return norm(c.rif) === rifN;});
-      // 2) Match por nombre exacto
-      if (!clMatch && nomN) clMatch = clDB.find(function(c){return norm(c.nombre) === nomN;});
-      // 3) Match por tokens de nombre (≥2 palabras coinciden)
-      if (!clMatch && nomN) {
-        var tks = nomN.split(' ').filter(function(w){return w.length > 2;});
-        clMatch = clDB.find(function(c){
-          var cn = norm(c.nombre);
-          return tks.filter(function(t){return cn.indexOf(t)>=0;}).length >= 2;
-        });
-      }
+    if (typeof resolverCliente === 'function' && (nomCli || rifCli)) {
+      var R = resolverCliente(nomCli, { rif: rifCli });
+      if (R && R.matched) clMatch = R.cli;
     }
   } catch(e){}
 
-  // DECIDIR el nombre FINAL ANTES de armar MS.data
-  // Regla: si hay match con directorio, usar EXACTAMENTE ese nombre (para evitar divergencia con _clienteUnica.nombre)
+  // DECIDIR el nombre FINAL ANTES de armar el pedido
   var sucName;
   if (clMatch) {
     MS._clienteUnica = clMatch;
-    sucName = clMatch.nombre;  // ← EXACTO del directorio
+    sucName = clMatch.nombre;
   } else if (nomCli) {
-    // No está en directorio pero la IA detectó el nombre — crear objeto con el MISMO nombre
     MS._clienteUnica = {
       nombre: nomCli,
       rif: rifCli,
       sucursales: [{ nombre: nomCli, direccion: '', despacho: '' }]
     };
-    sucName = nomCli;  // ← mismo string
+    sucName = nomCli;
   } else {
-    // Sin cliente detectado → usar nombre genérico SIN _clienteUnica
     sucName = 'PEDIDO IMAGEN';
     MS._clienteUnica = null;
   }
 
-  // Convertir al formato MS.data con el sucName YA DEFINITIVO
-  MS.data = lineas.map(function(l){
+  // Construir estructura productosNorm (igual formato que usa msAuditarPedido)
+  var sucursales = [sucName];
+  var productosNorm = lineas.map(function(l){
     var prod = (PRODUCTS||[]).find(function(p){return p.r===l.ref;}) || {};
-    var stock = (typeof getDisponible==='function') ? getDisponible(l.ref) : (prod.ex||0);
-    var pedidosObj = {}; pedidosObj[sucName] = l.cantidad;
-    var distObj = {}; distObj[sucName] = Math.min(stock, l.cantidad);
-    // Precio: prioridad precio de imagen si está > 0, si no precio del catálogo
-    var precio = parseFloat(l.precio_usd) || 0;
-    if (precio <= 0 && prod.u) precio = parseFloat(prod.u) || 0;
+    var pedidos = {};
+    pedidos[sucName] = parseInt(l.cantidad) || 0;
     return {
       ref: l.ref || ('IMG-'+Math.random().toString(36).substr(2,5).toUpperCase()),
       desc: l.desc || prod.d || '',
-      stock: stock,
-      pedidos: pedidosObj,
-      dist: distObj,
-      estado: stock >= l.cantidad ? 'completo' : stock > 0 ? 'parcial' : 'sinstock',
-      enSistema: !!(l.ref && prod.r),
-      precioUSD: precio
+      stock: (typeof getDisponible==='function') ? getDisponible(l.ref) : (prod.ex||0),
+      pedidos: pedidos,
+      precioUSD: parseFloat(l.precio_usd) || (parseFloat(prod.u)||0)
     };
   });
-  MS.sucursales = [sucName];
-  MS.moneda = 'USD';
-  MS._modoImagen = true;
-  // IMPORTANTE: NO activar _modoUnica aquí — eso dispara el renombrado de msRenderResultados
-  // que descoloca pedidos/dist si el nombre no matchea exacto con _clienteUnica.nombre
-  MS._modoUnica = false;
-  msRenderResultados();
-  var matchInfo = clMatch ? ' · ✅ cliente vinculado al directorio' : '';
-  showToast('✅ Pedido creado desde imagen — '+lineas.length+' líneas'+matchInfo,'ok');
+
+  // AUDITAR antes de crear el pedido — mismo modal que Multi-Sucursal
+  var audit = msAuditarPedido(productosNorm, sucursales, 'IMAGEN');
+
+  msMostrarAuditoria(audit, function(){
+    // Usuario confirmó → ahora sí construir MS.data definitivo
+    MS.data = productosNorm.map(function(p){
+      var prod = (PRODUCTS||[]).find(function(x){return x.r===p.ref;}) || {};
+      var stock = p.stock;
+      var pide = p.pedidos[sucName] || 0;
+      var distObj = {}; distObj[sucName] = Math.min(stock, pide);
+      return {
+        ref: p.ref,
+        desc: p.desc,
+        stock: stock,
+        pedidos: p.pedidos,
+        dist: distObj,
+        estado: stock >= pide ? 'completo' : stock > 0 ? 'parcial' : 'sinstock',
+        enSistema: !!(prod && prod.r),
+        precioUSD: p.precioUSD
+      };
+    });
+    MS.sucursales = [sucName];
+    MS.moneda = 'USD';
+    MS._modoImagen = true;
+    MS._modoUnica = false;
+    msRenderResultados();
+    var matchInfo = clMatch ? ' · ✅ cliente vinculado al directorio' : '';
+    showToast('✅ Pedido creado desde imagen — '+productosNorm.length+' líneas'+matchInfo,'ok');
+  }, productosNorm);
 };
 
 function msSetProgress(pct, msg) {
@@ -26381,33 +26531,55 @@ function msParsearExcel(file, input) {
         if(!productos.length) throw new Error('No se encontraron productos en el archivo QuickSell.');
         // Nombre de sucursal = nombre del cliente
         var nomSuc = (MS._clienteUnica && MS._clienteUnica.nombre) || clienteNombre || 'CLIENTE';
-        MS.sucursales = [nomSuc];
-        MS.data = productos.map(function(p){
+
+        // Construir productosNorm para auditoría (mismo formato que MS)
+        var productosNorm_QS = productos.map(function(p){
           var prod = (typeof PRODUCTS!=='undefined'?PRODUCTS:[]).find(function(x){return x.r===p.r;});
           var stock = (typeof getDisponible==='function') ? getDisponible(p.r) : (prod?prod.ex||0:0);
-          var pedidosObj={}, distObj={};
-          pedidosObj[nomSuc]=p.q[0];
-          distObj[nomSuc]=Math.min(stock,p.q[0]);
-          // Descripción: prioridad archivo → catálogo → ref
+          var pedidos = {};
+          pedidos[nomSuc] = parseInt(p.q[0]) || 0;
           var descFinal = (p.d && String(p.d).trim()) || (prod ? (prod.d || '') : '') || p.r;
           return {
-            ref:p.r, desc:descFinal,
-            stock:stock, pedidos:pedidosObj, dist:distObj,
-            estado: stock>=p.q[0]?'completo':stock>0?'parcial':'sinstock',
-            enSistema: !!(prod && prod.r),
+            ref: p.r,
+            desc: descFinal,
+            stock: stock,
+            pedidos: pedidos,
             precioUSD: p.precio
           };
         });
-        MS.moneda = 'USD';
-        MS._modoUnica = true;
+        // Ordenar alfanumérico por referencia
+        productosNorm_QS.sort(function(a,b){ return a.ref.localeCompare(b.ref, undefined, {numeric:true, sensitivity:'base'}); });
+
         if(!MS._clienteUnica && clienteNombre) {
           MS._clienteUnica = {nombre:clienteNombre, rif:clienteRIF};
         }
-        // Ordenar alfanumérico por referencia
-        MS.data.sort(function(a,b){ return a.ref.localeCompare(b.ref, undefined, {numeric:true, sensitivity:'base'}); });
-        msSetProgress(100, 'Listo');
-        msRenderResultados();
-        showToast('✅ QuickSell procesado — '+productos.length+' productos · '+nomSuc, 'ok');
+
+        msSetProgress(100, 'Auditoría completada');
+        // AUDITAR antes de crear el pedido — mismo modal que Multi-Sucursal
+        var audit_QS = msAuditarPedido(productosNorm_QS, [nomSuc], 'EXCEL');
+        msMostrarAuditoria(audit_QS, function(){
+          // Usuario confirmó → construir MS.data definitivo
+          MS.sucursales = [nomSuc];
+          MS.data = productosNorm_QS.map(function(p){
+            var prod = (typeof PRODUCTS!=='undefined'?PRODUCTS:[]).find(function(x){return x.r===p.ref;});
+            var pide = p.pedidos[nomSuc] || 0;
+            var distObj = {}; distObj[nomSuc] = Math.min(p.stock, pide);
+            return {
+              ref: p.ref,
+              desc: p.desc,
+              stock: p.stock,
+              pedidos: p.pedidos,
+              dist: distObj,
+              estado: p.stock >= pide ? 'completo' : p.stock > 0 ? 'parcial' : 'sinstock',
+              enSistema: !!(prod && prod.r),
+              precioUSD: p.precioUSD
+            };
+          });
+          MS.moneda = 'USD';
+          MS._modoUnica = true;
+          msRenderResultados();
+          showToast('✅ QuickSell procesado — '+productosNorm_QS.length+' productos · '+nomSuc, 'ok');
+        }, productosNorm_QS);
         return;
       }
       // ── Fin QuickSell — continuar flujo normal ────
@@ -27423,47 +27595,22 @@ window.msExportarExcel = function() {
   var fname='FARMERS - PEDIDO ('+_nomCliFile+') '+numP+' ('+_fechaFile+').xls';
 
   // ── HOJA POR SUCURSAL ──
-  // Cliente completo (disponible si es Factura Única o MS con cliente identificado)
-  var cliObj = MS._clienteUnica || {};
-  var cliRif      = cliObj.rif       || '';
-  var cliTel      = cliObj.telefono  || '';
-  var cliCorreo   = cliObj.correo    || '';
-  var cliCredito  = cliObj.diasCredito ? (cliObj.diasCredito + ' días') : '';
-  var cliVendedor = cliObj.vendedor  || '';
-  // Ubicación general (del cliente principal)
-  var cliEstado   = cliObj.estado    || '';
-  var cliCiudad   = cliObj.ciudad    || '';
-  var cliMuni     = cliObj.municipio || '';
-  var ubicacionStr = [cliMuni, cliCiudad, cliEstado].filter(Boolean).join(', ');
-
-  // Helper: busca la sucursal dentro del cliente por nombre (tolera mayus/acentos/espacios)
-  function _normSuc(s){ return String(s||'').toUpperCase().replace(/\s+/g,' ').trim(); }
-  function _buscarSucursal(nombreSuc){
-    if(!cliObj.sucursales || !cliObj.sucursales.length) return null;
-    var target = _normSuc(nombreSuc);
-    // 1) Match exacto por nombre
-    var m = cliObj.sucursales.find(function(s){ return _normSuc(s.nombre) === target; });
-    if(m) return m;
-    // 2) Match parcial (nombre sucursal contenido en el target o viceversa)
-    m = cliObj.sucursales.find(function(s){
-      var n = _normSuc(s.nombre);
-      return n && (target.indexOf(n) >= 0 || n.indexOf(target) >= 0);
-    });
-    if(m) return m;
-    // 3) Si solo hay una sucursal, usarla (Factura Única)
-    if(cliObj.sucursales.length === 1) return cliObj.sucursales[0];
-    return null;
-  }
+  // Sincronización automática: para cada sucursal, resolverCliente busca en el directorio
+  // usando el nombre de la sucursal + MS.clientesPorSucursal + RIF si está disponible.
 
   var sheetsSuc = [];
   MS.sucursales.forEach(function(suc){
-    // Datos específicos de ESTA sucursal (dirección fiscal + despacho + contacto local)
-    var sucObj      = _buscarSucursal(suc) || {};
-    var sucDirFis   = sucObj.direccion || '';  // Dirección fiscal (legal)
-    var sucDirDesp  = sucObj.despacho  || sucObj.direccion || '';  // Dirección de despacho
-    var sucContacto = sucObj.contacto  || '';
-    var sucTel      = sucObj.telefono  || cliTel;   // si sucursal no tiene, fallback a cliente
-    var sucCorreo   = sucObj.correo    || cliCorreo;
+    // Resolución automática cliente↔sucursal
+    var R = (typeof resolverCliente === 'function') ? resolverCliente(suc) : null;
+    var sucDirFis   = (R && R.direccionFiscal)   || '';
+    var sucDirDesp  = (R && R.direccionDespacho) || '';
+    var sucContacto = (R && R.sucObj && R.sucObj.contacto) || '';
+    var sucTel      = (R && R.telefono)          || '';
+    var sucCorreo   = (R && R.correo)            || '';
+    var cliRif      = (R && R.rif)               || '';
+    var cliCredito  = (R && R.diasCredito) ? (R.diasCredito + ' días') : '';
+    var cliVendedor = (R && R.vendedor)          || '';
+    var ubicacionStr= (R && R.ubicacion)         || '';
 
     var rows=[];
     // Título
@@ -27513,24 +27660,44 @@ window.msExportarExcel = function() {
   });
 
   // ── HOJA RESUMEN ──
+  // Para el header, resolver cliente general (el del pedido o el del primer match)
+  var Rmain = null;
+  if (MS.sucursales.length === 1) {
+    Rmain = (typeof resolverCliente === 'function') ? resolverCliente(MS.sucursales[0]) : null;
+  } else {
+    // Multi-sucursal: usar el primer cliente identificado, o _nomCli como fallback
+    for (var _si=0; _si<MS.sucursales.length; _si++){
+      var _rTry = (typeof resolverCliente === 'function') ? resolverCliente(MS.sucursales[_si]) : null;
+      if (_rTry && _rTry.matched) { Rmain = _rTry; break; }
+    }
+  }
+  var hdrRif      = (Rmain && Rmain.rif)         || '';
+  var hdrTel      = (Rmain && Rmain.telefono)    || '';
+  var hdrCorreo   = (Rmain && Rmain.correo)      || '';
+  var hdrCredito  = (Rmain && Rmain.diasCredito) ? (Rmain.diasCredito + ' días') : '';
+  var hdrVendedor = (Rmain && Rmain.vendedor)    || '';
+  var hdrUbic     = (Rmain && Rmain.ubicacion)   || '';
+
   var resRows=[];
   resRows.push({h:22,cells:[{v:' FARMERS C.A. — PEDIDO: '+_nomCli+' ('+monLabel+')',s:S.tit}]});
   resRows.push({h:14,cells:[{v:'N° Pedido:',s:S.norm},{v:numP,s:S.norm},{v:'Fecha:',s:S.norm},{v:fecha,s:S.norm},{v:'Moneda:',s:S.norm},{v:monLabel,s:S.norm},{v:'Tasa BCV:',s:S.norm},{v:tasaBCVstr,s:S.norm}]});
-  resRows.push({h:14,cells:[{v:'Cliente:',s:S.norm},{v:_nomCli,s:S.norm},{v:'RIF:',s:S.norm},{v:cliRif,s:S.norm},{v:'Crédito:',s:S.norm},{v:cliCredito,s:S.norm},{v:'Vendedor:',s:S.norm},{v:cliVendedor,s:S.norm}]});
-  resRows.push({h:14,cells:[{v:'Teléfono:',s:S.norm},{v:cliTel,s:S.norm},{v:'Correo:',s:S.norm},{v:cliCorreo,s:S.norm},{v:'Ubicación:',s:S.norm},{v:ubicacionStr,s:S.norm},{v:'',s:S.norm},{v:'',s:S.norm}]});
+  resRows.push({h:14,cells:[{v:'Cliente:',s:S.norm},{v:_nomCli,s:S.norm},{v:'RIF:',s:S.norm},{v:hdrRif,s:S.norm},{v:'Crédito:',s:S.norm},{v:hdrCredito,s:S.norm},{v:'Vendedor:',s:S.norm},{v:hdrVendedor,s:S.norm}]});
+  resRows.push({h:14,cells:[{v:'Teléfono:',s:S.norm},{v:hdrTel,s:S.norm},{v:'Correo:',s:S.norm},{v:hdrCorreo,s:S.norm},{v:'Ubicación:',s:S.norm},{v:hdrUbic,s:S.norm},{v:'',s:S.norm},{v:'',s:S.norm}]});
   resRows.push({h:14,cells:[{v:'Sucursales:',s:S.norm},{v:MS.sucursales.join(' | '),s:S.norm}]});
   resRows.push({h:4,cells:[{v:'',s:S.norm}]});
 
-  // Tabla de direcciones por sucursal (para verificación vs Valery)
+  // Tabla de direcciones por sucursal — usa resolverCliente para CADA sucursal (sincronización automática)
   resRows.push({h:20,cells:[{v:'📋 DIRECCIONES POR SUCURSAL',s:S.hdr},{v:'',s:S.hdr},{v:'',s:S.hdr},{v:'',s:S.hdr}]});
   resRows.push({h:18,cells:[
     {v:'SUCURSAL',s:S.hdr},{v:'DIR. FISCAL',s:S.hdr},{v:'DIR. DESPACHO',s:S.hdr},{v:'CONTACTO',s:S.hdr}
   ]});
   MS.sucursales.forEach(function(s){
-    var so = _buscarSucursal(s) || {};
-    var df = so.direccion || '(sin dato)';
-    var dd = so.despacho  || so.direccion || '(sin dato)';
-    var co = so.contacto  ? so.contacto + (so.telefono ? ' · ' + so.telefono : '') : '';
+    var Rs = (typeof resolverCliente === 'function') ? resolverCliente(s) : null;
+    var df = (Rs && Rs.direccionFiscal)   || '(sin dato)';
+    var dd = (Rs && Rs.direccionDespacho) || '(sin dato)';
+    var contacto = (Rs && Rs.sucObj && Rs.sucObj.contacto) ? Rs.sucObj.contacto : '';
+    var tel      = (Rs && Rs.telefono) || '';
+    var co = contacto ? (contacto + (tel ? ' · ' + tel : '')) : (tel || '');
     resRows.push({h:16,cells:[
       {v:s,s:S.norm},{v:df,s:S.norm},{v:dd,s:S.norm},{v:co,s:S.norm}
     ]});
@@ -28305,19 +28472,17 @@ function _msFacturaRenderizar(numP, suc) {
   var condPago = dF.condicionPago || '';
   var obs = dF.observaciones || '';
 
-  // Cliente
-  var cliObj = MS._clienteUnica || {};
-  var nomCli = cliObj.nombre || suc;
-  var rifCli = cliObj.rif || '';
-  var sucObj = null;
-  if (cliObj.sucursales && cliObj.sucursales.length) {
-    var t = String(suc).toUpperCase().trim();
-    sucObj = cliObj.sucursales.find(function(s){ return String(s.nombre||'').toUpperCase().trim() === t; });
-    if (!sucObj && cliObj.sucursales.length===1) sucObj = cliObj.sucursales[0];
-  }
-  var dirFis = (sucObj && sucObj.direccion) || '';
-  var dirDesp = (sucObj && sucObj.despacho) || dirFis;
-  var telCli = (sucObj && sucObj.telefono) || cliObj.telefono || '';
+  // Cliente — usa el helper unificado resolverCliente (sincronización automática)
+  var R = (typeof resolverCliente === 'function') ? resolverCliente(suc) : null;
+  var nomCli      = (R && R.nombre)            || suc;
+  var rifCli      = (R && R.rif)               || '';
+  var telCli      = (R && R.telefono)          || '';
+  var correoCli   = (R && R.correo)            || '';
+  var dirFis      = (R && R.direccionFiscal)   || '';
+  var dirDesp     = (R && R.direccionDespacho) || '';
+  var creditoCli  = (R && R.diasCredito)       ? (R.diasCredito + ' días') : '';
+  var vendedorCli = (R && R.vendedor)          || '';
+  var ubicacionCli= (R && R.ubicacion)         || '';
 
   // Items despachados de esa sucursal
   var moneda = MS.moneda || 'USD';
@@ -28345,8 +28510,14 @@ function _msFacturaRenderizar(numP, suc) {
     return;
   }
 
-  // IVA (16% en Venezuela)
-  var iva = subtotal * 0.16;
+  // IVA configurable — por defecto 0% (sin IVA)
+  // El usuario puede definir una tasa en localStorage.farmers_iva_pct si aplica
+  var ivaPct = 0;
+  try {
+    var stored = localStorage.getItem('farmers_iva_pct');
+    if (stored !== null && stored !== '') ivaPct = parseFloat(stored) || 0;
+  } catch(e){}
+  var iva = subtotal * (ivaPct / 100);
   var total = subtotal + iva;
   var totalBs = tasa > 0 ? total * tasa : 0;
 
@@ -28426,9 +28597,13 @@ function _msFacturaRenderizar(numP, suc) {
       '<div class="box"><div class="l">📋 Dir. Fiscal</div><div class="v">'+esc(dirFis||'(sin dato)')+'</div></div>' +
       '<div class="box"><div class="l">🚚 Dir. Despacho</div><div class="v">'+esc(dirDesp||'(sin dato)')+'</div></div>' +
       '<div class="box"><div class="l">Teléfono</div><div class="v">'+esc(telCli||'—')+'</div></div>' +
+      '<div class="box"><div class="l">Correo</div><div class="v">'+esc(correoCli||'—')+'</div></div>' +
       '<div class="box"><div class="l">Sucursal</div><div class="v">'+esc(suc)+'</div></div>' +
+      (ubicacionCli ? '<div class="box"><div class="l">Ubicación</div><div class="v">'+esc(ubicacionCli)+'</div></div>' : '') +
       '<div class="box"><div class="l">Fecha Emisión</div><div class="v">'+esc(fechaStr)+'</div></div>' +
       '<div class="box"><div class="l">Condición · Vence</div><div class="v">'+esc(condLabel)+(vencStr?' · '+esc(vencStr):'')+'</div></div>' +
+      (creditoCli ? '<div class="box"><div class="l">Crédito directorio</div><div class="v">'+esc(creditoCli)+'</div></div>' : '') +
+      (vendedorCli ? '<div class="box"><div class="l">Vendedor</div><div class="v">'+esc(vendedorCli)+'</div></div>' : '') +
     '</div>' +
 
     '<table class="items">' +
@@ -28454,7 +28629,7 @@ function _msFacturaRenderizar(numP, suc) {
 
     '<div class="totales">' +
       '<div class="row"><span>Subtotal:</span><span>'+monLabel+' '+fmt(subtotal)+'</span></div>' +
-      '<div class="row"><span>IVA 16%:</span><span>'+monLabel+' '+fmt(iva)+'</span></div>' +
+      (ivaPct > 0 ? '<div class="row"><span>IVA '+ivaPct+'%:</span><span>'+monLabel+' '+fmt(iva)+'</span></div>' : '') +
       '<div class="row grand"><span>TOTAL:</span><span>'+monLabel+' '+fmt(total)+'</span></div>' +
       (tasa > 0 ? '<div class="row bs"><span>Equivalente en Bs:</span><span>Bs. '+fmt(totalBs)+'</span></div>' : '') +
       (tasa > 0 ? '<div class="row bs"><span>Tasa BCV:</span><span>'+fmt(tasa)+' Bs/$</span></div>' : '') +
