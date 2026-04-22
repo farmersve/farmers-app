@@ -4028,10 +4028,33 @@ function downloadExcel() {
     { v:'Vendedor:',   s:S.norm }, { v:cd.vendedor,    s:S.norm }
   ]});
   rowsDesp.push({ h:14, cells:[
-    { v:'Dirección:',  s:S.norm }, { v:cd.direccion,   s:S.norm },
     { v:'Sucursal:',   s:S.norm }, { v:cd.sucursal,    s:S.norm },
     { v:'Teléfono:',   s:S.norm }, { v:cd.telefono,    s:S.norm },
-    { v:'Correo:',     s:S.norm }, { v:cd.correo,      s:S.norm }
+    { v:'Correo:',     s:S.norm }, { v:cd.correo,      s:S.norm },
+    { v:'',s:S.norm }, { v:'',s:S.norm }
+  ]});
+
+  // Direcciones fiscal y despacho
+  // Buscar la sucursal activa dentro del cliente cargado para obtener ambas direcciones
+  var _cliAct = window._activeClientObj || {};
+  var _sucAct = null;
+  if (_cliAct.sucursales && _cliAct.sucursales.length) {
+    var _sucBuscar = String(cd.sucursal||'').toUpperCase().trim();
+    if (_sucBuscar) {
+      _sucAct = _cliAct.sucursales.find(function(s){
+        return String(s.nombre||'').toUpperCase().trim() === _sucBuscar;
+      });
+    }
+    if (!_sucAct) _sucAct = _cliAct.sucursales[0];
+  }
+  var _dirFis  = (_sucAct && _sucAct.direccion) || cd.direccion || '';
+  var _dirDesp = (_sucAct && _sucAct.despacho)  || (_sucAct && _sucAct.direccion) || cd.direccion || '';
+
+  rowsDesp.push({ h:18, cells:[
+    { v:'📋 Dir. FISCAL:',  s:S.norm }, { v:_dirFis  || '(sin dato)', s:S.norm }
+  ]});
+  rowsDesp.push({ h:18, cells:[
+    { v:'🚚 Dir. DESPACHO:', s:S.norm }, { v:_dirDesp || '(sin dato)', s:S.norm }
   ]});
   rowsDesp.push({ h:4, cells:[{ v:'', s:S.norm }] });
 
@@ -4088,7 +4111,20 @@ function downloadExcel() {
   rowsRes.push({ h:14, cells:[
     { v:'Cliente:', s:S.norm }, { v:nomCli,     s:S.norm },
     { v:'RIF:',     s:S.norm }, { v:cd.rif,     s:S.norm },
+    { v:'Crédito:', s:S.norm }, { v:cd.credito, s:S.norm },
     { v:'Items:',   s:S.norm }, { v:orderedProducts.length, s:S.norm }
+  ]});
+  rowsRes.push({ h:14, cells:[
+    { v:'Sucursal:', s:S.norm }, { v:cd.sucursal, s:S.norm },
+    { v:'Teléfono:', s:S.norm }, { v:cd.telefono, s:S.norm },
+    { v:'Correo:',   s:S.norm }, { v:cd.correo,   s:S.norm },
+    { v:'Vendedor:', s:S.norm }, { v:cd.vendedor, s:S.norm }
+  ]});
+  rowsRes.push({ h:18, cells:[
+    { v:'📋 Dir. FISCAL:',  s:S.norm }, { v:_dirFis  || '(sin dato)', s:S.norm }
+  ]});
+  rowsRes.push({ h:18, cells:[
+    { v:'🚚 Dir. DESPACHO:', s:S.norm }, { v:_dirDesp || '(sin dato)', s:S.norm }
   ]});
   rowsRes.push({ h:4, cells:[{ v:'', s:S.norm }] });
   rowsRes.push({ h:28, cells:[
@@ -26960,21 +26996,56 @@ window.msExportarExcel = function() {
   var cliRif      = cliObj.rif       || '';
   var cliTel      = cliObj.telefono  || '';
   var cliCorreo   = cliObj.correo    || '';
-  var cliDir      = cliObj.direccion || '';
   var cliCredito  = cliObj.diasCredito ? (cliObj.diasCredito + ' días') : '';
   var cliVendedor = cliObj.vendedor  || '';
+  // Ubicación general (del cliente principal)
+  var cliEstado   = cliObj.estado    || '';
+  var cliCiudad   = cliObj.ciudad    || '';
+  var cliMuni     = cliObj.municipio || '';
+  var ubicacionStr = [cliMuni, cliCiudad, cliEstado].filter(Boolean).join(', ');
+
+  // Helper: busca la sucursal dentro del cliente por nombre (tolera mayus/acentos/espacios)
+  function _normSuc(s){ return String(s||'').toUpperCase().replace(/\s+/g,' ').trim(); }
+  function _buscarSucursal(nombreSuc){
+    if(!cliObj.sucursales || !cliObj.sucursales.length) return null;
+    var target = _normSuc(nombreSuc);
+    // 1) Match exacto por nombre
+    var m = cliObj.sucursales.find(function(s){ return _normSuc(s.nombre) === target; });
+    if(m) return m;
+    // 2) Match parcial (nombre sucursal contenido en el target o viceversa)
+    m = cliObj.sucursales.find(function(s){
+      var n = _normSuc(s.nombre);
+      return n && (target.indexOf(n) >= 0 || n.indexOf(target) >= 0);
+    });
+    if(m) return m;
+    // 3) Si solo hay una sucursal, usarla (Factura Única)
+    if(cliObj.sucursales.length === 1) return cliObj.sucursales[0];
+    return null;
+  }
 
   var sheetsSuc = [];
   MS.sucursales.forEach(function(suc){
+    // Datos específicos de ESTA sucursal (dirección fiscal + despacho + contacto local)
+    var sucObj      = _buscarSucursal(suc) || {};
+    var sucDirFis   = sucObj.direccion || '';  // Dirección fiscal (legal)
+    var sucDirDesp  = sucObj.despacho  || sucObj.direccion || '';  // Dirección de despacho
+    var sucContacto = sucObj.contacto  || '';
+    var sucTel      = sucObj.telefono  || cliTel;   // si sucursal no tiene, fallback a cliente
+    var sucCorreo   = sucObj.correo    || cliCorreo;
+
     var rows=[];
     // Título
     rows.push({h:22,cells:[{v:' FARMERS C.A. — DESPACHO: '+suc+' ('+monLabel+')',s:S.tit}]});
     // Metadata fila 1: básicos del pedido
     rows.push({h:14,cells:[{v:'N° Pedido:',s:S.norm},{v:numP,s:S.norm},{v:'Fecha:',s:S.norm},{v:fecha,s:S.norm},{v:'Moneda:',s:S.norm},{v:monLabel,s:S.norm},{v:'Tasa BCV:',s:S.norm},{v:tasaBCVstr,s:S.norm}]});
-    // Metadata fila 2: cliente
+    // Metadata fila 2: cliente + fiscales
     rows.push({h:14,cells:[{v:'Cliente:',s:S.norm},{v:suc,s:S.norm},{v:'RIF:',s:S.norm},{v:cliRif,s:S.norm},{v:'Crédito:',s:S.norm},{v:cliCredito,s:S.norm},{v:'Vendedor:',s:S.norm},{v:cliVendedor,s:S.norm}]});
-    // Metadata fila 3: contacto
-    rows.push({h:14,cells:[{v:'Teléfono:',s:S.norm},{v:cliTel,s:S.norm},{v:'Correo:',s:S.norm},{v:cliCorreo,s:S.norm},{v:'Dirección:',s:S.norm},{v:cliDir,s:S.norm},{v:'',s:S.norm},{v:'',s:S.norm}]});
+    // Metadata fila 3: contacto de la sucursal
+    rows.push({h:14,cells:[{v:'Contacto:',s:S.norm},{v:sucContacto,s:S.norm},{v:'Teléfono:',s:S.norm},{v:sucTel,s:S.norm},{v:'Correo:',s:S.norm},{v:sucCorreo,s:S.norm},{v:'Ubicación:',s:S.norm},{v:ubicacionStr,s:S.norm}]});
+    // Metadata fila 4: DIRECCIÓN FISCAL (legal, para facturación)
+    rows.push({h:18,cells:[{v:'📋 Dir. FISCAL:',s:S.norm},{v:sucDirFis || '(sin dato)',s:S.norm}]});
+    // Metadata fila 5: DIRECCIÓN DESPACHO (donde se entrega)
+    rows.push({h:18,cells:[{v:'🚚 Dir. DESPACHO:',s:S.norm},{v:sucDirDesp || '(sin dato)',s:S.norm}]});
     rows.push({h:4,cells:[{v:'',s:S.norm}]});
     // Encabezados
     rows.push({h:28,cells:[
@@ -27014,8 +27085,25 @@ window.msExportarExcel = function() {
   resRows.push({h:22,cells:[{v:' FARMERS C.A. — PEDIDO: '+_nomCli+' ('+monLabel+')',s:S.tit}]});
   resRows.push({h:14,cells:[{v:'N° Pedido:',s:S.norm},{v:numP,s:S.norm},{v:'Fecha:',s:S.norm},{v:fecha,s:S.norm},{v:'Moneda:',s:S.norm},{v:monLabel,s:S.norm},{v:'Tasa BCV:',s:S.norm},{v:tasaBCVstr,s:S.norm}]});
   resRows.push({h:14,cells:[{v:'Cliente:',s:S.norm},{v:_nomCli,s:S.norm},{v:'RIF:',s:S.norm},{v:cliRif,s:S.norm},{v:'Crédito:',s:S.norm},{v:cliCredito,s:S.norm},{v:'Vendedor:',s:S.norm},{v:cliVendedor,s:S.norm}]});
-  resRows.push({h:14,cells:[{v:'Teléfono:',s:S.norm},{v:cliTel,s:S.norm},{v:'Correo:',s:S.norm},{v:cliCorreo,s:S.norm},{v:'Dirección:',s:S.norm},{v:cliDir,s:S.norm},{v:'',s:S.norm},{v:'',s:S.norm}]});
+  resRows.push({h:14,cells:[{v:'Teléfono:',s:S.norm},{v:cliTel,s:S.norm},{v:'Correo:',s:S.norm},{v:cliCorreo,s:S.norm},{v:'Ubicación:',s:S.norm},{v:ubicacionStr,s:S.norm},{v:'',s:S.norm},{v:'',s:S.norm}]});
   resRows.push({h:14,cells:[{v:'Sucursales:',s:S.norm},{v:MS.sucursales.join(' | '),s:S.norm}]});
+  resRows.push({h:4,cells:[{v:'',s:S.norm}]});
+
+  // Tabla de direcciones por sucursal (para verificación vs Valery)
+  resRows.push({h:20,cells:[{v:'📋 DIRECCIONES POR SUCURSAL',s:S.hdr},{v:'',s:S.hdr},{v:'',s:S.hdr},{v:'',s:S.hdr}]});
+  resRows.push({h:18,cells:[
+    {v:'SUCURSAL',s:S.hdr},{v:'DIR. FISCAL',s:S.hdr},{v:'DIR. DESPACHO',s:S.hdr},{v:'CONTACTO',s:S.hdr}
+  ]});
+  MS.sucursales.forEach(function(s){
+    var so = _buscarSucursal(s) || {};
+    var df = so.direccion || '(sin dato)';
+    var dd = so.despacho  || so.direccion || '(sin dato)';
+    var co = so.contacto  ? so.contacto + (so.telefono ? ' · ' + so.telefono : '') : '';
+    resRows.push({h:16,cells:[
+      {v:s,s:S.norm},{v:df,s:S.norm},{v:dd,s:S.norm},{v:co,s:S.norm}
+    ]});
+  });
+
   resRows.push({h:4,cells:[{v:'',s:S.norm}]});
   var hRes=[{v:'REFERENCIA',s:S.hdr},{v:'DESCRIPCIÓN',s:S.hdr},{v:'CÓD.BARRA',s:S.hdr},{v:'CÓDIGO',s:S.hdr},{v:'STOCK',s:S.hdr},{v:'P.'+monLabel,s:S.hdr},{v:'T.PEDIDO',s:S.hdr},{v:'T.DESP',s:S.hdr},{v:'VENTA '+monLabel,s:S.hdr},{v:'ESTADO',s:S.hdr}];
   MS.sucursales.forEach(function(s){hRes.push({v:'PIDE\n'+s,s:S.hdr},{v:'DESP\n'+s,s:S.hdr},{v:'VENTA\n'+s,s:S.hdr});});
