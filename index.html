@@ -25768,8 +25768,10 @@ function msParsearExcel(file, input) {
           var pedidosObj={}, distObj={};
           pedidosObj[nomSuc]=p.q[0];
           distObj[nomSuc]=Math.min(stock,p.q[0]);
+          // Descripción: prioridad archivo → catálogo → ref
+          var descFinal = (p.d && String(p.d).trim()) || (prod ? (prod.d || '') : '') || p.r;
           return {
-            ref:p.r, desc:p.d||p.r,
+            ref:p.r, desc:descFinal,
             stock:stock, pedidos:pedidosObj, dist:distObj,
             estado: stock>=p.q[0]?'completo':stock>0?'parcial':'sinstock',
             enSistema: !!(prod && prod.r),
@@ -26091,7 +26093,12 @@ async function msAnalizarConIA(rows, pdfBase64, input) {
     var productosRaw = todosProductos.map(function(p){
       var pedidos = {};
       sucursales.forEach(function(s, idx){ pedidos[s] = parseInt((p.q||[])[idx]) || 0; });
-      return { ref: String(p.r||'').trim(), desc: String(p.d||'').trim(), stock: parseInt(p.s)||0, pedidos: pedidos };
+      // Descripción: prioridad archivo → catálogo (fallback para evitar celdas vacías)
+      var ref = String(p.r||'').trim();
+      var descArch = String(p.d||'').trim();
+      var prodCat = (typeof PRODUCTS!=='undefined' ? PRODUCTS : []).find(function(x){return x.r===ref;});
+      var descFinal = descArch || (prodCat ? (prodCat.d || '') : '');
+      return { ref: ref, desc: descFinal, stock: parseInt(p.s)||0, pedidos: pedidos };
     }).filter(function(p){ return p.ref.length >= 2; });
 
     // Deduplicar — quedarse con la ocurrencia que tenga más cantidades
