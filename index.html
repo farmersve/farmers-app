@@ -10302,7 +10302,9 @@ window.ocSincronizarInventarioClick = function(ocId) {
     diferencias: [],
     sinMedidas: [],
     nuevas: [],
-    all: []   // Todos los items con su análisis (para el modal)
+    all: [],   // Todos los items con su análisis (para el modal)
+    _itemsSinMedidas: 0,  // Items sin volDirecto ni LxAxH confiable
+    _itemsSinPeso: 0      // Items sin pesoPorBulto/peso confiable
   };
 
   var normStr = function(s){
@@ -10331,6 +10333,27 @@ window.ocSincronizarInventarioClick = function(ocId) {
     if (!prod) {
       // ═══ Ref nueva — proponer crear ═══
       analisis.categoria = 'nueva';
+
+      // Calcular vol/peso POR BULTO con cascade correcto (priorizar ptData sobre item)
+      var volPorBultoN = 0;
+      if (medidas.volDirecto && parseFloat(medidas.volDirecto) > 0) {
+        volPorBultoN = parseFloat(medidas.volDirecto);
+      } else if (medidas.largo && medidas.ancho && medidas.alto && parseFloat(medidas.largo) > 0 && parseFloat(medidas.ancho) > 0 && parseFloat(medidas.alto) > 0) {
+        volPorBultoN = (parseFloat(medidas.largo) * parseFloat(medidas.ancho) * parseFloat(medidas.alto)) / 28316.85;
+      } else if (parseFloat(item.volDirecto) > 0) {
+        volPorBultoN = parseFloat(item.volDirecto);
+      } else if (parseFloat(item.largo) > 0 && parseFloat(item.ancho) > 0 && parseFloat(item.alto) > 0) {
+        volPorBultoN = (parseFloat(item.largo) * parseFloat(item.ancho) * parseFloat(item.alto)) / 28316.85;
+      }
+      var pesoPorBultoN = 0;
+      if (medidas.peso && parseFloat(medidas.peso) > 0) {
+        pesoPorBultoN = parseFloat(medidas.peso);
+      } else if (parseFloat(item.pesoPorBulto) > 0) {
+        pesoPorBultoN = parseFloat(item.pesoPorBulto);
+      } else if (parseFloat(item.peso) > 0) {
+        pesoPorBultoN = parseFloat(item.peso);
+      }
+
       analisis.fields = [
         { campo: 'b',  labelUI: 'Código barra',     valorActual: null, valorNuevo: item.codigoBarra || '',       aplicar: !!item.codigoBarra },
         { campo: 'c',  labelUI: 'Ref proveedor',    valorActual: null, valorNuevo: item.refProveedor || '',       aplicar: !!item.refProveedor },
@@ -10342,8 +10365,8 @@ window.ocSincronizarInventarioClick = function(ocId) {
         { campo: 'med.largo',   labelUI: 'Largo cm',     valorActual: null, valorNuevo: parseFloat(item.largo)||0, aplicar: !!item.largo },
         { campo: 'med.ancho',   labelUI: 'Ancho cm',     valorActual: null, valorNuevo: parseFloat(item.ancho)||0, aplicar: !!item.ancho },
         { campo: 'med.alto',    labelUI: 'Alto cm',      valorActual: null, valorNuevo: parseFloat(item.alto)||0,  aplicar: !!item.alto },
-        { campo: 'med.volDirecto', labelUI: 'Vol ft³/bulto', valorActual: null, valorNuevo: parseFloat(item.volumenFt3) || parseFloat(item.volDirecto) || 0, aplicar: !!(item.volumenFt3 || item.volDirecto) },
-        { campo: 'med.peso',    labelUI: 'Peso Kg/bulto', valorActual: null, valorNuevo: parseFloat(item.pesoKg) || parseFloat(item.peso) || 0, aplicar: !!(item.pesoKg || item.peso) }
+        { campo: 'med.volDirecto', labelUI: 'Vol ft³/bulto', valorActual: null, valorNuevo: volPorBultoN > 0 ? parseFloat(volPorBultoN.toFixed(4)) : 0, aplicar: volPorBultoN > 0 },
+        { campo: 'med.peso',    labelUI: 'Peso Kg/bulto', valorActual: null, valorNuevo: pesoPorBultoN > 0 ? parseFloat(pesoPorBultoN.toFixed(3)) : 0, aplicar: pesoPorBultoN > 0 }
       ];
       resultado.nuevas.push(analisis);
       resultado.all.push(analisis);
@@ -10386,6 +10409,62 @@ window.ocSincronizarInventarioClick = function(ocId) {
       return resultado;
     };
 
+    // CASCADE CORRECTO de fuentes (prioridad de MÁS confiable a MENOS):
+    //   1. ptData[ref].medidas.volDirecto  ← del importador de medidas (Excel proveedor). Es LA fuente real.
+    //   2. ptData[ref].medidas.largo × ancho × alto  ← dimensiones importadas, convertidas a ft³
+    //   3. item.volDirecto                 ← si las medidas se guardaron también en el item
+    //   4. item.largo × ancho × alto       ← dimensiones en el item
+    //
+    // NUNCA usamos item.volumenFt3 / bultos porque ese valor es derivado y puede ser
+    // una estimación de la IA al cargar la factura, NO el valor real del Excel del proveedor.
+    //
+    // Si ninguna fuente confiable está disponible, mostramos 0 y avisamos en banner.
+    var volPorBultoOC = 0;
+    var volSource = 'ninguna';
+
+    // Prioridad 1: ptData (importador de medidas)
+    if (medidas.volDirecto && parseFloat(medidas.volDirecto) > 0) {
+      volPorBultoOC = parseFloat(medidas.volDirecto);
+      volSource = 'ptData.volDirecto';
+    }
+    // Prioridad 2: ptData LxAxH
+    else if (medidas.largo && medidas.ancho && medidas.alto && parseFloat(medidas.largo) > 0 && parseFloat(medidas.ancho) > 0 && parseFloat(medidas.alto) > 0) {
+      volPorBultoOC = (parseFloat(medidas.largo) * parseFloat(medidas.ancho) * parseFloat(medidas.alto)) / 28316.85;
+      volSource = 'ptData.LxAxH';
+    }
+    // Prioridad 3: item.volDirecto (si se guardó también en el item de la OC)
+    else if (parseFloat(item.volDirecto) > 0) {
+      volPorBultoOC = parseFloat(item.volDirecto);
+      volSource = 'item.volDirecto';
+    }
+    // Prioridad 4: item LxAxH
+    else if (parseFloat(item.largo) > 0 && parseFloat(item.ancho) > 0 && parseFloat(item.alto) > 0) {
+      volPorBultoOC = (parseFloat(item.largo) * parseFloat(item.ancho) * parseFloat(item.alto)) / 28316.85;
+      volSource = 'item.LxAxH';
+    }
+    // Ya NO usamos item.volumenFt3 porque es un total derivado (contaminado)
+
+    var pesoPorBultoOC = 0;
+    var pesoSource = 'ninguna';
+    if (medidas.peso && parseFloat(medidas.peso) > 0) {
+      pesoPorBultoOC = parseFloat(medidas.peso);
+      pesoSource = 'ptData.peso';
+    } else if (parseFloat(item.pesoPorBulto) > 0) {
+      pesoPorBultoOC = parseFloat(item.pesoPorBulto);
+      pesoSource = 'item.pesoPorBulto';
+    } else if (parseFloat(item.peso) > 0) {
+      pesoPorBultoOC = parseFloat(item.peso);
+      pesoSource = 'item.peso';
+    }
+    // Ya NO usamos item.pesoKg porque es un total derivado (contaminado)
+
+    analisis._volSource = volSource;
+    analisis._pesoSource = pesoSource;
+
+    // Contabilizar items sin medidas confiables (para avisar al usuario)
+    if (volPorBultoOC === 0) resultado._itemsSinMedidas++;
+    if (pesoPorBultoOC === 0) resultado._itemsSinPeso++;
+
     var fieldsCandidatos = [
       cmp('b',  'Código barra',    prod.b,  item.codigoBarra,      'str'),
       cmp('c',  'Ref proveedor',   prod.c,  item.refProveedor,     'str'),
@@ -10397,8 +10476,8 @@ window.ocSincronizarInventarioClick = function(ocId) {
       cmp('med.largo',   'Largo cm',        medidas.largo, item.largo,           'num'),
       cmp('med.ancho',   'Ancho cm',        medidas.ancho, item.ancho,           'num'),
       cmp('med.alto',    'Alto cm',         medidas.alto,  item.alto,            'num'),
-      cmp('med.volDirecto', 'Vol ft³/bulto', medidas.volDirecto, (item.volumenFt3 || item.volDirecto), 'num'),
-      cmp('med.peso',    'Peso Kg/bulto',   medidas.peso,  (item.pesoKg || item.peso), 'num')
+      cmp('med.volDirecto', 'Vol ft³/bulto', medidas.volDirecto, volPorBultoOC > 0 ? parseFloat(volPorBultoOC.toFixed(4)) : 0, 'num'),
+      cmp('med.peso',    'Peso Kg/bulto',   medidas.peso,  pesoPorBultoOC > 0 ? parseFloat(pesoPorBultoOC.toFixed(3)) : 0, 'num')
     ];
 
     analisis.fields = fieldsCandidatos.filter(function(f){ return f !== null; });
@@ -10446,6 +10525,26 @@ function _ocSyncRenderModal() {
         '<button onclick="ocSyncCancelar()" style="background:rgba(255,255,255,0.15);border:1.5px solid rgba(255,255,255,0.3);border-radius:7px;padding:7px 12px;cursor:pointer;font-weight:800;color:white;font-size:0.85rem;">✕</button>' +
       '</div>' +
 
+      // Banner advertencia CRÍTICA si faltan medidas confiables
+      ((r._itemsSinMedidas > 0 || r._itemsSinPeso > 0)
+        ? '<div style="padding:12px 24px;background:linear-gradient(135deg,#fee2e2,#fecaca);border-bottom:2px solid #dc2626;display:flex;gap:12px;align-items:center;flex-wrap:wrap;">' +
+            '<span style="font-size:1.6rem;">⚠️</span>' +
+            '<div style="flex:1;min-width:320px;">' +
+              '<div style="font-weight:900;color:#991b1b;font-size:0.85rem;">' +
+                'ATENCIÓN: ' + (r._itemsSinMedidas > 0 ? r._itemsSinMedidas + ' items SIN volumen confiable' : '') +
+                (r._itemsSinMedidas > 0 && r._itemsSinPeso > 0 ? ' · ' : '') +
+                (r._itemsSinPeso > 0 ? r._itemsSinPeso + ' items SIN peso confiable' : '') +
+              '</div>' +
+              '<div style="font-size:0.72rem;color:#7f1d1d;margin-top:3px;line-height:1.4;">' +
+                'Para sincronizar correctamente el catálogo necesitamos los valores <strong>POR BULTO</strong> del Excel del proveedor. ' +
+                'Si no aparecen aquí, cierra este panel y usa primero <strong>📥 Importar Medidas</strong>. ' +
+                'Sin medidas confiables, los campos se mostrarán en 0 y no se sincronizarán.' +
+              '</div>' +
+            '</div>' +
+            '<button onclick="ocSyncCancelar(); setTimeout(function(){ ocImportarMedidasClick(\'' + r.ocId + '\'); }, 300);" style="background:#dc2626;color:white;border:none;border-radius:7px;padding:10px 16px;cursor:pointer;font-weight:800;font-size:0.78rem;">📥 Ir a Importar Medidas</button>' +
+          '</div>'
+        : '') +
+
       // Tarjetas de resumen (filtros)
       '<div style="padding:12px 24px;background:#f8fafc;border-bottom:1px solid #e2e8f0;display:grid;grid-template-columns:repeat(5,1fr);gap:10px;">' +
         _ocSyncCard('todos',       'TODOS',        r.all.length,        '#1a2050', '#e0e7ff') +
@@ -10455,9 +10554,20 @@ function _ocSyncRenderModal() {
         _ocSyncCard('nuevas',      '🔴 Nuevas',    r.nuevas.length,     '#991b1b', '#fee2e2') +
       '</div>' +
 
+      // Barra de acciones masivas
+      '<div style="padding:10px 24px;background:#fef3c7;border-bottom:1px solid #fcd34d;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">' +
+        '<span style="font-size:0.7rem;font-weight:900;color:#78350f;text-transform:uppercase;letter-spacing:0.8px;margin-right:6px;">⚡ Acciones masivas:</span>' +
+        '<button onclick="ocSyncMasivoAplicarRefTodas()" style="background:#78350f;color:white;border:none;border-radius:6px;padding:6px 12px;cursor:pointer;font-weight:800;font-size:0.7rem;" title="Aplica el formato DESCRIPCIÓN + REF interna a todas las filas con aviso">✏️ Aplicar REF a TODAS las descripciones</button>' +
+        '<button onclick="ocSyncMasivoMarcarTodos(true)" style="background:#047857;color:white;border:none;border-radius:6px;padding:6px 12px;cursor:pointer;font-weight:800;font-size:0.7rem;" title="Marca todos los checkboxes de todas las filas visibles">✓ Marcar TODOS</button>' +
+        '<button onclick="ocSyncMasivoMarcarTodos(false)" style="background:#64748b;color:white;border:none;border-radius:6px;padding:6px 12px;cursor:pointer;font-weight:800;font-size:0.7rem;" title="Desmarca todos los checkboxes">✗ Desmarcar TODOS</button>' +
+        '<button onclick="ocSyncMasivoSoloVacios()" style="background:#1e40af;color:white;border:none;border-radius:6px;padding:6px 12px;cursor:pointer;font-weight:800;font-size:0.7rem;" title="Solo marca campos donde el catálogo actual está vacío (no sobrescribe datos existentes)">🎯 Solo campos VACÍOS</button>' +
+        '<div style="flex:1;"></div>' +
+        '<span style="font-size:0.65rem;color:#78350f;opacity:0.85;">Se aplican al filtro activo</span>' +
+      '</div>' +
+
       // Info rápida
-      '<div style="padding:8px 24px;background:#f0fdf4;border-bottom:1px solid #86efac;font-size:0.72rem;color:#047857;">' +
-        '💡 <strong>Por cada fila puedes marcar/desmarcar los campos específicos</strong> que quieres aplicar al catálogo. Las refs nuevas se crearán como productos nuevos. Los datos del catálogo actual están en gris, los propuestos en verde.' +
+      '<div style="padding:7px 24px;background:#f0fdf4;border-bottom:1px solid #86efac;font-size:0.68rem;color:#047857;">' +
+        '💡 Por cada fila puedes marcar/desmarcar campos individuales. Las refs nuevas se crearán como productos nuevos. Catálogo actual en gris, propuesto en verde.' +
       '</div>' +
 
       // Lista (contenedor que se re-renderiza al cambiar filtro)
@@ -10573,13 +10683,37 @@ function _ocSyncRenderLista() {
           '</div>';
       }
 
+      // Badge de fuente para volumen/peso (de dónde se tomó el valor)
+      var badgeFuente = '';
+      if (f.campo === 'med.volDirecto' && a._volSource && a._volSource !== 'ninguna') {
+        var src = a._volSource;
+        var badgeLabel = '', badgeColor = '', badgeTitle = '';
+        if (src === 'ptData.volDirecto') { badgeLabel = 'EXCEL'; badgeColor = '#047857'; badgeTitle = 'Del Excel de medidas del proveedor (valor directo ft³/bulto)'; }
+        else if (src === 'ptData.LxAxH') { badgeLabel = 'L×A×H'; badgeColor = '#b45309'; badgeTitle = 'Calculado desde Largo × Ancho × Alto del Excel de medidas'; }
+        else if (src === 'item.volDirecto') { badgeLabel = 'OC'; badgeColor = '#6366f1'; badgeTitle = 'Del item de la OC (medidas guardadas en la OC)'; }
+        else if (src === 'item.LxAxH') { badgeLabel = 'OC-L×A×H'; badgeColor = '#9333ea'; badgeTitle = 'Calculado desde L×A×H del item de la OC'; }
+        if (badgeLabel) {
+          badgeFuente = ' <span style="display:inline-block;padding:1px 6px;background:' + badgeColor + ';color:white;border-radius:3px;font-size:0.58rem;font-weight:900;letter-spacing:0.5px;vertical-align:middle;margin-left:4px;" title="' + badgeTitle + '">' + badgeLabel + '</span>';
+        }
+      }
+      if (f.campo === 'med.peso' && a._pesoSource && a._pesoSource !== 'ninguna') {
+        var src2 = a._pesoSource;
+        var lbl2 = '', col2 = '', ttl2 = '';
+        if (src2 === 'ptData.peso') { lbl2 = 'EXCEL'; col2 = '#047857'; ttl2 = 'Del Excel de medidas del proveedor'; }
+        else if (src2 === 'item.pesoPorBulto') { lbl2 = 'OC'; col2 = '#6366f1'; ttl2 = 'Del item de la OC'; }
+        else if (src2 === 'item.peso') { lbl2 = 'OC'; col2 = '#6366f1'; ttl2 = 'Del item de la OC'; }
+        if (lbl2) {
+          badgeFuente = ' <span style="display:inline-block;padding:1px 6px;background:' + col2 + ';color:white;border-radius:3px;font-size:0.58rem;font-weight:900;letter-spacing:0.5px;vertical-align:middle;margin-left:4px;" title="' + ttl2 + '">' + lbl2 + '</span>';
+        }
+      }
+
       tabla += '<tr style="border-bottom:1px solid #f1f5f9;background:' + rowBg + ';">' +
         '<td style="padding:5px 8px;text-align:center;">' +
           '<input type="checkbox" ' + (f.aplicar ? 'checked' : '') + ' onchange="ocSyncToggleField(' + i + ',' + fi + ', this.checked)" style="width:16px;height:16px;cursor:pointer;accent-color:#047857;">' +
         '</td>' +
         '<td style="padding:5px 8px;font-weight:700;color:#1a2050;">' + f.labelUI + '</td>' +
         '<td style="padding:5px 8px;color:#64748b;background:#f8fafc;">' + valA + '</td>' +
-        '<td style="padding:5px 8px;color:#047857;font-weight:700;background:' + difBg + ';">' + valN + avisoRef + '</td>' +
+        '<td style="padding:5px 8px;color:#047857;font-weight:700;background:' + difBg + ';">' + valN + badgeFuente + avisoRef + '</td>' +
       '</tr>';
     });
 
@@ -10588,6 +10722,99 @@ function _ocSyncRenderLista() {
     return hdr;
   }).join('');
 }
+
+// ─── OPERACIONES MASIVAS ───
+
+// Helper: obtener los items visibles según el filtro activo
+function _ocSyncItemsVisibles() {
+  if (!_ocSyncBuffer) return [];
+  var items = _ocSyncBuffer.all;
+  if (window._ocSyncFiltro && window._ocSyncFiltro !== 'todos') {
+    items = items.filter(function(a){ return a.categoria === window._ocSyncFiltro; });
+  }
+  return items;
+}
+
+// Aplica "REF interna al final" a TODAS las descripciones que tengan sugerencia pendiente
+window.ocSyncMasivoAplicarRefTodas = function() {
+  var items = _ocSyncItemsVisibles();
+  var count = 0;
+  items.forEach(function(a){
+    a.fields.forEach(function(f){
+      if (f.campo === 'd' && f.sugerenciaRefInterna) {
+        f.valorNuevo = f.sugerenciaRefInterna;
+        f.sugerenciaRefInterna = null;
+        f.aplicar = true;
+        f.tieneDiferencia = true;
+        count++;
+      }
+    });
+  });
+
+  if (count === 0) {
+    alert('No hay descripciones pendientes de corregir en el filtro actual.');
+    return;
+  }
+
+  // Re-render lista
+  var listEl = document.getElementById('oc-sync-list');
+  if (listEl) listEl.innerHTML = _ocSyncRenderLista();
+
+  if (typeof showToast === 'function') {
+    showToast('✏️ REF interna aplicada a ' + count + ' descripcion(es)', 'success');
+  } else {
+    alert('✏️ REF interna aplicada a ' + count + ' descripción(es)');
+  }
+};
+
+// Marca/desmarca TODOS los checkboxes de todas las filas visibles
+window.ocSyncMasivoMarcarTodos = function(marcar) {
+  var items = _ocSyncItemsVisibles();
+  var count = 0;
+  items.forEach(function(a){
+    a.fields.forEach(function(f){
+      // Solo tocar campos que tienen un valor nuevo real
+      var tieneValorNuevo = (f.valorNuevo !== undefined && f.valorNuevo !== null && f.valorNuevo !== '' && f.valorNuevo !== 0);
+      if (tieneValorNuevo && f.aplicar !== marcar) {
+        f.aplicar = marcar;
+        count++;
+      }
+    });
+  });
+
+  var listEl = document.getElementById('oc-sync-list');
+  if (listEl) listEl.innerHTML = _ocSyncRenderLista();
+
+  var msg = (marcar ? '✓ Marcados ' : '✗ Desmarcados ') + count + ' campo(s)';
+  if (typeof showToast === 'function') showToast(msg, 'success');
+};
+
+// Solo marca los campos donde el catálogo actual está vacío (no sobrescribe datos existentes)
+window.ocSyncMasivoSoloVacios = function() {
+  var items = _ocSyncItemsVisibles();
+  var marcados = 0, desmarcados = 0;
+  items.forEach(function(a){
+    a.fields.forEach(function(f){
+      var tieneValorNuevo = (f.valorNuevo !== undefined && f.valorNuevo !== null && f.valorNuevo !== '' && f.valorNuevo !== 0);
+      if (!tieneValorNuevo) return;
+
+      if (f.esVacioActual || a.categoria === 'nuevas') {
+        // Catálogo vacío o ref nueva → marcar
+        if (!f.aplicar) { f.aplicar = true; marcados++; }
+      } else {
+        // Catálogo tiene dato → desmarcar (no sobrescribir)
+        if (f.aplicar) { f.aplicar = false; desmarcados++; }
+      }
+    });
+  });
+
+  var listEl = document.getElementById('oc-sync-list');
+  if (listEl) listEl.innerHTML = _ocSyncRenderLista();
+
+  var msg = '🎯 Solo vacíos: ' + marcados + ' marcados · ' + desmarcados + ' desmarcados (para no sobrescribir datos existentes)';
+  if (typeof showToast === 'function') showToast(msg, 'success');
+  else alert(msg);
+};
 
 window.ocSyncFiltrar = function(filtro) {
   window._ocSyncFiltro = filtro;
@@ -13029,91 +13256,85 @@ window.ocExportarExcel = function(id) {
 
   var fmtFecha = function(f){ if (!f) return ''; try { var d=new Date(f); return String(d.getDate()).padStart(2,'0')+'/'+String(d.getMonth()+1).padStart(2,'0')+'/'+d.getFullYear(); } catch(e) { return f; } };
 
-  // ═══ HOJA ÚNICA: Todo en una con separación visual ═══
-  var rows = [];
-  var merges = [];
+  // Cargar ptData para cálculo de medidas por bulto
+  var ptData = {};
+  try { ptData = JSON.parse(localStorage.getItem('farmers_pt_data') || '{}'); } catch(e){}
 
-  // ─── SECCIÓN 1: Título principal ───
-  rows.push(['FARMERS C.A. — ORDEN DE COMPRA ' + oc.numero]);
-  merges.push({ s:{r:0,c:0}, e:{r:0,c:12} });
-  rows.push([]);
-
-  // ─── SECCIÓN 2: Datos Generales + Proveedor (2 columnas paralelas) ───
-  rows.push(['📋 DATOS GENERALES', '', '', '', '', '📦 PROVEEDOR']);
-  merges.push({ s:{r:rows.length-1,c:0}, e:{r:rows.length-1,c:4} });
-  merges.push({ s:{r:rows.length-1,c:5}, e:{r:rows.length-1,c:12} });
-
-  var datosGen = [
-    ['N° OC',                 oc.numero,                     '', '', '', 'Nombre',          oc.proveedorNombre || ''],
-    ['Estado',                estadoObj.label,               '', '', '', 'País',            oc.proveedorPais || ''],
-    ['Fecha emisión',         fmtFecha(oc.fechaEmision),     '', '', '', 'N° Factura',      oc._numeroFacturaProveedor || ''],
-    ['Fecha llegada est.',    fmtFecha(oc.fechaEstimadaLlegada), '', '', '', 'Incoterms',    oc.incoterms || 'FOB'],
-    ['Moneda',                oc.moneda || 'USD',            '', '', '', 'Puerto origen',   oc.puertoOrigen || '']
+  // ─── Hoja 1: Resumen (key-value) ───
+  var resumenRows = [
+    ['FARMERS C.A. — ORDEN DE COMPRA'],
+    [],
+    ['📋 DATOS GENERALES'],
+    ['N° OC', oc.numero],
+    ['Estado', estadoObj.label],
+    ['Fecha emisión', fmtFecha(oc.fechaEmision)],
+    ['Fecha llegada estimada', fmtFecha(oc.fechaEstimadaLlegada)],
+    ['Moneda', oc.moneda || 'USD'],
+    ['Incoterms', oc.incoterms || 'FOB'],
+    ['Puerto origen', oc.puertoOrigen || ''],
+    [],
+    ['📦 PROVEEDOR'],
+    ['Nombre', oc.proveedorNombre || ''],
+    ['País', oc.proveedorPais || ''],
+    ['N° Factura proveedor', oc._numeroFacturaProveedor || ''],
+    []
   ];
-  datosGen.forEach(function(r){ rows.push(r); });
-  rows.push([]);
 
-  // ─── SECCIÓN 3: Metadata factura (si aplica) ───
   if (Object.keys(meta).length > 0) {
-    rows.push(['🗂 METADATA FACTURA']);
-    merges.push({ s:{r:rows.length-1,c:0}, e:{r:rows.length-1,c:12} });
-    var metaCampos = [
-      ['N° Documento',       meta.numeroDocumento],
-      ['Socio de negocio',   meta.socioDeNegocio],
-      ['Tipo documento',     meta.tipoDocumento],
-      ['Fecha emisión fact.',fmtFecha(meta.fechaEmisionFactura)],
-      ['Vencimiento',        fmtFecha(meta.fechaVencimiento)],
-      ['Condición pago',     meta.condicionPago],
-      ['Marca',              meta.marca],
-      ['Agente',             meta.agente],
-      ['Contacto',           meta.contacto],
-      ['Consignado a',       meta.consignadoA],
-      ['Trámite',            meta.tramite]
-    ];
-    metaCampos.forEach(function(mc){
-      if (mc[1]) rows.push([mc[0], mc[1]]);
-    });
-    rows.push([]);
+    resumenRows.push(['🗂 METADATA FACTURA']);
+    if (meta.numeroDocumento)     resumenRows.push(['N° Documento',       meta.numeroDocumento]);
+    if (meta.socioDeNegocio)      resumenRows.push(['Socio de negocio',   meta.socioDeNegocio]);
+    if (meta.tipoDocumento)       resumenRows.push(['Tipo documento',     meta.tipoDocumento]);
+    if (meta.fechaEmisionFactura) resumenRows.push(['Fecha emisión',      fmtFecha(meta.fechaEmisionFactura)]);
+    if (meta.fechaVencimiento)    resumenRows.push(['Vencimiento',        fmtFecha(meta.fechaVencimiento)]);
+    if (meta.condicionPago)       resumenRows.push(['Condición pago',     meta.condicionPago]);
+    if (meta.marca)               resumenRows.push(['Marca',              meta.marca]);
+    if (meta.agente)              resumenRows.push(['Agente',             meta.agente]);
+    if (meta.contacto)            resumenRows.push(['Contacto',           meta.contacto]);
+    if (meta.consignadoA)         resumenRows.push(['Consignado a',       meta.consignadoA]);
+    if (meta.tramite)             resumenRows.push(['Trámite',            meta.tramite]);
+    resumenRows.push([]);
   }
 
-  // ─── SECCIÓN 4: Totales Financieros + Volumetría (lado a lado) ───
-  rows.push(['💰 TOTALES FINANCIEROS (' + (oc.moneda || 'USD') + ')', '', '', '', '', '📐 VOLUMETRÍA']);
-  merges.push({ s:{r:rows.length-1,c:0}, e:{r:rows.length-1,c:4} });
-  merges.push({ s:{r:rows.length-1,c:5}, e:{r:rows.length-1,c:12} });
+  resumenRows.push(['💰 TOTALES FINANCIEROS (' + (oc.moneda || 'USD') + ')']);
+  resumenRows.push(['Subtotal',  parseFloat(t.subtotal)  || 0]);
+  resumenRows.push(['Descuento', parseFloat(t.descuento) || 0]);
+  resumenRows.push(['Traspaso',  parseFloat(t.traspaso)  || 0]);
+  resumenRows.push(['Impuesto',  parseFloat(t.impuesto)  || 0]);
+  resumenRows.push(['TOTAL',     parseFloat(t.total)     || 0]);
+  resumenRows.push([]);
+  resumenRows.push(['📐 VOLUMETRÍA']);
+  resumenRows.push(['Volumen total (ft³)', parseFloat(t.volumenTotalFt3) || 0]);
+  resumenRows.push(['Peso total (Kg)',     parseFloat(t.pesoTotalKg)     || 0]);
+  resumenRows.push(['Cajas totales',       parseInt(t.cajasTotales)      || 0]);
+  resumenRows.push([]);
+  resumenRows.push(['📊 RESUMEN DE ÍTEMS']);
+  resumenRows.push(['Total ítems',       items.length]);
+  var totalUds = items.reduce(function(s,it){ return s + (parseInt(it.cantidad)||0); }, 0);
+  resumenRows.push(['Total unidades',    totalUds]);
+  if (oc.notas) {
+    resumenRows.push([]);
+    resumenRows.push(['📝 NOTAS']);
+    resumenRows.push([oc.notas]);
+  }
 
-  var finVol = [
-    ['Subtotal',  parseFloat(t.subtotal)  || 0, '', '', '', 'Volumen total (ft³)',  parseFloat(t.volumenTotalFt3) || 0],
-    ['Descuento', parseFloat(t.descuento) || 0, '', '', '', 'Peso total (Kg)',      parseFloat(t.pesoTotalKg) || 0],
-    ['Traspaso',  parseFloat(t.traspaso)  || 0, '', '', '', 'Cajas totales',        parseInt(t.cajasTotales) || 0],
-    ['Impuesto',  parseFloat(t.impuesto)  || 0, '', '', '', 'Total ítems',          items.length],
-    ['TOTAL',     parseFloat(t.total)     || 0, '', '', '', 'Total unidades',       items.reduce(function(s,it){ return s + (parseInt(it.cantidad)||0); }, 0)]
-  ];
-  finVol.forEach(function(r){ rows.push(r); });
-  rows.push([]);
-  rows.push([]);
+  var wsResumen = XLSX.utils.aoa_to_sheet(resumenRows);
+  wsResumen['!cols'] = [ {wch:28}, {wch:50} ];
+  wsResumen['!merges'] = [ { s:{r:0,c:0}, e:{r:0,c:1} } ];
 
-  // ─── SECCIÓN 5: ITEMS (con Vol/bulto, Peso/bulto, totales) ───
-  rows.push(['📋 ÍTEMS DE LA ORDEN — ' + items.length + ' líneas']);
-  merges.push({ s:{r:rows.length-1,c:0}, e:{r:rows.length-1,c:12} });
-  rows.push([]);
-
+  // ─── Hoja 2: Items (con Vol/bulto + Peso/bulto + totales) ───
   var itemsHeader = [
     '#', 'Ref Proveedor', 'Ref Farmers', 'Descripción', 'Unidad',
     'Cantidad', 'Bultos', 'Precio FOB', 'Subtotal',
     'Vol ft³/bulto', 'Peso Kg/bulto',
     'Vol ft³ total', 'Peso Kg total'
   ];
-  rows.push(itemsHeader);
-
-  // Cargar ptData para obtener medidas por bulto (si existen)
-  var ptData = {};
-  try { ptData = JSON.parse(localStorage.getItem('farmers_pt_data') || '{}'); } catch(e){}
-
+  var itemsRows = [ itemsHeader ];
   items.forEach(function(it, i){
     var cant = parseFloat(it.cantidad) || 0;
     var bultos = parseInt(it.bultosEstimados) || 0;
     var sub = cant * (parseFloat(it.precioFOB) || 0);
-    var volTotal = parseFloat(it.volumenFt3) || 0;  // Este es el TOTAL (ya multiplicado)
+    var volTotal = parseFloat(it.volumenFt3) || 0;
     var pesoTotal = parseFloat(it.pesoKg) || 0;
 
     // Calcular POR BULTO: preferir catálogo, sino dividir total entre bultos
@@ -13123,11 +13344,10 @@ window.ocExportarExcel = function(id) {
       if (pt.medidas.volDirecto) volBulto = parseFloat(pt.medidas.volDirecto);
       if (pt.medidas.peso) pesoBulto = parseFloat(pt.medidas.peso);
     }
-    // Fallback: calcular dividiendo el total entre bultos
     if (!volBulto && bultos > 0 && volTotal > 0) volBulto = volTotal / bultos;
     if (!pesoBulto && bultos > 0 && pesoTotal > 0) pesoBulto = pesoTotal / bultos;
 
-    rows.push([
+    itemsRows.push([
       i+1,
       it.refProveedor || '',
       it.refFarmers || '',
@@ -13143,76 +13363,30 @@ window.ocExportarExcel = function(id) {
       Number(pesoTotal.toFixed(3))
     ]);
   });
-
-  // Fila TOTALES al final de items
-  rows.push([]);
-  rows.push([
+  // Fila de totales al final
+  itemsRows.push([]);
+  itemsRows.push([
     '', '', '', '', 'TOTALES',
     items.reduce(function(s,it){ return s + (parseFloat(it.cantidad)||0); }, 0),
     items.reduce(function(s,it){ return s + (parseInt(it.bultosEstimados)||0); }, 0),
     '',
     parseFloat(t.subtotal) || 0,
-    '',  // Vol/bulto no suma
-    '',  // Peso/bulto no suma
+    '',
+    '',
     parseFloat(t.volumenTotalFt3) || 0,
     parseFloat(t.pesoTotalKg) || 0
   ]);
-  rows.push([]);
-  rows.push([]);
 
-  // ─── SECCIÓN 6: Comparativo Ordenada (si aplica) ───
-  var hayComp = false;
-  var compRows = [];
-  items.forEach(function(it){
-    var entry = ptData[it.refFarmers];
-    var ord = (entry && entry.exOrdenada !== undefined) ? parseInt(entry.exOrdenada) : 0;
-    var cant = parseInt(it.cantidad) || 0;
-    if (ord > 0 || cant > 0) hayComp = true;
-    var diff = cant - ord;
-    var estado;
-    if (ord === 0) estado = 'Sin ordenada';
-    else if (ord === cant) estado = 'Coincide ✓';
-    else estado = 'DIFERENCIA ⚠';
-    compRows.push([it.refFarmers, it.descripcion, cant, ord, diff, estado]);
-  });
-
-  if (hayComp) {
-    rows.push(['📊 COMPARATIVO CANTIDAD FACTURA vs ORDENADA']);
-    merges.push({ s:{r:rows.length-1,c:0}, e:{r:rows.length-1,c:12} });
-    rows.push([]);
-    rows.push(['Ref Farmers', 'Descripción', 'Cant Factura', 'Ordenada', 'Diferencia', 'Estado']);
-    compRows.forEach(function(cr){ rows.push(cr); });
-    rows.push([]);
-  }
-
-  // ─── Notas al final (si las hay) ───
-  if (oc.notas) {
-    rows.push([]);
-    rows.push(['📝 NOTAS']);
-    merges.push({ s:{r:rows.length-1,c:0}, e:{r:rows.length-1,c:12} });
-    rows.push([oc.notas]);
-  }
-
-  // ─── Pie ───
-  rows.push([]);
-  var hoyStr = (function(){
-    var d = new Date();
-    return String(d.getDate()).padStart(2,'0') + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + d.getFullYear();
-  })();
-  rows.push(['Exportado desde Farmers C.A. · ' + hoyStr]);
-
-  // Construir hoja única
-  var ws = XLSX.utils.aoa_to_sheet(rows);
-  ws['!merges'] = merges;
-  ws['!cols'] = [
+  var wsItems = XLSX.utils.aoa_to_sheet(itemsRows);
+  wsItems['!cols'] = [
     {wch:5},   // #
     {wch:18},  // Ref Prov
     {wch:14},  // Ref Farmers
     {wch:55},  // Descripción
     {wch:9},   // Unidad
-    {wch:10},  // Cantidad
+    {wch:11},  // Cantidad
     {wch:8},   // Bultos
-    {wch:11},  // Precio FOB
+    {wch:12},  // Precio FOB
     {wch:12},  // Subtotal
     {wch:14},  // Vol/bulto
     {wch:14},  // Peso/bulto
@@ -13220,14 +13394,41 @@ window.ocExportarExcel = function(id) {
     {wch:14}   // Peso total
   ];
 
-  // Construir workbook con UNA SOLA HOJA
-  var wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, 'OC ' + oc.numero);
+  // ─── Hoja 3: Comparativo Ordenada (si aplica) ───
+  var wsComp = null;
+  try {
+    var compHeader = ['Ref Farmers', 'Descripción', 'Cantidad Factura', 'Ordenada Actual', 'Diferencia', 'Estado'];
+    var compRows = [ compHeader ];
+    items.forEach(function(it){
+      var entry = ptData[it.refFarmers];
+      var ord = (entry && entry.exOrdenada !== undefined) ? parseInt(entry.exOrdenada) : 0;
+      var cant = parseInt(it.cantidad) || 0;
+      var diff = cant - ord;
+      var estado;
+      if (ord === 0) estado = 'Sin ordenada';
+      else if (ord === cant) estado = 'Coincide ✓';
+      else estado = 'DIFERENCIA ⚠';
+      compRows.push([ it.refFarmers, it.descripcion, cant, ord, diff, estado ]);
+    });
+    wsComp = XLSX.utils.aoa_to_sheet(compRows);
+    wsComp['!cols'] = [ {wch:14}, {wch:55}, {wch:16}, {wch:16}, {wch:12}, {wch:18} ];
+  } catch(e) { /* ignore */ }
 
+  // Construir workbook
+  var wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, wsResumen, 'Resumen');
+  XLSX.utils.book_append_sheet(wb, wsItems,   'Items');
+  if (wsComp) XLSX.utils.book_append_sheet(wb, wsComp, 'Comparativo Ordenada');
+
+  var hoyStr = (function(){
+    var d = new Date();
+    return String(d.getDate()).padStart(2,'0') + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + d.getFullYear();
+  })();
   var filename = 'FARMERS - OC ' + oc.numero + ' - ' + String(oc.proveedorNombre||'Proveedor').replace(/[^\w\s.,-]/g,'').trim() + ' (' + hoyStr + ').xlsx';
+
   XLSX.writeFile(wb, filename);
 
-  if (typeof showToast === 'function') showToast('📊 Excel generado en una sola hoja: ' + oc.numero, 'success');
+  if (typeof showToast === 'function') showToast('📊 Excel generado: ' + oc.numero, 'success');
 };
 
 
