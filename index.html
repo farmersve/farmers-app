@@ -25693,28 +25693,38 @@ window.msImagenAnalizar = function() {
   if(!_msImgBase64) return;
   var btn = document.getElementById('ms-img-btn-analizar');
   if(btn) { btn.disabled=true; btn.textContent='⏳ Analizando...'; }
-  // Construir contexto de productos del sistema
-  var prodsCtx = (PRODUCTS||[]).slice(0,300).map(function(p){
-    return p.r+'|'+(p.d||'')+'|USD:'+(p.u||0);
-  }).join('\n');
-  var prompt = 'Analiza esta imagen de un pedido/orden de compra y extrae los datos en JSON.\n'
-    +'Productos en el sistema (REF|DESCRIPCION|PRECIO_USD):\n'+prodsCtx+'\n\n'
-    +'Responde SOLO con un objeto JSON válido, sin texto extra:\n'
+
+  // Construir contexto COMPLETO de productos — formato compacto (TODOS)
+  // Formato: REF|COD_BARRA|CODIGO|DESCRIPCION|PRECIO_USD
+  var prodsArr = (PRODUCTS||[]).map(function(p){
+    return (p.r||'')+'|'+(p.b||'')+'|'+(p.c||'')+'|'+(p.d||'')+'|'+(p.u||0);
+  });
+  var prodsCtx = prodsArr.join('\n');
+
+  var prompt = 'Analiza esta imagen de un pedido/orden de compra y extrae los datos en JSON.\n\n'
+    +'CATÁLOGO FARMERS ('+prodsArr.length+' productos) formato: REF|COD_BARRA|CODIGO|DESCRIPCION|PRECIO_USD\n'
+    +prodsCtx+'\n\n'
+    +'INSTRUCCIONES DE MATCHING (en orden de prioridad):\n'
+    +'1. Si en la imagen aparece un CÓDIGO DE BARRAS (número largo de 13 dígitos tipo 7453...), búscalo EXACTO en COD_BARRA del catálogo y usa esa REF.\n'
+    +'2. Si aparece un CÓDIGO tipo GEN###, GN-XXX, EXC###, búscalo EXACTO en REF o CODIGO del catálogo.\n'
+    +'3. Si solo hay DESCRIPCIÓN, compárala con las DESCRIPCIONES del catálogo y asigna la REF del match más cercano (mismo producto aunque la descripción sea ligeramente distinta — ej: "BIBERON 2OZ" coincide con "BIBERON VIDRIO 2OZ").\n'
+    +'4. Si no hay match confiable, deja ref vacío pero conserva la descripción original.\n\n'
+    +'Responde SOLO con un objeto JSON válido, sin texto extra ni markdown:\n'
     +'{\n'
     +'  "cliente": "nombre detectado o vacío",\n'
     +'  "rif": "RIF detectado o vacío",\n'
     +'  "lineas": [\n'
-    +'    {"ref":"REF_SISTEMA_O_VACIO","desc":"descripcion","cantidad":0,"precio_usd":0,"nota":"observacion si aplica"}\n'
+    +'    {"ref":"REF_FARMERS","cod_barra":"7453...","desc":"descripción original de la imagen","cantidad":0,"precio_usd":0}\n'
     +'  ]\n'
     +'}\n'
-    +'Si no puedes identificar la referencia exacta en el sistema, deja ref vacío pero escribe la descripción completa.\n'
-    +'El precio_usd debe ser el precio unitario en dólares si aparece, sino 0.';
+    +'La referencia debe coincidir EXACTAMENTE con una REF del catálogo Farmers (no inventar refs).';
+
   fetch('https://farmers-proxy.farmersve.workers.dev/', {
     method:'POST',
     headers:{'Content-Type':'application/json'},
     body:JSON.stringify({
       model:'claude-sonnet-4-20250514',
-      max_tokens:3000,
+      max_tokens:8000,
       messages:[{
         role:'user',
         content:[
@@ -25731,20 +25741,117 @@ window.msImagenAnalizar = function() {
     txt = txt.replace(/```json|```/g,'').trim();
     try {
       var parsed = JSON.parse(txt);
+      // POST-PROCESO: matching local de refuerzo para líneas que la IA no pudo identificar
+      _msImgAplicarMatchingLocal(parsed);
       msImagenMostrarRevision(parsed);
     } catch(e) {
+      console.error('Parse error:', e, txt.substring(0,500));
       showToast('No se pudo interpretar la respuesta de la IA. Intenta con otra imagen.','error');
       if(btn){ btn.disabled=false; btn.textContent='🤖 Analizar con IA →'; }
     }
   })
   .catch(function(e){
+    console.error('Fetch error:', e);
     showToast('Error de conexión al analizar imagen','error');
     if(btn){ btn.disabled=false; btn.textContent='🤖 Analizar con IA →'; }
   });
 };
 
+// ── Matching local: cruza códigos de barras y códigos con el catálogo ──
+// Si la IA no asignó ref pero hay un código de barras que coincide, lo completa automáticamente
+function _msImgAplicarMatchingLocal(parsed) {
+  if (!parsed || !parsed.lineas || !PRODUCTS) return;
+
+  // Índices rápidos
+  var ixBarra = {};
+  var ixCodigo = {};
+  var ixRef = {};
+  PRODUCTS.forEach(function(p){
+    if (p.b) ixBarra[String(p.b).trim()] = p;
+    if (p.c) ixCodigo[String(p.c).trim().toUpperCase()] = p;
+    if (p.r) ixRef[String(p.r).trim().toUpperCase()] = p;
+  });
+
+  // Normalizar descripción para comparar
+  function norm(s){
+    return String(s||'').toUpperCase()
+      .replace(/[ÁÀÄÂ]/g,'A').replace(/[ÉÈËÊ]/g,'E')
+      .replace(/[ÍÌÏÎ]/g,'I').replace(/[ÓÒÖÔ]/g,'O')
+      .replace(/[ÚÙÜÛ]/g,'U').replace(/Ñ/g,'N')
+      .replace(/[^A-Z0-9 ]/g,' ')
+      .replace(/\s+/g,' ').trim();
+  }
+
+  // Contador de cambios
+  var matchedBarra = 0, matchedCodigo = 0, matchedDesc = 0;
+
+  parsed.lineas.forEach(function(l){
+    // Si ya tiene ref válida en el catálogo, confirmarla (normalizar mayúsculas)
+    if (l.ref) {
+      var refUpp = String(l.ref).trim().toUpperCase();
+      if (ixRef[refUpp]) {
+        l.ref = ixRef[refUpp].r;
+        return; // ya OK
+      }
+      // ref no existe en catálogo → limpiar e intentar otro camino
+      l.ref = '';
+    }
+
+    // 1) Match por código de barras (más confiable)
+    if (l.cod_barra) {
+      var cb = String(l.cod_barra).trim().replace(/\D/g,'');
+      if (cb && ixBarra[cb]) {
+        l.ref = ixBarra[cb].r;
+        matchedBarra++;
+        return;
+      }
+    }
+
+    // 2) Match por código (GN-XXX, GEN###)
+    if (l.codigo) {
+      var co = String(l.codigo).trim().toUpperCase();
+      if (ixCodigo[co]) {
+        l.ref = ixCodigo[co].r;
+        matchedCodigo++;
+        return;
+      }
+    }
+
+    // 3) Match por descripción (fuzzy: tokens comunes ≥ 60%)
+    if (l.desc) {
+      var tk = norm(l.desc).split(' ').filter(function(w){return w.length >= 3;});
+      if (tk.length < 2) return;
+      var best = null, bestScore = 0;
+      PRODUCTS.forEach(function(p){
+        if (!p.d) return;
+        var pt = norm(p.d).split(' ').filter(function(w){return w.length >= 3;});
+        if (pt.length === 0) return;
+        // Calcular intersección de tokens
+        var hits = 0;
+        tk.forEach(function(t){ if (pt.indexOf(t) >= 0) hits++; });
+        var score = hits / Math.max(tk.length, pt.length);
+        if (score > bestScore) { bestScore = score; best = p; }
+      });
+      if (best && bestScore >= 0.6) {
+        l.ref = best.r;
+        matchedDesc++;
+      }
+    }
+  });
+
+  var totalMatched = matchedBarra + matchedCodigo + matchedDesc;
+  if (totalMatched > 0) {
+    console.log('[MS Imagen] Matching local: '+matchedBarra+' por barra, '+matchedCodigo+' por código, '+matchedDesc+' por descripción');
+  }
+}
+
 function msImagenMostrarRevision(parsed) {
   _msImgDatosExtraidos = parsed.lineas || [];
+  // Guardar cliente detectado (si existe) para usarlo al confirmar
+  window._msImgClienteDetectado = {
+    nombre: parsed.cliente || '',
+    rif: parsed.rif || ''
+  };
   // Info cliente
   var infoDiv = document.getElementById('ms-img-info-cliente');
   var cliTxt = document.getElementById('ms-img-cliente-txt');
@@ -25753,17 +25860,24 @@ function msImagenMostrarRevision(parsed) {
     infoDiv.style.display = 'block';
   }
   // Resumen
+  var conRef = _msImgDatosExtraidos.filter(function(l){return l.ref;}).length;
+  var totalL = _msImgDatosExtraidos.length;
   var res = document.getElementById('ms-img-resumen-texto');
-  if(res) res.textContent = _msImgDatosExtraidos.length+' líneas detectadas — edita si es necesario';
+  if(res) res.textContent = totalL+' líneas detectadas — '+conRef+' identificadas ('+Math.round(100*conRef/Math.max(1,totalL))+'%)';
   // Alertas
-  var sinRef = _msImgDatosExtraidos.filter(function(l){return !l.ref;}).length;
+  var sinRef = totalL - conRef;
   var alerta = document.getElementById('ms-img-alerta');
   if(alerta) {
     if(sinRef>0) {
       alerta.style.display='block';
-      alerta.textContent='⚠️ '+sinRef+' línea(s) sin referencia identificada en el sistema. Revisa y asigna manualmente si aplica.';
+      alerta.textContent='⚠️ '+sinRef+' línea(s) sin referencia identificada. Revisa manualmente o elimínalas.';
+      alerta.style.background='#fef3c7';
+      alerta.style.borderLeftColor='#f59e0b';
     } else {
-      alerta.style.display='none';
+      alerta.style.display='block';
+      alerta.textContent='✅ Todas las '+totalL+' líneas fueron identificadas automáticamente.';
+      alerta.style.background='#dcfce7';
+      alerta.style.borderLeftColor='#16a34a';
     }
   }
   // Renderizar tabla editable
@@ -25821,13 +25935,63 @@ window.msImagenAgregarFila = function() {
 window.msImagenConfirmar = function() {
   var lineas = _msImgDatosExtraidos.filter(function(l){return l.cantidad>0;});
   if(!lineas.length){ showToast('No hay líneas con cantidad','warn'); return; }
+
+  // Usar cliente detectado (si lo hay), o buscarlo en el directorio por nombre/RIF
+  var cliDetectado = window._msImgClienteDetectado || {};
+  var nomCli = cliDetectado.nombre || '';
+  var rifCli = cliDetectado.rif || '';
+
+  // Intentar match con directorio CL (para obtener dirección, sucursales, crédito)
+  var clMatch = null;
+  try {
+    var clDB = (typeof getClientsDB==='function') ? getClientsDB() : [];
+    if (nomCli || rifCli) {
+      function norm(s){return String(s||'').toUpperCase().replace(/[^A-Z0-9]/g,' ').replace(/\s+/g,' ').trim();}
+      var nomN = norm(nomCli);
+      var rifN = norm(rifCli);
+      // 1) Match por RIF exacto
+      if (rifN) clMatch = clDB.find(function(c){return norm(c.rif) === rifN;});
+      // 2) Match por nombre exacto
+      if (!clMatch && nomN) clMatch = clDB.find(function(c){return norm(c.nombre) === nomN;});
+      // 3) Match por tokens de nombre (≥2 palabras coinciden)
+      if (!clMatch && nomN) {
+        var tks = nomN.split(' ').filter(function(w){return w.length > 2;});
+        clMatch = clDB.find(function(c){
+          var cn = norm(c.nombre);
+          return tks.filter(function(t){return cn.indexOf(t)>=0;}).length >= 2;
+        });
+      }
+    }
+  } catch(e){}
+
+  // Si encontramos cliente en el directorio, usarlo (completa datos fiscales)
+  if (clMatch) {
+    MS._clienteUnica = clMatch;
+    nomCli = clMatch.nombre;
+  } else if (nomCli) {
+    // No está en directorio pero la IA detectó el nombre — crear objeto básico
+    MS._clienteUnica = {
+      nombre: nomCli,
+      rif: rifCli,
+      sucursales: [{ nombre: nomCli, direccion: '', despacho: '' }]
+    };
+  } else {
+    // Sin cliente detectado → usar nombre genérico
+    nomCli = 'PEDIDO IMAGEN';
+    MS._clienteUnica = null;
+  }
+
+  var sucName = nomCli; // usar el nombre del cliente como nombre de sucursal
+
   // Convertir al formato MS.data
   MS.data = lineas.map(function(l){
     var prod = (PRODUCTS||[]).find(function(p){return p.r===l.ref;}) || {};
     var stock = (typeof getDisponible==='function') ? getDisponible(l.ref) : (prod.ex||0);
-    var suc = 'PEDIDO IMAGEN';
-    var pedidosObj = {}; pedidosObj[suc] = l.cantidad;
-    var distObj = {}; distObj[suc] = Math.min(stock, l.cantidad);
+    var pedidosObj = {}; pedidosObj[sucName] = l.cantidad;
+    var distObj = {}; distObj[sucName] = Math.min(stock, l.cantidad);
+    // Precio: prioridad precio de imagen si está > 0, si no precio del catálogo
+    var precio = parseFloat(l.precio_usd) || 0;
+    if (precio <= 0 && prod.u) precio = parseFloat(prod.u) || 0;
     return {
       ref: l.ref || ('IMG-'+Math.random().toString(36).substr(2,5).toUpperCase()),
       desc: l.desc || prod.d || '',
@@ -25835,14 +25999,17 @@ window.msImagenConfirmar = function() {
       pedidos: pedidosObj,
       dist: distObj,
       estado: stock >= l.cantidad ? 'completo' : stock > 0 ? 'parcial' : 'sinstock',
-      enSistema: !!(l.ref && prod.r)
+      enSistema: !!(l.ref && prod.r),
+      precioUSD: precio
     };
   });
-  MS.sucursales = ['PEDIDO IMAGEN'];
+  MS.sucursales = [sucName];
   MS.moneda = 'USD';
   MS._modoImagen = true;
+  MS._modoUnica = true;  // Tratar como factura única para reutilizar el flujo completo de venta
   msRenderResultados();
-  showToast('✅ Pedido creado desde imagen — '+lineas.length+' líneas','ok');
+  var matchInfo = clMatch ? ' · ✅ cliente vinculado al directorio' : '';
+  showToast('✅ Pedido creado desde imagen — '+lineas.length+' líneas'+matchInfo,'ok');
 };
 
 function msSetProgress(pct, msg) {
@@ -27813,6 +27980,238 @@ window.msConfirmarSeleccionadas = function(numP, sel, hayPendientes, ovEmision){
   msAbrirOverlayReservado(numP, sel, quedanPendientes);
 };
 
+// ══════════════════════════════════════════════════════════════════
+// MSGENERARFACTURAPDF — Factura formal para visualizar / imprimir
+// ══════════════════════════════════════════════════════════════════
+// Genera una ventana con la factura formal por sucursal, usando los datos
+// fiscales capturados en el overlay de despacho (N° Factura, Control, etc).
+// Si hay varias sucursales, muestra selector primero.
+window.msGenerarFacturaPDF = function(numP, sel) {
+  numP = numP || MS.numPedido;
+  sel = sel || (MS.sucursales||[]).slice();
+  if (!numP || !sel.length) {
+    showToast('⚠️ No hay pedido activo para generar factura', 'warn');
+    return;
+  }
+
+  // Si hay más de una sucursal, mostrar selector
+  if (sel.length > 1) {
+    _msFacturaSelectorSucursal(numP, sel);
+    return;
+  }
+
+  _msFacturaRenderizar(numP, sel[0]);
+};
+
+function _msFacturaSelectorSucursal(numP, sucs) {
+  var ov = document.createElement('div');
+  ov.id = 'ms-fact-sel-ov';
+  ov.style.cssText = 'position:fixed;inset:0;z-index:99200;background:rgba(0,0,0,.7);display:flex;align-items:center;justify-content:center;';
+  var box = document.createElement('div');
+  box.style.cssText = 'background:#fff;border-radius:14px;padding:24px;max-width:480px;width:92%;';
+  box.innerHTML =
+    '<div style="font-size:1.05rem;font-weight:900;color:#1a2050;margin-bottom:6px;">🧾 Seleccionar Factura</div>' +
+    '<div style="font-size:.8rem;color:#64748b;margin-bottom:14px;">Pedido '+numP+' tiene '+sucs.length+' sucursales. ¿De cuál deseas la factura?</div>';
+  sucs.forEach(function(s){
+    var dF = (MS.datosFiscales||{})[s] || {};
+    var nFact = dF.nFactura || '(sin N° factura)';
+    var btn = document.createElement('button');
+    btn.style.cssText = 'display:block;width:100%;text-align:left;background:#f8fafc;border:1.5px solid #e2e8f0;border-radius:8px;padding:10px 14px;margin-bottom:8px;cursor:pointer;font-weight:700;color:#1a2050;font-size:.82rem;';
+    btn.innerHTML = '<strong>'+s+'</strong><br><span style="font-size:.72rem;color:#64748b;font-weight:500;">Factura N°: '+nFact+'</span>';
+    btn.onclick = function(){ ov.remove(); _msFacturaRenderizar(numP, s); };
+    box.appendChild(btn);
+  });
+  var btnC = document.createElement('button');
+  btnC.textContent = 'Cancelar';
+  btnC.style.cssText = 'background:#f1f5f9;color:#475569;border:none;border-radius:8px;padding:8px 14px;cursor:pointer;font-weight:700;width:100%;margin-top:4px;';
+  btnC.onclick = function(){ ov.remove(); };
+  box.appendChild(btnC);
+  ov.appendChild(box);
+  document.body.appendChild(ov);
+}
+
+function _msFacturaRenderizar(numP, suc) {
+  var dF = (MS.datosFiscales||{})[suc] || {};
+  var nFact = dF.nFactura || '';
+  var nCtrl = dF.nControl || '';
+  var nNE = dF.nNotaEntrega || '';
+  var fEmi = dF.fechaEmision || '';
+  var fVenc = dF.fechaVencimiento || '';
+  var condPago = dF.condicionPago || '';
+  var obs = dF.observaciones || '';
+
+  // Cliente
+  var cliObj = MS._clienteUnica || {};
+  var nomCli = cliObj.nombre || suc;
+  var rifCli = cliObj.rif || '';
+  var sucObj = null;
+  if (cliObj.sucursales && cliObj.sucursales.length) {
+    var t = String(suc).toUpperCase().trim();
+    sucObj = cliObj.sucursales.find(function(s){ return String(s.nombre||'').toUpperCase().trim() === t; });
+    if (!sucObj && cliObj.sucursales.length===1) sucObj = cliObj.sucursales[0];
+  }
+  var dirFis = (sucObj && sucObj.direccion) || '';
+  var dirDesp = (sucObj && sucObj.despacho) || dirFis;
+  var telCli = (sucObj && sucObj.telefono) || cliObj.telefono || '';
+
+  // Items despachados de esa sucursal
+  var moneda = MS.moneda || 'USD';
+  var monLabel = moneda === 'BCV' ? 'BCV $' : moneda === 'TF' ? 'TF $' : 'USD $';
+  var tasa = (typeof getTasaHoy==='function' ? getTasaHoy() : 0) || 0;
+
+  var items = [];
+  var subtotal = 0;
+  MS.data.forEach(function(p){
+    var pide = p.pedidos[suc]||0;
+    var desp = Math.min(p.dist[suc]||0, pide);
+    if (desp <= 0) return;
+    var precio = (typeof msGetPrecio==='function' ? msGetPrecio(p.ref) : 0) || 0;
+    var tot = precio * desp;
+    subtotal += tot;
+    var prod = (PRODUCTS||[]).find(function(x){return x.r===p.ref;}) || {};
+    items.push({
+      ref: p.ref, desc: p.desc || prod.d || '', cod: prod.c || '',
+      cant: desp, precio: precio, total: tot
+    });
+  });
+
+  if (!items.length) {
+    showToast('⚠️ No hay items despachados en esta sucursal', 'warn');
+    return;
+  }
+
+  // IVA (16% en Venezuela)
+  var iva = subtotal * 0.16;
+  var total = subtotal + iva;
+  var totalBs = tasa > 0 ? total * tasa : 0;
+
+  function fmt(n){ return (n||0).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ','); }
+  function esc(s){ return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+  var fechaStr = fEmi ? (function(){var p=fEmi.split('-'); return p.length===3? p[2]+'/'+p[1]+'/'+p[0] : fEmi;})() : new Date().toLocaleDateString('es-VE');
+  var vencStr = fVenc ? (function(){var p=fVenc.split('-'); return p.length===3? p[2]+'/'+p[1]+'/'+p[0] : fVenc;})() : '';
+  var condLabel = condPago === 'CONTADO' ? 'CONTADO' :
+                  (condPago && condPago.indexOf('CREDITO_')===0) ? ('CRÉDITO '+condPago.split('_')[1]+' DÍAS') :
+                  (condPago || '—');
+
+  var html =
+  '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Factura N° '+esc(nFact||numP)+' — '+esc(nomCli)+'</title>' +
+  '<style>' +
+    '* { box-sizing: border-box; margin:0; padding:0; }' +
+    'body { font-family: Arial, sans-serif; font-size: 10pt; color: #1a2050; padding: 20px; background: #f5f5f5; }' +
+    '.factura { max-width: 800px; margin: 0 auto; background: white; padding: 25px 30px; box-shadow: 0 4px 20px rgba(0,0,0,0.1); border: 2px solid #1a2050; }' +
+    '.hdr { display:flex; justify-content:space-between; align-items:start; border-bottom: 3px double #1a2050; padding-bottom: 14px; margin-bottom: 14px; }' +
+    '.empresa { flex: 1; }' +
+    '.empresa h1 { font-size: 20pt; color: #1a2050; letter-spacing: 1px; margin-bottom: 2px; }' +
+    '.empresa .sub { font-size: 8pt; color: #64748b; line-height: 1.4; }' +
+    '.fact-box { border: 2px solid #dc2626; border-radius: 6px; padding: 10px 16px; text-align: center; min-width: 200px; }' +
+    '.fact-box .t { font-size: 11pt; font-weight: 900; color: #dc2626; letter-spacing: 1px; }' +
+    '.fact-box .n { font-size: 16pt; font-weight: 900; color: #1a2050; margin: 4px 0; }' +
+    '.fact-box .ctrl { font-size: 8pt; color: #64748b; }' +
+    '.meta { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 14px; font-size: 9pt; }' +
+    '.meta .box { border: 1px solid #cbd5e1; padding: 8px 10px; border-radius: 4px; }' +
+    '.meta .box .l { font-size: 7pt; color: #64748b; text-transform: uppercase; font-weight: 800; letter-spacing: 0.5px; }' +
+    '.meta .box .v { font-size: 10pt; color: #1a2050; font-weight: 700; margin-top: 2px; }' +
+    'table.items { width:100%; border-collapse:collapse; margin: 10px 0; font-size: 9pt; }' +
+    'table.items thead { background: #1a2050; color: white; }' +
+    'table.items th, table.items td { border: 1px solid #cbd5e1; padding: 6px 8px; text-align: left; }' +
+    'table.items th { font-weight: 800; font-size: 8pt; text-transform: uppercase; letter-spacing: 0.4px; }' +
+    'table.items td.r { text-align: right; font-variant-numeric: tabular-nums; }' +
+    'table.items td.c { text-align: center; }' +
+    'table.items tbody tr:nth-child(even) { background: #f8fafc; }' +
+    '.totales { margin-left: auto; margin-top: 10px; width: 50%; font-size: 10pt; }' +
+    '.totales .row { display: flex; justify-content: space-between; padding: 5px 10px; border-bottom: 1px solid #e2e8f0; }' +
+    '.totales .row.grand { background: #1a2050; color: white; font-size: 12pt; font-weight: 900; border: none; margin-top: 4px; }' +
+    '.totales .row.bs { background: #f8fafc; color: #64748b; font-size: 9pt; font-style: italic; }' +
+    '.obs { margin-top: 14px; border-top: 1px dashed #cbd5e1; padding-top: 10px; font-size: 9pt; color: #475569; }' +
+    '.firmas { margin-top: 30px; display: grid; grid-template-columns: 1fr 1fr; gap: 40px; font-size: 9pt; color: #64748b; }' +
+    '.firmas .f { border-top: 1px solid #1a2050; padding-top: 4px; text-align: center; }' +
+    '.actions { position: sticky; top: 0; background: white; padding: 10px 0; margin-bottom: 10px; text-align: center; border-bottom: 1px solid #e2e8f0; }' +
+    '.actions button { background: #1a2050; color: white; border: none; padding: 9px 18px; margin: 0 4px; border-radius: 6px; font-weight: 800; cursor: pointer; font-size: 10pt; }' +
+    '.actions button:hover { background: #2d3a8c; }' +
+    '.actions button.print { background: #dc2626; }' +
+    '@media print {' +
+      '.actions { display: none; }' +
+      'body { background: white; padding: 0; }' +
+      '.factura { box-shadow: none; border: none; }' +
+    '}' +
+  '</style></head><body>' +
+  '<div class="actions">' +
+    '<button class="print" onclick="window.print()">🖨️ Imprimir / Guardar PDF</button>' +
+    '<button onclick="window.close()">✕ Cerrar</button>' +
+  '</div>' +
+  '<div class="factura">' +
+    '<div class="hdr">' +
+      '<div class="empresa">' +
+        '<h1>FARMERS, C.A.</h1>' +
+        '<div class="sub">RIF: J-XXXXXXXXX-X<br>' +
+        'Nueva Esparta, Margarita · Venezuela<br>' +
+        '0412-0445797 · farmersve@gmail.com</div>' +
+      '</div>' +
+      '<div class="fact-box">' +
+        '<div class="t">FACTURA</div>' +
+        '<div class="n">N° '+esc(nFact||'—')+'</div>' +
+        '<div class="ctrl">Control: '+esc(nCtrl||'—')+(nNE?'<br>N.E.: '+esc(nNE):'')+'</div>' +
+      '</div>' +
+    '</div>' +
+
+    '<div class="meta">' +
+      '<div class="box"><div class="l">Cliente</div><div class="v">'+esc(nomCli)+'</div></div>' +
+      '<div class="box"><div class="l">RIF</div><div class="v">'+esc(rifCli||'—')+'</div></div>' +
+      '<div class="box"><div class="l">📋 Dir. Fiscal</div><div class="v">'+esc(dirFis||'(sin dato)')+'</div></div>' +
+      '<div class="box"><div class="l">🚚 Dir. Despacho</div><div class="v">'+esc(dirDesp||'(sin dato)')+'</div></div>' +
+      '<div class="box"><div class="l">Teléfono</div><div class="v">'+esc(telCli||'—')+'</div></div>' +
+      '<div class="box"><div class="l">Sucursal</div><div class="v">'+esc(suc)+'</div></div>' +
+      '<div class="box"><div class="l">Fecha Emisión</div><div class="v">'+esc(fechaStr)+'</div></div>' +
+      '<div class="box"><div class="l">Condición · Vence</div><div class="v">'+esc(condLabel)+(vencStr?' · '+esc(vencStr):'')+'</div></div>' +
+    '</div>' +
+
+    '<table class="items">' +
+      '<thead><tr>' +
+        '<th style="width:6%">#</th>' +
+        '<th style="width:14%">Ref.</th>' +
+        '<th style="width:44%">Descripción</th>' +
+        '<th style="width:8%" class="c">Cant.</th>' +
+        '<th style="width:14%" class="r">P.Unit</th>' +
+        '<th style="width:14%" class="r">Total</th>' +
+      '</tr></thead><tbody>' +
+      items.map(function(it, i){
+        return '<tr>' +
+          '<td class="c">'+(i+1)+'</td>' +
+          '<td>'+esc(it.ref)+'</td>' +
+          '<td>'+esc(it.desc)+'</td>' +
+          '<td class="c">'+it.cant+'</td>' +
+          '<td class="r">'+fmt(it.precio)+'</td>' +
+          '<td class="r">'+fmt(it.total)+'</td>' +
+        '</tr>';
+      }).join('') +
+      '</tbody></table>' +
+
+    '<div class="totales">' +
+      '<div class="row"><span>Subtotal:</span><span>'+monLabel+' '+fmt(subtotal)+'</span></div>' +
+      '<div class="row"><span>IVA 16%:</span><span>'+monLabel+' '+fmt(iva)+'</span></div>' +
+      '<div class="row grand"><span>TOTAL:</span><span>'+monLabel+' '+fmt(total)+'</span></div>' +
+      (tasa > 0 ? '<div class="row bs"><span>Equivalente en Bs:</span><span>Bs. '+fmt(totalBs)+'</span></div>' : '') +
+      (tasa > 0 ? '<div class="row bs"><span>Tasa BCV:</span><span>'+fmt(tasa)+' Bs/$</span></div>' : '') +
+    '</div>' +
+
+    (obs ? '<div class="obs"><strong>Observaciones:</strong> '+esc(obs)+'</div>' : '') +
+
+    '<div class="firmas">' +
+      '<div class="f">Emitido por — FARMERS, C.A.</div>' +
+      '<div class="f">Recibido por — '+esc(nomCli)+'</div>' +
+    '</div>' +
+  '</div></body></html>';
+
+  var w = window.open('', '_blank', 'width=900,height=1000');
+  if (!w) {
+    showToast('⚠️ Permite ventanas emergentes para ver la factura', 'warn');
+    return;
+  }
+  w.document.write(html);
+  w.document.close();
+}
+
 // ── FUNCIÓN: registrar venta + CXC (solo al despachar) ─────────
 function msRegistrarVentaYCXC(numP, sel) {
   // El overlay de despacho ya capturó los datos fiscales y confirmó la intención.
@@ -27854,7 +28253,7 @@ function msRegistrarVentaYCXC(numP, sel) {
 
   sel.forEach(function(suc){
     // No duplicar si ya fue despachada
-    if((MS.sucursalesEstado[suc])==='despachado') return;
+    if(String(MS.sucursalesEstado[suc]||'').toUpperCase()==='DESPACHADO') return;
 
     var itemsSuc=[];
     MS.data.forEach(function(p){
@@ -27933,11 +28332,12 @@ function msRegistrarVentaYCXC(numP, sel) {
     }
     if(typeof cxcCrearDesdePedido==='function') cxcCrearDesdePedido(sale);
 
-    MS.sucursalesEstado[suc]='despachado';
+    MS.sucursalesEstado[suc]='DESPACHADO';
   });
 
   var todasDespachadas=MS.sucursales.every(function(s){
-    return MS.sucursalesEstado[s]==='despachado'||MS.sucursalesEstado[s]==='pendiente';
+    var e = String(MS.sucursalesEstado[s]||'').toUpperCase();
+    return e==='DESPACHADO'||e==='PENDIENTE';
   });
   if(todasDespachadas) MS.fase='despachado';
   MS.formalizado=true;
@@ -27951,9 +28351,25 @@ function msRegistrarVentaYCXC(numP, sel) {
       peds[pidx].fase = MS.fase;
       peds[pidx].datosFiscales = MS.datosFiscales || {};
       peds[pidx].formalizado = true;
+      // Fix: sincronizar también el campo "estado" (visible en UI)
+      // msLiberarComprometido ya lo actualizó, pero esta re-persistencia lo volvería a
+      // leer viejo sin el fix. Reconstruimos aquí basado en sucursalesEstado:
+      var todasDesp = (peds[pidx].sucursales||[]).every(function(s){
+        var est = (peds[pidx].sucursalesEstado||{})[s] || '';
+        return String(est).toUpperCase() === 'DESPACHADO';
+      });
+      peds[pidx].estado = todasDesp ? 'DESPACHADO' : 'PARCIAL';
+      peds[pidx].fechaDespacho = peds[pidx].fechaDespacho || new Date().toLocaleDateString('es-VE',{day:'2-digit',month:'2-digit',year:'numeric'});
       saveMsPedidos(peds);
     }
   }
+
+  // Fix: forzar refresh de inventario/catálogo tras descuento real
+  try {
+    if (typeof renderTable === 'function') renderTable();
+    if (typeof ptRender === 'function') ptRender();
+    if (typeof catRenderizar === 'function') catRenderizar();
+  } catch(e) { console.warn('Refresh post-despacho:', e); }
 
   if(typeof cxcUpdateBadge==='function') cxcUpdateBadge();
   if(typeof renderHistorial==='function') renderHistorial();
@@ -29803,7 +30219,18 @@ window.msAbrirOverlayConfirmado = function(numP, sel, hayPendientes){
 
   row.appendChild(mkBtn('EXCEL','#16a34a',function(){try{msExportarExcel();showToast('📊 Excel descargado','success');}catch(err){console.error(err);showToast('❌ Error Excel: '+err.message,'warn');}}));
   row.appendChild(mkBtn('PDF','#dc2626',function(){try{msExportarPDF();}catch(err){console.error(err);showToast('❌ Error PDF: '+err.message,'warn');}}));
-  row.appendChild(mkBtn('Factura','#1a2050',function(){msGenerarFacturaPDF();}));
+  row.appendChild(mkBtn('Factura','#1a2050',function(){
+    try {
+      if (typeof msGenerarFacturaPDF === 'function') {
+        msGenerarFacturaPDF(numP, sel);
+      } else {
+        showToast('⚠️ Función de Factura no disponible','warn');
+      }
+    } catch(err) {
+      console.error(err);
+      showToast('❌ Error Factura: '+err.message,'warn');
+    }
+  }));
   row.appendChild(mkBtn('Etiquetas','#7c3aed',function(){msAbrirEtiquetas();}));
 
   if(hayPendientes){
