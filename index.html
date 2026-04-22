@@ -10461,6 +10461,27 @@ window.ocSincronizarInventarioClick = function(ocId) {
     analisis._volSource = volSource;
     analisis._pesoSource = pesoSource;
 
+    // DEBUG: guardar valores crudos para diagnóstico visible
+    analisis._debug = {
+      ptData_volDirecto:  medidas.volDirecto,
+      ptData_peso:        medidas.peso,
+      ptData_largo:       medidas.largo,
+      ptData_ancho:       medidas.ancho,
+      ptData_alto:        medidas.alto,
+      item_volumenFt3:    item.volumenFt3,
+      item_volDirecto:    item.volDirecto,
+      item_pesoKg:        item.pesoKg,
+      item_peso:          item.peso,
+      item_pesoPorBulto:  item.pesoPorBulto,
+      item_bultos:        item.bultos,
+      item_bultosEstim:   item.bultosEstimados,
+      item_cantidad:      item.cantidad,
+      item_udsPorBulto:   item.unidadesPorBulto,
+      prod_m:             prod ? prod.m : null,
+      volPorBultoOC_calc: volPorBultoOC,
+      pesoPorBultoOC_calc: pesoPorBultoOC
+    };
+
     // Contabilizar items sin medidas confiables (para avisar al usuario)
     if (volPorBultoOC === 0) resultado._itemsSinMedidas++;
     if (pesoPorBultoOC === 0) resultado._itemsSinPeso++;
@@ -10472,12 +10493,12 @@ window.ocSincronizarInventarioClick = function(ocId) {
       cmp('e',  'Unidad',          prod.e,  item.unidad,           'str'),
       cmp('m',  'Uds/bulto',       prod.m,  item.unidadesPorBulto, 'int'),
       cmp('br', 'Marca',           prod.br, item.marca,            'str'),
-      cmp('paisOrigen',  'País origen',     pt.paisOrigen, item.paisOrigen,      'str'),
-      cmp('med.largo',   'Largo cm',        medidas.largo, item.largo,           'num'),
-      cmp('med.ancho',   'Ancho cm',        medidas.ancho, item.ancho,           'num'),
-      cmp('med.alto',    'Alto cm',         medidas.alto,  item.alto,            'num'),
-      cmp('med.volDirecto', 'Vol ft³/bulto', medidas.volDirecto, volPorBultoOC > 0 ? parseFloat(volPorBultoOC.toFixed(4)) : 0, 'num'),
-      cmp('med.peso',    'Peso Kg/bulto',   medidas.peso,  pesoPorBultoOC > 0 ? parseFloat(pesoPorBultoOC.toFixed(3)) : 0, 'num')
+      cmp('paisOrigen',  'País origen',     pt.paisOrigen, item.paisOrigen,      'str')
+      // ─── IMPORTANTE: vol/peso/medidas NO se comparan en el sincronizador ───
+      // Estos datos vienen del Excel de medidas del proveedor y se guardan
+      // directamente en ptData[ref].medidas al ejecutar "📥 Importar Medidas".
+      // Si hay diferencias, se gestionan en ese flujo, no aquí.
+      // El sincronizador se enfoca en datos de la FACTURA (código, descripción, país, marca, uds/bulto).
     ];
 
     analisis.fields = fieldsCandidatos.filter(function(f){ return f !== null; });
@@ -10660,7 +10681,9 @@ function _ocSyncRenderLista() {
         '<th style="padding:6px 8px;text-align:center;width:40px;">✓</th>' +
         '<th style="padding:6px 8px;text-align:left;width:150px;">Campo</th>' +
         '<th style="padding:6px 8px;text-align:left;">Actual (catálogo)</th>' +
-        '<th style="padding:6px 8px;text-align:left;">Nuevo (de OC)</th>' +
+        '<th style="padding:6px 8px;text-align:left;">Nuevo (de OC)' +
+          ' <button onclick="ocSyncVerDebug(\'' + a.refFarmers + '\')" style="background:#1e40af;color:white;border:none;border-radius:4px;padding:2px 7px;cursor:pointer;font-weight:800;font-size:0.6rem;margin-left:8px;vertical-align:middle;" title="Ver de dónde sale cada valor (diagnóstico técnico)">🔍 Debug</button>' +
+        '</th>' +
       '</tr></thead><tbody>';
 
     a.fields.forEach(function(f, fi) {
@@ -10880,6 +10903,90 @@ window.ocSyncCancelar = function() {
   if (el) el.remove();
   _ocSyncBuffer = null;
   window._ocSyncFiltro = 'todos';
+};
+
+// Debug: muestra los valores crudos de cada fuente para una ref específica
+window.ocSyncVerDebug = function(refFarmers) {
+  if (!_ocSyncBuffer) return;
+  var a = _ocSyncBuffer.all.find(function(x){ return x.refFarmers === refFarmers; });
+  if (!a || !a._debug) { alert('No hay info de debug para ' + refFarmers); return; }
+
+  var d = a._debug;
+  var fmt = function(v) {
+    if (v === null || v === undefined) return '<em style="color:#94a3b8;">null/undefined</em>';
+    if (v === '') return '<em style="color:#94a3b8;">""</em>';
+    if (v === 0) return '<span style="color:#dc2626;font-weight:800;">0</span>';
+    return '<span style="color:#047857;font-weight:800;">' + v + '</span>';
+  };
+
+  var html = '<div id="oc-sync-debug-ov" style="position:fixed;inset:0;z-index:99940;background:rgba(0,0,0,0.85);display:flex;align-items:center;justify-content:center;padding:20px;">' +
+    '<div style="background:white;border-radius:14px;width:100%;max-width:700px;max-height:90vh;overflow:auto;box-shadow:0 20px 60px rgba(0,0,0,0.5);">' +
+
+      // Header
+      '<div style="padding:16px 24px;background:linear-gradient(135deg,#1e40af,#3b82f6);color:white;display:flex;justify-content:space-between;align-items:center;">' +
+        '<div>' +
+          '<div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;font-size:1.3rem;letter-spacing:1px;">🔍 DEBUG — ' + refFarmers + '</div>' +
+          '<div style="font-size:0.72rem;opacity:0.9;">Valores crudos en cada fuente de datos</div>' +
+        '</div>' +
+        '<button onclick="document.getElementById(\'oc-sync-debug-ov\').remove()" style="background:rgba(255,255,255,0.15);border:1.5px solid rgba(255,255,255,0.3);border-radius:7px;padding:7px 12px;cursor:pointer;font-weight:800;color:white;font-size:0.85rem;">✕</button>' +
+      '</div>' +
+
+      '<div style="padding:18px 24px;">' +
+
+        // ptData
+        '<div style="background:#ecfdf5;border:1.5px solid #6ee7b7;border-radius:8px;padding:12px;margin-bottom:12px;">' +
+          '<div style="font-weight:900;color:#047857;font-size:0.78rem;margin-bottom:8px;">📦 ptData[' + refFarmers + '].medidas (debe ser la fuente REAL del Excel proveedor)</div>' +
+          '<div style="font-family:monospace;font-size:0.72rem;line-height:1.8;">' +
+            '<div>volDirecto: ' + fmt(d.ptData_volDirecto) + ' ft³/bulto</div>' +
+            '<div>peso: ' + fmt(d.ptData_peso) + ' Kg/bulto</div>' +
+            '<div>largo × ancho × alto: ' + fmt(d.ptData_largo) + ' × ' + fmt(d.ptData_ancho) + ' × ' + fmt(d.ptData_alto) + ' cm</div>' +
+          '</div>' +
+        '</div>' +
+
+        // Item OC
+        '<div style="background:#eef2ff;border:1.5px solid #a5b4fc;border-radius:8px;padding:12px;margin-bottom:12px;">' +
+          '<div style="font-weight:900;color:#4338ca;font-size:0.78rem;margin-bottom:8px;">📄 Item en la OC (valores calculados al cargar factura)</div>' +
+          '<div style="font-family:monospace;font-size:0.72rem;line-height:1.8;">' +
+            '<div>volumenFt3 (TOTAL): ' + fmt(d.item_volumenFt3) + '</div>' +
+            '<div>volDirecto: ' + fmt(d.item_volDirecto) + '</div>' +
+            '<div>pesoKg (TOTAL): ' + fmt(d.item_pesoKg) + '</div>' +
+            '<div>peso: ' + fmt(d.item_peso) + '</div>' +
+            '<div>pesoPorBulto: ' + fmt(d.item_pesoPorBulto) + '</div>' +
+            '<div>cantidad: ' + fmt(d.item_cantidad) + '</div>' +
+            '<div>bultos: ' + fmt(d.item_bultos) + '</div>' +
+            '<div>bultosEstimados: ' + fmt(d.item_bultosEstim) + '</div>' +
+            '<div>unidadesPorBulto: ' + fmt(d.item_udsPorBulto) + '</div>' +
+          '</div>' +
+        '</div>' +
+
+        // PRODUCTS
+        '<div style="background:#fef3c7;border:1.5px solid #fcd34d;border-radius:8px;padding:12px;margin-bottom:12px;">' +
+          '<div style="font-weight:900;color:#78350f;font-size:0.78rem;margin-bottom:8px;">📗 PRODUCTS[' + refFarmers + '] (catálogo maestro)</div>' +
+          '<div style="font-family:monospace;font-size:0.72rem;line-height:1.8;">' +
+            '<div>m (uds/bulto): ' + fmt(d.prod_m) + '</div>' +
+          '</div>' +
+        '</div>' +
+
+        // Resultado calculado
+        '<div style="background:#f3e8ff;border:1.5px solid #c4b5fd;border-radius:8px;padding:12px;">' +
+          '<div style="font-weight:900;color:#6b21a8;font-size:0.78rem;margin-bottom:8px;">🎯 Resultado final mostrado en la tabla (columna "Nuevo")</div>' +
+          '<div style="font-family:monospace;font-size:0.72rem;line-height:1.8;">' +
+            '<div>vol/bulto calculado: ' + fmt(d.volPorBultoOC_calc) + ' ft³ <strong style="color:#6b21a8;">(' + a._volSource + ')</strong></div>' +
+            '<div>peso/bulto calculado: ' + fmt(d.pesoPorBultoOC_calc) + ' Kg <strong style="color:#6b21a8;">(' + a._pesoSource + ')</strong></div>' +
+          '</div>' +
+        '</div>' +
+
+        '<div style="margin-top:14px;padding:10px;background:#f1f5f9;border-radius:6px;font-size:0.68rem;color:#475569;line-height:1.5;">' +
+          '💡 <strong>Copia esta info y pégala al chat para diagnóstico.</strong> Si ptData tiene el valor correcto pero "Resultado" muestra algo distinto, hay un bug en el cascade. Si ptData también tiene el valor incorrecto, el bug está en el importador de medidas.' +
+        '</div>' +
+
+      '</div>' +
+    '</div>' +
+  '</div>';
+
+  var prev = document.getElementById('oc-sync-debug-ov');
+  if (prev) prev.remove();
+  document.body.insertAdjacentHTML('beforeend', html);
 };
 
 window.ocSyncAplicar = function() {
@@ -13334,18 +13441,27 @@ window.ocExportarExcel = function(id) {
     var cant = parseFloat(it.cantidad) || 0;
     var bultos = parseInt(it.bultosEstimados) || 0;
     var sub = cant * (parseFloat(it.precioFOB) || 0);
-    var volTotal = parseFloat(it.volumenFt3) || 0;
-    var pesoTotal = parseFloat(it.pesoKg) || 0;
 
-    // Calcular POR BULTO: preferir catálogo, sino dividir total entre bultos
+    // ─── Vol y peso POR BULTO ─── (fuente confiable: ptData del Excel de medidas)
     var volBulto = 0, pesoBulto = 0;
     var pt = ptData[it.refFarmers];
     if (pt && pt.medidas) {
       if (pt.medidas.volDirecto) volBulto = parseFloat(pt.medidas.volDirecto);
       if (pt.medidas.peso) pesoBulto = parseFloat(pt.medidas.peso);
+      // Fallback LxAxH si no hay volDirecto
+      if (!volBulto && pt.medidas.largo && pt.medidas.ancho && pt.medidas.alto) {
+        volBulto = (parseFloat(pt.medidas.largo) * parseFloat(pt.medidas.ancho) * parseFloat(pt.medidas.alto)) / 28316.85;
+      }
     }
-    if (!volBulto && bultos > 0 && volTotal > 0) volBulto = volTotal / bultos;
-    if (!pesoBulto && bultos > 0 && pesoTotal > 0) pesoBulto = pesoTotal / bultos;
+
+    // ─── Vol y peso TOTAL ─── (SIEMPRE calcular: bulto × bultos, nunca leer de item contaminado)
+    var volTotal = volBulto * bultos;
+    var pesoTotal = pesoBulto * bultos;
+
+    // Último fallback: si no hay vol/peso por bulto confiable, usar item.volumenFt3/pesoKg
+    // (menos confiable pero mejor que 0)
+    if (!volTotal && parseFloat(it.volumenFt3) > 0) volTotal = parseFloat(it.volumenFt3);
+    if (!pesoTotal && parseFloat(it.pesoKg) > 0) pesoTotal = parseFloat(it.pesoKg);
 
     itemsRows.push([
       i+1,
