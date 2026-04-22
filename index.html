@@ -20277,6 +20277,7 @@ function doRefSearch() {
           '<button onclick="ptImportarMedidas()" style="background:linear-gradient(135deg,#1d4ed8,#1e40af);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:700;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;" title="Importar largo, ancho, alto y peso desde Excel">📐 Importar Medidas</button>' +
           '<button onclick="ptImportarDatosMaestro()" style="background:linear-gradient(135deg,#7c3aed,#6d28d9);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:700;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;" title="Importar y actualizar todos los campos desde Excel">📥 Importar Datos</button>' +
           '<button onclick="ptImportarConIA()" style="background:linear-gradient(135deg,#dc2626,#b91c1c);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:700;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;" title="Usar IA para interpretar catálogo del proveedor (PDF o Excel)">🤖 IA Catálogo</button>' +
+          '<button onclick="ptAplicarRefAlFinalMasivo()" style="background:linear-gradient(135deg,#78350f,#a16207);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:700;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;" title="Aplica REF interna al final de TODAS las descripciones del catálogo (necesario para Valery)">✏️ REF al final</button>' +
         '</div>' +
         '<div id="pt-stats" style="padding:8px 20px;background:#fff;border-bottom:1px solid #eef0f8;display:flex;gap:16px;font-size:.72rem;color:#5a6080;flex-wrap:wrap;"></div>' +
         '<div style="overflow-y:auto;max-height:calc(100vh - 260px);">' +
@@ -21642,6 +21643,157 @@ function ptNextRef(brandPrefix) {
   var nxt = nums.length > 0 ? Math.max.apply(null, nums) + 1 : 1;
   return brandPrefix + String(nxt).padStart(3, '0');
 }
+
+// ══════════════════════════════════════════════════
+// APLICAR REF INTERNA AL FINAL MASIVO — todo el catálogo
+// ══════════════════════════════════════════════════
+// Aplica el formato "DESCRIPCIÓN + REF_INTERNA" a todas las descripciones
+// de PRODUCTS que no terminen con su ref. Necesario para que Valery (sistema
+// de ventas) pueda ubicar cada producto visualmente por la ref al final.
+// Preserva paréntesis tipo "(1 PZA)" limpiando y reponiendo antes de la ref.
+function ptAplicarRefAlFinalMasivo() {
+  if (typeof PRODUCTS === 'undefined' || !PRODUCTS.length) {
+    alert('No hay productos en el catálogo');
+    return;
+  }
+
+  // Analizar qué descripciones necesitan cambio
+  var cambios = [];
+  var yaCorrectos = 0;
+  var sinDescripcion = 0;
+
+  PRODUCTS.forEach(function(p){
+    if (!p.r) return;
+    var desc = String(p.d||'').trim();
+    if (!desc) { sinDescripcion++; return; }
+
+    var refUpper = String(p.r).toUpperCase();
+    var descUpper = desc.toUpperCase();
+
+    // Verificar si ya termina con la ref
+    var regexTail = new RegExp('\\b' + refUpper.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*$', 'i');
+    if (regexTail.test(descUpper)) {
+      yaCorrectos++;
+      return;
+    }
+
+    // Construir descripción nueva: quitar paréntesis redundantes al final + agregar ref
+    var descLimpia = desc
+      .replace(/\s*\(\s*1\s*PZA\s*\.?\s*\)\s*$/i, '')
+      .replace(/\s*\(\s*1\s*UNIDAD\s*\.?\s*\)\s*$/i, '')
+      .replace(/\s*\(\s*1\s*UND\s*\.?\s*\)\s*$/i, '')
+      .replace(/\s+$/, '');
+
+    var descNueva = descLimpia + ' ' + p.r;
+    cambios.push({ ref: p.r, antes: desc, despues: descNueva });
+  });
+
+  if (cambios.length === 0) {
+    alert('✅ Todas las descripciones ya tienen la REF al final.\n\n' +
+          'Correctas: ' + yaCorrectos + '\n' +
+          'Sin descripción: ' + sinDescripcion);
+    return;
+  }
+
+  // Preview de los primeros 10 cambios para confirmar
+  var preview = cambios.slice(0, 10).map(function(c){
+    var antes = c.antes.length > 55 ? c.antes.substring(0,52)+'...' : c.antes;
+    var despues = c.despues.length > 55 ? c.despues.substring(0,52)+'...' : c.despues;
+    return '• ' + c.ref + ':\n    ' + antes + '\n  → ' + despues;
+  }).join('\n\n');
+
+  var extra = cambios.length > 10 ? '\n\n...y ' + (cambios.length - 10) + ' más' : '';
+
+  var msg = '⚠️ APLICAR REF AL FINAL — MASIVO\n\n' +
+            'Se modificarán ' + cambios.length + ' descripciones.\n' +
+            (yaCorrectos > 0 ? yaCorrectos + ' ya están correctas.\n' : '') +
+            (sinDescripcion > 0 ? sinDescripcion + ' no tienen descripción.\n' : '') +
+            '\nPreview de los primeros 10:\n\n' + preview + extra +
+            '\n\n¿Continuar?';
+
+  if (!confirm(msg)) return;
+
+  // Aplicar cambios
+  var aplicados = 0;
+  cambios.forEach(function(c){
+    var p = PRODUCTS.find(function(x){ return x.r === c.ref; });
+    if (p) { p.d = c.despues; aplicados++; }
+  });
+
+  // Persistir
+  if (typeof saveProducts === 'function') saveProducts();
+  if (typeof window.fbSaveProducts === 'function') window.fbSaveProducts(PRODUCTS);
+
+  // Re-render
+  if (typeof ptRender === 'function') ptRender();
+
+  // Reporte
+  var reporteTxt = '═══════════════════════════════════════════════════\n' +
+                   '  APLICACIÓN MASIVA — REF AL FINAL\n' +
+                   '  ' + new Date().toLocaleString('es-VE') + '\n' +
+                   '  Total aplicados: ' + aplicados + '\n' +
+                   '═══════════════════════════════════════════════════\n\n';
+  cambios.forEach(function(c){
+    reporteTxt += c.ref + ':\n  ' + c.antes + '\n  → ' + c.despues + '\n\n';
+  });
+
+  // Guardar reporte en global para botón copiar
+  window._ptUltimoReporteRef = reporteTxt;
+
+  if (typeof showToast === 'function') {
+    showToast('✏️ ' + aplicados + ' descripciones actualizadas con REF al final', 'success');
+  }
+
+  // Modal con reporte
+  var modalHTML = '<div id="pt-ref-reporte-ov" style="position:fixed;inset:0;z-index:99950;background:rgba(0,0,0,0.85);display:flex;align-items:center;justify-content:center;padding:20px;">' +
+    '<div style="background:white;border-radius:14px;width:100%;max-width:900px;max-height:90vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,0.5);">' +
+      '<div style="padding:16px 24px;background:linear-gradient(135deg,#78350f,#a16207);color:white;display:flex;justify-content:space-between;align-items:center;border-radius:14px 14px 0 0;">' +
+        '<div>' +
+          '<div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;font-size:1.4rem;">✏️ REF AL FINAL APLICADO</div>' +
+          '<div style="font-size:0.78rem;opacity:0.95;">' + aplicados + ' descripciones actualizadas en el catálogo</div>' +
+        '</div>' +
+        '<button onclick="document.getElementById(\'pt-ref-reporte-ov\').remove()" style="background:rgba(255,255,255,0.15);border:1.5px solid rgba(255,255,255,0.3);border-radius:8px;padding:7px 12px;cursor:pointer;font-weight:800;color:white;font-size:0.85rem;">✕</button>' +
+      '</div>' +
+      '<div style="flex:1;overflow:auto;padding:18px 24px;">' +
+        '<table style="width:100%;border-collapse:collapse;font-size:0.72rem;">' +
+          '<thead style="position:sticky;top:0;background:#fef3c7;">' +
+            '<tr><th style="padding:8px;text-align:left;color:#78350f;border-bottom:2px solid #fcd34d;">REF</th>' +
+            '<th style="padding:8px;text-align:left;color:#78350f;border-bottom:2px solid #fcd34d;">ANTES</th>' +
+            '<th style="padding:8px;text-align:left;color:#78350f;border-bottom:2px solid #fcd34d;">DESPUÉS</th></tr>' +
+          '</thead><tbody>' +
+        cambios.map(function(c, i){
+          return '<tr style="background:'+(i%2===0?'white':'#fafafa')+';border-bottom:1px solid #f1f5f9;">' +
+            '<td style="padding:6px 8px;font-family:monospace;font-weight:900;color:#1a2050;">'+c.ref+'</td>' +
+            '<td style="padding:6px 8px;color:#64748b;">'+c.antes+'</td>' +
+            '<td style="padding:6px 8px;color:#047857;font-weight:700;">'+c.despues+'</td>' +
+          '</tr>';
+        }).join('') +
+        '</tbody></table>' +
+      '</div>' +
+      '<div style="padding:14px 24px;background:#f8fafc;border-top:1px solid #e2e8f0;display:flex;justify-content:space-between;align-items:center;border-radius:0 0 14px 14px;">' +
+        '<div style="font-size:0.75rem;color:#64748b;"><strong style="color:#78350f;">' + aplicados + '</strong> descripciones modificadas · Guardado en catálogo</div>' +
+        '<div style="display:flex;gap:8px;">' +
+          '<button onclick="ptCopiarReporteRef()" style="background:#1e40af;color:white;border:none;border-radius:7px;padding:9px 16px;cursor:pointer;font-weight:800;font-size:0.78rem;">📋 Copiar</button>' +
+          '<button onclick="document.getElementById(\'pt-ref-reporte-ov\').remove()" style="background:#047857;color:white;border:none;border-radius:7px;padding:9px 20px;cursor:pointer;font-weight:800;font-size:0.85rem;">✓ Entendido</button>' +
+        '</div>' +
+      '</div>' +
+    '</div>' +
+  '</div>';
+
+  document.body.insertAdjacentHTML('beforeend', modalHTML);
+}
+window.ptAplicarRefAlFinalMasivo = ptAplicarRefAlFinalMasivo;
+
+window.ptCopiarReporteRef = function() {
+  if (!window._ptUltimoReporteRef) return;
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(window._ptUltimoReporteRef).then(function(){
+      if (typeof showToast === 'function') showToast('📋 Reporte copiado', 'success');
+    });
+  } else {
+    prompt('Copia este reporte (Ctrl+C):', window._ptUltimoReporteRef);
+  }
+};
 
 // Estado del módulo importación
 var _ptImport = { rows: [], file: null };
@@ -26803,13 +26955,26 @@ window.msExportarExcel = function() {
   var fname='FARMERS - PEDIDO ('+_nomCliFile+') '+numP+' ('+_fechaFile+').xls';
 
   // ── HOJA POR SUCURSAL ──
+  // Cliente completo (disponible si es Factura Única o MS con cliente identificado)
+  var cliObj = MS._clienteUnica || {};
+  var cliRif      = cliObj.rif       || '';
+  var cliTel      = cliObj.telefono  || '';
+  var cliCorreo   = cliObj.correo    || '';
+  var cliDir      = cliObj.direccion || '';
+  var cliCredito  = cliObj.diasCredito ? (cliObj.diasCredito + ' días') : '';
+  var cliVendedor = cliObj.vendedor  || '';
+
   var sheetsSuc = [];
   MS.sucursales.forEach(function(suc){
     var rows=[];
     // Título
     rows.push({h:22,cells:[{v:' FARMERS C.A. — DESPACHO: '+suc+' ('+monLabel+')',s:S.tit}]});
-    // Metadata
+    // Metadata fila 1: básicos del pedido
     rows.push({h:14,cells:[{v:'N° Pedido:',s:S.norm},{v:numP,s:S.norm},{v:'Fecha:',s:S.norm},{v:fecha,s:S.norm},{v:'Moneda:',s:S.norm},{v:monLabel,s:S.norm},{v:'Tasa BCV:',s:S.norm},{v:tasaBCVstr,s:S.norm}]});
+    // Metadata fila 2: cliente
+    rows.push({h:14,cells:[{v:'Cliente:',s:S.norm},{v:suc,s:S.norm},{v:'RIF:',s:S.norm},{v:cliRif,s:S.norm},{v:'Crédito:',s:S.norm},{v:cliCredito,s:S.norm},{v:'Vendedor:',s:S.norm},{v:cliVendedor,s:S.norm}]});
+    // Metadata fila 3: contacto
+    rows.push({h:14,cells:[{v:'Teléfono:',s:S.norm},{v:cliTel,s:S.norm},{v:'Correo:',s:S.norm},{v:cliCorreo,s:S.norm},{v:'Dirección:',s:S.norm},{v:cliDir,s:S.norm},{v:'',s:S.norm},{v:'',s:S.norm}]});
     rows.push({h:4,cells:[{v:'',s:S.norm}]});
     // Encabezados
     rows.push({h:28,cells:[
@@ -26848,6 +27013,8 @@ window.msExportarExcel = function() {
   var resRows=[];
   resRows.push({h:22,cells:[{v:' FARMERS C.A. — PEDIDO: '+_nomCli+' ('+monLabel+')',s:S.tit}]});
   resRows.push({h:14,cells:[{v:'N° Pedido:',s:S.norm},{v:numP,s:S.norm},{v:'Fecha:',s:S.norm},{v:fecha,s:S.norm},{v:'Moneda:',s:S.norm},{v:monLabel,s:S.norm},{v:'Tasa BCV:',s:S.norm},{v:tasaBCVstr,s:S.norm}]});
+  resRows.push({h:14,cells:[{v:'Cliente:',s:S.norm},{v:_nomCli,s:S.norm},{v:'RIF:',s:S.norm},{v:cliRif,s:S.norm},{v:'Crédito:',s:S.norm},{v:cliCredito,s:S.norm},{v:'Vendedor:',s:S.norm},{v:cliVendedor,s:S.norm}]});
+  resRows.push({h:14,cells:[{v:'Teléfono:',s:S.norm},{v:cliTel,s:S.norm},{v:'Correo:',s:S.norm},{v:cliCorreo,s:S.norm},{v:'Dirección:',s:S.norm},{v:cliDir,s:S.norm},{v:'',s:S.norm},{v:'',s:S.norm}]});
   resRows.push({h:14,cells:[{v:'Sucursales:',s:S.norm},{v:MS.sucursales.join(' | '),s:S.norm}]});
   resRows.push({h:4,cells:[{v:'',s:S.norm}]});
   var hRes=[{v:'REFERENCIA',s:S.hdr},{v:'DESCRIPCIÓN',s:S.hdr},{v:'CÓD.BARRA',s:S.hdr},{v:'CÓDIGO',s:S.hdr},{v:'STOCK',s:S.hdr},{v:'P.'+monLabel,s:S.hdr},{v:'T.PEDIDO',s:S.hdr},{v:'T.DESP',s:S.hdr},{v:'VENTA '+monLabel,s:S.hdr},{v:'ESTADO',s:S.hdr}];
