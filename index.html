@@ -3952,155 +3952,298 @@ function clearOrders() {
 }
 
 function downloadExcel() {
-  const today = new Date().toLocaleDateString('es-VE');
-  const cd = {
-    cliente:   document.getElementById('f_cliente').value,
-    credito:   document.getElementById('f_credito').value,
-    telefono:  document.getElementById('f_telefono').value,
-    correo:    document.getElementById('f_correo').value,
-    direccion: document.getElementById('f_direccion').value,
-    sucursal:  document.getElementById('f_sucursal').value,
-    rif:       document.getElementById('f_rif').value,
-    vendedor:  document.getElementById('f_vendedor').value,
-    numpedido: document.getElementById('f_numpedido').value,
+  var today = new Date().toLocaleDateString('es-VE');
+  var cd = {
+    cliente:   document.getElementById('f_cliente').value   || '',
+    credito:   document.getElementById('f_credito').value   || '',
+    telefono:  document.getElementById('f_telefono').value  || '',
+    correo:    document.getElementById('f_correo').value    || '',
+    direccion: document.getElementById('f_direccion').value || '',
+    sucursal:  document.getElementById('f_sucursal').value  || '',
+    rif:       document.getElementById('f_rif').value       || '',
+    vendedor:  document.getElementById('f_vendedor').value  || '',
+    numpedido: document.getElementById('f_numpedido').value || ('P-' + Date.now())
   };
-  const mn = {USD:'(USD)', BCV:'(BCV)', TF:'(TF)'};
 
-  // Only products with ORDEN > 0
-  const orderedProducts = PRODUCTS.filter(p => selectedBrands.has(p.br) && orders[p.r] > 0);
+  // Solo productos con orden > 0
+  var orderedProducts = PRODUCTS.filter(function(p){
+    return selectedBrands.has(p.br) && orders[p.r] > 0;
+  });
 
-  if(orderedProducts.length === 0) {
-    toastWarn('Agrega cantidades antes de descargar.', 'Sin productos en la orden');
+  if (orderedProducts.length === 0) {
+    if (typeof toastWarn === 'function') toastWarn('Agrega cantidades antes de descargar.', 'Sin productos en la orden');
+    else alert('Agrega cantidades antes de descargar.');
     return;
   }
 
-  const wb = XLSX.utils.book_new();
-  const ws = {};
-
-  // ── Helpers ──────────────────────────────────────────────────────
-  const navy   = '003366';
-  const white  = 'FFFFFFFF';
-  const grey   = 'FFE0E0E0';
-  const stripe = 'FFF5F5F5';
-  const thinB  = { style:'thin', color:{rgb:'FF000000'} };
-  const allBorders = { top:thinB, bottom:thinB, left:thinB, right:thinB };
-
-  function cell(v, opts={}) {
-    const c = { v, t: typeof v === 'number' ? 'n' : 's' };
-    if(opts.bold || opts.color || opts.bg || opts.align || opts.border || opts.fmt || opts.wrap || opts.sz) {
-      c.s = {};
-      if(opts.bold || opts.color || opts.sz) {
-        c.s.font = {};
-        if(opts.bold)  c.s.font.bold = true;
-        if(opts.sz)    c.s.font.sz = opts.sz;
-        if(opts.color) c.s.font.color = { rgb: opts.color };
-      }
-      if(opts.bg) c.s.fill = { patternType:'solid', fgColor:{ rgb: opts.bg } };
-      if(opts.align) c.s.alignment = { horizontal: opts.align, vertical:'center', wrapText: !!opts.wrap };
-      else if(opts.wrap) c.s.alignment = { vertical:'center', wrapText:true };
-      else c.s.alignment = { vertical:'center' };
-      if(opts.border) c.s.border = allBorders;
-      if(opts.fmt) c.s.numFmt = opts.fmt;
-    }
-    return c;
-  }
-
-  function setCell(ws, coord, v, opts={}) {
-    ws[coord] = cell(v, opts);
-  }
-
-  // ── ROW 1: Title (A1:K1 merged) ──────────────────────────────────
-  setCell(ws, 'A1', 'FARMERS, C.A. – FORMATO DE PEDIDO',
-    { bold:true, sz:20, color:white, bg:'FF003366', align:'center', wrap:true });
-  // fill merged cells so style applies
-  ['B1','C1','D1','E1','F1','G1','H1','I1','J1','K1'].forEach(c =>
-    setCell(ws, c, null, { bg:'FF003366' })
-  );
-
-  // ── ROW 2: Client info labels + values ───────────────────────────
-  const labelOpts = { bold:true, sz:11, bg:'FFE0E0E0', align:'left', wrap:true };
-  const valueOpts = { sz:11, align:'left', wrap:true };
-  setCell(ws,'A2','CLIENTE:',   labelOpts); setCell(ws,'B2', cd.cliente,   valueOpts);
-  setCell(ws,'C2','CRÉDITO:',  labelOpts); setCell(ws,'D2', cd.credito,   valueOpts);
-  setCell(ws,'E2','TELÉFONO:', labelOpts); setCell(ws,'F2', cd.telefono,  valueOpts);
-  setCell(ws,'G2','CORREO:',    labelOpts); setCell(ws,'H2', cd.correo,    valueOpts);
-  setCell(ws,'I2','N° PEDIDO:',labelOpts); setCell(ws,'J2', cd.numpedido, valueOpts);
-  setCell(ws,'K2','FECHA:',     labelOpts);
-
-  // ── ROW 3: Address row ───────────────────────────────────────────
-  setCell(ws,'A3','DIRECCIÓN:', labelOpts); setCell(ws,'B3', cd.direccion, valueOpts);
-  setCell(ws,'C3','SUCURSAL:',  labelOpts); setCell(ws,'D3', cd.sucursal,  valueOpts);
-  setCell(ws,'E3','RIF:',       labelOpts); setCell(ws,'F3', cd.rif,       valueOpts);
-  setCell(ws,'G3','VENDEDOR:',  labelOpts); setCell(ws,'H3', cd.vendedor,  valueOpts);
-  setCell(ws,'I3', today,       valueOpts);
-
-  // ── ROW 4: empty ─────────────────────────────────────────────────
-  setCell(ws,'A4', null);
-
-  // ── ROW 5: Column headers ─────────────────────────────────────────
-  const hdrOpts = { bold:true, sz:11, color:white, bg:'FF003366', align:'center', wrap:true, border:true };
-  const hdrs = ['REFERENCIA','CODIGO BARRA','CODIGO','DESCRIPCION','EMPAQUE','MEDIDA','PRECIO','ORDEN','TOTAL','EXISTENCIA','EXISTENCIA TOTAL'];
-  const cols  = ['A','B','C','D','E','F','G','H','I','J','K'];
-  hdrs.forEach((h,i) => setCell(ws, cols[i]+'5', h, hdrOpts));
-
-  // ── ROWS 6+: Products with order ─────────────────────────────────
-  orderedProducts.forEach((p, idx) => {
-    const r = idx + 6;
-    const price = getPrice(p);
-    const ord   = orders[p.r];
-    const total = ord * price;
-    const bg    = idx % 2 === 0 ? 'FFF5F5F5' : 'FFFFFFFF';
-    const rowOpts = { bold:true, sz:11, bg, align:'center', wrap:true, border:true };
-    const numOpts = { bold:true, sz:11, bg, align:'center', wrap:true, border:true, fmt:'#,##0.00' };
-
-    setCell(ws, 'A'+r, p.r,   rowOpts);
-    setCell(ws, 'B'+r, p.b,   rowOpts);
-    setCell(ws, 'C'+r, p.c,   rowOpts);
-    setCell(ws, 'D'+r, p.d,   rowOpts);
-    setCell(ws, 'E'+r, p.e,   rowOpts);
-    setCell(ws, 'F'+r, p.m,   rowOpts);
-    setCell(ws, 'G'+r, price, numOpts);
-    setCell(ws, 'H'+r, ord,   rowOpts);
-    setCell(ws, 'I'+r, total, numOpts);
-    setCell(ws, 'J'+r, p.ex,  rowOpts);  // EXISTENCIA = inventario puro
-    // EXIST. TOTAL = fórmula dinámica: EXISTENCIA - ORDEN (se actualiza al escribir en col H)
-    ws['K'+r] = Object.assign({ f:'J'+r+'-H'+r, t:'n' }, { s: cell(0, rowOpts).s });
+  // Ordenar alfanuméricamente (igual que MS)
+  orderedProducts.sort(function(a,b){
+    return String(a.r||'').localeCompare(String(b.r||''), 'es', {numeric:true, sensitivity:'base'});
   });
 
-  // ── Sheet range ───────────────────────────────────────────────────
-  const lastRow = 5 + orderedProducts.length;
-  ws['!ref'] = 'A1:K' + lastRow;
+  var moneda   = selectedMoneda || 'USD';
+  var monLabel = moneda === 'BCV' ? 'BCV $' : moneda === 'TF' ? 'TF $' : 'USD $';
+  var tasa     = (typeof getTasaHoy === 'function' ? getTasaHoy() : 0) || 0;
+  var tasaBCVstr = tasa > 0 ? tasa.toFixed(2) + ' Bs/$' : '—';
+  var numP     = cd.numpedido;
+  var fecha    = today;
 
-  // ── Merges (matching original) ────────────────────────────────────
-  ws['!merges'] = [
-    {s:{r:0,c:0}, e:{r:0,c:10}},  // A1:K1 title
-    {s:{r:1,c:0}, e:{r:1,c:1}},   // A2:B2 CLIENTE
-    {s:{r:1,c:2}, e:{r:1,c:3}},   // C2:D2 CREDITO
-    {s:{r:1,c:4}, e:{r:1,c:5}},   // E2:F2 TELEFONO
-    {s:{r:1,c:6}, e:{r:1,c:7}},   // G2:H2 CORREO
-    {s:{r:2,c:0}, e:{r:2,c:1}},   // A3:B3 DIRECCION
-    {s:{r:2,c:2}, e:{r:2,c:3}},   // C3:D3 SUCURSAL
-    {s:{r:2,c:4}, e:{r:2,c:5}},   // E3:F3 RIF
-    {s:{r:2,c:6}, e:{r:2,c:7}},   // G3:H3 VENDEDOR
+  // Cliente principal (único destino)
+  var nomCli     = cd.cliente || 'CLIENTE';
+  var nomCliFile = nomCli.replace(/[:\\/?*\[\]]/g,'_').replace(/\s+/g,'_').toUpperCase();
+  var fechaFile  = fecha.replace(/\//g,'-');
+  var fname      = 'FARMERS - PEDIDO (' + nomCliFile + ') ' + numP + ' (' + fechaFile + ').xls';
+
+  // IDs de estilo (idénticos al MS: 60=normal, 61=número, 62=header, 63=título, 64=total, 65=alt, 66=numAlt, 67=venta)
+  var S = { norm:60, num:61, hdr:62, tit:63, tot:64, alt:65, numAlt:66, vta:67 };
+
+  function getPrecioByMoneda(p, mon){
+    if (mon === 'BCV') return parseFloat(p.bv) || 0;
+    if (mon === 'TF')  return parseFloat(p.t)  || 0;
+    return parseFloat(p.u) || 0;
+  }
+  function n4(v){ return v ? Math.round(v*10000)/10000 : ''; }
+  function n2(v){ return v ? Math.round(v*100)/100 : ''; }
+  function esc(s){
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+                    .replace(/"/g,'&quot;').replace(/'/g,'&apos;');
+  }
+
+  // ═══ HOJA 1: DESPACHO (detalle del pedido) ═══
+  var rowsDesp = [];
+  // Título
+  rowsDesp.push({ h:22, cells:[{ v:' FARMERS C.A. — DESPACHO: '+nomCli+' ('+monLabel+')', s:S.tit }] });
+  // Metadata
+  rowsDesp.push({ h:14, cells:[
+    { v:'N° Pedido:',  s:S.norm }, { v:numP,           s:S.norm },
+    { v:'Fecha:',      s:S.norm }, { v:fecha,          s:S.norm },
+    { v:'Moneda:',     s:S.norm }, { v:monLabel,       s:S.norm },
+    { v:'Tasa BCV:',   s:S.norm }, { v:tasaBCVstr,     s:S.norm }
+  ]});
+  // Info del cliente (adicional, que el MS no tiene pero Nuevo Pedido sí necesita)
+  rowsDesp.push({ h:14, cells:[
+    { v:'Cliente:',    s:S.norm }, { v:nomCli,         s:S.norm },
+    { v:'RIF:',        s:S.norm }, { v:cd.rif,         s:S.norm },
+    { v:'Crédito:',    s:S.norm }, { v:cd.credito,     s:S.norm },
+    { v:'Vendedor:',   s:S.norm }, { v:cd.vendedor,    s:S.norm }
+  ]});
+  rowsDesp.push({ h:14, cells:[
+    { v:'Dirección:',  s:S.norm }, { v:cd.direccion,   s:S.norm },
+    { v:'Sucursal:',   s:S.norm }, { v:cd.sucursal,    s:S.norm },
+    { v:'Teléfono:',   s:S.norm }, { v:cd.telefono,    s:S.norm },
+    { v:'Correo:',     s:S.norm }, { v:cd.correo,      s:S.norm }
+  ]});
+  rowsDesp.push({ h:4, cells:[{ v:'', s:S.norm }] });
+
+  // Encabezados (idénticos al MS)
+  rowsDesp.push({ h:28, cells:[
+    { v:'REFERENCIA',  s:S.hdr }, { v:'DESCRIPCIÓN', s:S.hdr },
+    { v:'CÓD.BARRA',   s:S.hdr }, { v:'CÓDIGO',      s:S.hdr },
+    { v:'STOCK',       s:S.hdr }, { v:'PEDIDO',      s:S.hdr },
+    { v:'DESPACHO',    s:S.hdr }, { v:'DIFERENCIA',  s:S.hdr },
+    { v:'P.'+monLabel, s:S.hdr }, { v:'VENTA '+monLabel, s:S.hdr }
+  ]});
+
+  // Filas de productos
+  var totalVenta = 0, alt = false;
+  orderedProducts.forEach(function(p){
+    var pide  = parseInt(orders[p.r]) || 0;
+    if (!pide) return;
+    var stock = parseInt(p.ex) || 0;
+    var desp  = Math.min(stock, pide);  // Despachable = min(stock, pedido)
+    var diff  = pide - desp;
+    var pr    = getPrecioByMoneda(p, moneda);
+    var venta = pr * desp;
+    totalVenta += venta;
+
+    var ns  = alt ? S.numAlt : S.num;
+    var ls  = alt ? S.alt    : S.norm;
+    var vs2 = alt ? S.alt    : S.vta;
+    rowsDesp.push({ h:16, cells:[
+      { v:p.r,     s:ls }, { v:p.d || '',  s:ls },
+      { v:p.b||'', s:ls }, { v:p.c || '',  s:ls },
+      { v:stock,   s:ns }, { v:pide,       s:ns },
+      { v:desp,    s:ns }, { v:diff,       s:ns },
+      { v:n4(pr),  s:ns }, { v:n2(venta)||'', s:vs2 }
+    ]});
+    alt = !alt;
+  });
+
+  // Fila de TOTAL
+  rowsDesp.push({ h:18, cells:[
+    { v:'', s:S.norm }, { v:'', s:S.norm }, { v:'', s:S.norm }, { v:'', s:S.norm },
+    { v:'', s:S.norm }, { v:'', s:S.norm }, { v:'', s:S.norm }, { v:'', s:S.norm },
+    { v:'TOTAL '+monLabel+':', s:S.tot }, { v:n2(totalVenta), s:S.tot }
+  ]});
+
+  // ═══ HOJA 2: RESUMEN ═══
+  var rowsRes = [];
+  rowsRes.push({ h:22, cells:[{ v:' FARMERS C.A. — PEDIDO: '+nomCli+' ('+monLabel+')', s:S.tit }] });
+  rowsRes.push({ h:14, cells:[
+    { v:'N° Pedido:', s:S.norm }, { v:numP,       s:S.norm },
+    { v:'Fecha:',     s:S.norm }, { v:fecha,      s:S.norm },
+    { v:'Moneda:',    s:S.norm }, { v:monLabel,   s:S.norm },
+    { v:'Tasa BCV:',  s:S.norm }, { v:tasaBCVstr, s:S.norm }
+  ]});
+  rowsRes.push({ h:14, cells:[
+    { v:'Cliente:', s:S.norm }, { v:nomCli,     s:S.norm },
+    { v:'RIF:',     s:S.norm }, { v:cd.rif,     s:S.norm },
+    { v:'Items:',   s:S.norm }, { v:orderedProducts.length, s:S.norm }
+  ]});
+  rowsRes.push({ h:4, cells:[{ v:'', s:S.norm }] });
+  rowsRes.push({ h:28, cells:[
+    { v:'REFERENCIA',  s:S.hdr }, { v:'DESCRIPCIÓN',   s:S.hdr },
+    { v:'CÓD.BARRA',   s:S.hdr }, { v:'CÓDIGO',        s:S.hdr },
+    { v:'MARCA',       s:S.hdr }, { v:'EMPAQUE',       s:S.hdr },
+    { v:'STOCK',       s:S.hdr }, { v:'P.'+monLabel,   s:S.hdr },
+    { v:'T.PEDIDO',    s:S.hdr }, { v:'T.DESP',        s:S.hdr },
+    { v:'VENTA '+monLabel, s:S.hdr }, { v:'ESTADO',    s:S.hdr }
+  ]});
+
+  var totalRes = 0, altR = false, totDesp = 0, totPedido = 0;
+  orderedProducts.forEach(function(p){
+    var pide  = parseInt(orders[p.r]) || 0;
+    var stock = parseInt(p.ex) || 0;
+    var desp  = Math.min(stock, pide);
+    var pr    = getPrecioByMoneda(p, moneda);
+    var venta = pr * desp;
+    totalRes += venta; totDesp += desp; totPedido += pide;
+    var estado = desp === 0 ? 'SIN STOCK' : (desp < pide ? 'PARCIAL' : 'COMPLETO');
+    var ns = altR ? S.numAlt : S.num;
+    var ls = altR ? S.alt    : S.norm;
+    var vs = altR ? S.alt    : S.vta;
+    rowsRes.push({ h:16, cells:[
+      { v:p.r,       s:ls }, { v:p.d || '',  s:ls },
+      { v:p.b || '', s:ls }, { v:p.c || '',  s:ls },
+      { v:p.br||'',  s:ls }, { v:p.e || '',  s:ls },
+      { v:stock,     s:ns }, { v:n4(pr),     s:ns },
+      { v:pide,      s:ns }, { v:desp,       s:ns },
+      { v:n2(venta)||'', s:vs }, { v:estado,  s:ls }
+    ]});
+    altR = !altR;
+  });
+  // Total resumen
+  rowsRes.push({ h:18, cells:[
+    { v:'', s:S.norm }, { v:'', s:S.norm }, { v:'', s:S.norm }, { v:'', s:S.norm },
+    { v:'', s:S.norm }, { v:'', s:S.norm }, { v:'', s:S.norm }, { v:'TOTAL:', s:S.tot },
+    { v:totPedido, s:S.tot }, { v:totDesp, s:S.tot },
+    { v:n2(totalRes), s:S.tot }, { v:'', s:S.norm }
+  ]});
+
+  // ═══ ESTILOS XML (copia exacta del motor MS) ═══
+  var styles = '<?xml version="1.0"?><?mso-application progid="Excel.Sheet"?>'
+    +'<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"'
+    +' xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"'
+    +' xmlns:x="urn:schemas-microsoft-com:office:excel">'
+    +'<Styles>'
+    // s60: celda normal
+    +'<Style ss:ID="s60"><Alignment ss:Horizontal="Left" ss:Vertical="Center"/>'
+    +'<Borders><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/>'
+    +'<Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/>'
+    +'<Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/>'
+    +'<Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/></Borders>'
+    +'<Font ss:FontName="Arial" ss:Size="9"/></Style>'
+    // s61: número
+    +'<Style ss:ID="s61"><Alignment ss:Horizontal="Right" ss:Vertical="Center"/>'
+    +'<Borders><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/>'
+    +'<Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/>'
+    +'<Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/>'
+    +'<Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/></Borders>'
+    +'<Font ss:FontName="Arial" ss:Size="9"/></Style>'
+    // s62: encabezado navy
+    +'<Style ss:ID="s62"><Alignment ss:Horizontal="Center" ss:Vertical="Center" ss:WrapText="1"/>'
+    +'<Borders><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/>'
+    +'<Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/>'
+    +'<Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/>'
+    +'<Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/></Borders>'
+    +'<Font ss:FontName="Arial" ss:Size="9" ss:Bold="1" ss:Color="#FFFFFF"/>'
+    +'<Interior ss:Color="#1B1F6B" ss:Pattern="Solid"/></Style>'
+    // s63: título
+    +'<Style ss:ID="s63"><Alignment ss:Horizontal="Left" ss:Vertical="Center"/>'
+    +'<Borders><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/>'
+    +'<Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/>'
+    +'<Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/>'
+    +'<Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/></Borders>'
+    +'<Font ss:FontName="Arial" ss:Size="11" ss:Bold="1" ss:Color="#FFFFFF"/>'
+    +'<Interior ss:Color="#1B1F6B" ss:Pattern="Solid"/></Style>'
+    // s64: total
+    +'<Style ss:ID="s64"><Alignment ss:Horizontal="Right" ss:Vertical="Center"/>'
+    +'<Borders><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="2"/>'
+    +'<Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="2"/>'
+    +'<Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="2"/>'
+    +'<Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="2"/></Borders>'
+    +'<Font ss:FontName="Arial" ss:Size="10" ss:Bold="1" ss:Color="#16A34A"/>'
+    +'<Interior ss:Color="#0F172A" ss:Pattern="Solid"/></Style>'
+    // s65: alternada
+    +'<Style ss:ID="s65"><Alignment ss:Horizontal="Left" ss:Vertical="Center"/>'
+    +'<Borders><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/>'
+    +'<Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/>'
+    +'<Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/>'
+    +'<Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/></Borders>'
+    +'<Font ss:FontName="Arial" ss:Size="9"/>'
+    +'<Interior ss:Color="#EFF6FF" ss:Pattern="Solid"/></Style>'
+    // s66: número alt
+    +'<Style ss:ID="s66"><Alignment ss:Horizontal="Right" ss:Vertical="Center"/>'
+    +'<Borders><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/>'
+    +'<Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/>'
+    +'<Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/>'
+    +'<Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/></Borders>'
+    +'<Font ss:FontName="Arial" ss:Size="9"/>'
+    +'<Interior ss:Color="#EFF6FF" ss:Pattern="Solid"/></Style>'
+    // s67: venta verde
+    +'<Style ss:ID="s67"><Alignment ss:Horizontal="Right" ss:Vertical="Center"/>'
+    +'<Borders><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/>'
+    +'<Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/>'
+    +'<Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/>'
+    +'<Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/></Borders>'
+    +'<Font ss:FontName="Arial" ss:Size="9" ss:Bold="1" ss:Color="#166534"/>'
+    +'<Interior ss:Color="#F0FDF4" ss:Pattern="Solid"/></Style>'
+    +'</Styles>';
+
+  var sheets = [
+    { name: nomCli.substring(0,28).replace(/[:\/?*\[\]]/g,'_'), rows: rowsDesp,
+      colWidths: [14, 38, 16, 16, 8, 9, 9, 10, 14, 16] },
+    { name: 'RESUMEN', rows: rowsRes,
+      colWidths: [14, 38, 16, 16, 14, 10, 8, 11, 10, 10, 14, 12] }
   ];
 
-  // ── Column widths (exact from original) ──────────────────────────
-  ws['!cols'] = [
-    {wch:10.5},{wch:22.75},{wch:21.875},{wch:48.125},
-    {wch:15.75},{wch:10.5},{wch:13.125},{wch:10.5},
-    {wch:15.75},{wch:10.5},{wch:13.125}
-  ];
+  var sheetsXml = '';
+  sheets.forEach(function(sh){
+    sheetsXml += '<Worksheet ss:Name="' + esc(sh.name) + '">'
+      + '<Table ss:DefaultColumnWidth="80">';
+    (sh.colWidths || []).forEach(function(w){
+      sheetsXml += '<Column ss:Width="' + (w*7) + '"/>';
+    });
+    sh.rows.forEach(function(row){
+      sheetsXml += '<Row ss:Height="' + (row.h||18) + '">';
+      row.cells.forEach(function(c){
+        var sid = c.s || 60;
+        var typ = (typeof c.v === 'number') ? 'Number' : 'String';
+        var val = (c.v === null || c.v === undefined || c.v === '') ? '' : c.v;
+        if (typ === 'String') val = esc(String(val));
+        sheetsXml += '<Cell ss:StyleID="s' + sid + '">'
+          + '<Data ss:Type="' + typ + '">' + val + '</Data>'
+          + '</Cell>';
+      });
+      sheetsXml += '</Row>';
+    });
+    sheetsXml += '</Table></Worksheet>';
+  });
 
-  // ── Row heights ───────────────────────────────────────────────────
-  const rowHeights = [{hpt:40},{hpt:30},{hpt:30},{hpt:15},{hpt:30}];
-  for(let i=0; i<orderedProducts.length; i++) rowHeights.push({hpt:22});
-  ws['!rows'] = rowHeights;
-  ws['!calcpr'] = { fullCalcOnLoad: true };
+  var xml = styles + sheetsXml + '</Workbook>';
+  var blob = new Blob([xml], { type: 'application/vnd.ms-excel;charset=utf-8' });
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement('a');
+  a.href = url; a.download = fname;
+  document.body.appendChild(a); a.click();
+  setTimeout(function(){
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }, 100);
 
-  XLSX.utils.book_append_sheet(wb, ws, 'PEDIDO '+mn[selectedMoneda]);
-
-  const nombre = (cd.cliente||'PEDIDO').replace(/[^a-zA-Z0-9]/g,'_');
-  XLSX.writeFile(wb, 'FARMERS_'+nombre+'_'+mn[selectedMoneda].replace(/[()]/g,'')+'_'+today.replace(/\//g,'-')+'.xlsx');
+  if (typeof showToast === 'function') {
+    showToast('📊 Excel descargado: ' + fname, 'success');
+  }
 }
 
 function resetAll() {
@@ -10362,6 +10505,7 @@ window.ocSincronizarInventarioClick = function(ocId) {
         { campo: 'm',  labelUI: 'Uds/bulto',        valorActual: null, valorNuevo: parseInt(item.unidadesPorBulto)||0, aplicar: !!item.unidadesPorBulto },
         { campo: 'br', labelUI: 'Marca',            valorActual: null, valorNuevo: item.marca || '',              aplicar: !!item.marca },
         { campo: 'paisOrigen',  labelUI: 'País origen',   valorActual: null, valorNuevo: item.paisOrigen || '',    aplicar: !!item.paisOrigen },
+        { campo: 'costoFOB', labelUI: 'Costo FOB $', valorActual: null, valorNuevo: parseFloat(item.precioFOB)||0, aplicar: parseFloat(item.precioFOB) > 0 },
         { campo: 'med.largo',   labelUI: 'Largo cm',     valorActual: null, valorNuevo: parseFloat(item.largo)||0, aplicar: !!item.largo },
         { campo: 'med.ancho',   labelUI: 'Ancho cm',     valorActual: null, valorNuevo: parseFloat(item.ancho)||0, aplicar: !!item.ancho },
         { campo: 'med.alto',    labelUI: 'Alto cm',      valorActual: null, valorNuevo: parseFloat(item.alto)||0,  aplicar: !!item.alto },
@@ -10493,12 +10637,12 @@ window.ocSincronizarInventarioClick = function(ocId) {
       cmp('e',  'Unidad',          prod.e,  item.unidad,           'str'),
       cmp('m',  'Uds/bulto',       prod.m,  item.unidadesPorBulto, 'int'),
       cmp('br', 'Marca',           prod.br, item.marca,            'str'),
-      cmp('paisOrigen',  'País origen',     pt.paisOrigen, item.paisOrigen,      'str')
+      cmp('paisOrigen',  'País origen',     pt.paisOrigen, item.paisOrigen,      'str'),
+      // ─── COSTO FOB ─── nuevo campo dedicado para el precio del proveedor
+      cmp('costoFOB', 'Costo FOB $', prod.costoFOB, parseFloat(item.precioFOB) || 0, 'num')
       // ─── IMPORTANTE: vol/peso/medidas NO se comparan en el sincronizador ───
       // Estos datos vienen del Excel de medidas del proveedor y se guardan
       // directamente en ptData[ref].medidas al ejecutar "📥 Importar Medidas".
-      // Si hay diferencias, se gestionan en ese flujo, no aquí.
-      // El sincronizador se enfoca en datos de la FACTURA (código, descripción, país, marca, uds/bulto).
     ];
 
     analisis.fields = fieldsCandidatos.filter(function(f){ return f !== null; });
@@ -11020,6 +11164,31 @@ window.ocSyncAplicar = function() {
   msg += '\n¿Continuar?';
   if (!confirm(msg)) return;
 
+  // ─── LOG DETALLADO ─── Captura cada cambio por ref, agrupado por campo
+  var reporteCambios = {
+    ocNumero: '',
+    ocProveedor: '',
+    fecha: new Date().toISOString(),
+    productosNuevos: [],          // [{ref, datos}]
+    descripciones: [],             // [{ref, antes, despues}]
+    udsBulto: [],                  // [{ref, antes, despues}]
+    codigoBarra: [],               // [{ref, antes, despues}]
+    refProveedor: [],              // [{ref, antes, despues}]
+    marca: [],                     // [{ref, antes, despues}]
+    unidad: [],                    // [{ref, antes, despues}]
+    paisOrigen: [],                // [{ref, antes, despues}]
+    costoFOB: [],                  // [{ref, antes, despues}]
+    medidas: [],                   // [{ref, campo, antes, despues}]
+    totalCampos: 0
+  };
+
+  // Meta-info
+  var oc = _ocDB.find(function(x){ return x.id === r.ocId; });
+  if (oc) {
+    reporteCambios.ocNumero = oc.numero;
+    reporteCambios.ocProveedor = oc.proveedorNombre || '';
+  }
+
   try {
     var ptData = JSON.parse(localStorage.getItem('farmers_pt_data') || '{}');
 
@@ -11039,21 +11208,27 @@ window.ocSyncAplicar = function() {
           r: refF, b: '', c: '', d: refF, e: 'UNIDAD', m: 0, br: '',
           ex: 0, et: 0, u: 0, bv: 0, t: 0
         };
+        var camposNuevos = {};
         a.fields.forEach(function(f){
           if (!f.aplicar) return;
           if (f.campo === 'paisOrigen') {
             ptData[refF].paisOrigen = f.valorNuevo;
+            camposNuevos.paisOrigen = f.valorNuevo;
           } else if (f.campo.startsWith('med.')) {
             var key = f.campo.substring(4);
             ptData[refF].medidas[key] = f.valorNuevo;
+            camposNuevos['med.' + key] = f.valorNuevo;
           } else {
             nuevo[f.campo] = f.valorNuevo;
+            camposNuevos[f.campo] = f.valorNuevo;
           }
+          reporteCambios.totalCampos++;
         });
         // Sincronizar m a ptData también
         if (nuevo.m) ptData[refF].unidadesPorBulto = nuevo.m;
 
         if (typeof PRODUCTS !== 'undefined') PRODUCTS.push(nuevo);
+        reporteCambios.productosNuevos.push({ ref: refF, datos: camposNuevos, descripcion: nuevo.d });
       } else {
         // ═══ Actualizar producto existente ═══
         var prod = (typeof PRODUCTS !== 'undefined')
@@ -11062,15 +11237,46 @@ window.ocSyncAplicar = function() {
 
         a.fields.forEach(function(f){
           if (!f.aplicar) return;
+          var valorAntes = f.valorActual;  // Antes de escribir
+          var valorDespues = f.valorNuevo;
+
           if (f.campo === 'paisOrigen') {
             ptData[refF].paisOrigen = f.valorNuevo;
+            reporteCambios.paisOrigen.push({ ref: refF, antes: valorAntes, despues: valorDespues });
           } else if (f.campo.startsWith('med.')) {
             var key = f.campo.substring(4);
             ptData[refF].medidas[key] = f.valorNuevo;
+            reporteCambios.medidas.push({ ref: refF, campo: key, antes: valorAntes, despues: valorDespues });
           } else if (prod) {
             prod[f.campo] = f.valorNuevo;
             if (f.campo === 'm') ptData[refF].unidadesPorBulto = f.valorNuevo;
+
+            // Si cambió el costo FOB, agregar al histórico
+            if (f.campo === 'costoFOB') {
+              if (!Array.isArray(prod.costoFOBHistorial)) prod.costoFOBHistorial = [];
+              prod.costoFOBHistorial.push({
+                fecha: new Date().toISOString(),
+                oc: reporteCambios.ocNumero,
+                proveedor: reporteCambios.ocProveedor,
+                valorAnterior: parseFloat(valorAntes) || 0,
+                valorNuevo: parseFloat(valorDespues) || 0
+              });
+              // Limitar a últimos 50 registros
+              if (prod.costoFOBHistorial.length > 50) {
+                prod.costoFOBHistorial = prod.costoFOBHistorial.slice(-50);
+              }
+            }
+
+            // Registrar en la sección correspondiente
+            if (f.campo === 'd')      reporteCambios.descripciones.push({ ref: refF, antes: valorAntes, despues: valorDespues });
+            else if (f.campo === 'm') reporteCambios.udsBulto.push({ ref: refF, antes: valorAntes, despues: valorDespues });
+            else if (f.campo === 'b') reporteCambios.codigoBarra.push({ ref: refF, antes: valorAntes, despues: valorDespues });
+            else if (f.campo === 'c') reporteCambios.refProveedor.push({ ref: refF, antes: valorAntes, despues: valorDespues });
+            else if (f.campo === 'br') reporteCambios.marca.push({ ref: refF, antes: valorAntes, despues: valorDespues });
+            else if (f.campo === 'e') reporteCambios.unidad.push({ ref: refF, antes: valorAntes, despues: valorDespues });
+            else if (f.campo === 'costoFOB') reporteCambios.costoFOB.push({ ref: refF, antes: valorAntes, despues: valorDespues });
           }
+          reporteCambios.totalCampos++;
         });
       }
     });
@@ -11084,18 +11290,231 @@ window.ocSyncAplicar = function() {
     ocSyncCancelar();
     if (oc) ocRenderFicha(oc);
 
-    if (typeof showToast === 'function') {
-      var toastMsg = '🔄 Sincronización aplicada: ';
-      var parts = [];
-      if (productosNuevos > 0) parts.push(productosNuevos + ' prods nuevos');
-      if (cambiosProductos > 0) parts.push(cambiosProductos + ' campos');
-      if (cambiosMedidas > 0) parts.push(cambiosMedidas + ' medidas');
-      toastMsg += parts.join(' · ');
-      showToast(toastMsg, 'success');
-    }
+    // ─── MOSTRAR REPORTE DETALLADO ───
+    _ocSyncMostrarReporte(reporteCambios);
   } catch(err) {
-    alert('Error aplicando sincronización: ' + err.message);
+    alert('Error al aplicar sincronización: ' + err.message);
     console.error(err);
+  }
+};
+
+// Muestra un modal-reporte con el detalle de todos los cambios aplicados
+function _ocSyncMostrarReporte(rep) {
+  var fmtFecha = function(iso) {
+    try {
+      var d = new Date(iso);
+      return String(d.getDate()).padStart(2,'0') + '/' + String(d.getMonth()+1).padStart(2,'0') + '/' + d.getFullYear() +
+             ' ' + String(d.getHours()).padStart(2,'0') + ':' + String(d.getMinutes()).padStart(2,'0');
+    } catch(e) { return iso; }
+  };
+
+  // Helper para construir una sección con lista de cambios
+  var seccion = function(titulo, emoji, items, renderItem, colorHeader) {
+    if (!items || !items.length) return '';
+    var html = '<div style="margin-bottom:18px;background:white;border:1.5px solid #e2e8f0;border-radius:10px;overflow:hidden;">' +
+      '<div style="background:' + colorHeader + ';color:white;padding:10px 14px;display:flex;justify-content:space-between;align-items:center;">' +
+        '<div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;font-size:1rem;letter-spacing:1px;">' +
+          emoji + ' ' + titulo.toUpperCase() +
+        '</div>' +
+        '<div style="background:rgba(255,255,255,0.25);padding:3px 10px;border-radius:12px;font-weight:900;font-size:0.75rem;">' +
+          items.length +
+        '</div>' +
+      '</div>' +
+      '<div style="max-height:200px;overflow:auto;padding:8px 14px;">' +
+        items.map(renderItem).join('') +
+      '</div>' +
+    '</div>';
+    return html;
+  };
+
+  // Render de un cambio antes→después
+  var renderCambio = function(x) {
+    var antes = (x.antes === null || x.antes === undefined || x.antes === '') ? '<em style="color:#94a3b8;">vacío</em>' : String(x.antes);
+    var despues = (x.despues === null || x.despues === undefined || x.despues === '') ? '<em style="color:#94a3b8;">vacío</em>' : String(x.despues);
+    return '<div style="padding:6px 0;border-bottom:1px dashed #f1f5f9;display:flex;gap:8px;align-items:center;font-size:0.74rem;flex-wrap:wrap;">' +
+      '<span style="font-family:monospace;font-weight:900;color:#1a2050;min-width:80px;">' + x.ref + '</span>' +
+      (x.campo ? '<span style="font-size:0.65rem;background:#e0e7ff;color:#4338ca;padding:1px 6px;border-radius:3px;font-weight:800;">' + x.campo + '</span>' : '') +
+      '<span style="color:#64748b;flex:1;">' + antes + '</span>' +
+      '<span style="color:#94a3b8;">→</span>' +
+      '<span style="color:#047857;font-weight:700;flex:1;">' + despues + '</span>' +
+    '</div>';
+  };
+
+  // Render de producto nuevo
+  var renderNuevo = function(x) {
+    var camposTxt = Object.keys(x.datos).map(function(k){ return k + '=' + x.datos[k]; }).join(' · ');
+    return '<div style="padding:8px 0;border-bottom:1px dashed #f1f5f9;font-size:0.74rem;">' +
+      '<div style="display:flex;gap:10px;align-items:center;">' +
+        '<span style="font-family:monospace;font-weight:900;color:#991b1b;min-width:80px;">' + x.ref + '</span>' +
+        '<span style="color:#1a2050;font-weight:700;flex:1;">' + (x.descripcion || '—') + '</span>' +
+      '</div>' +
+      '<div style="font-size:0.66rem;color:#64748b;margin-top:3px;">' + camposTxt + '</div>' +
+    '</div>';
+  };
+
+  var html = '<div id="oc-sync-reporte-ov" style="position:fixed;inset:0;z-index:99945;background:rgba(0,0,0,0.85);display:flex;align-items:center;justify-content:center;padding:20px;">' +
+    '<div style="background:#f8fafc;border-radius:14px;width:100%;max-width:1100px;max-height:95vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,0.5);">' +
+
+      // Header
+      '<div style="padding:18px 26px;background:linear-gradient(135deg,#047857,#059669);color:white;display:flex;justify-content:space-between;align-items:center;border-radius:14px 14px 0 0;">' +
+        '<div>' +
+          '<div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;font-size:1.5rem;letter-spacing:1px;">✅ SINCRONIZACIÓN APLICADA</div>' +
+          '<div style="font-size:0.82rem;opacity:0.95;margin-top:3px;">' +
+            'OC ' + rep.ocNumero + ' · ' + rep.ocProveedor + ' · ' +
+            fmtFecha(rep.fecha) +
+          '</div>' +
+        '</div>' +
+        '<button onclick="document.getElementById(\'oc-sync-reporte-ov\').remove()" style="background:rgba(255,255,255,0.15);border:1.5px solid rgba(255,255,255,0.3);border-radius:8px;padding:8px 14px;cursor:pointer;font-weight:800;color:white;font-size:0.88rem;">✕ Cerrar</button>' +
+      '</div>' +
+
+      // Contadores top
+      '<div style="padding:14px 26px;background:#ecfdf5;border-bottom:1px solid #6ee7b7;display:grid;grid-template-columns:repeat(7,1fr);gap:8px;">' +
+        _ocSyncStatCard('📝', 'Descripciones', rep.descripciones.length, '#6b21a8') +
+        _ocSyncStatCard('📦', 'Uds/Bulto', rep.udsBulto.length, '#b45309') +
+        _ocSyncStatCard('🏷️', 'Cód. Barra', rep.codigoBarra.length, '#1e40af') +
+        _ocSyncStatCard('🌍', 'País Origen', rep.paisOrigen.length, '#047857') +
+        _ocSyncStatCard('💰', 'Costo FOB', rep.costoFOB.length, '#059669') +
+        _ocSyncStatCard('📐', 'Medidas', rep.medidas.length, '#7c3aed') +
+        _ocSyncStatCard('🆕', 'Nuevos', rep.productosNuevos.length, '#991b1b') +
+      '</div>' +
+
+      // Cuerpo del reporte
+      '<div style="flex:1;overflow:auto;padding:18px 26px;">' +
+
+        // Productos nuevos
+        seccion('Productos Nuevos Creados', '🆕', rep.productosNuevos, renderNuevo, '#991b1b') +
+
+        // Descripciones actualizadas
+        seccion('Descripciones Actualizadas', '📝', rep.descripciones, renderCambio, '#6b21a8') +
+
+        // Uds/bulto modificadas (las más críticas)
+        seccion('Unidades por Bulto Modificadas', '📦', rep.udsBulto, renderCambio, '#b45309') +
+
+        // Códigos de barra
+        seccion('Códigos de Barra', '🏷️', rep.codigoBarra, renderCambio, '#1e40af') +
+
+        // Ref proveedor
+        seccion('Ref Proveedor', '🔗', rep.refProveedor, renderCambio, '#0369a1') +
+
+        // Marca
+        seccion('Marca', '🏭', rep.marca, renderCambio, '#0f766e') +
+
+        // Unidad
+        seccion('Unidad (medida)', '📏', rep.unidad, renderCambio, '#065f46') +
+
+        // País origen
+        seccion('País Origen', '🌍', rep.paisOrigen, renderCambio, '#047857') +
+
+        // Costos FOB (con alerta visual si diferencia es grande)
+        seccion('Costos FOB Actualizados', '💰', rep.costoFOB, function(x){
+          var antes = parseFloat(x.antes) || 0;
+          var despues = parseFloat(x.despues) || 0;
+          var pctChange = antes > 0 ? ((despues - antes) / antes * 100) : 0;
+          var alertColor = '';
+          var alertIcon = '';
+          if (Math.abs(pctChange) >= 200) { alertColor = '#dc2626'; alertIcon = '🔴'; }
+          else if (Math.abs(pctChange) >= 50) { alertColor = '#d97706'; alertIcon = '⚠️'; }
+          var pctStr = antes > 0 ? ' <span style="color:' + (alertColor || '#64748b') + ';font-weight:900;">' + (pctChange >= 0 ? '+' : '') + pctChange.toFixed(0) + '%' + (alertIcon ? ' ' + alertIcon : '') + '</span>' : '';
+          return '<div style="padding:6px 0;border-bottom:1px dashed #f1f5f9;display:flex;gap:8px;align-items:center;font-size:0.74rem;flex-wrap:wrap;">' +
+            '<span style="font-family:monospace;font-weight:900;color:#1a2050;min-width:80px;">' + x.ref + '</span>' +
+            '<span style="color:#64748b;flex:1;">$' + antes.toFixed(4) + '</span>' +
+            '<span style="color:#94a3b8;">→</span>' +
+            '<span style="color:#047857;font-weight:700;">$' + despues.toFixed(4) + '</span>' +
+            pctStr +
+          '</div>';
+        }, '#059669') +
+
+        // Medidas (vol, peso, L×A×H)
+        seccion('Medidas Actualizadas', '📐', rep.medidas, renderCambio, '#7c3aed') +
+
+      '</div>' +
+
+      // Footer
+      '<div style="padding:14px 26px;background:white;border-top:1px solid #e2e8f0;display:flex;justify-content:space-between;align-items:center;border-radius:0 0 14px 14px;">' +
+        '<div style="font-size:0.75rem;color:#64748b;">' +
+          '<strong style="color:#047857;font-size:0.9rem;">' + rep.totalCampos + ' campos modificados</strong> · ' +
+          'Los cambios se guardaron en PRODUCTS, ptData y Firebase.' +
+        '</div>' +
+        '<div style="display:flex;gap:8px;">' +
+          '<button onclick="ocSyncCopiarReporte()" style="background:#1e40af;color:white;border:none;border-radius:7px;padding:9px 16px;cursor:pointer;font-weight:800;font-size:0.78rem;" title="Copia el reporte al portapapeles">📋 Copiar Reporte</button>' +
+          '<button onclick="document.getElementById(\'oc-sync-reporte-ov\').remove()" style="background:#047857;color:white;border:none;border-radius:7px;padding:9px 20px;cursor:pointer;font-weight:800;font-size:0.85rem;">✓ Entendido</button>' +
+        '</div>' +
+      '</div>' +
+
+    '</div>' +
+  '</div>';
+
+  // Guardar reporte en variable global para el botón "copiar"
+  window._ocSyncUltimoReporte = rep;
+
+  var prev = document.getElementById('oc-sync-reporte-ov');
+  if (prev) prev.remove();
+  document.body.insertAdjacentHTML('beforeend', html);
+}
+
+// Tarjeta pequeña de estadística en el header del reporte
+function _ocSyncStatCard(emoji, label, count, color) {
+  var opacity = count > 0 ? 1 : 0.4;
+  return '<div style="background:white;border:1.5px solid ' + color + ';border-radius:8px;padding:8px;text-align:center;opacity:' + opacity + ';">' +
+    '<div style="font-size:1.1rem;">' + emoji + '</div>' +
+    '<div style="font-size:0.58rem;font-weight:800;color:' + color + ';text-transform:uppercase;letter-spacing:0.5px;margin-top:2px;">' + label + '</div>' +
+    '<div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;font-size:1.4rem;color:' + color + ';line-height:1;margin-top:3px;">' + count + '</div>' +
+  '</div>';
+}
+
+// Copia el reporte al portapapeles en formato texto plano
+window.ocSyncCopiarReporte = function() {
+  var rep = window._ocSyncUltimoReporte;
+  if (!rep) return;
+
+  var lines = [];
+  lines.push('═══════════════════════════════════════════════════');
+  lines.push('  SINCRONIZACIÓN — ' + rep.ocNumero + ' · ' + rep.ocProveedor);
+  lines.push('  ' + new Date(rep.fecha).toLocaleString('es-VE'));
+  lines.push('  Total: ' + rep.totalCampos + ' campos modificados');
+  lines.push('═══════════════════════════════════════════════════');
+  lines.push('');
+
+  var seccionTxt = function(titulo, items, extraField) {
+    if (!items.length) return;
+    lines.push('▸ ' + titulo.toUpperCase() + ' (' + items.length + ')');
+    items.forEach(function(x){
+      var txt = '  ' + x.ref + (extraField ? ' [' + x[extraField] + ']' : '') + ': ';
+      txt += (x.antes === null || x.antes === '' || x.antes === undefined ? '(vacío)' : x.antes);
+      txt += ' → ' + (x.despues === null || x.despues === '' || x.despues === undefined ? '(vacío)' : x.despues);
+      lines.push(txt);
+    });
+    lines.push('');
+  };
+
+  if (rep.productosNuevos.length) {
+    lines.push('▸ PRODUCTOS NUEVOS CREADOS (' + rep.productosNuevos.length + ')');
+    rep.productosNuevos.forEach(function(x){
+      lines.push('  ' + x.ref + ': ' + (x.descripcion || '—'));
+    });
+    lines.push('');
+  }
+
+  seccionTxt('Descripciones actualizadas', rep.descripciones);
+  seccionTxt('Uds/bulto modificadas', rep.udsBulto);
+  seccionTxt('Costos FOB actualizados', rep.costoFOB);
+  seccionTxt('Códigos de barra', rep.codigoBarra);
+  seccionTxt('Ref proveedor', rep.refProveedor);
+  seccionTxt('Marca', rep.marca);
+  seccionTxt('Unidad', rep.unidad);
+  seccionTxt('País origen', rep.paisOrigen);
+  seccionTxt('Medidas', rep.medidas, 'campo');
+
+  var texto = lines.join('\n');
+
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(texto).then(function(){
+      if (typeof showToast === 'function') showToast('📋 Reporte copiado al portapapeles', 'success');
+      else alert('Reporte copiado al portapapeles');
+    });
+  } else {
+    // Fallback: mostrar en prompt para copiar manualmente
+    prompt('Copia este reporte (Ctrl+C):', texto);
   }
 };
 
@@ -19869,6 +20288,7 @@ function doRefSearch() {
                 '<th style="padding:8px 12px;text-align:center;white-space:nowrap;">Marca</th>' +
                 '<th style="padding:8px 12px;text-align:center;white-space:nowrap;">Depto.</th>' +
                 '<th style="padding:8px 12px;text-align:center;white-space:nowrap;">Costo $</th>' +
+                '<th style="padding:8px 12px;text-align:center;white-space:nowrap;background:#059669;" title="Costo FOB actualizado automáticamente desde las Órdenes de Compra al sincronizar">💰 FOB $</th>' +
                 '<th style="padding:8px 12px;text-align:center;white-space:nowrap;">P. USD</th>' +
                 '<th style="padding:8px 12px;text-align:center;white-space:nowrap;">P. BCV</th>' +
                 '<th style="padding:8px 12px;text-align:center;white-space:nowrap;">P. TF</th>' +
@@ -20168,6 +20588,28 @@ function ptRender() {
     row += '<td style="padding:8px 12px;text-align:right;font-size:.75rem;">' +
       (costoTotal > 0 ? '<span style="font-weight:700;color:#1a2050;">$' + costoTotal.toFixed(2) + '</span>' +
       (costoBase > 0 && costoTotal !== costoBase ? '<div style="font-size:.58rem;color:#94a3b8;">base $'+costoBase.toFixed(2)+'</div>' : '') : '—') +
+    '</td>';
+
+    // Celda FOB $ (nuevo campo sincronizado desde OC)
+    var fob = parseFloat(p.costoFOB) || 0;
+    var fobHistLen = Array.isArray(p.costoFOBHistorial) ? p.costoFOBHistorial.length : 0;
+    var fobBg = '#f3f4f6', fobColor = '#94a3b8';
+    if (fob > 0) {
+      fobBg = '#dcfce7'; fobColor = '#047857';
+      // Si diverge mucho del costo actual, ámbar
+      if (costoBase > 0 && Math.abs(fob - costoBase) / Math.max(fob, costoBase) > 0.20) {
+        fobBg = '#fef3c7'; fobColor = '#b45309';
+      }
+    }
+    var fobTooltip = fob > 0
+      ? 'Costo FOB sincronizado desde OC' + (fobHistLen > 0 ? ' · ' + fobHistLen + ' cambio(s) en histórico' : '')
+      : 'Sin costo FOB registrado · Se llenará al sincronizar una OC';
+    row += '<td style="padding:8px 12px;text-align:right;font-size:.75rem;" title="' + fobTooltip + '">' +
+      (fob > 0
+        ? '<span style="background:' + fobBg + ';color:' + fobColor + ';padding:3px 8px;border-radius:10px;font-weight:800;">$' + fob.toFixed(4) + '</span>' +
+          (fobHistLen > 0 ? '<div style="font-size:.55rem;color:#94a3b8;margin-top:2px;">📊 ' + fobHistLen + ' cambio' + (fobHistLen > 1 ? 's' : '') + '</div>' : '')
+        : '<span style="color:#cbd5e1;">—</span>'
+      ) +
     '</td>';
 
     row += '<td style="padding:8px 12px;text-align:right;font-size:.75rem;font-weight:700;color:#1a2050;">' + (p.u > 0 ? '$'+p.u.toFixed(2) : '—') + '</td>';
@@ -26042,7 +26484,12 @@ function msCalcularDistribucion(productos) {
     var pedNorm = {};
     MS.sucursales.forEach(function(s){ pedNorm[s] = parseInt(pedidos[s])||0; });
 
-    MS.data.push({ ref:ref, desc:String(p.desc||'').trim(), stock:stock, enSistema:(stockSistema!==undefined), pedidos:pedNorm, dist:dist, estado:estado, totalPedido:totalPedido, precioPedido:parseFloat(p.precio||p.price||0)||0 });
+    // Descripción: Excel primero, si está vacía usar la del catálogo
+    var descExcel = String(p.desc||'').trim();
+    var prodCat = PRODUCTS.find(function(x){ return x.r === ref; });
+    var descFinal = descExcel || (prodCat ? (prodCat.d || '') : '');
+
+    MS.data.push({ ref:ref, desc:descFinal, stock:stock, enSistema:(stockSistema!==undefined), pedidos:pedNorm, dist:dist, estado:estado, totalPedido:totalPedido, precioPedido:parseFloat(p.precio||p.price||0)||0 });
   });
 
   // Ordenar alfanuméricamente por referencia (igual que el catálogo)
