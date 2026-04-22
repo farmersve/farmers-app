@@ -26675,20 +26675,28 @@ function msRowsToText(rows) {
 
 // ── PASO 1: detectar estructura del Excel ────────
 async function msDetectarEstructura(rows) {
-  // La IA SOLO identifica qué columna es qué — una sola llamada pequeña
-  // Los números los lee el código directamente de las celdas
+  // Detector MULTI-FORMATO — tolera Excel sin columna REFERENCIA
+  // Formatos soportados:
+  //   A) Excel con REFERENCIA explícita (formato clásico)
+  //   B) Excel con CÓDIGO DE BARRAS y/o DESCRIPCIÓN sin REFERENCIA → se deriva la ref
+  //   C) Excel solo con DESCRIPCIÓN → matching por fuzzy con catálogo
   var muestra = msRowsToText(rows.slice(0, 6));
   var prompt =
-    'Analiza estas primeras filas de un Excel de pedidos multi-sucursal:\n\n' +
+    'Analiza estas primeras filas de un Excel de pedidos. Puede venir en formatos variados.\n\n' +
     muestra + '\n\n' +
-    'Identifica SOLO los índices de columna (números enteros, 0-based):\n' +
-    '1. headerRow: fila con los encabezados\n' +
-    '2. refCol: columna con la REFERENCIA del producto (ej: EXC001, MAT030, LUM011)\n' +
-    '3. descCol: columna con la DESCRIPCIÓN (-1 si no existe)\n' +
-    '4. invCol: columna con INVENTARIO/STOCK/T.T\n' +
-    '5. sucursalesCols: array de índices de columnas con cantidades pedidas por sucursal\n\n' +
+    'Identifica índices de columna (0-based). Si una columna no existe, usa -1.\n' +
+    '1. headerRow: fila con los encabezados (normalmente 0)\n' +
+    '2. refCol: columna con REFERENCIA INTERNA del producto (ej: EXC001, MAT030, GEN019). -1 si no hay.\n' +
+    '3. descCol: columna con DESCRIPCIÓN del producto (ej: "BIBERON 2OZ GENIAL"). -1 si no hay.\n' +
+    '4. barraCol: columna con CÓDIGO DE BARRAS (ej: números de 12-14 dígitos tipo 7453...). -1 si no hay.\n' +
+    '5. codigoCol: columna con CÓDIGO secundario tipo GN-BC5025, GN-YETH1. -1 si no hay.\n' +
+    '6. invCol: columna con INVENTARIO/STOCK disponible del proveedor. -1 si no hay.\n' +
+    '7. sucursalesCols: array de columnas con CANTIDADES PEDIDAS por sucursal.\n' +
+    '   Si solo hay UNA columna de cantidad (ej: CANTIDAD, PEDIDO, PIDE, UNID), ponla sola en el array.\n\n' +
+    'IMPORTANTE: Al menos UNO de refCol/descCol/barraCol debe ser >= 0 (necesitas al menos una forma de identificar el producto).\n' +
+    'Y sucursalesCols debe tener al menos 1 elemento.\n\n' +
     'RESPONDE SOLO JSON sin markdown:\n' +
-    '{"headerRow":1,"refCol":3,"descCol":1,"invCol":4,"sucursalesCols":[5,6,7,8]}';
+    '{"headerRow":0,"refCol":-1,"descCol":0,"barraCol":1,"codigoCol":-1,"invCol":-1,"sucursalesCols":[2]}';
   var texto = await msCallProxy([{role:'user', content: prompt}], 600);
   var parsed = JSON.parse(texto);
 
@@ -26700,7 +26708,7 @@ async function msDetectarEstructura(rows) {
 
   // Si la IA no devolvió sucursalesCols, inferir columnas numéricas después de invCol
   if(!sucursalesCols.length) {
-    var reservadas = [parsed.refCol, parsed.descCol, parsed.invCol];
+    var reservadas = [parsed.refCol, parsed.descCol, parsed.barraCol, parsed.codigoCol, parsed.invCol];
     for(var ci = 0; ci < headerRow.length; ci++) {
       if(reservadas.indexOf(ci) >= 0) continue;
       var h = String(headerRow[ci]||'').trim();
@@ -26708,22 +26716,42 @@ async function msDetectarEstructura(rows) {
     }
   }
 
+  // Validación: necesitamos al menos una forma de identificar el producto
+  var refCol    = (typeof parsed.refCol === 'number') ? parsed.refCol : -1;
+  var descCol   = (typeof parsed.descCol === 'number') ? parsed.descCol : -1;
+  var barraCol  = (typeof parsed.barraCol === 'number') ? parsed.barraCol : -1;
+  var codigoCol = (typeof parsed.codigoCol === 'number') ? parsed.codigoCol : -1;
+  var invCol    = (typeof parsed.invCol === 'number') ? parsed.invCol : -1;
+
+  if (refCol < 0 && descCol < 0 && barraCol < 0 && codigoCol < 0) {
+    throw new Error('No se identificó cómo reconocer los productos (ni REFERENCIA, ni DESCRIPCIÓN, ni CÓDIGO DE BARRAS). Encabezados: ' +
+      headerRow.map(function(h,i){return i+'='+h;}).join(' | '));
+  }
+
   if(!sucursalesCols.length) {
-    throw new Error('No se identificaron columnas de sucursales. Encabezados: ' +
+    throw new Error('No se identificó la columna de cantidades. Encabezados: ' +
       headerRow.map(function(h,i){return i+'='+h;}).join(' | '));
   }
 
   // Nombres limpios del encabezado real — sin prefijo PED/PEDIDO
   var sucursales = sucursalesCols.map(function(col){
     var raw = String(headerRow[col]||'').trim();
-    return raw.replace(/^(PED|PEDIDO|CANT|QTY)[\s.\-_]*/i,'').trim() || raw;
+    raw = raw.replace(/^(PED|PEDIDO|CANT|CANTIDAD|QTY|UNID|UNIDADES)[\s.\-_]*/i,'').trim();
+    // Si tras limpiar queda vacío o es solo "CANTIDAD", usar el nombre del cliente detectado
+    if (!raw || /^(CANTIDAD|QTY|UNID|UNIDADES|PEDIDO|PIDE)$/i.test(raw)) {
+      if (MS._clienteUnica && MS._clienteUnica.nombre) return MS._clienteUnica.nombre;
+      return 'PEDIDO';
+    }
+    return raw;
   });
 
   return {
     headerRow:      parsed.headerRow || 0,
-    refCol:         parsed.refCol,
-    descCol:        parsed.descCol,
-    invCol:         parsed.invCol,
+    refCol:         refCol,
+    descCol:        descCol,
+    barraCol:       barraCol,
+    codigoCol:      codigoCol,
+    invCol:         invCol,
     sucursales:     sucursales,
     sucursalesCols: sucursalesCols
   };
@@ -26733,18 +26761,169 @@ async function msDetectarEstructura(rows) {
 // Cada cantidad se lee de su celda exacta. Imposible duplicar o inventar números.
 function msExtraerLote(rows, estructura) {
   var resultados = [];
-  var refCol  = estructura.refCol;
-  var descCol = estructura.descCol;
-  var invCol  = estructura.invCol;
-  var sucCols = estructura.sucursalesCols;
+  var refCol    = estructura.refCol;
+  var descCol   = estructura.descCol;
+  var barraCol  = (typeof estructura.barraCol  === 'number') ? estructura.barraCol  : -1;
+  var codigoCol = (typeof estructura.codigoCol === 'number') ? estructura.codigoCol : -1;
+  var invCol    = estructura.invCol;
+  var sucCols   = estructura.sucursalesCols;
+
+  // Índices rápidos del catálogo para resolver refs cuando no vienen explícitas
+  var ixBarra = {}, ixCodigo = {};
+  if (typeof PRODUCTS !== 'undefined' && PRODUCTS.length) {
+    PRODUCTS.forEach(function(p){
+      if (p.b) ixBarra[String(p.b).trim()] = p.r;
+      if (p.c) ixCodigo[String(p.c).trim().toUpperCase()] = p.r;
+    });
+  }
+
+  // Normalizador descripción para fuzzy-match
+  function normDesc(s){
+    return String(s||'').toUpperCase()
+      .replace(/[ÁÀÄÂ]/g,'A').replace(/[ÉÈËÊ]/g,'E')
+      .replace(/[ÍÌÏÎ]/g,'I').replace(/[ÓÒÖÔ]/g,'O')
+      .replace(/[ÚÙÜÛ]/g,'U').replace(/Ñ/g,'N')
+      .replace(/[^A-Z0-9 ]/g,' ').replace(/\s+/g,' ').trim();
+  }
+
+  // Intenta extraer ref desde el final de la descripción (ej: "CORTA UÑAS MAT46" → "MAT46")
+  function extraerRefDeDesc(desc){
+    if (!desc) return '';
+    var tokens = String(desc).trim().split(/\s+/);
+    if (!tokens.length) return '';
+    var last = tokens[tokens.length-1].toUpperCase().replace(/[^A-Z0-9-]/g,'');
+    // Patrón típico: 2-5 letras + 2-6 números (GEN26, MAT46, EXC001, etc.)
+    if (/^[A-Z]{2,5}[-]?[0-9]{2,6}$/.test(last)) return last;
+    return '';
+  }
+
+  // Fuzzy-match de descripción contra el catálogo
+  function matchDesc(desc){
+    if (!desc || typeof PRODUCTS === 'undefined') return '';
+    var tk = normDesc(desc).split(' ').filter(function(w){return w.length>=3;});
+    if (tk.length < 2) return '';
+    var best = null, bestScore = 0;
+    PRODUCTS.forEach(function(p){
+      if (!p.d) return;
+      var pt = normDesc(p.d).split(' ').filter(function(w){return w.length>=3;});
+      if (!pt.length) return;
+      var hits = 0;
+      tk.forEach(function(t){ if (pt.indexOf(t) >= 0) hits++; });
+      var score = hits / Math.max(tk.length, pt.length);
+      if (score > bestScore) { bestScore = score; best = p; }
+    });
+    return (best && bestScore >= 0.6) ? best.r : '';
+  }
 
   rows.forEach(function(row) {
     if(!row) return;
-    var ref = String(row[refCol]||'').trim();
-    if(ref.length < 2) return;
 
-    var desc  = (descCol >= 0 && descCol != null) ? String(row[descCol]||'').trim() : '';
-    var stock = parseInt(row[invCol]) || 0;
+    // ── Leer TODOS los identificadores disponibles (sin descartar ninguno) ──
+    var refLiteral = (refCol    >= 0) ? String(row[refCol]    ||'').trim().toUpperCase() : '';
+    var desc       = (descCol   >= 0) ? String(row[descCol]   ||'').trim() : '';
+    var barra      = (barraCol  >= 0) ? String(row[barraCol]  ||'').trim().replace(/\D/g,'') : '';
+    var codigo     = (codigoCol >= 0) ? String(row[codigoCol] ||'').trim().toUpperCase() : '';
+
+    // ── CASCADA DE RESOLUCIÓN (siempre cruza con el catálogo) ──
+    // Orden de prioridad: más confiable primero
+    var ref = '';
+    var metodoMatch = '';
+
+    // 1) CÓDIGO DE BARRAS — identificador único físico, más confiable
+    if (barra && barra.length >= 8 && ixBarra[barra]) {
+      ref = ixBarra[barra];
+      metodoMatch = 'barra';
+    }
+
+    // 2) CÓDIGO secundario (tipo GN-BC5025, A019-DB087)
+    if (!ref && codigo && ixCodigo[codigo]) {
+      ref = ixCodigo[codigo];
+      metodoMatch = 'codigo';
+    }
+
+    // 3) REF LITERAL del cliente, solo si existe EXACTA en nuestro catálogo
+    //    (evita aceptar refs mal escritas del cliente)
+    if (!ref && refLiteral && typeof PRODUCTS !== 'undefined') {
+      var exact = PRODUCTS.find(function(p){ return String(p.r||'').toUpperCase() === refLiteral; });
+      if (exact) {
+        ref = exact.r;
+        metodoMatch = 'ref-exacta';
+      }
+    }
+
+    // 4) REF LITERAL con normalización (ej: "MAT46" → probar "MAT046")
+    if (!ref && refLiteral && typeof PRODUCTS !== 'undefined') {
+      var variante = refLiteral.replace(/^([A-Z]+)-?([0-9]+)$/, function(m, p1, p2){
+        return p1 + (p2.length === 2 ? '0' + p2 : p2);
+      });
+      if (variante !== refLiteral) {
+        var found = PRODUCTS.find(function(p){ return String(p.r||'').toUpperCase() === variante; });
+        if (found) {
+          ref = found.r;
+          metodoMatch = 'ref-normalizada';
+        }
+      }
+    }
+
+    // 5) Ref embebida en la descripción (ej: "CORTA UÑAS MAT46" → MAT46)
+    if (!ref && desc) {
+      var posibleRef = extraerRefDeDesc(desc);
+      if (posibleRef && typeof PRODUCTS !== 'undefined') {
+        var exactDesc = PRODUCTS.find(function(p){ return String(p.r||'').toUpperCase() === posibleRef; });
+        if (exactDesc) {
+          ref = exactDesc.r;
+          metodoMatch = 'desc-final';
+        } else {
+          // Probar variante normalizada
+          var varDesc = posibleRef.replace(/^([A-Z]+)-?([0-9]+)$/, function(m, p1, p2){
+            return p1 + (p2.length === 2 ? '0' + p2 : p2);
+          });
+          var foundVar = PRODUCTS.find(function(p){ return String(p.r||'').toUpperCase() === varDesc; });
+          if (foundVar) {
+            ref = foundVar.r;
+            metodoMatch = 'desc-final-norm';
+          }
+        }
+      }
+    }
+
+    // 6) Fuzzy-match por descripción completa (último recurso)
+    if (!ref && desc) {
+      var fuzzy = matchDesc(desc);
+      if (fuzzy) {
+        ref = fuzzy;
+        metodoMatch = 'fuzzy';
+      }
+    }
+
+    // 7) Si NADA funcionó pero el cliente trajo algún identificador → aceptar el literal
+    //    para que aparezca como "no encontrada en BD" en la auditoría y el usuario pueda
+    //    corregir manualmente (NO se pierde el dato)
+    if (!ref) {
+      if (refLiteral && refLiteral.length >= 2) {
+        ref = refLiteral;
+        metodoMatch = 'literal-no-bd';
+      } else if (codigo && codigo.length >= 2) {
+        ref = codigo;
+        metodoMatch = 'codigo-no-bd';
+      } else if (barra && barra.length >= 8) {
+        // Generar ref temporal desde barra para que el usuario pueda editarla
+        ref = 'BARRA-' + barra.slice(-6);
+        metodoMatch = 'barra-no-bd';
+      } else if (desc) {
+        // Ref temporal desde primeras palabras de descripción
+        var tempD = desc.substring(0, 20).toUpperCase().replace(/[^A-Z0-9]/g,'').slice(0,10);
+        if (tempD.length >= 3) {
+          ref = 'DESC-' + tempD;
+          metodoMatch = 'desc-no-bd';
+        }
+      }
+    }
+
+    // Si ni así hay ref, la fila está realmente vacía — descartar
+    if (!ref || ref.length < 2) return;
+
+    var stock = (invCol >= 0) ? (parseInt(row[invCol]) || 0) : 0;
 
     // Leer cantidad de cada sucursal DIRECTAMENTE de su celda — cero interpretación
     var q = sucCols.map(function(col){
@@ -26755,7 +26934,11 @@ function msExtraerLote(rows, estructura) {
       return (isNaN(n) || n < 0) ? 0 : n;
     });
 
-    resultados.push({ r: ref, d: desc, s: stock, q: q });
+    // Si no hay cantidad válida en ninguna sucursal, descartar
+    var totalQ = q.reduce(function(s,x){return s+x;},0);
+    if (totalQ <= 0) return;
+
+    resultados.push({ r: ref, d: desc, s: stock, q: q, _metodoMatch: metodoMatch });
   });
   return resultados;
 }
@@ -26863,8 +27046,14 @@ async function msAnalizarConIA(rows, pdfBase64, input) {
       if(!sucursales.length) throw new Error('No se detectaron sucursales en el archivo.');
 
       // Filas de datos (saltar encabezados)
+      // Filtramos por CUALQUIER identificador disponible: ref, descripción, código de barras
       var dataRows = rows.slice(estructura.headerRow + 1).filter(function(r){
-        return r && r[estructura.refCol] && String(r[estructura.refCol]).trim().length >= 3;
+        if (!r) return false;
+        var tieneRef    = estructura.refCol    >= 0 && r[estructura.refCol]    && String(r[estructura.refCol]).trim().length >= 2;
+        var tieneDesc   = estructura.descCol   >= 0 && r[estructura.descCol]   && String(r[estructura.descCol]).trim().length >= 3;
+        var tieneBarra  = estructura.barraCol  >= 0 && r[estructura.barraCol]  && String(r[estructura.barraCol]).trim().length >= 5;
+        var tieneCodigo = estructura.codigoCol >= 0 && r[estructura.codigoCol] && String(r[estructura.codigoCol]).trim().length >= 2;
+        return tieneRef || tieneDesc || tieneBarra || tieneCodigo;
       });
       if(!dataRows.length) {
         // Diagnóstico: mostrar qué detectó la IA
@@ -26872,7 +27061,7 @@ async function msAnalizarConIA(rows, pdfBase64, input) {
         var muestra3 = rows.slice(estructura.headerRow+1, estructura.headerRow+4)
           .map(function(r){ return (r||[]).slice(0,8).join(' | '); }).join('\n');
         throw new Error('No se encontraron filas de productos.\n'
-          + 'Estructura detectada: refCol='+estructura.refCol+', headerRow='+estructura.headerRow+'\n'
+          + 'Estructura detectada: refCol='+estructura.refCol+', descCol='+estructura.descCol+', barraCol='+estructura.barraCol+', headerRow='+estructura.headerRow+'\n'
           + 'Encabezados: '+headerRow.slice(0,8).join(' | ')+'\n'
           + 'Primeras filas:\n'+muestra3);
       }
@@ -26921,6 +27110,13 @@ async function msAnalizarConIA(rows, pdfBase64, input) {
 
     msSetProgress(95, 'Auditando integridad del pedido...');
     var fuenteArchivo = pdfBase64 ? 'PDF' : 'EXCEL';
+
+    // REGLA MANDATORIA: ordenar alfanuméricamente por REF del catálogo ANTES de auditar
+    // Esto garantiza que la auditoría se vea en el mismo orden que el resto del sistema
+    productosNorm.sort(function(a,b){
+      return String(a.ref||'').localeCompare(String(b.ref||''), 'es', {numeric:true, sensitivity:'base'});
+    });
+
     var audit = msAuditarPedido(productosNorm, sucursales, fuenteArchivo);
     msSetProgress(100, 'Auditoría completada');
     msMostrarAuditoria(audit, function() {
