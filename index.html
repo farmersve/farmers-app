@@ -19243,8 +19243,17 @@ function updateClientModeUI() {
 // ══════════════════════════════════════════════════════════════════════
 
 function _catGetStock(p, inv) {
-  if (inv && inv[p.r] !== undefined) return parseInt(inv[p.r]) || 0;
-  return parseInt(p.ex) || 0;
+  // Unificado con el render del catálogo: devuelve DISPONIBLE = real − comprometido.
+  // Antes devolvía el stock REAL, lo que causaba incoherencia: productos con badge
+  // "AGOTADO" en pantalla (disponible=0 por compromiso) pasaban el filtro "Con stock"
+  // y aparecían en Excel/PDF. El criterio debe ser el mismo en pantalla, filtro y export.
+  var real = (inv && inv[p.r] !== undefined) ? (parseInt(inv[p.r]) || 0) : (parseInt(p.ex) || 0);
+  var comp = 0;
+  try {
+    var c = (typeof getComprometido === 'function') ? getComprometido() : {};
+    if (c && c[p.r]) comp = parseInt(c[p.r].qty) || 0;
+  } catch(e) {}
+  return Math.max(0, real - comp);
 }
 
 function _catPasaFiltroStock(p, inv) {
@@ -19804,7 +19813,7 @@ function _catDownloadPDFWithImgs(_prodImgsLocal) {
         var _stReal = parseInt((inv[p.r] !== undefined) ? inv[p.r] : (p.ex || 0)) || 0;
       var _compInv = (typeof getComprometido==='function' ? getComprometido() : {})[p.r];
       var _compInvQty = _compInv ? (_compInv.qty||0) : 0;
-      var st = _stReal; // Stock real en inventario (mostrar real + indicador comprometido)
+      var st = Math.max(0, _stReal - _compInvQty); // DISPONIBLE = real − comprometido (unificado con pantalla/Excel)
         // OR multi-selección — mismos umbrales que catálogo visual
         if (_refStockFilters.has('IN')  && st > 10)            return true; // Con stock: >10
         if (_refStockFilters.has('LOW') && st > 0 && st <= 10) return true; // Bajo stock: 1-10
@@ -20177,7 +20186,7 @@ function doRefSearch() {
       var _stReal = parseInt((inv[p.r] !== undefined) ? inv[p.r] : (p.ex || 0)) || 0;
       var _compInv = (typeof getComprometido==='function' ? getComprometido() : {})[p.r];
       var _compInvQty = _compInv ? (_compInv.qty||0) : 0;
-      var st = _stReal; // Stock real en inventario (mostrar real + indicador comprometido)
+      var st = Math.max(0, _stReal - _compInvQty); // DISPONIBLE = real − comprometido (unificado con pantalla/Excel)
       
       if (_refStockFilters.has('IN')  && st > 10)            return true; // Con stock
       if (_refStockFilters.has('LOW') && st > 0 && st <= 10) return true; // Bajo stock
