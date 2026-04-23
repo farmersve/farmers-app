@@ -19502,7 +19502,14 @@ function catDownloadExcel(monedasParam) {
     var monedas     = monedasParam || [{label:'USD',campo:'u'},{label:'BCV',campo:'bv'},{label:'TF',campo:'t'}];
     var filtroStock = (typeof _refStockFilters !== 'undefined') ? _refStockFilters : new Set(['ALL']);
 
-    // Filtrar exactamente igual que la pantalla
+    // ═══ FILTRO EXCEL — autocontenido, usa getDisponible canónico ═══
+    // No dependemos de _catPasaFiltroStock para evitar cualquier desfase.
+    // Criterio: mismo que el render visual del catálogo.
+    var _compExcel = (typeof getComprometido === 'function') ? getComprometido() : {};
+    var _ptDataExcel = {};
+    try { _ptDataExcel = JSON.parse(localStorage.getItem('farmers_pt_data') || '{}'); } catch(e){}
+
+    var _excluidos = [];  // diagnóstico: refs que se filtran
     var prods = PRODUCTS.filter(function(p) {
       if (filtroMarca && p.br !== filtroMarca) return false;
       if (filtroQ) {
@@ -19510,8 +19517,34 @@ function catDownloadExcel(monedasParam) {
         if (!(p.r||'').toUpperCase().includes(q) && !(p.d||'').toUpperCase().includes(q) &&
             !(p.b||'').toUpperCase().includes(q) && !(p.c||'').toUpperCase().includes(q)) return false;
       }
-      return _catPasaFiltroStock(p, inv);
+      // Si el filtro es "Todos" dejamos pasar todo
+      if (filtroStock.has('ALL')) return true;
+
+      // Calcular disponible EXACTAMENTE igual que la pantalla
+      var real = (inv && inv[p.r] !== undefined) ? (parseInt(inv[p.r]) || 0) : (parseInt(p.ex) || 0);
+      var compQty = (_compExcel[p.r] && _compExcel[p.r].qty) ? (parseInt(_compExcel[p.r].qty) || 0) : 0;
+      var disp = Math.max(0, real - compQty);
+
+      // Aplicar OR entre los filtros activos usando DISPONIBLE
+      var pasa = false;
+      if (filtroStock.has('IN')  && disp > 10)             pasa = true;
+      if (filtroStock.has('LOW') && disp > 0 && disp <= 10) pasa = true;
+      if (filtroStock.has('OUT') && disp === 0)             pasa = true;
+      if (filtroStock.has('ORD')) {
+        var exOrd = (_ptDataExcel[p.r] && _ptDataExcel[p.r].exOrdenada) ? parseInt(_ptDataExcel[p.r].exOrdenada) : 0;
+        if (exOrd > 0) pasa = true;
+      }
+
+      if (!pasa) _excluidos.push(p.r + ' (disp=' + disp + ', real=' + real + ', comp=' + compQty + ')');
+      return pasa;
     });
+
+    // Diagnóstico: log de productos filtrados
+    console.log('[Excel] Filtros activos:', Array.from(filtroStock).join(','));
+    console.log('[Excel] Productos incluidos: ' + prods.length + ' / Excluidos: ' + _excluidos.length);
+    if (_excluidos.length > 0 && _excluidos.length < 30) {
+      console.log('[Excel] Excluidos:', _excluidos.join(' · '));
+    }
 
     var wb = XLSX.utils.book_new();
 
@@ -20182,31 +20215,30 @@ function doRefSearch() {
 
   // Filtro de stock — exclusivo, umbrales unificados con el resto del sistema
   if (!_refStockFilters.has('ALL')) {
+    var _compPantalla = (typeof getComprometido === 'function') ? getComprometido() : {};
+    var _debugPantalla = [];
     pool = pool.filter(function(p){
       var _stReal = parseInt((inv[p.r] !== undefined) ? inv[p.r] : (p.ex || 0)) || 0;
-      var _compInv = (typeof getComprometido==='function' ? getComprometido() : {})[p.r];
-      var _compInvQty = _compInv ? (_compInv.qty||0) : 0;
-      var st = Math.max(0, _stReal - _compInvQty); // DISPONIBLE = real − comprometido (unificado con pantalla/Excel)
+      var _compInvQty = (_compPantalla[p.r] && _compPantalla[p.r].qty) ? (parseInt(_compPantalla[p.r].qty) || 0) : 0;
+      var st = Math.max(0, _stReal - _compInvQty); // DISPONIBLE = real − comprometido
       
-      if (_refStockFilters.has('IN')  && st > 10)            return true; // Con stock
-      if (_refStockFilters.has('LOW') && st > 0 && st <= 10) return true; // Bajo stock
-      if (_refStockFilters.has('OUT') && st === 0)           return true; // Agotados
-      
-      // ✅ FILTRO "CON ORDENADA" - usar misma lógica que _catPasaFiltroStock
+      var pasa = false;
+      if (_refStockFilters.has('IN')  && st > 10)             pasa = true;
+      if (_refStockFilters.has('LOW') && st > 0 && st <= 10)  pasa = true;
+      if (_refStockFilters.has('OUT') && st === 0)            pasa = true;
       if (_refStockFilters.has('ORD')) {
         var _ptDataFiltro = {};
-        try { 
-          _ptDataFiltro = JSON.parse(localStorage.getItem('farmers_pt_data') || '{}'); 
-        } catch(e) {}
-        
-        var exOrden = (_ptDataFiltro[p.r] && _ptDataFiltro[p.r].exOrdenada) ? 
-                      parseInt(_ptDataFiltro[p.r].exOrdenada) : 0;
-        
-        if (exOrden > 0) return true;
+        try { _ptDataFiltro = JSON.parse(localStorage.getItem('farmers_pt_data') || '{}'); } catch(e) {}
+        var exOrden = (_ptDataFiltro[p.r] && _ptDataFiltro[p.r].exOrdenada) ? parseInt(_ptDataFiltro[p.r].exOrdenada) : 0;
+        if (exOrden > 0) pasa = true;
       }
-      
-      return false;
+      // Diagnóstico — log para los primeros 3 que NO pasan
+      if (!pasa && _debugPantalla.length < 3) {
+        _debugPantalla.push(p.r + ' disp=' + st + ' real=' + _stReal + ' comp=' + _compInvQty);
+      }
+      return pasa;
     });
+    if (_debugPantalla.length) console.log('[Catálogo] Excluidos ejemplo:', _debugPantalla.join(' · '));
   }
 
   // Filtro: excluir artículos sin disponible si _catExclComp está activo
