@@ -10692,10 +10692,15 @@ window.ocSincronizarInventarioClick = function(ocId) {
         pesoPorBultoN = parseFloat(item.peso);
       }
 
+      // Descripción de productos NUEVOS: aplicar REF al final automáticamente (Capa A)
+      var descNueva = item.descripcion || '';
+      var descConRef = _ocSyncDescripcionConRef(descNueva, refF);
+      if (descConRef) descNueva = descConRef;  // Ya incluye la REF al final
+
       analisis.fields = [
         { campo: 'b',  labelUI: 'Código barra',     valorActual: null, valorNuevo: item.codigoBarra || '',       aplicar: !!item.codigoBarra },
         { campo: 'c',  labelUI: 'Ref proveedor',    valorActual: null, valorNuevo: item.refProveedor || '',       aplicar: !!item.refProveedor },
-        { campo: 'd',  labelUI: 'Descripción',      valorActual: null, valorNuevo: item.descripcion || '',        aplicar: !!item.descripcion, sugerenciaRefInterna: _ocSyncDescripcionConRef(item.descripcion, refF) },
+        { campo: 'd',  labelUI: 'Descripción',      valorActual: null, valorNuevo: descNueva,                     aplicar: !!descNueva, sugerenciaRefInterna: null },
         { campo: 'e',  labelUI: 'Unidad',           valorActual: null, valorNuevo: item.unidad || 'UNIDAD',       aplicar: !!item.unidad },
         { campo: 'm',  labelUI: 'Uds/bulto',        valorActual: null, valorNuevo: parseInt(item.unidadesPorBulto)||0, aplicar: !!item.unidadesPorBulto },
         { campo: 'br', labelUI: 'Marca',            valorActual: null, valorNuevo: item.marca || '',              aplicar: !!item.marca },
@@ -10825,10 +10830,13 @@ window.ocSincronizarInventarioClick = function(ocId) {
     if (volPorBultoOC === 0) resultado._itemsSinMedidas++;
     if (pesoPorBultoOC === 0) resultado._itemsSinPeso++;
 
+    // Preparar descripción propuesta con REF al final (Capa A automática)
+    var descItemConRef = item.descripcion ? (_ocSyncDescripcionConRef(item.descripcion, refF) || item.descripcion) : '';
+
     var fieldsCandidatos = [
       cmp('b',  'Código barra',    prod.b,  item.codigoBarra,      'str'),
       cmp('c',  'Ref proveedor',   prod.c,  item.refProveedor,     'str'),
-      cmp('d',  'Descripción',     prod.d,  item.descripcion,      'str'),
+      cmp('d',  'Descripción',     prod.d,  descItemConRef,        'str'),
       cmp('e',  'Unidad',          prod.e,  item.unidad,           'str'),
       cmp('m',  'Uds/bulto',       prod.m,  item.unidadesPorBulto, 'int'),
       cmp('br', 'Marca',           prod.br, item.marca,            'str'),
@@ -11386,6 +11394,27 @@ window.ocSyncAplicar = function() {
 
   try {
     var ptData = JSON.parse(localStorage.getItem('farmers_pt_data') || '{}');
+
+    // ─── CAPA B: DOBLE CHEQUEO ────────────────────────────────────────────
+    // Antes de escribir nada, recorrer TODAS las descripciones marcadas y
+    // garantizar que terminen con la REF interna al final. Esto protege contra
+    // ediciones manuales del usuario que hayan omitido la REF por accidente.
+    var correccionesCapaB = 0;
+    r.all.forEach(function(a){
+      var refF = a.refFarmers;
+      a.fields.forEach(function(f){
+        if (f.campo !== 'd' || !f.aplicar || !f.valorNuevo) return;
+        var corregido = _ocSyncDescripcionConRef(f.valorNuevo, refF);
+        // Si la función retorna algo, significa que le faltaba la REF — lo corregimos
+        if (corregido && corregido !== f.valorNuevo) {
+          f.valorNuevo = corregido;
+          correccionesCapaB++;
+        }
+      });
+    });
+    if (correccionesCapaB > 0 && typeof console !== 'undefined') {
+      console.log('[OC Sync · Capa B] ' + correccionesCapaB + ' descripción(es) corregidas con REF al final antes de aplicar');
+    }
 
     r.all.forEach(function(a){
       var tieneAlgoMarcado = a.fields.some(function(f){ return f.aplicar; });
