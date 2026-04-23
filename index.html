@@ -19404,6 +19404,30 @@ function catAbrirModalExcel() {
   grid.appendChild(makeMonCard('bcv', 'BCV', 'Tasa BCV'));
   grid.appendChild(makeMonCard('tf',  'TF',  'Tasa preferencial'));
 
+  // ── Checkbox "Sin Precio" — genera hoja sin columnas de precio ──
+  // Usa su propio estilo (verde) para diferenciarlo visualmente de las monedas.
+  var sinPrecioCard = document.createElement('div');
+  sinPrecioCard.id = 'lbl-sinprecio';
+  sinPrecioCard.style.cssText = 'display:flex;align-items:center;gap:10px;padding:13px 15px;border:2px solid #e2e8f0;border-radius:10px;cursor:pointer;background:white;';
+  var chkSP = document.createElement('input');
+  chkSP.type = 'checkbox';
+  chkSP.id = 'chk-sinprecio';
+  chkSP.checked = false;
+  chkSP.style.cssText = 'width:17px;height:17px;accent-color:#16a34a;cursor:pointer;';
+  chkSP.addEventListener('change', function(){
+    sinPrecioCard.style.borderColor = chkSP.checked ? '#16a34a' : '#e2e8f0';
+    sinPrecioCard.style.background  = chkSP.checked ? '#f0fdf4' : 'white';
+  });
+  sinPrecioCard.addEventListener('click', function(e){
+    if (e.target !== chkSP) { chkSP.checked = !chkSP.checked; chkSP.dispatchEvent(new Event('change')); }
+  });
+  var txtSP = document.createElement('div');
+  txtSP.innerHTML = '<div style="font-weight:900;color:#166534;font-size:.92rem;">\uD83D\uDCDD Sin Precio</div>'
+    + '<div style="font-size:.7rem;color:#64748b;margin-top:1px;">Hoja sin columnas de precio</div>';
+  sinPrecioCard.appendChild(chkSP);
+  sinPrecioCard.appendChild(txtSP);
+  grid.appendChild(sinPrecioCard);
+
   // Toggle: incluir stock ordenado (en camino)
   var ordenRow = document.createElement('div');
   ordenRow.style.cssText = 'grid-column:1/-1;margin-top:4px;';
@@ -19473,7 +19497,9 @@ function catDescargarExcelConFiltros() {
   if (document.getElementById('chk-usd') && document.getElementById('chk-usd').checked) monSelec.push({label:'USD', campo:'u'});
   if (document.getElementById('chk-bcv') && document.getElementById('chk-bcv').checked) monSelec.push({label:'BCV', campo:'bv'});
   if (document.getElementById('chk-tf')  && document.getElementById('chk-tf').checked)  monSelec.push({label:'TF',  campo:'t'});
-  if (!monSelec.length) { showToast('Selecciona al menos una moneda', 'warning'); return; }
+  // ── Sin Precio: genera hoja sin columnas de precio ──
+  if (document.getElementById('chk-sinprecio') && document.getElementById('chk-sinprecio').checked) monSelec.push({label:'SIN PRECIO', campo:null});
+  if (!monSelec.length) { showToast('Selecciona al menos una moneda o Sin Precio', 'warning'); return; }
   // Sincronizar toggle "En Camino" desde el modal
   var chkOrdenEl = document.getElementById('chk-orden');
   if (chkOrdenEl) {
@@ -19550,9 +19576,24 @@ function catDownloadExcel(monedasParam) {
 
     monedas.forEach(function(mon) {
       var monLabel = mon.label, campo = mon.campo;
-      var heads, widths, colP, colO, colT, ncols;
+      var heads, widths, colP, colO, colT, colOrd, ncols;
+      var sinPrecio = (campo === null);  // ── Modo sin precio ──
 
-      if (!modoCliente) {
+      if (sinPrecio) {
+        // ── SIN PRECIO — sin columnas PRECIO, TOTAL, EXIST. TOTAL ──
+        if (!modoCliente) {
+          heads  = ['REFERENCIA','COD. BARRAS','COD. INTERNO','DESCRIPCION',
+                    'EMPAQUE','MED/CAJA','MARCA',
+                    'ORDEN','EXISTENCIA','ORDENADA'];
+          widths = [13,17,15,48,10,10,12,9,11,12];
+          colO=8; colOrd=10; ncols=10;
+        } else {
+          heads  = ['REFERENCIA','COD. BARRAS','DESCRIPCION',
+                    'EMPAQUE','MED/CAJA','MARCA','ORDEN'];
+          widths = [13,17,52,10,10,12,9];
+          colO=7; ncols=7;
+        }
+      } else if (!modoCliente) {
         heads  = ['REFERENCIA','COD. BARRAS','COD. INTERNO','DESCRIPCION',
                   'EMPAQUE','MED/CAJA','MARCA',
                   'PRECIO '+monLabel+' ($)','ORDEN','TOTAL ($)','EXISTENCIA','ORDENADA','EXIST. TOTAL'];
@@ -19567,17 +19608,29 @@ function catDownloadExcel(monedasParam) {
       }
 
       var rows = prods.map(function(p, i) {
-        var precio = parseFloat((p[campo]||0).toFixed(4));
         var ex     = _catGetStock(p, inv);
-        
+
         // ═══ LEER CANTIDAD ORDENADA ═══
         var ptDataExcel = {};
-        try { 
-          ptDataExcel = JSON.parse(localStorage.getItem('farmers_pt_data') || '{}'); 
+        try {
+          ptDataExcel = JSON.parse(localStorage.getItem('farmers_pt_data') || '{}');
         } catch(e) {}
-        var exOrdenada = (ptDataExcel[p.r] && ptDataExcel[p.r].exOrdenada) ? 
+        var exOrdenada = (ptDataExcel[p.r] && ptDataExcel[p.r].exOrdenada) ?
                          parseInt(ptDataExcel[p.r].exOrdenada) : 0;
-        
+
+        if (sinPrecio) {
+          // ── Filas sin precio (sin PRECIO, TOTAL, EXIST. TOTAL) ──
+          if (!modoCliente) {
+            return [p.r||'', String(p.b||''), p.c||'', p.d||'',
+                    p.e||'UNIDAD', p.m||'', p.br||'',
+                    null, ex, exOrdenada];
+          } else {
+            return [p.r||'', String(p.b||''), p.d||'',
+                    p.e||'UNIDAD', p.m||'', p.br||'', null];
+          }
+        }
+
+        var precio = parseFloat((p[campo]||0).toFixed(4));
         var fila   = i + 6;
         var ordRef = XLSX.utils.encode_col(colO-1) + fila;
         var preRef = XLSX.utils.encode_col(colP-1) + fila;
@@ -19594,12 +19647,14 @@ function catDownloadExcel(monedasParam) {
 
       var lastData = 5 + prods.length;
       var ordCol   = XLSX.utils.encode_col(colO-1);
-      var totCol   = XLSX.utils.encode_col(colT-1);
       var totRow   = new Array(ncols).fill(null);
       totRow[0]    = 'TOTAL DEL PEDIDO:';
       totRow[colO-1] = {f:'SUM('+ordCol+'6:'+ordCol+lastData+')'};
-      totRow[colT-1] = {f:'SUM('+totCol+'6:'+totCol+lastData+')'};
-      
+      if (!sinPrecio) {
+        var totCol = XLSX.utils.encode_col(colT-1);
+        totRow[colT-1] = {f:'SUM('+totCol+'6:'+totCol+lastData+')'};
+      }
+
       // ═══ TOTAL PARA ORDENADA (solo modo interno) ═══
       if (!modoCliente && colOrd) {
         var ordCol2 = XLSX.utils.encode_col(colOrd-1);  // L = ORDENADA
@@ -19617,10 +19672,11 @@ function catDownloadExcel(monedasParam) {
       var ws  = XLSX.utils.aoa_to_sheet(aoa);
 
       // Escribir fórmulas EXIST. TOTAL directamente en cada celda (col M = índice 12)
-      if (!modoCliente) {
+      // Solo aplica en modo interno CON precio (en modo sin precio no hay columna EXIST. TOTAL).
+      if (!modoCliente && !sinPrecio) {
         var existCol = XLSX.utils.encode_col(10);  // K = EXISTENCIA
         var ordColL  = XLSX.utils.encode_col(8);   // I = ORDEN
-        var etCol    = XLSX.utils.encode_col(12);  // M = EXIST. TOTAL (era 11, ahora 12)
+        var etCol    = XLSX.utils.encode_col(12);  // M = EXIST. TOTAL
         prods.forEach(function(p, i) {
           var row = i + 6;
           var exVal = _catGetStock(p, inv);
