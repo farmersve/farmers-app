@@ -6347,6 +6347,20 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
     try { await setDoc(doc(db, 'portal_tokens', token), data); return true; }
     catch(e) { console.error('fbSavePortalToken:', e); return false; }
   };
+  // comprometido — publicar a Firestore para que el portal lea el DISPONIBLE real (inv − comprometido)
+  // Acepta objeto opcional (o lo lee de localStorage). Serializa a string para consistencia.
+  window.fbSaveComprometido = async (compObj) => {
+    try {
+      var compString;
+      if (compObj && typeof compObj === 'object') {
+        compString = JSON.stringify(compObj);
+      } else {
+        compString = localStorage.getItem('farmers_inv_comprometido') || '{}';
+      }
+      await setDoc(doc(db, 'data', 'comprometido'), { v: compString, updatedAt: Date.now() });
+      return true;
+    } catch(e) { console.error('[fbSaveComprometido] ✗ error:', e); return false; }
+  };
   // pt_data (Ordenada) — publicar a Firestore para que el portal lo lea cuando el token tenga mostrarOrdenada:true
   // Acepta objeto opcional (o lo lee de localStorage). Serializa a string para consistencia.
   window.fbSavePT = async (dataObj) => {
@@ -6367,6 +6381,15 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
       console.log('[fbSavePT] ✓ pt_data publicado: ' + totalRefs + ' refs, ' + conOrd + ' con Ordenada > 0');
       return true;
     } catch(e) { console.error('[fbSavePT] ✗ error:', e); return false; }
+  };
+  // Leer pt_data desde Firestore (para auditoría — ver lo que el portal ve realmente)
+  window.fbGetPT = async () => {
+    try {
+      var snap = await getDoc(doc(db, 'data', 'pt_data'));
+      if (!snap.exists() || !snap.data().v) return { exists: false, data: {}, updatedAt: null };
+      var data = JSON.parse(snap.data().v);
+      return { exists: true, data: data, updatedAt: snap.data().updatedAt || null };
+    } catch(e) { console.error('[fbGetPT] ✗ error:', e); return { exists: false, data: {}, error: e.message }; }
   };
   window.fbGetPortalTokens = async () => {
     try {
@@ -21032,7 +21055,7 @@ function doRefSearch() {
           '</select>' +
           '<button onclick="ptNuevoProducto()" style="background:#1B1F6B;color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:700;font-size:.8rem;white-space:nowrap;">+ Nuevo Producto</button>' +
           '<button onclick="ptResetOrdenada()" style="background:linear-gradient(135deg,#92400e,#b45309);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:700;font-size:.8rem;white-space:nowrap;">📦 Actualizar Ordenada</button>' +
-          '<button onclick="ptPublicarOrdenadaAlPortal()" style="background:linear-gradient(135deg,#d97706,#f59e0b);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:700;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;" title="Sube las cantidades ordenadas a Firestore para que los clientes del Portal las vean">📤 Publicar al Portal</button>' +
+          '<button onclick="ptPublicarOrdenadaAlPortal()" style="background:linear-gradient(135deg,#1B1F6B,#4f46e5);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:700;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;" title="Diagnostica qué Ordenada ve tu admin vs el portal del cliente">🔍 Auditar Ordenada</button>' +
           '<button onclick="ptImportarPedido()" style="background:linear-gradient(135deg,#059669,#065f46);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:700;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;">📦 Importar Pedido Proveedor</button>' +
           '<button onclick="ptImportarMedidas()" style="background:linear-gradient(135deg,#1d4ed8,#1e40af);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:700;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;" title="Importar largo, ancho, alto y peso desde Excel">📐 Importar Medidas</button>' +
           '<button onclick="ptImportarDatosMaestro()" style="background:linear-gradient(135deg,#7c3aed,#6d28d9);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:700;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;" title="Importar y actualizar todos los campos desde Excel">📥 Importar Datos</button>' +
@@ -23182,117 +23205,292 @@ window.ptResetOrdenada = ptResetOrdenada;
 // y mostrarlas a los clientes cuyo token tiene mostrarOrdenada=true.
 // Muestra un modal de diagnóstico antes de publicar.
 // ══════════════════════════════════════════════════════════════
-function ptPublicarOrdenadaAlPortal() {
-  // Calcular diagnóstico con desglose por marca
-  var ptData = {};
-  try { ptData = JSON.parse(localStorage.getItem('farmers_pt_data') || '{}'); } catch(e){}
-  var totalRefs = Object.keys(ptData).length;
-  var conOrdenada = 0;
-  var ejemplos = [];
+// ══════════════════════════════════════════════════════════════════════
+// ptPublicarOrdenadaAlPortal — Auditoría completa de Ordenada
+//
+// Compara 3 fuentes:
+//   1) localStorage.farmers_pt_data  — lo que hay en el admin LOCAL
+//   2) Firestore data/pt_data        — lo que el PORTAL está leyendo
+//   3) PRODUCTS                       — el catálogo oficial (para validar que refs existen)
+//
+// Resultado: muestra desglose por marca, discrepancias y alertas.
+// ══════════════════════════════════════════════════════════════════════
+async function ptPublicarOrdenadaAlPortal() {
+  // 1) Leer localStorage
+  var ptLocal = {};
+  try { ptLocal = JSON.parse(localStorage.getItem('farmers_pt_data') || '{}'); } catch(e){}
 
-  // Desglose por marca: cuántas refs tiene Ordenada > 0 por cada marca
-  // Matching ref → marca: cruzar con PRODUCTS del admin
-  var porMarca = {};  // { 'EXCALIBUR': {total: 120, conOrd: 18}, 'GENIAL': {...} }
-  var refSinMarcaEnCatalogo = 0;
+  // 2) Leer Firestore (async)
+  var firestoreStatus = { loading: true, exists: false, data: {}, error: null, updatedAt: null };
 
-  Object.keys(ptData).forEach(function(ref){
-    var ex = parseInt(ptData[ref] && ptData[ref].exOrdenada || 0) || 0;
-    if (ex > 0) {
-      conOrdenada++;
-      if (ejemplos.length < 10) ejemplos.push({ ref: ref, qty: ex });
-
-      // Buscar la marca de esta ref en PRODUCTS
-      var prod = (typeof PRODUCTS !== 'undefined' ? PRODUCTS.find(function(p){ return p.r === ref; }) : null);
-      var marca = prod && prod.br ? String(prod.br).toUpperCase() : '_SIN_MARCA_';
-      if (marca === '_SIN_MARCA_') refSinMarcaEnCatalogo++;
-      if (!porMarca[marca]) porMarca[marca] = { conOrd: 0, totalUds: 0 };
-      porMarca[marca].conOrd++;
-      porMarca[marca].totalUds += ex;
-    }
-  });
-
-  // Modal de confirmación con diagnóstico
+  // Abrir modal primero con estado de carga
   var el = document.createElement('div');
   el.id = 'pt-pub-modal';
-  el.style.cssText = 'position:fixed;inset:0;background:rgba(10,15,40,.8);z-index:99999;display:flex;align-items:center;justify-content:center;';
-
-  // HTML del desglose por marca
-  var marcasHTML = '';
-  var marcasArr = Object.keys(porMarca).filter(function(m){ return m !== '_SIN_MARCA_'; }).sort(function(a,b){
-    return porMarca[b].conOrd - porMarca[a].conOrd;
-  });
-  if (marcasArr.length > 0) {
-    var marcaColors = {
-      EXCALIBUR: '#1a2050', GENIAL: '#0d9488', MATRIX: '#b45309',
-      LUMEN: '#b91c1c', MAXKILLER: '#7c3aed', VARIOS: '#475569'
-    };
-    marcasHTML =
-      '<div style="background:#f8f9ff;border:1.5px solid #e0e4f0;border-radius:8px;padding:10px 12px;margin-top:10px;">' +
-        '<div style="font-size:.62rem;font-weight:900;color:#1B1F6B;text-transform:uppercase;letter-spacing:1.2px;margin-bottom:8px;">📊 Desglose por marca:</div>' +
-        '<div style="display:grid;grid-template-columns:1fr;gap:4px;max-height:150px;overflow-y:auto;">' +
-          marcasArr.map(function(m){
-            var c = marcaColors[m] || '#475569';
-            return '<div style="display:flex;align-items:center;gap:8px;padding:6px 8px;background:#fff;border-radius:6px;border-left:3px solid ' + c + ';">' +
-              '<span style="flex:1;font-weight:800;color:#1B1F6B;font-size:.72rem;letter-spacing:.5px;">' + m + '</span>' +
-              '<span style="background:#e0e7ff;color:#1B1F6B;padding:2px 8px;border-radius:999px;font-size:.62rem;font-weight:800;">' + porMarca[m].conOrd + ' refs</span>' +
-              '<span style="background:#fef3c7;color:#92400e;padding:2px 8px;border-radius:999px;font-size:.62rem;font-weight:800;">' + porMarca[m].totalUds + ' uds</span>' +
-            '</div>';
-          }).join('') +
-        '</div>' +
-        (refSinMarcaEnCatalogo > 0
-          ? '<div style="margin-top:8px;padding:6px 10px;background:#fee2e2;border-radius:6px;font-size:.65rem;color:#991b1b;"><strong>⚠ Alerta:</strong> ' + refSinMarcaEnCatalogo + ' refs con Ordenada NO existen en el catálogo oficial (no se verán en portal).</div>'
-          : '') +
-      '</div>';
-  }
-
-  var ejemplosHTML = ejemplos.length > 0
-    ? '<div style="background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:10px 12px;margin-top:10px;max-height:120px;overflow-y:auto;">' +
-        '<div style="font-size:.62rem;font-weight:900;color:#92400e;text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;">Ejemplos de Ordenada (primeros 10):</div>' +
-        ejemplos.map(function(e){ return '<div style="font-size:.7rem;color:#78350f;font-family:monospace;padding:2px 0;"><strong>' + e.ref + '</strong> → ' + e.qty + ' uds</div>'; }).join('') +
-      '</div>'
-    : '';
-
-  var warning = conOrdenada === 0
-    ? '<div style="background:#fee2e2;border:1.5px solid #fca5a5;border-radius:8px;padding:12px;margin-top:10px;"><strong style="color:#991b1b;">⚠ No hay productos con Ordenada > 0</strong><div style="font-size:.72rem;color:#7f1d1d;margin-top:4px;">Debes cargar las cantidades de Ordenada primero usando "📦 Actualizar Ordenada" con un Excel del pedido proveedor, o editar productos manualmente.</div></div>'
-    : '';
-
+  el.style.cssText = 'position:fixed;inset:0;background:rgba(10,15,40,.8);z-index:99999;display:flex;align-items:center;justify-content:center;padding:16px;';
   el.innerHTML =
-    '<div style="background:white;border-radius:16px;width:min(560px,94vw);overflow:hidden;box-shadow:0 24px 64px rgba(0,0,0,.4);">' +
-      '<div style="background:linear-gradient(135deg,#d97706,#f59e0b);padding:18px 24px;display:flex;justify-content:space-between;align-items:center;">' +
+    '<div style="background:white;border-radius:16px;width:min(720px,94vw);max-height:92vh;overflow-y:auto;box-shadow:0 24px 64px rgba(0,0,0,.4);">' +
+      '<div style="background:linear-gradient(135deg,#1B1F6B,#9B6FD4,#F47B3E);padding:18px 24px;display:flex;justify-content:space-between;align-items:center;">' +
         '<div>' +
-          '<div style="font-size:1.05rem;font-weight:900;color:white;letter-spacing:.5px;">📤 Publicar Ordenada al Portal</div>' +
-          '<div style="font-size:.7rem;color:rgba(255,255,255,.8);margin-top:2px;">Sincroniza cantidades "en camino" para clientes del portal</div>' +
+          '<div style="font-size:1.1rem;font-weight:900;color:white;letter-spacing:.5px;text-transform:uppercase;">🔍 Auditoría de Ordenada</div>' +
+          '<div style="font-size:.72rem;color:rgba(255,255,255,.85);margin-top:2px;">Comparando sistema local vs Firestore vs catálogo</div>' +
         '</div>' +
-        '<button onclick="document.getElementById(\'pt-pub-modal\').remove()" style="background:rgba(255,255,255,.15);border:none;color:white;border-radius:8px;padding:5px 12px;cursor:pointer;font-weight:700;font-size:1rem;">✕</button>' +
+        '<button onclick="document.getElementById(\'pt-pub-modal\').remove()" style="background:rgba(255,255,255,.2);border:none;color:white;border-radius:8px;padding:5px 12px;cursor:pointer;font-weight:700;font-size:1rem;">✕</button>' +
       '</div>' +
-      '<div style="padding:22px 24px;">' +
-
-        '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px;">' +
-          '<div style="background:#f1f5f9;padding:12px;border-radius:8px;text-align:center;">' +
-            '<div style="font-size:.6rem;font-weight:900;color:#64748b;text-transform:uppercase;letter-spacing:1px;">Total refs</div>' +
-            '<div style="font-size:1.6rem;font-weight:900;color:#1B1F6B;font-family:\'Barlow Condensed\',sans-serif;">' + totalRefs + '</div>' +
-          '</div>' +
-          '<div style="background:' + (conOrdenada > 0 ? '#fef3c7' : '#fee2e2') + ';padding:12px;border-radius:8px;text-align:center;border:1.5px solid ' + (conOrdenada > 0 ? '#fbbf24' : '#fca5a5') + ';">' +
-            '<div style="font-size:.6rem;font-weight:900;color:' + (conOrdenada > 0 ? '#92400e' : '#991b1b') + ';text-transform:uppercase;letter-spacing:1px;">Con Ordenada > 0</div>' +
-            '<div style="font-size:1.6rem;font-weight:900;color:' + (conOrdenada > 0 ? '#92400e' : '#991b1b') + ';font-family:\'Barlow Condensed\',sans-serif;">' + conOrdenada + '</div>' +
-          '</div>' +
-        '</div>' +
-
-        marcasHTML + ejemplosHTML + warning +
-
-        '<div id="pt-pub-status" style="font-size:.75rem;min-height:18px;text-align:center;margin-top:12px;"></div>' +
-
-        '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px;">' +
-          '<button onclick="document.getElementById(\'pt-pub-modal\').remove()" style="padding:10px 18px;background:#f1f5f9;color:#475569;border:1.5px solid #e2e8f0;border-radius:8px;font-weight:800;font-size:.78rem;cursor:pointer;text-transform:uppercase;letter-spacing:.5px;">Cancelar</button>' +
-          '<button id="pt-pub-confirm" ' + (conOrdenada === 0 ? 'disabled' : '') + ' style="padding:10px 22px;background:' + (conOrdenada > 0 ? 'linear-gradient(135deg,#d97706,#f59e0b)' : '#94a3b8') + ';color:#fff;border:none;border-radius:8px;font-weight:900;font-size:.78rem;cursor:' + (conOrdenada > 0 ? 'pointer' : 'not-allowed') + ';text-transform:uppercase;letter-spacing:.5px;box-shadow:' + (conOrdenada > 0 ? '0 4px 12px rgba(217,119,6,.3)' : 'none') + ';">📤 Publicar Ahora</button>' +
+      '<div id="pt-pub-body" style="padding:22px 24px;">' +
+        '<div style="text-align:center;padding:32px 0;">' +
+          '<div style="font-size:2rem;margin-bottom:8px;">⏳</div>' +
+          '<div style="font-weight:800;color:#1B1F6B;">Consultando Firestore...</div>' +
+          '<div style="font-size:.72rem;color:#64748b;margin-top:4px;">Leyendo lo que tu portal ve actualmente</div>' +
         '</div>' +
       '</div>' +
     '</div>';
   document.body.appendChild(el);
 
+  // Consultar Firestore
+  try {
+    if (typeof window.fbGetPT === 'function') {
+      firestoreStatus = await window.fbGetPT();
+      firestoreStatus.loading = false;
+    } else {
+      firestoreStatus = { loading: false, exists: false, data: {}, error: 'fbGetPT no disponible — recarga' };
+    }
+  } catch(e) {
+    firestoreStatus = { loading: false, exists: false, data: {}, error: e.message };
+  }
+
+  // ─────────────────────────────────────────────────
+  // 3) Calcular estadísticas para LOCAL
+  var localStats = _ptCalcularStats(ptLocal);
+  var remoteStats = _ptCalcularStats(firestoreStatus.data || {});
+
+  // ─────────────────────────────────────────────────
+  // 4) Detectar discrepancias
+  var refsSoloLocal = [];     // en localStorage pero NO en Firestore
+  var refsSoloRemote = [];    // en Firestore pero NO en localStorage
+  var refsDiferentes = [];    // cantidades diferentes
+
+  Object.keys(ptLocal).forEach(function(ref){
+    var exL = parseInt(ptLocal[ref] && ptLocal[ref].exOrdenada || 0) || 0;
+    if (exL <= 0) return;
+    var exR = parseInt(firestoreStatus.data[ref] && firestoreStatus.data[ref].exOrdenada || 0) || 0;
+    if (exR === 0) refsSoloLocal.push({ ref: ref, qty: exL });
+    else if (exR !== exL) refsDiferentes.push({ ref: ref, local: exL, remote: exR });
+  });
+  Object.keys(firestoreStatus.data || {}).forEach(function(ref){
+    var exR = parseInt(firestoreStatus.data[ref] && firestoreStatus.data[ref].exOrdenada || 0) || 0;
+    if (exR <= 0) return;
+    var exL = parseInt(ptLocal[ref] && ptLocal[ref].exOrdenada || 0) || 0;
+    if (exL === 0) refsSoloRemote.push({ ref: ref, qty: exR });
+  });
+
+  // 5) Render del reporte final
+  _ptRenderAuditoriaOrdenada({
+    local: localStats,
+    remote: remoteStats,
+    firestoreExists: firestoreStatus.exists,
+    firestoreError: firestoreStatus.error,
+    firestoreUpdatedAt: firestoreStatus.updatedAt,
+    soloLocal: refsSoloLocal,
+    soloRemote: refsSoloRemote,
+    diferentes: refsDiferentes,
+    ptLocal: ptLocal
+  });
+}
+window.ptPublicarOrdenadaAlPortal = ptPublicarOrdenadaAlPortal;
+
+// Calcular estadísticas de un pt_data (total refs, con Ordenada > 0, desglose por marca)
+// + Compara contra PRODUCTS para detectar refs del catálogo SIN registro pt_data
+function _ptCalcularStats(ptData) {
+  var stats = {
+    total: Object.keys(ptData).length,
+    conOrdenada: 0,
+    totalUds: 0,
+    porMarca: {},    // por marca: { conOrd, uds, totalCatalogo (refs en PRODUCTS), sinRegistro (refs sin pt_data) }
+    refSinMarca: 0,
+    ejemplos: []
+  };
+
+  // Primero, indexar PRODUCTS por marca para saber cuántos hay en total
+  if (typeof PRODUCTS !== 'undefined') {
+    PRODUCTS.forEach(function(p){
+      var marca = p.br ? String(p.br).toUpperCase() : '_SIN_MARCA_';
+      if (!stats.porMarca[marca]) stats.porMarca[marca] = { conOrd: 0, uds: 0, totalCatalogo: 0, sinRegistro: 0 };
+      stats.porMarca[marca].totalCatalogo++;
+      // Si no hay registro en pt_data, contar
+      if (!ptData[p.r]) stats.porMarca[marca].sinRegistro++;
+    });
+  }
+
+  Object.keys(ptData).forEach(function(ref){
+    var ex = parseInt(ptData[ref] && ptData[ref].exOrdenada || 0) || 0;
+    if (ex <= 0) return;
+    stats.conOrdenada++;
+    stats.totalUds += ex;
+    if (stats.ejemplos.length < 10) stats.ejemplos.push({ ref: ref, qty: ex });
+    var prod = (typeof PRODUCTS !== 'undefined') ? PRODUCTS.find(function(p){ return p.r === ref; }) : null;
+    var marca = prod && prod.br ? String(prod.br).toUpperCase() : '_SIN_MARCA_';
+    if (marca === '_SIN_MARCA_') stats.refSinMarca++;
+    if (!stats.porMarca[marca]) stats.porMarca[marca] = { conOrd: 0, uds: 0, totalCatalogo: 0, sinRegistro: 0 };
+    stats.porMarca[marca].conOrd++;
+    stats.porMarca[marca].uds += ex;
+  });
+  return stats;
+}
+
+function _ptRenderAuditoriaOrdenada(rpt) {
+  var body = document.getElementById('pt-pub-body');
+  if (!body) return;
+
+  var marcaColors = {
+    EXCALIBUR: '#1a2050', GENIAL: '#0d9488', MATRIX: '#b45309',
+    LUMEN: '#b91c1c', MAXKILLER: '#7c3aed', VARIOS: '#475569'
+  };
+
+  // Marcas que están en LOCAL pero NO en Firestore — éste es el caso típico del problema de Omar
+  // Listar TODAS las marcas del catálogo (aunque no tengan Ordenada cargada) para diagnosticar
+  var marcasLocal = Object.keys(rpt.local.porMarca).filter(function(m){ return m !== '_SIN_MARCA_'; }).sort();
+  var marcasRemote = new Set(Object.keys(rpt.remote.porMarca || {}));
+  var marcasFaltanEnFirestore = marcasLocal.filter(function(m){ return !marcasRemote.has(m) && (rpt.local.porMarca[m].conOrd || 0) > 0; });
+
+  // ─── Render ───
+  var html = '';
+
+  // ═══ Resumen comparativo en 3 columnas ═══
+  html +=
+    '<div style="font-size:.72rem;font-weight:900;color:#1B1F6B;text-transform:uppercase;letter-spacing:1.5px;margin-bottom:10px;">📊 Resumen comparativo</div>' +
+    '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px;">' +
+
+      // LOCAL
+      '<div style="background:linear-gradient(135deg,#eff6ff,#dbeafe);border:1.5px solid #60a5fa;border-radius:10px;padding:12px;">' +
+        '<div style="font-size:.6rem;font-weight:900;color:#1e40af;text-transform:uppercase;letter-spacing:1.2px;margin-bottom:6px;">💻 En tu admin (local)</div>' +
+        '<div style="font-size:.85rem;color:#1e3a8a;"><strong>' + rpt.local.conOrdenada + '</strong> refs con Ordenada</div>' +
+        '<div style="font-size:.72rem;color:#1e3a8a;margin-top:2px;"><strong>' + rpt.local.totalUds.toLocaleString() + '</strong> uds totales</div>' +
+        '<div style="font-size:.65rem;color:#64748b;margin-top:4px;">de ' + rpt.local.total + ' refs totales en pt_data</div>' +
+      '</div>' +
+
+      // REMOTE (Firestore)
+      '<div style="background:linear-gradient(135deg,' + (rpt.firestoreExists ? '#f0fdf4,#dcfce7' : '#fef2f2,#fee2e2') + ');border:1.5px solid ' + (rpt.firestoreExists ? '#4ade80' : '#fca5a5') + ';border-radius:10px;padding:12px;">' +
+        '<div style="font-size:.6rem;font-weight:900;color:' + (rpt.firestoreExists ? '#14532d' : '#991b1b') + ';text-transform:uppercase;letter-spacing:1.2px;margin-bottom:6px;">☁ En Firestore (portal)</div>' +
+        (rpt.firestoreExists
+          ? '<div style="font-size:.85rem;color:#166534;"><strong>' + rpt.remote.conOrdenada + '</strong> refs con Ordenada</div>' +
+            '<div style="font-size:.72rem;color:#166534;margin-top:2px;"><strong>' + rpt.remote.totalUds.toLocaleString() + '</strong> uds totales</div>' +
+            '<div style="font-size:.65rem;color:#64748b;margin-top:4px;">' + (rpt.firestoreUpdatedAt ? 'Actualizado: ' + new Date(rpt.firestoreUpdatedAt).toLocaleString('es-VE') : 'Sin fecha') + '</div>'
+          : '<div style="font-size:.85rem;color:#991b1b;"><strong>Sin datos</strong></div>' +
+            '<div style="font-size:.72rem;color:#991b1b;margin-top:2px;">' + (rpt.firestoreError ? rpt.firestoreError : 'El portal no tiene nada que leer') + '</div>'
+        ) +
+      '</div>' +
+    '</div>';
+
+  // ═══ Desglose por marca — comparativo local vs remoto ═══
+  if (marcasLocal.length > 0) {
+    html +=
+      '<div style="font-size:.72rem;font-weight:900;color:#1B1F6B;text-transform:uppercase;letter-spacing:1.5px;margin-bottom:8px;">📦 Desglose por marca</div>' +
+      '<div style="background:#f8f9ff;border:1.5px solid #e0e4f0;border-radius:10px;padding:10px 12px;margin-bottom:14px;max-height:240px;overflow-y:auto;">' +
+        '<div style="display:grid;grid-template-columns:1.2fr 1fr 1fr;gap:6px;padding:0 4px 6px;border-bottom:1px solid #e0e4f0;font-size:.58rem;font-weight:900;color:#64748b;text-transform:uppercase;letter-spacing:1px;">' +
+          '<div>MARCA</div><div style="text-align:center;">💻 LOCAL</div><div style="text-align:center;">☁ FIRESTORE</div>' +
+        '</div>';
+
+    marcasLocal.forEach(function(m){
+      var c = marcaColors[m] || '#475569';
+      var localStat = rpt.local.porMarca[m] || { conOrd: 0, uds: 0, totalCatalogo: 0, sinRegistro: 0 };
+      var remoteStat = (rpt.remote.porMarca || {})[m] || { conOrd: 0, uds: 0 };
+      var sincronizado = (localStat.conOrd === remoteStat.conOrd && localStat.uds === remoteStat.uds);
+      var tieneCero = localStat.conOrd === 0;
+      var pctCobertura = localStat.totalCatalogo > 0 ? Math.round((localStat.conOrd / localStat.totalCatalogo) * 100) : 0;
+
+      html +=
+        '<div style="display:grid;grid-template-columns:1.2fr 1fr 1fr;gap:6px;padding:7px 4px;align-items:center;border-bottom:1px solid #eef1f8;' + (tieneCero ? 'background:#fffbeb;' : '') + '">' +
+          '<div style="display:flex;align-items:center;gap:6px;">' +
+            '<span style="width:4px;height:22px;background:' + c + ';border-radius:2px;flex-shrink:0;"></span>' +
+            '<div style="flex:1;">' +
+              '<div style="font-weight:800;color:#1B1F6B;font-size:.72rem;letter-spacing:.3px;">' + m + '</div>' +
+              '<div style="font-size:.58rem;color:#94a3b8;margin-top:1px;">' + localStat.totalCatalogo + ' en catálogo · ' + pctCobertura + '% con ord.</div>' +
+            '</div>' +
+          '</div>' +
+          '<div style="text-align:center;font-size:.68rem;">' +
+            (localStat.conOrd > 0
+              ? '<strong style="color:#1e40af;">' + localStat.conOrd + '</strong> <span style="color:#64748b;">refs · ' + localStat.uds + ' uds</span>'
+              : '<span style="color:#d97706;font-weight:700;">⚠ SIN ORDENADA</span>'
+            ) +
+          '</div>' +
+          '<div style="text-align:center;font-size:.68rem;' + (sincronizado ? '' : 'background:#fef2f2;border-radius:5px;padding:2px 4px;') + '">' +
+            (remoteStat.conOrd > 0
+              ? '<strong style="color:' + (sincronizado ? '#166534' : '#991b1b') + ';">' + remoteStat.conOrd + '</strong> <span style="color:#64748b;">refs · ' + remoteStat.uds + ' uds</span>' + (sincronizado ? ' ✓' : '')
+              : (localStat.conOrd === 0 ? '<span style="color:#94a3b8;">—</span>' : '<strong style="color:#dc2626;">0</strong> <span style="color:#991b1b;">⚠</span>')
+            ) +
+          '</div>' +
+        '</div>';
+    });
+    html += '</div>';
+  }
+
+  // ═══ Diagnóstico / alertas ═══
+  var tieneProblemas = (rpt.soloLocal.length > 0 || rpt.soloRemote.length > 0 || rpt.diferentes.length > 0 || marcasFaltanEnFirestore.length > 0);
+  if (tieneProblemas) {
+    html += '<div style="font-size:.72rem;font-weight:900;color:#dc2626;text-transform:uppercase;letter-spacing:1.5px;margin-bottom:8px;">⚠ Discrepancias detectadas</div>';
+    html += '<div style="background:#fef2f2;border:1.5px solid #fca5a5;border-radius:10px;padding:12px;margin-bottom:14px;">';
+
+    if (rpt.soloLocal.length > 0) {
+      html += '<div style="font-size:.72rem;color:#991b1b;margin-bottom:4px;"><strong>→ ' + rpt.soloLocal.length + '</strong> refs con Ordenada en tu admin <strong>NO están publicadas</strong> en Firestore (por eso el cliente no las ve)</div>';
+    }
+    if (rpt.diferentes.length > 0) {
+      html += '<div style="font-size:.72rem;color:#991b1b;margin-bottom:4px;"><strong>→ ' + rpt.diferentes.length + '</strong> refs con cantidades diferentes entre admin y portal</div>';
+    }
+    if (rpt.soloRemote.length > 0) {
+      html += '<div style="font-size:.72rem;color:#991b1b;margin-bottom:4px;"><strong>→ ' + rpt.soloRemote.length + '</strong> refs en Firestore que ya no tienes localmente (se quedaron huérfanas)</div>';
+    }
+
+    html += '<div style="font-size:.68rem;color:#7f1d1d;margin-top:8px;padding:6px 10px;background:rgba(220,38,38,.1);border-radius:6px;"><strong>Solución:</strong> presiona "📤 Publicar Ahora" abajo para sincronizar tu admin local con Firestore. El portal verá inmediatamente los cambios.</div>';
+    html += '</div>';
+  } else if (rpt.firestoreExists && rpt.local.conOrdenada > 0) {
+    html +=
+      '<div style="background:#f0fdf4;border:1.5px solid #4ade80;border-radius:10px;padding:12px;margin-bottom:14px;">' +
+        '<div style="font-size:.85rem;font-weight:800;color:#166534;">✓ Todo sincronizado</div>' +
+        '<div style="font-size:.72rem;color:#166534;margin-top:2px;">Tu admin local y Firestore coinciden. El portal muestra exactamente lo que tienes cargado.</div>' +
+      '</div>';
+  }
+
+  // ═══ Advertencias adicionales ═══
+  if (rpt.local.refSinMarca > 0) {
+    html += '<div style="background:#fef3c7;border:1.5px solid #fbbf24;border-radius:8px;padding:10px;margin-bottom:12px;font-size:.68rem;color:#78350f;"><strong>⚠ Atención:</strong> ' + rpt.local.refSinMarca + ' refs con Ordenada NO existen en tu catálogo PRODUCTS. Estas no se verán en el portal aunque las publiques (el portal filtra solo productos del catálogo oficial).</div>';
+  }
+
+  if (rpt.local.conOrdenada === 0) {
+    html += '<div style="background:#fee2e2;border:1.5px solid #fca5a5;border-radius:10px;padding:12px;margin-bottom:12px;">' +
+      '<div style="font-weight:800;color:#991b1b;">⚠ No tienes Ordenada cargada</div>' +
+      '<div style="font-size:.72rem;color:#7f1d1d;margin-top:4px;">Para que las cantidades "en camino" aparezcan en el portal del cliente, debes:<br>' +
+      '<strong>1.</strong> Ir al módulo Catálogo / Ordenada<br>' +
+      '<strong>2.</strong> Presionar "📦 Actualizar Ordenada" y cargar el Excel del pedido del proveedor (una carga por marca)<br>' +
+      '<strong>3.</strong> Volver aquí y presionar "📤 Publicar Ahora"</div>' +
+      '</div>';
+  }
+
+  // ═══ Ejemplos de refs con Ordenada (colapsado) ═══
+  if (rpt.local.ejemplos.length > 0) {
+    html += '<details style="background:#f8f9ff;border:1px solid #e0e4f0;border-radius:8px;padding:8px 12px;margin-bottom:14px;"><summary style="cursor:pointer;font-size:.68rem;font-weight:800;color:#1B1F6B;text-transform:uppercase;letter-spacing:1px;">Ver ejemplos de Ordenada (primeras 10 refs)</summary>';
+    html += '<div style="margin-top:8px;max-height:120px;overflow-y:auto;">';
+    rpt.local.ejemplos.forEach(function(e){
+      html += '<div style="font-size:.68rem;color:#475569;font-family:monospace;padding:2px 0;"><strong>' + e.ref + '</strong> → ' + e.qty + ' uds</div>';
+    });
+    html += '</div></details>';
+  }
+
+  // ═══ Status y botones ═══
+  html +=
+    '<div id="pt-pub-status" style="font-size:.75rem;min-height:18px;text-align:center;margin-top:12px;"></div>' +
+    '<div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:10px 12px;margin-top:12px;font-size:.68rem;color:#1e40af;line-height:1.5;">' +
+      '<strong>💡 Sincronización automática activa:</strong> cada vez que editas Ordenada en la tabla, importas un Excel o sincronizas una OC, los cambios se publican <strong>automáticamente</strong> al portal. El botón de abajo es solo por si necesitas forzar una resincronización (raro).' +
+    '</div>' +
+    '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px;border-top:1px solid #e2e8f0;padding-top:14px;">' +
+      '<button onclick="document.getElementById(\'pt-pub-modal\').remove()" style="padding:10px 18px;background:#1B1F6B;color:#fff;border:none;border-radius:8px;font-weight:900;font-size:.78rem;cursor:pointer;text-transform:uppercase;letter-spacing:.5px;">Cerrar</button>' +
+      '<button id="pt-pub-confirm" ' + (rpt.local.conOrdenada === 0 ? 'disabled' : '') + ' style="padding:10px 18px;background:' + (rpt.local.conOrdenada > 0 ? '#f1f5f9' : '#f1f5f9') + ';color:#475569;border:1.5px solid #e2e8f0;border-radius:8px;font-weight:700;font-size:.72rem;cursor:' + (rpt.local.conOrdenada > 0 ? 'pointer' : 'not-allowed') + ';text-transform:uppercase;letter-spacing:.5px;">🔄 Forzar resync</button>' +
+    '</div>';
+
+  body.innerHTML = html;
+
   // Listener del botón confirmar
   var btnConfirm = document.getElementById('pt-pub-confirm');
-  if (btnConfirm && conOrdenada > 0) {
+  if (btnConfirm && rpt.local.conOrdenada > 0) {
     btnConfirm.addEventListener('click', async function(){
       var status = document.getElementById('pt-pub-status');
       btnConfirm.disabled = true;
@@ -23300,17 +23498,17 @@ function ptPublicarOrdenadaAlPortal() {
       if (status) { status.textContent = ''; status.style.color = ''; }
       try {
         if (typeof window.fbSavePT !== 'function') throw new Error('fbSavePT no disponible — recarga la página');
-        var ok = await window.fbSavePT(ptData);
+        var ok = await window.fbSavePT(rpt.ptLocal);
         if (!ok) throw new Error('La publicación devolvió false');
         if (status) {
-          status.innerHTML = '✓ Publicado exitosamente — ' + conOrdenada + ' refs con Ordenada disponibles en el portal';
+          status.innerHTML = '✓ Publicado — ' + rpt.local.conOrdenada + ' refs con Ordenada disponibles en el portal';
           status.style.color = '#16a34a';
           status.style.fontWeight = '800';
         }
         btnConfirm.textContent = '✓ PUBLICADO';
         btnConfirm.style.background = '#16a34a';
-        if (typeof showToast === 'function') showToast('📤 Ordenada publicada al portal (' + conOrdenada + ' refs)', 'success');
-        setTimeout(function(){ var m = document.getElementById('pt-pub-modal'); if (m) m.remove(); }, 2000);
+        if (typeof showToast === 'function') showToast('📤 Ordenada publicada al portal (' + rpt.local.conOrdenada + ' refs)', 'success');
+        setTimeout(function(){ var m = document.getElementById('pt-pub-modal'); if (m) m.remove(); }, 1800);
       } catch(e) {
         console.error('[ptPublicarOrdenadaAlPortal]', e);
         if (status) { status.textContent = '✗ Error: ' + e.message; status.style.color = '#dc2626'; status.style.fontWeight = '800'; }
@@ -23320,7 +23518,6 @@ function ptPublicarOrdenadaAlPortal() {
     });
   }
 }
-window.ptPublicarOrdenadaAlPortal = ptPublicarOrdenadaAlPortal;
 
 function ptResetOrdenadaProcess(file) {
   if (!file) return;
