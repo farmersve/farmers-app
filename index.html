@@ -23183,17 +23183,31 @@ window.ptResetOrdenada = ptResetOrdenada;
 // Muestra un modal de diagnóstico antes de publicar.
 // ══════════════════════════════════════════════════════════════
 function ptPublicarOrdenadaAlPortal() {
-  // Calcular diagnóstico
+  // Calcular diagnóstico con desglose por marca
   var ptData = {};
   try { ptData = JSON.parse(localStorage.getItem('farmers_pt_data') || '{}'); } catch(e){}
   var totalRefs = Object.keys(ptData).length;
   var conOrdenada = 0;
   var ejemplos = [];
+
+  // Desglose por marca: cuántas refs tiene Ordenada > 0 por cada marca
+  // Matching ref → marca: cruzar con PRODUCTS del admin
+  var porMarca = {};  // { 'EXCALIBUR': {total: 120, conOrd: 18}, 'GENIAL': {...} }
+  var refSinMarcaEnCatalogo = 0;
+
   Object.keys(ptData).forEach(function(ref){
     var ex = parseInt(ptData[ref] && ptData[ref].exOrdenada || 0) || 0;
     if (ex > 0) {
       conOrdenada++;
       if (ejemplos.length < 10) ejemplos.push({ ref: ref, qty: ex });
+
+      // Buscar la marca de esta ref en PRODUCTS
+      var prod = (typeof PRODUCTS !== 'undefined' ? PRODUCTS.find(function(p){ return p.r === ref; }) : null);
+      var marca = prod && prod.br ? String(prod.br).toUpperCase() : '_SIN_MARCA_';
+      if (marca === '_SIN_MARCA_') refSinMarcaEnCatalogo++;
+      if (!porMarca[marca]) porMarca[marca] = { conOrd: 0, totalUds: 0 };
+      porMarca[marca].conOrd++;
+      porMarca[marca].totalUds += ex;
     }
   });
 
@@ -23202,8 +23216,37 @@ function ptPublicarOrdenadaAlPortal() {
   el.id = 'pt-pub-modal';
   el.style.cssText = 'position:fixed;inset:0;background:rgba(10,15,40,.8);z-index:99999;display:flex;align-items:center;justify-content:center;';
 
+  // HTML del desglose por marca
+  var marcasHTML = '';
+  var marcasArr = Object.keys(porMarca).filter(function(m){ return m !== '_SIN_MARCA_'; }).sort(function(a,b){
+    return porMarca[b].conOrd - porMarca[a].conOrd;
+  });
+  if (marcasArr.length > 0) {
+    var marcaColors = {
+      EXCALIBUR: '#1a2050', GENIAL: '#0d9488', MATRIX: '#b45309',
+      LUMEN: '#b91c1c', MAXKILLER: '#7c3aed', VARIOS: '#475569'
+    };
+    marcasHTML =
+      '<div style="background:#f8f9ff;border:1.5px solid #e0e4f0;border-radius:8px;padding:10px 12px;margin-top:10px;">' +
+        '<div style="font-size:.62rem;font-weight:900;color:#1B1F6B;text-transform:uppercase;letter-spacing:1.2px;margin-bottom:8px;">📊 Desglose por marca:</div>' +
+        '<div style="display:grid;grid-template-columns:1fr;gap:4px;max-height:150px;overflow-y:auto;">' +
+          marcasArr.map(function(m){
+            var c = marcaColors[m] || '#475569';
+            return '<div style="display:flex;align-items:center;gap:8px;padding:6px 8px;background:#fff;border-radius:6px;border-left:3px solid ' + c + ';">' +
+              '<span style="flex:1;font-weight:800;color:#1B1F6B;font-size:.72rem;letter-spacing:.5px;">' + m + '</span>' +
+              '<span style="background:#e0e7ff;color:#1B1F6B;padding:2px 8px;border-radius:999px;font-size:.62rem;font-weight:800;">' + porMarca[m].conOrd + ' refs</span>' +
+              '<span style="background:#fef3c7;color:#92400e;padding:2px 8px;border-radius:999px;font-size:.62rem;font-weight:800;">' + porMarca[m].totalUds + ' uds</span>' +
+            '</div>';
+          }).join('') +
+        '</div>' +
+        (refSinMarcaEnCatalogo > 0
+          ? '<div style="margin-top:8px;padding:6px 10px;background:#fee2e2;border-radius:6px;font-size:.65rem;color:#991b1b;"><strong>⚠ Alerta:</strong> ' + refSinMarcaEnCatalogo + ' refs con Ordenada NO existen en el catálogo oficial (no se verán en portal).</div>'
+          : '') +
+      '</div>';
+  }
+
   var ejemplosHTML = ejemplos.length > 0
-    ? '<div style="background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:10px 12px;margin-top:10px;max-height:140px;overflow-y:auto;">' +
+    ? '<div style="background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:10px 12px;margin-top:10px;max-height:120px;overflow-y:auto;">' +
         '<div style="font-size:.62rem;font-weight:900;color:#92400e;text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;">Ejemplos de Ordenada (primeros 10):</div>' +
         ejemplos.map(function(e){ return '<div style="font-size:.7rem;color:#78350f;font-family:monospace;padding:2px 0;"><strong>' + e.ref + '</strong> → ' + e.qty + ' uds</div>'; }).join('') +
       '</div>'
@@ -23235,7 +23278,7 @@ function ptPublicarOrdenadaAlPortal() {
           '</div>' +
         '</div>' +
 
-        ejemplosHTML + warning +
+        marcasHTML + ejemplosHTML + warning +
 
         '<div id="pt-pub-status" style="font-size:.75rem;min-height:18px;text-align:center;margin-top:12px;"></div>' +
 
@@ -47771,7 +47814,7 @@ function pcAbrirFormToken(existente, clDB) {
     clienteNombre: '',
     rifEsperado: '',
     activo: true,
-    configVista: { moneda: 'USD', mostrarStock: 'disponibilidad', marcasVisibles: [], ocultarAgotados: false, mostrarOrdenada: false },
+    configVista: { moneda: 'USD', mostrarStock: 'disponibilidad', marcasVisibles: [], ocultarAgotados: false, mostrarOrdenada: false, ordenadaModo: 'exacto' },
     pedidosRealizados: 0,
     creado: Date.now(),
   };
@@ -47862,11 +47905,22 @@ function pcAbrirFormToken(existente, clDB) {
           '</label>' +
         '</div>' +
 
+        // ── Bloque de Ordenada con subopciones ──
         '<div style="background:#fffbeb;border:1.5px solid #fde68a;border-radius:10px;padding:12px 14px;margin-bottom:16px;">' +
           '<label style="display:flex;align-items:center;gap:10px;font-size:.8rem;color:#1e293b;cursor:pointer;font-weight:600;">' +
             '<input type="checkbox" id="pc-mostrar-ordenada"' + (data.configVista.mostrarOrdenada ? ' checked' : '') + ' style="width:18px;height:18px;accent-color:#f59e0b;cursor:pointer;">' +
             '<span>📦 <strong style="color:#92400e;text-transform:uppercase;">Mostrar cantidad ordenada</strong> — Mercancía en camino visible al cliente</span>' +
           '</label>' +
+
+          // Subopciones — solo se muestran si el checkbox está activado
+          '<div id="pc-ord-submodo" style="margin-top:10px;padding-top:10px;border-top:1px dashed #fde68a;' + (data.configVista.mostrarOrdenada ? '' : 'display:none;') + '">' +
+            '<div style="font-size:.62rem;font-weight:900;color:#92400e;text-transform:uppercase;letter-spacing:1.2px;margin-bottom:6px;">¿Cómo mostrar al cliente?</div>' +
+            '<div class="pc-ordmodo-pills" style="display:flex;gap:6px;">' +
+              '<button type="button" class="pc-ordmodo-pill' + ((data.configVista.ordenadaModo || 'exacto') === 'exacto' ? ' active' : '') + '" data-val="exacto" style="flex:1;padding:9px;border:1.5px solid ' + ((data.configVista.ordenadaModo || 'exacto') === 'exacto' ? '#d97706' : '#fde68a') + ';border-radius:8px;background:' + ((data.configVista.ordenadaModo || 'exacto') === 'exacto' ? 'linear-gradient(135deg,#d97706,#f59e0b);color:#fff' : '#fff;color:#78350f') + ';font-weight:800;font-size:.68rem;cursor:pointer;text-transform:uppercase;letter-spacing:.5px;transition:all .15s;box-shadow:' + ((data.configVista.ordenadaModo || 'exacto') === 'exacto' ? '0 3px 10px rgba(217,119,6,.3)' : 'none') + ';">🔢 MOSTRAR CANTIDAD<br><span style="font-weight:600;font-size:.58rem;opacity:.85;">(Ej: "📦 288 ORDENADA")</span></button>' +
+              '<button type="button" class="pc-ordmodo-pill' + (data.configVista.ordenadaModo === 'simple' ? ' active' : '') + '" data-val="simple" style="flex:1;padding:9px;border:1.5px solid ' + (data.configVista.ordenadaModo === 'simple' ? '#d97706' : '#fde68a') + ';border-radius:8px;background:' + (data.configVista.ordenadaModo === 'simple' ? 'linear-gradient(135deg,#d97706,#f59e0b);color:#fff' : '#fff;color:#78350f') + ';font-weight:800;font-size:.68rem;cursor:pointer;text-transform:uppercase;letter-spacing:.5px;transition:all .15s;box-shadow:' + (data.configVista.ordenadaModo === 'simple' ? '0 3px 10px rgba(217,119,6,.3)' : 'none') + ';">🏷 SOLO LA PALABRA<br><span style="font-weight:600;font-size:.58rem;opacity:.85;">(Ej: "📦 ORDENADA")</span></button>' +
+            '</div>' +
+            '<input type="hidden" id="pc-ord-modo" value="' + (data.configVista.ordenadaModo || 'exacto') + '">' +
+          '</div>' +
         '</div>' +
 
         // ── Marcas visibles ──
@@ -47950,6 +48004,29 @@ function pcAbrirFormToken(existente, clDB) {
     });
   });
 
+  // ── Checkbox "Mostrar Ordenada" ↔ subopciones ──
+  var chkOrd = document.getElementById('pc-mostrar-ordenada');
+  if (chkOrd) {
+    chkOrd.addEventListener('change', function(){
+      var sub = document.getElementById('pc-ord-submodo');
+      if (sub) sub.style.display = chkOrd.checked ? '' : 'none';
+    });
+  }
+
+  // ── Pills de modo Ordenada (exacto / simple) ──
+  document.querySelectorAll('.pc-ordmodo-pill').forEach(function(btn){
+    btn.addEventListener('click', function(){
+      var val = btn.getAttribute('data-val');
+      document.getElementById('pc-ord-modo').value = val;
+      document.querySelectorAll('.pc-ordmodo-pill').forEach(function(b){
+        b.classList.remove('active');
+        b.style.cssText = 'flex:1;padding:9px;border:1.5px solid #fde68a;border-radius:8px;background:#fff;color:#78350f;font-weight:800;font-size:.68rem;cursor:pointer;text-transform:uppercase;letter-spacing:.5px;transition:all .15s;box-shadow:none;';
+      });
+      btn.classList.add('active');
+      btn.style.cssText = 'flex:1;padding:9px;border:1.5px solid #d97706;border-radius:8px;background:linear-gradient(135deg,#d97706,#f59e0b);color:#fff;font-weight:800;font-size:.68rem;cursor:pointer;text-transform:uppercase;letter-spacing:.5px;transition:all .15s;box-shadow:0 3px 10px rgba(217,119,6,.3);';
+    });
+  });
+
   document.getElementById('pc-form-close').addEventListener('click', function(){ ov.remove(); });
   document.getElementById('pc-form-cancel').addEventListener('click', function(){ ov.remove(); });
 
@@ -47968,6 +48045,7 @@ function pcAbrirFormToken(existente, clDB) {
       mostrarStock: document.getElementById('pc-stock').value,
       ocultarAgotados: document.getElementById('pc-ocultar-agotados').checked,
       mostrarOrdenada: document.getElementById('pc-mostrar-ordenada').checked,
+      ordenadaModo: (document.getElementById('pc-ord-modo') ? document.getElementById('pc-ord-modo').value : 'exacto'),
       marcasVisibles: marcasSeleccionadas,
     };
 
