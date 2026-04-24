@@ -26856,16 +26856,242 @@ window.msParsearArchivo = function(input) {
   }
 };
 
-// ── PDF → base64 → IA ───────────────────────────
+// ── PDF → parser directo (PDF.js) + IA fallback ───────────────────────────
+// Enfoque: intentar extraer productos con regex directo sobre el texto del PDF.
+// Si reconocemos el formato de OC venezolano estándar, evitamos la IA (más rápido
+// y confiable). Si no reconocemos el formato, enviamos a la IA como antes.
 function msParsearPDF(file, input) {
   msSetProgress(15, 'Leyendo PDF...');
   var reader = new FileReader();
-  reader.onload = function(e) {
-    var base64 = e.target.result.split(',')[1];
+  reader.onload = async function(e) {
+    var arrayBuffer = e.target.result;
+
+    // Paso 1: Extraer texto con PDF.js si está disponible
+    if (typeof pdfjsLib !== 'undefined') {
+      try {
+        msSetProgress(25, 'Extrayendo texto del PDF...');
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+        var pdf = await pdfjsLib.getDocument({data: new Uint8Array(arrayBuffer)}).promise;
+        var textoCompleto = '';
+        for (var pi = 1; pi <= pdf.numPages; pi++) {
+          var pagina = await pdf.getPage(pi);
+          var contenido = await pagina.getTextContent();
+          // Agrupar items por línea usando la coordenada Y (tolerancia pequeña)
+          var lineas = [];
+          var lineaActual = [];
+          var yAnterior = null;
+          contenido.items.forEach(function(it){
+            var y = Math.round(it.transform[5]);
+            if (yAnterior === null || Math.abs(y - yAnterior) < 3) {
+              lineaActual.push(it.str);
+            } else {
+              if (lineaActual.length) lineas.push(lineaActual.join(' ').trim());
+              lineaActual = [it.str];
+            }
+            yAnterior = y;
+          });
+          if (lineaActual.length) lineas.push(lineaActual.join(' ').trim());
+          textoCompleto += lineas.join('\n') + '\n';
+        }
+        console.log('[PDF Parser] Texto extraído (' + textoCompleto.length + ' chars)');
+        console.log('[PDF Parser] Primeras 500 chars:', textoCompleto.substring(0, 500));
+
+        // Paso 2: Intentar parseo directo
+        var parsed = msParsearTextoOC(textoCompleto);
+        if (parsed && parsed.productos.length >= 3) {
+          console.log('[PDF Parser] ✓ Parseo directo exitoso: ' + parsed.productos.length + ' productos');
+          msSetProgress(70, 'Extraídos ' + parsed.productos.length + ' productos directamente...');
+          // Procesar igual que respuesta IA
+          await msProcesarProductosPDF(parsed, input);
+          return;
+        }
+        console.log('[PDF Parser] ⚠ Parseo directo solo detectó ' + (parsed ? parsed.productos.length : 0) + ' productos — fallback a IA');
+      } catch(err) {
+        console.warn('[PDF Parser] Error en PDF.js, cayendo a IA:', err);
+      }
+    }
+
+    // Fallback: enviar base64 a la IA (flujo original)
+    var base64Str = '';
+    var bytes = new Uint8Array(arrayBuffer);
+    var chunks = [];
+    for (var i = 0; i < bytes.length; i += 32768) {
+      chunks.push(String.fromCharCode.apply(null, bytes.subarray(i, i + 32768)));
+    }
+    base64Str = btoa(chunks.join(''));
     msSetProgress(35, 'Enviando PDF a la IA para análisis...');
-    msAnalizarConIA(null, base64, input);
+    msAnalizarConIA(null, base64Str, input);
   };
-  reader.readAsDataURL(file);
+  reader.readAsArrayBuffer(file);
+}
+
+// ── Parser de texto de OC venezolana ───────────────────────────
+// Detecta el formato: "Cantidad Descripción [REF] 0 CostoUnit Subtotal"
+// Devuelve {sucursales:[...], productos:[...]} igual que la IA.
+window.msParsearTextoOC = function(texto) {
+  var lineas = texto.split('\n').map(function(l){ return l.trim(); }).filter(function(l){ return l.length >= 5; });
+
+  // Detectar cliente/sucursal desde encabezado
+  var clienteNombre = (MS._clienteUnica && MS._clienteUnica.nombre) || 'CLIENTE';
+
+  // Buscar fila de encabezado "Cantidad ... Costo ... Sub Total" para delimitar la tabla
+  var idxInicio = -1, idxFin = lineas.length;
+  for (var i = 0; i < lineas.length; i++) {
+    var lu = lineas[i].toUpperCase();
+    // Encabezado típico de OC venezolana
+    if (/CANTIDAD/.test(lu) && /(COSTO|PRECIO)/.test(lu) && /(SUB\s*TOTAL|TOTAL)/.test(lu)) {
+      idxInicio = i + 1;
+      break;
+    }
+  }
+  if (idxInicio === -1) {
+    // No encontramos encabezado — intentar detectar primera línea que parezca producto
+    for (var j = 0; j < lineas.length; j++) {
+      if (/^\d+\s+\S.+\s+\d+\s+[\d,\.]+\s+[\d,\.]+\s*$/.test(lineas[j])) {
+        idxInicio = j;
+        break;
+      }
+    }
+  }
+  if (idxInicio === -1) return { sucursales: [clienteNombre], productos: [] };
+
+  // Buscar fin de tabla: "Total Items", "SUB TOTAL $", "TOTAL $", etc.
+  for (var k = idxInicio; k < lineas.length; k++) {
+    var lku = lineas[k].toUpperCase();
+    if (/^TOTAL\s+ITEMS/.test(lku) || /^SUB\s*TOTAL\s*\$/.test(lku) ||
+        /^TOTAL\s+PRODUCTOS/.test(lku) || /^TOTAL\s*\$/.test(lku) ||
+        /^Son\s+\$/i.test(lineas[k])) {
+      idxFin = k;
+      break;
+    }
+  }
+
+  // Regex principal: cantidad al inicio, ref opcional al final de la descripción, IVA (siempre entero), costo, subtotal
+  // Soporta: "6 ALIMENT FRUTAS GEN088 0 4,38 26,28"
+  //          "6 BIBERON DE CUELLO ESTANDAR (60ML/2OZ) 0 1,84 11,04"
+  //          "12 CURITAS ADHESIV x 50 Pzs GEN201 0 1,92 23,04"
+  var regexLinea = /^(\d+)\s+(.+?)(?:\s+([A-Z]{2,6}\d{2,6}))?\s+(\d+)\s+([\d,\.]+)\s+([\d,\.]+)\s*$/;
+
+  var productos = [];
+  for (var m = idxInicio; m < idxFin; m++) {
+    var linea = lineas[m];
+    if (!linea || linea.length < 8) continue;
+    var mt = regexLinea.exec(linea);
+    if (!mt) continue;
+
+    var cantidad = parseInt(mt[1]) || 0;
+    var descripcion = (mt[2] || '').trim();
+    var ref = mt[3] ? mt[3].toUpperCase() : null;
+    // IVA mt[4] ignorado
+    var costo = parseFloat(String(mt[5]).replace(/\./g,'').replace(',','.')) || 0;
+    // Heurística: si el costo parece mal parseado (miles), intentar sólo reemplazar coma
+    if (costo > 1000) {
+      costo = parseFloat(String(mt[5]).replace(',','.')) || 0;
+    }
+
+    if (cantidad <= 0) continue;
+    // Filtrar líneas que obviamente no son productos (ej: totales)
+    if (/^SUB\s*TOTAL/i.test(descripcion) || /^TOTAL/i.test(descripcion)) continue;
+
+    var pedidos = {};
+    pedidos[clienteNombre] = cantidad;
+
+    productos.push({
+      ref: ref,
+      desc: descripcion,
+      stock: 0,
+      precio_usd: costo,
+      pedidos: pedidos
+    });
+  }
+
+  return {
+    sucursales: [clienteNombre],
+    productos: productos
+  };
+};
+
+// ── Procesar productos extraídos (de IA o parser directo) ──
+// Unifica el flujo posterior: priorizar desc sistema, cargar a MS, mostrar Paso 3.
+async function msProcesarProductosPDF(parsedPDF, input) {
+  var sucursales = parsedPDF.sucursales || [];
+  if (sucursales.length === 1 && MS._clienteUnica && MS._clienteUnica.nombre) {
+    var nomOriginal = sucursales[0];
+    if (nomOriginal !== MS._clienteUnica.nombre) {
+      sucursales = [MS._clienteUnica.nombre];
+      parsedPDF.productos.forEach(function(p){
+        if (p.pedidos && p.pedidos[nomOriginal] !== undefined) {
+          p.pedidos[MS._clienteUnica.nombre] = p.pedidos[nomOriginal];
+          delete p.pedidos[nomOriginal];
+        }
+      });
+    } else {
+      sucursales = [MS._clienteUnica.nombre];
+    }
+    MS._modoUnica = true;
+  }
+
+  // Diagnóstico
+  console.log('[PDF Parser] Productos finales: ' + parsedPDF.productos.length);
+  var sinRef = parsedPDF.productos.filter(function(p){ return !p.ref; }).length;
+  var conCantidadCero = parsedPDF.productos.filter(function(p){
+    var suma = 0; if(p.pedidos) Object.keys(p.pedidos).forEach(function(k){ suma += parseInt(p.pedidos[k])||0; });
+    return suma === 0;
+  }).length;
+  console.log('[PDF Parser] Sin REF: ' + sinRef + ' · Con cantidad=0: ' + conCantidadCero);
+
+  // Normalizar al formato interno y priorizar descripción del sistema
+  var todosProductos = [];
+  parsedPDF.productos.forEach(function(p){
+    var q = sucursales.map(function(s){ return parseInt((p.pedidos||{})[s])||0; });
+    var descFinal = p.desc || '';
+    if (p.ref) {
+      var refUp = String(p.ref).toUpperCase().trim();
+      for (var pi = 0; pi < PRODUCTS.length; pi++) {
+        if (String(PRODUCTS[pi].r||'').toUpperCase() === refUp) {
+          descFinal = PRODUCTS[pi].d || descFinal;
+          break;
+        }
+      }
+    }
+    todosProductos.push({
+      r: p.ref || null,
+      d: descFinal,
+      s: parseInt(p.stock)||0,
+      q: q,
+      precioUSD: parseFloat(p.precio_usd)||0,
+      _descCliente: p.desc || '',
+      _sinRef: !p.ref
+    });
+  });
+
+  // Continuar con el flujo normal: auditoría + render
+  MS.data = todosProductos;
+  MS.sucursales = sucursales;
+  msSetProgress(85, 'Auditando pedido...');
+
+  // Sort mandatorio antes de auditar
+  todosProductos.sort(function(a,b){
+    return String(a.r||'').localeCompare(String(b.r||''), 'es', {numeric:true, sensitivity:'base'});
+  });
+
+  // Convertir al formato que msAuditarPedido espera
+  var productosNorm = todosProductos.map(function(p){
+    var pedidos = {};
+    sucursales.forEach(function(s, si){ pedidos[s] = p.q[si] || 0; });
+    return { ref:p.r, desc:p.d, stock:p.s, pedidos:pedidos, precio_usd:p.precioUSD, _descCliente:p._descCliente, _sinRef:p._sinRef };
+  });
+
+  var audit = msAuditarPedido(productosNorm, sucursales, 'PDF');
+  msSetProgress(95, 'Listo');
+
+  // Limpiar input para permitir re-selección
+  try { if (input) input.value = ''; } catch(e) {}
+
+  msMostrarAuditoria(audit, function(){
+    msCalcularDistribucion(productosNorm);
+    setTimeout(function(){ msRenderResultados(); }, 300);
+  }, productosNorm);
 }
 
 // ── Excel → JSON → IA ───────────────────────────
