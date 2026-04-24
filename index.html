@@ -6348,13 +6348,25 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
     catch(e) { console.error('fbSavePortalToken:', e); return false; }
   };
   // pt_data (Ordenada) — publicar a Firestore para que el portal lo lea cuando el token tenga mostrarOrdenada:true
-  window.fbSavePT = async () => {
+  // Acepta objeto opcional (o lo lee de localStorage). Serializa a string para consistencia.
+  window.fbSavePT = async (dataObj) => {
     try {
-      var ptData = localStorage.getItem('farmers_pt_data') || '{}';
-      await setDoc(doc(db, 'data', 'pt_data'), { v: ptData });
-      console.log('[fbSavePT] pt_data publicado a Firestore (' + Object.keys(JSON.parse(ptData)).length + ' refs)');
+      var ptString;
+      if (dataObj && typeof dataObj === 'object') {
+        ptString = JSON.stringify(dataObj);
+      } else {
+        ptString = localStorage.getItem('farmers_pt_data') || '{}';
+      }
+      var parsed = JSON.parse(ptString);
+      var totalRefs = Object.keys(parsed).length;
+      var conOrd = 0;
+      Object.keys(parsed).forEach(function(r){
+        if (parsed[r] && parseInt(parsed[r].exOrdenada || 0) > 0) conOrd++;
+      });
+      await setDoc(doc(db, 'data', 'pt_data'), { v: ptString, updatedAt: Date.now(), totalRefs: totalRefs, conOrdenada: conOrd });
+      console.log('[fbSavePT] ✓ pt_data publicado: ' + totalRefs + ' refs, ' + conOrd + ' con Ordenada > 0');
       return true;
-    } catch(e) { console.error('fbSavePT:', e); return false; }
+    } catch(e) { console.error('[fbSavePT] ✗ error:', e); return false; }
   };
   window.fbGetPortalTokens = async () => {
     try {
@@ -21020,6 +21032,7 @@ function doRefSearch() {
           '</select>' +
           '<button onclick="ptNuevoProducto()" style="background:#1B1F6B;color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:700;font-size:.8rem;white-space:nowrap;">+ Nuevo Producto</button>' +
           '<button onclick="ptResetOrdenada()" style="background:linear-gradient(135deg,#92400e,#b45309);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:700;font-size:.8rem;white-space:nowrap;">📦 Actualizar Ordenada</button>' +
+          '<button onclick="ptPublicarOrdenadaAlPortal()" style="background:linear-gradient(135deg,#d97706,#f59e0b);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:700;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;" title="Sube las cantidades ordenadas a Firestore para que los clientes del Portal las vean">📤 Publicar al Portal</button>' +
           '<button onclick="ptImportarPedido()" style="background:linear-gradient(135deg,#059669,#065f46);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:700;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;">📦 Importar Pedido Proveedor</button>' +
           '<button onclick="ptImportarMedidas()" style="background:linear-gradient(135deg,#1d4ed8,#1e40af);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:700;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;" title="Importar largo, ancho, alto y peso desde Excel">📐 Importar Medidas</button>' +
           '<button onclick="ptImportarDatosMaestro()" style="background:linear-gradient(135deg,#7c3aed,#6d28d9);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:700;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;" title="Importar y actualizar todos los campos desde Excel">📥 Importar Datos</button>' +
@@ -23161,6 +23174,110 @@ function ptResetOrdenada() {
   document.body.appendChild(el);
 }
 window.ptResetOrdenada = ptResetOrdenada;
+
+// ══════════════════════════════════════════════════════════════
+// ptPublicarOrdenadaAlPortal
+// Publica el localStorage.farmers_pt_data a Firestore para que el
+// portal cliente (farmers-portal) pueda leer las cantidades Ordenada
+// y mostrarlas a los clientes cuyo token tiene mostrarOrdenada=true.
+// Muestra un modal de diagnóstico antes de publicar.
+// ══════════════════════════════════════════════════════════════
+function ptPublicarOrdenadaAlPortal() {
+  // Calcular diagnóstico
+  var ptData = {};
+  try { ptData = JSON.parse(localStorage.getItem('farmers_pt_data') || '{}'); } catch(e){}
+  var totalRefs = Object.keys(ptData).length;
+  var conOrdenada = 0;
+  var ejemplos = [];
+  Object.keys(ptData).forEach(function(ref){
+    var ex = parseInt(ptData[ref] && ptData[ref].exOrdenada || 0) || 0;
+    if (ex > 0) {
+      conOrdenada++;
+      if (ejemplos.length < 10) ejemplos.push({ ref: ref, qty: ex });
+    }
+  });
+
+  // Modal de confirmación con diagnóstico
+  var el = document.createElement('div');
+  el.id = 'pt-pub-modal';
+  el.style.cssText = 'position:fixed;inset:0;background:rgba(10,15,40,.8);z-index:99999;display:flex;align-items:center;justify-content:center;';
+
+  var ejemplosHTML = ejemplos.length > 0
+    ? '<div style="background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:10px 12px;margin-top:10px;max-height:140px;overflow-y:auto;">' +
+        '<div style="font-size:.62rem;font-weight:900;color:#92400e;text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;">Ejemplos de Ordenada (primeros 10):</div>' +
+        ejemplos.map(function(e){ return '<div style="font-size:.7rem;color:#78350f;font-family:monospace;padding:2px 0;"><strong>' + e.ref + '</strong> → ' + e.qty + ' uds</div>'; }).join('') +
+      '</div>'
+    : '';
+
+  var warning = conOrdenada === 0
+    ? '<div style="background:#fee2e2;border:1.5px solid #fca5a5;border-radius:8px;padding:12px;margin-top:10px;"><strong style="color:#991b1b;">⚠ No hay productos con Ordenada > 0</strong><div style="font-size:.72rem;color:#7f1d1d;margin-top:4px;">Debes cargar las cantidades de Ordenada primero usando "📦 Actualizar Ordenada" con un Excel del pedido proveedor, o editar productos manualmente.</div></div>'
+    : '';
+
+  el.innerHTML =
+    '<div style="background:white;border-radius:16px;width:min(560px,94vw);overflow:hidden;box-shadow:0 24px 64px rgba(0,0,0,.4);">' +
+      '<div style="background:linear-gradient(135deg,#d97706,#f59e0b);padding:18px 24px;display:flex;justify-content:space-between;align-items:center;">' +
+        '<div>' +
+          '<div style="font-size:1.05rem;font-weight:900;color:white;letter-spacing:.5px;">📤 Publicar Ordenada al Portal</div>' +
+          '<div style="font-size:.7rem;color:rgba(255,255,255,.8);margin-top:2px;">Sincroniza cantidades "en camino" para clientes del portal</div>' +
+        '</div>' +
+        '<button onclick="document.getElementById(\'pt-pub-modal\').remove()" style="background:rgba(255,255,255,.15);border:none;color:white;border-radius:8px;padding:5px 12px;cursor:pointer;font-weight:700;font-size:1rem;">✕</button>' +
+      '</div>' +
+      '<div style="padding:22px 24px;">' +
+
+        '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px;">' +
+          '<div style="background:#f1f5f9;padding:12px;border-radius:8px;text-align:center;">' +
+            '<div style="font-size:.6rem;font-weight:900;color:#64748b;text-transform:uppercase;letter-spacing:1px;">Total refs</div>' +
+            '<div style="font-size:1.6rem;font-weight:900;color:#1B1F6B;font-family:\'Barlow Condensed\',sans-serif;">' + totalRefs + '</div>' +
+          '</div>' +
+          '<div style="background:' + (conOrdenada > 0 ? '#fef3c7' : '#fee2e2') + ';padding:12px;border-radius:8px;text-align:center;border:1.5px solid ' + (conOrdenada > 0 ? '#fbbf24' : '#fca5a5') + ';">' +
+            '<div style="font-size:.6rem;font-weight:900;color:' + (conOrdenada > 0 ? '#92400e' : '#991b1b') + ';text-transform:uppercase;letter-spacing:1px;">Con Ordenada > 0</div>' +
+            '<div style="font-size:1.6rem;font-weight:900;color:' + (conOrdenada > 0 ? '#92400e' : '#991b1b') + ';font-family:\'Barlow Condensed\',sans-serif;">' + conOrdenada + '</div>' +
+          '</div>' +
+        '</div>' +
+
+        ejemplosHTML + warning +
+
+        '<div id="pt-pub-status" style="font-size:.75rem;min-height:18px;text-align:center;margin-top:12px;"></div>' +
+
+        '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px;">' +
+          '<button onclick="document.getElementById(\'pt-pub-modal\').remove()" style="padding:10px 18px;background:#f1f5f9;color:#475569;border:1.5px solid #e2e8f0;border-radius:8px;font-weight:800;font-size:.78rem;cursor:pointer;text-transform:uppercase;letter-spacing:.5px;">Cancelar</button>' +
+          '<button id="pt-pub-confirm" ' + (conOrdenada === 0 ? 'disabled' : '') + ' style="padding:10px 22px;background:' + (conOrdenada > 0 ? 'linear-gradient(135deg,#d97706,#f59e0b)' : '#94a3b8') + ';color:#fff;border:none;border-radius:8px;font-weight:900;font-size:.78rem;cursor:' + (conOrdenada > 0 ? 'pointer' : 'not-allowed') + ';text-transform:uppercase;letter-spacing:.5px;box-shadow:' + (conOrdenada > 0 ? '0 4px 12px rgba(217,119,6,.3)' : 'none') + ';">📤 Publicar Ahora</button>' +
+        '</div>' +
+      '</div>' +
+    '</div>';
+  document.body.appendChild(el);
+
+  // Listener del botón confirmar
+  var btnConfirm = document.getElementById('pt-pub-confirm');
+  if (btnConfirm && conOrdenada > 0) {
+    btnConfirm.addEventListener('click', async function(){
+      var status = document.getElementById('pt-pub-status');
+      btnConfirm.disabled = true;
+      btnConfirm.textContent = '⏳ Publicando...';
+      if (status) { status.textContent = ''; status.style.color = ''; }
+      try {
+        if (typeof window.fbSavePT !== 'function') throw new Error('fbSavePT no disponible — recarga la página');
+        var ok = await window.fbSavePT(ptData);
+        if (!ok) throw new Error('La publicación devolvió false');
+        if (status) {
+          status.innerHTML = '✓ Publicado exitosamente — ' + conOrdenada + ' refs con Ordenada disponibles en el portal';
+          status.style.color = '#16a34a';
+          status.style.fontWeight = '800';
+        }
+        btnConfirm.textContent = '✓ PUBLICADO';
+        btnConfirm.style.background = '#16a34a';
+        if (typeof showToast === 'function') showToast('📤 Ordenada publicada al portal (' + conOrdenada + ' refs)', 'success');
+        setTimeout(function(){ var m = document.getElementById('pt-pub-modal'); if (m) m.remove(); }, 2000);
+      } catch(e) {
+        console.error('[ptPublicarOrdenadaAlPortal]', e);
+        if (status) { status.textContent = '✗ Error: ' + e.message; status.style.color = '#dc2626'; status.style.fontWeight = '800'; }
+        btnConfirm.disabled = false;
+        btnConfirm.textContent = '📤 Reintentar';
+      }
+    });
+  }
+}
+window.ptPublicarOrdenadaAlPortal = ptPublicarOrdenadaAlPortal;
 
 function ptResetOrdenadaProcess(file) {
   if (!file) return;
@@ -47862,9 +47979,26 @@ function pcAbrirFormToken(existente, clDB) {
       if (typeof window.fbSavePortalToken === 'function') {
         await window.fbSavePortalToken(data.token, data);
       }
-      // Si el token activa "Mostrar Ordenada", sincronizar pt_data a Firestore (fire-and-forget)
+      // Si el token activa "Mostrar Ordenada", sincronizar pt_data a Firestore
+      var syncOrdenadaMsg = '';
       if (data.configVista.mostrarOrdenada && typeof window.fbSavePT === 'function') {
-        window.fbSavePT().catch(function(e){ console.warn('fbSavePT falló:', e); });
+        try {
+          var ptRaw = localStorage.getItem('farmers_pt_data') || '{}';
+          var ptObj = JSON.parse(ptRaw);
+          var conOrd = 0;
+          Object.keys(ptObj).forEach(function(r){
+            if (ptObj[r] && parseInt(ptObj[r].exOrdenada || 0) > 0) conOrd++;
+          });
+          await window.fbSavePT();
+          if (conOrd === 0) {
+            syncOrdenadaMsg = ' · ⚠ No hay productos con Ordenada > 0 cargados; el cliente no verá cantidades en camino';
+          } else {
+            syncOrdenadaMsg = ' · 📦 ' + conOrd + ' refs con Ordenada publicadas';
+          }
+        } catch(e) {
+          console.warn('fbSavePT falló:', e);
+          syncOrdenadaMsg = ' · ⚠ Error al publicar Ordenada';
+        }
       }
       // Actualizar caché
       if (isEdit) {
@@ -47875,7 +48009,7 @@ function pcAbrirFormToken(existente, clDB) {
       }
       ov.remove();
       pcRenderTokensList();
-      showToast(isEdit ? 'Link actualizado' : 'Link creado — copia el enlace y mándaselo al cliente', 'success');
+      showToast((isEdit ? 'Link actualizado' : 'Link creado') + syncOrdenadaMsg, 'success');
     } catch(e) {
       console.error(e);
       alert('Error al guardar: ' + e.message);
@@ -48459,14 +48593,62 @@ function pcDescargarPedidoExcel(id) {
 }
 
 function pcRenderConfig(body) {
+  // Calcular diagnóstico de Ordenada en localStorage
+  var ptDiag = { total: 0, conOrdenada: 0, refs: [] };
+  try {
+    var ptRaw = localStorage.getItem('farmers_pt_data') || '{}';
+    var ptData = JSON.parse(ptRaw);
+    ptDiag.total = Object.keys(ptData).length;
+    Object.keys(ptData).forEach(function(ref){
+      var ex = parseInt(ptData[ref] && ptData[ref].exOrdenada || 0) || 0;
+      if (ex > 0) {
+        ptDiag.conOrdenada++;
+        if (ptDiag.refs.length < 8) ptDiag.refs.push(ref + ' (' + ex + ')');
+      }
+    });
+  } catch(e) {}
+
   body.innerHTML =
-    '<div style="background:#fff;border-radius:10px;padding:18px;max-width:600px;">' +
+    '<div style="background:#fff;border-radius:10px;padding:18px;max-width:720px;">' +
       '<div style="font-size:.9rem;font-weight:800;color:#1B1F6B;margin-bottom:14px;">Configuración del Portal</div>' +
+
       '<label style="display:block;font-size:.72rem;font-weight:700;color:#475569;margin-bottom:4px;">URL base del portal</label>' +
       '<input type="text" id="pc-url" value="' + getPortalBaseUrl() + '" style="width:100%;padding:9px 11px;border:1px solid #e2e8f0;border-radius:8px;font-size:.82rem;margin-bottom:4px;">' +
-      '<div style="font-size:.68rem;color:#64748b;margin-bottom:16px;">El link de cada cliente tendrá la forma: <strong>[URL]?token=XXXXX</strong></div>' +
+      '<div style="font-size:.68rem;color:#64748b;margin-bottom:12px;">El link de cada cliente tendrá la forma: <strong>[URL]?token=XXXXX</strong></div>' +
       '<button id="pc-save-url" style="padding:10px 18px;background:#1B1F6B;color:#fff;border:none;border-radius:8px;font-weight:800;font-size:.78rem;cursor:pointer;">Guardar URL</button>' +
-      '<div style="margin-top:24px;padding:14px;background:#eff6ff;border-radius:8px;font-size:.72rem;color:#1e40af;line-height:1.6;">' +
+
+      // ═══ SECCIÓN SINCRONIZACIÓN ORDENADA ═══
+      '<div style="margin-top:24px;padding:16px;background:linear-gradient(135deg,#fef3c7,#fde68a);border-radius:10px;border:1.5px solid #f59e0b;">' +
+        '<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;">' +
+          '<span style="font-size:1.4rem;">📦</span>' +
+          '<div>' +
+            '<div style="font-size:.85rem;font-weight:800;color:#92400e;text-transform:uppercase;letter-spacing:1px;">Sincronización de Ordenada</div>' +
+            '<div style="font-size:.7rem;color:#78350f;margin-top:2px;">Publica las cantidades "en camino" para que clientes con "Mostrar Ordenada" activado las vean</div>' +
+          '</div>' +
+        '</div>' +
+
+        '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px;">' +
+          '<div style="background:rgba(255,255,255,.6);padding:10px 12px;border-radius:8px;">' +
+            '<div style="font-size:.6rem;font-weight:800;color:#78350f;text-transform:uppercase;letter-spacing:.8px;margin-bottom:2px;">TOTAL REFS</div>' +
+            '<div style="font-size:1.3rem;font-weight:900;color:#92400e;font-family:\'Barlow Condensed\',sans-serif;">' + ptDiag.total + '</div>' +
+          '</div>' +
+          '<div style="background:rgba(255,255,255,.6);padding:10px 12px;border-radius:8px;">' +
+            '<div style="font-size:.6rem;font-weight:800;color:#78350f;text-transform:uppercase;letter-spacing:.8px;margin-bottom:2px;">CON ORDENADA > 0</div>' +
+            '<div style="font-size:1.3rem;font-weight:900;color:#92400e;font-family:\'Barlow Condensed\',sans-serif;">' + ptDiag.conOrdenada + '</div>' +
+          '</div>' +
+        '</div>' +
+
+        (ptDiag.conOrdenada > 0
+          ? '<div style="background:rgba(255,255,255,.6);padding:8px 11px;border-radius:7px;font-size:.68rem;color:#78350f;margin-bottom:10px;"><strong>Ejemplos:</strong> ' + ptDiag.refs.join(', ') + (ptDiag.conOrdenada > 8 ? ', ...' : '') + '</div>'
+          : '<div style="background:#fee2e2;color:#991b1b;padding:8px 11px;border-radius:7px;font-size:.7rem;margin-bottom:10px;"><strong>⚠ Sin datos:</strong> No hay productos con cantidad ordenada > 0 en tu sistema. Ve al módulo Catálogo / Ordenada y carga las cantidades primero.</div>') +
+
+        '<div style="display:flex;gap:8px;align-items:center;">' +
+          '<button id="pc-sync-pt" ' + (ptDiag.conOrdenada === 0 ? 'disabled' : '') + ' style="padding:10px 18px;background:' + (ptDiag.conOrdenada > 0 ? '#d97706' : '#94a3b8') + ';color:#fff;border:none;border-radius:8px;font-weight:800;font-size:.78rem;cursor:' + (ptDiag.conOrdenada > 0 ? 'pointer' : 'not-allowed') + ';text-transform:uppercase;letter-spacing:.5px;">📤 Publicar Ordenada a Firestore</button>' +
+          '<span id="pc-sync-status" style="font-size:.7rem;color:#78350f;font-weight:700;"></span>' +
+        '</div>' +
+      '</div>' +
+
+      '<div style="margin-top:18px;padding:14px;background:#eff6ff;border-radius:8px;font-size:.72rem;color:#1e40af;line-height:1.6;">' +
         '<strong>📋 Para poner en marcha el portal:</strong><br>' +
         '1. Crea un repo nuevo llamado <code>farmers-portal</code> en GitHub<br>' +
         '2. Sube el archivo <code>portal.html</code> al repo (renómbralo a <code>index.html</code>)<br>' +
@@ -48483,6 +48665,37 @@ function pcRenderConfig(body) {
     localStorage.setItem('farmers_portal_url', url);
     showToast('URL guardada', 'success');
   });
+
+  // Botón manual de sincronización de pt_data
+  var btnSync = document.getElementById('pc-sync-pt');
+  if (btnSync) {
+    btnSync.addEventListener('click', async function(){
+      var status = document.getElementById('pc-sync-status');
+      btnSync.disabled = true;
+      var txtOld = btnSync.textContent;
+      btnSync.textContent = '⏳ Publicando...';
+      if (status) status.textContent = '';
+      try {
+        if (typeof window.fbSavePT !== 'function') {
+          throw new Error('fbSavePT no disponible');
+        }
+        var ok = await window.fbSavePT();
+        if (ok) {
+          if (status) { status.textContent = '✓ Publicado exitosamente'; status.style.color = '#16a34a'; }
+          showToast('Ordenada publicada a Firestore', 'success');
+        } else {
+          throw new Error('No se pudo publicar');
+        }
+      } catch(e) {
+        console.error('[pc-sync-pt]', e);
+        if (status) { status.textContent = '✗ Error: ' + e.message; status.style.color = '#dc2626'; }
+        alert('Error al publicar: ' + e.message);
+      } finally {
+        btnSync.disabled = false;
+        btnSync.textContent = txtOld;
+      }
+    });
+  }
 }
 
 </script>
