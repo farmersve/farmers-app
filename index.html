@@ -6623,6 +6623,47 @@ async function loadFromFirebase() {
     }
   } catch(ep) { console.warn('Upload logo portal:', ep); }
 
+  // ── AUTO-RESYNC al cargar — asegura que el portal siempre vea lo último ──
+  // Antes había un bug: fbSavePT y fbSaveComprometido no estaban implementadas.
+  // Por eso datos viejos pueden estar en localStorage pero no en Firestore.
+  // Esta resync detecta y arregla la situación AUTOMÁTICAMENTE sin que el admin haga nada.
+  try {
+    if (!sessionStorage.getItem('farmers_autoresync_done')) {
+      sessionStorage.setItem('farmers_autoresync_done', '1');
+      setTimeout(async function(){
+        try {
+          // 1) Resync pt_data (Ordenada)
+          if (typeof window.fbSavePT === 'function' && typeof window.fbGetPT === 'function') {
+            var localPT = JSON.parse(localStorage.getItem('farmers_pt_data') || '{}');
+            var localCount = 0;
+            Object.keys(localPT).forEach(function(r){ if (parseInt((localPT[r]||{}).exOrdenada || 0) > 0) localCount++; });
+
+            if (localCount > 0) {
+              var remotePT = await window.fbGetPT();
+              var remoteCount = 0;
+              Object.keys(remotePT.data || {}).forEach(function(r){ if (parseInt((remotePT.data[r]||{}).exOrdenada || 0) > 0) remoteCount++; });
+
+              if (Math.abs(localCount - remoteCount) >= 1) {
+                console.log('[AUTO-RESYNC] Detectado desfase pt_data: local=' + localCount + ' refs, firestore=' + remoteCount + '. Resincronizando...');
+                await window.fbSavePT(localPT);
+                console.log('[AUTO-RESYNC] ✓ pt_data resincronizado al portal');
+              }
+            }
+          }
+
+          // 2) Resync comprometido
+          if (typeof window.fbSaveComprometido === 'function') {
+            var compStr = localStorage.getItem('farmers_inv_comprometido');
+            if (compStr) {
+              await window.fbSaveComprometido(JSON.parse(compStr));
+              console.log('[AUTO-RESYNC] ✓ comprometido resincronizado al portal');
+            }
+          }
+        } catch(eAR) { console.warn('[AUTO-RESYNC]', eAR); }
+      }, 3000); // Esperar 3 segundos después del login para no bloquear UI
+    }
+  } catch(eAR2) {}
+
   // Auto-corregir clientes MS después de cargar — asegura sincronización permanente
   try {
     var _MAPA_AUTO = {
@@ -23478,12 +23519,19 @@ function _ptRenderAuditoriaOrdenada(rpt) {
   // ═══ Status y botones ═══
   html +=
     '<div id="pt-pub-status" style="font-size:.75rem;min-height:18px;text-align:center;margin-top:12px;"></div>' +
-    '<div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:10px 12px;margin-top:12px;font-size:.68rem;color:#1e40af;line-height:1.5;">' +
-      '<strong>💡 Sincronización automática activa:</strong> cada vez que editas Ordenada en la tabla, importas un Excel o sincronizas una OC, los cambios se publican <strong>automáticamente</strong> al portal. El botón de abajo es solo por si necesitas forzar una resincronización (raro).' +
-    '</div>' +
+    (tieneProblemas
+      ? '<div style="background:#fef3c7;border:1.5px solid #fbbf24;border-radius:10px;padding:12px;margin-top:12px;">' +
+          '<div style="font-size:.78rem;font-weight:900;color:#92400e;text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;">⚠ Acción recomendada</div>' +
+          '<div style="font-size:.72rem;color:#78350f;line-height:1.5;margin-bottom:10px;">Tu admin tiene datos que el portal no está viendo. Presiona el botón abajo para resincronizar todo de una vez.</div>' +
+          '<button id="pt-pub-confirm" style="width:100%;padding:13px;background:linear-gradient(135deg,#d97706,#f59e0b);color:#fff;border:none;border-radius:8px;font-weight:900;font-size:.85rem;cursor:pointer;text-transform:uppercase;letter-spacing:1px;box-shadow:0 4px 14px rgba(217,119,6,.4);">🔄 RESINCRONIZAR AHORA</button>' +
+        '</div>'
+      : '<div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:10px 12px;margin-top:12px;font-size:.68rem;color:#1e40af;line-height:1.5;">' +
+          '<strong>💡 Sincronización automática activa:</strong> cada vez que editas Ordenada en la tabla, importas un Excel o sincronizas una OC, los cambios se publican <strong>automáticamente</strong> al portal.' +
+        '</div>'
+    ) +
     '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px;border-top:1px solid #e2e8f0;padding-top:14px;">' +
       '<button onclick="document.getElementById(\'pt-pub-modal\').remove()" style="padding:10px 18px;background:#1B1F6B;color:#fff;border:none;border-radius:8px;font-weight:900;font-size:.78rem;cursor:pointer;text-transform:uppercase;letter-spacing:.5px;">Cerrar</button>' +
-      '<button id="pt-pub-confirm" ' + (rpt.local.conOrdenada === 0 ? 'disabled' : '') + ' style="padding:10px 18px;background:' + (rpt.local.conOrdenada > 0 ? '#f1f5f9' : '#f1f5f9') + ';color:#475569;border:1.5px solid #e2e8f0;border-radius:8px;font-weight:700;font-size:.72rem;cursor:' + (rpt.local.conOrdenada > 0 ? 'pointer' : 'not-allowed') + ';text-transform:uppercase;letter-spacing:.5px;">🔄 Forzar resync</button>' +
+      (tieneProblemas ? '' : '<button id="pt-pub-confirm" ' + (rpt.local.conOrdenada === 0 ? 'disabled' : '') + ' style="padding:10px 18px;background:#f1f5f9;color:#475569;border:1.5px solid #e2e8f0;border-radius:8px;font-weight:700;font-size:.72rem;cursor:' + (rpt.local.conOrdenada > 0 ? 'pointer' : 'not-allowed') + ';text-transform:uppercase;letter-spacing:.5px;">🔄 Forzar resync</button>') +
     '</div>';
 
   body.innerHTML = html;
