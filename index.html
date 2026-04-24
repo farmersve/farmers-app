@@ -3500,14 +3500,71 @@ var PRODUCTS_KEY = 'farmers_products';
 var _PRODUCTS_FALLBACK = JSON.parse(JSON.stringify(PRODUCTS));
 
 // ── saveProducts: persiste PRODUCTS a localStorage ──
+// CAPA C de la regla REF al final: ANTES de guardar, aseguramos que todas
+// las descripciones terminen con su ref. Esta es la última red de seguridad.
 window.saveProducts = function() {
   try {
+    // Capa C: aplicar REF al final a toda descripción que la falte (autocorrección silenciosa)
+    // Esta es la red de seguridad final de la regla de integridad "REF al final".
+    var corregidosC = 0;
+    var ejemplosCorregidos = [];
+    PRODUCTS.forEach(function(p){
+      if (!p || !p.r || !p.d) return;
+      var descCorregida = window.aplicarRefAlFinal(p.d, p.r);
+      if (descCorregida !== p.d) {
+        if (ejemplosCorregidos.length < 5) {
+          ejemplosCorregidos.push({ ref: p.r, antes: p.d, despues: descCorregida });
+        }
+        p.d = descCorregida;
+        corregidosC++;
+      }
+    });
+    if (corregidosC > 0) {
+      console.log('[saveProducts · Capa C] ⚠ REGLA DE INTEGRIDAD: ' + corregidosC + ' producto(s) autocorregido(s) con REF al final antes de guardar');
+      ejemplosCorregidos.forEach(function(ej){
+        console.log('  · ' + ej.ref + ': "' + ej.antes + '" → "' + ej.despues + '"');
+      });
+      if (corregidosC > 5) console.log('  · (y ' + (corregidosC - 5) + ' más...)');
+    }
     localStorage.setItem(PRODUCTS_KEY, JSON.stringify(PRODUCTS));
     return true;
   } catch(e) {
     console.error('[saveProducts] error:', e);
     return false;
   }
+};
+
+// ── aplicarRefAlFinal: helper central, ÚNICA fuente de verdad ──
+// Regla: toda descripción de producto debe terminar con su referencia interna.
+// Esta función se usa desde:
+//   - OC Sync (Capa A: análisis, Capa B: aplicación)
+//   - Imports nuevos (Excel, PDF, imagen) al crear PRODUCTS.push
+//   - Herramienta masiva ptAplicarRefAlFinalMasivo
+//   - saveProducts (Capa C: red de seguridad final)
+window.aplicarRefAlFinal = function(descripcion, refFarmers) {
+  if (!descripcion || !refFarmers) return descripcion || '';
+  var desc = String(descripcion).trim();
+  var ref = String(refFarmers).toUpperCase().trim();
+  if (!desc || !ref) return desc;
+
+  var descUpper = desc.toUpperCase();
+  // Si ya termina con la ref, no hacer nada
+  var refEsc = ref.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  var regexTail = new RegExp('\\b' + refEsc + '\\s*$', 'i');
+  if (regexTail.test(descUpper)) return desc;
+
+  // Limpiar paréntesis redundantes al final
+  var descLimpia = desc
+    .replace(/\s*\(\s*1\s*PZA\s*\.?\s*\)\s*$/i, '')
+    .replace(/\s*\(\s*1\s*UNIDAD\s*\.?\s*\)\s*$/i, '')
+    .replace(/\s*\(\s*1\s*UND\s*\.?\s*\)\s*$/i, '')
+    .replace(/\s+$/, '');
+
+  // Si la ref aparece suelta en el medio, la quitamos también (evita duplicados)
+  var regexMedio = new RegExp('\\b' + refEsc + '\\b', 'ig');
+  descLimpia = descLimpia.replace(regexMedio, '').replace(/\s{2,}/g, ' ').trim();
+
+  return descLimpia + ' ' + ref;
 };
 
 // ── _aplicarProductsArray: reemplaza in-place el contenido de PRODUCTS ──
@@ -3610,13 +3667,20 @@ window.getEmpaqueReal = function(ref) {
     if (lsExt && lsExt.length > 0) {
       var existingRefs = new Set(PRODUCTS.map(function(p){ return p.r; }));
       var added = 0;
+      var corregidosInt = 0;
       lsExt.forEach(function(p) {
         if (p && p.r && !existingRefs.has(p.r)) {
+          // Regla de integridad: REF al final
+          if (p.d && typeof window.aplicarRefAlFinal === 'function') {
+            var dCorr = window.aplicarRefAlFinal(p.d, p.r);
+            if (dCorr !== p.d) { p.d = dCorr; corregidosInt++; }
+          }
           PRODUCTS.push(p);
           existingRefs.add(p.r);
           added++;
         }
       });
+      if (corregidosInt > 0) console.log('[Startup · Integridad] ' + corregidosInt + ' producto(s) autocorregidos con REF al final al cargar de localStorage');
       if (added > 0) sortProducts();
     }
   } catch(e) { console.warn('products_ext startup load:', e); }
@@ -6307,12 +6371,19 @@ async function loadFromFirebase() {
         // Fusionar: agregar solo los que no existen aún en PRODUCTS
         var existingRefs = new Set(PRODUCTS.map(function(p){ return p.r; }));
         var added = 0;
+        var corregidosInt = 0;
         ext.forEach(function(p) {
           if (!existingRefs.has(p.r)) {
+            // Regla de integridad: REF al final antes de insertar
+            if (p && p.r && p.d && typeof window.aplicarRefAlFinal === 'function') {
+              var dCorr = window.aplicarRefAlFinal(p.d, p.r);
+              if (dCorr !== p.d) { p.d = dCorr; corregidosInt++; }
+            }
             PRODUCTS.push(p);
             added++;
           }
         });
+        if (corregidosInt > 0) console.log('[loadFromFirebase · Integridad] ' + corregidosInt + ' producto(s) entrantes autocorregidos con REF al final');
         if (added > 0 && typeof sortProducts === 'function') sortProducts();
         localStorage.setItem('farmers_products_ext', JSON.stringify(ext));
       } else {
@@ -6322,9 +6393,17 @@ async function loadFromFirebase() {
           if (lsExt.length) {
             var existRefs2 = new Set(PRODUCTS.map(function(p){ return p.r; }));
             var added2 = 0;
+            var corregidosInt2 = 0;
             lsExt.forEach(function(p) {
-              if (!existRefs2.has(p.r)) { PRODUCTS.push(p); added2++; }
+              if (!existRefs2.has(p.r)) {
+                if (p && p.r && p.d && typeof window.aplicarRefAlFinal === 'function') {
+                  var dCorr2 = window.aplicarRefAlFinal(p.d, p.r);
+                  if (dCorr2 !== p.d) { p.d = dCorr2; corregidosInt2++; }
+                }
+                PRODUCTS.push(p); added2++;
+              }
             });
+            if (corregidosInt2 > 0) console.log('[loadFromFirebase/LS · Integridad] ' + corregidosInt2 + ' producto(s) autocorregidos con REF al final');
             if (added2 > 0 && typeof sortProducts === 'function') sortProducts();
           }
         } catch(e2) {}
@@ -11568,6 +11647,15 @@ window.ocSyncAplicar = function() {
         // Sincronizar m a ptData también
         if (nuevo.m) ptData[refF].unidadesPorBulto = nuevo.m;
 
+        // Regla de integridad final: asegurar REF al final antes de insertar
+        if (nuevo && nuevo.r && nuevo.d && typeof window.aplicarRefAlFinal === 'function') {
+          var dIntegr = window.aplicarRefAlFinal(nuevo.d, nuevo.r);
+          if (dIntegr !== nuevo.d) {
+            console.log('[OC Sync · Integridad] ' + nuevo.r + ' autocorregido al crear: "' + nuevo.d + '" → "' + dIntegr + '"');
+            nuevo.d = dIntegr;
+          }
+        }
+
         if (typeof PRODUCTS !== 'undefined') PRODUCTS.push(nuevo);
         reporteCambios.productosNuevos.push({ ref: refF, datos: camposNuevos, descripcion: nuevo.d });
       } else {
@@ -11591,6 +11679,15 @@ window.ocSyncAplicar = function() {
           } else if (prod) {
             prod[f.campo] = f.valorNuevo;
             if (f.campo === 'm') ptData[refF].unidadesPorBulto = f.valorNuevo;
+
+            // Regla de integridad: si se actualizó la descripción, aplicar REF al final
+            if (f.campo === 'd' && prod.r && prod.d && typeof window.aplicarRefAlFinal === 'function') {
+              var dIntegrU = window.aplicarRefAlFinal(prod.d, prod.r);
+              if (dIntegrU !== prod.d) {
+                console.log('[OC Sync · Integridad update] ' + prod.r + ' autocorregido: "' + prod.d + '" → "' + dIntegrU + '"');
+                prod.d = dIntegrU;
+              }
+            }
 
             // Si cambió el costo FOB, agregar al histórico
             if (f.campo === 'costoFOB') {
@@ -23302,7 +23399,7 @@ function ptImpConfirmar() {
       r:  refVal,
       b:  row.barcode || '',
       c:  row.ref_prov,
-      d:  row.desc,
+      d:  (typeof window.aplicarRefAlFinal === 'function') ? window.aplicarRefAlFinal(row.desc, refVal) : row.desc,
       e:  row.medida || 'UNIDAD',
       m:  row.bultos ? Math.round(row.uds / (row.bultos||1)) : row.uds,
       br: row.marca,
@@ -23800,7 +23897,7 @@ function ptGuardarFicha(refOriginal) {
     r:  ref,
     b:  ((document.getElementById('ptf-barcode')||{}).value||'').trim(),
     c:  ((document.getElementById('ptf-refalt') ||{}).value||'').trim(),
-    d:  nombre,
+    d:  (typeof window.aplicarRefAlFinal === 'function') ? window.aplicarRefAlFinal(nombre, ref) : nombre,
     e:  (document.getElementById('ptf-unidad')  ||{value:'UNIDAD'}).value,
     m:  parseInt((document.getElementById('ptf-bulto') ||{}).value)||0,
     br: (document.getElementById('ptf-marca')   ||{value:''}).value,
@@ -25554,12 +25651,15 @@ window.confirmImportPrices=function(){
   _ipResults.forEach(function(r){
     if(r.status==='update'&&r.original){
       if(r.price!=null)r.original.u=r.price;
-      if(r.desc)r.original.d=r.desc;
+      if(r.desc) {
+        r.original.d = (typeof window.aplicarRefAlFinal === 'function') ? window.aplicarRefAlFinal(r.desc, r.original.r) : r.desc;
+      }
       if(r.stock!=null){r.original.ex=r.stock;r.original.et=r.stock;inv[r.original.r]=r.stock;}
       if(r.brand)r.original.br=r.brand;
       applied++;
     }else if(r.status==='new'&&r.price!=null&&r.code){
-      var np={r:r.code,b:'',c:r.code,d:r.desc||r.code,e:'UNIDAD',m:0,br:r.brand||'VARIOS',ex:r.stock||0,et:r.stock||0,u:r.price,bv:parseFloat((r.price*1.6).toFixed(6)),t:parseFloat((r.price*1.92).toFixed(6))};
+      var _descNp = (typeof window.aplicarRefAlFinal === 'function') ? window.aplicarRefAlFinal(r.desc||r.code, r.code) : (r.desc||r.code);
+      var np={r:r.code,b:'',c:r.code,d:_descNp,e:'UNIDAD',m:0,br:r.brand||'VARIOS',ex:r.stock||0,et:r.stock||0,u:r.price,bv:parseFloat((r.price*1.6).toFixed(6)),t:parseFloat((r.price*1.92).toFixed(6))};
       if(typeof PRODUCTS!=='undefined')PRODUCTS.push(np);
       if(r.stock)inv[r.code]=r.stock;
       applied++;
@@ -27337,16 +27437,79 @@ async function msProcesarProductosUniv(resultado, input) {
     };
   });
 
+  msSetProgress(90, 'Comparando con catálogo del sistema…');
+
+  // ═══ REGLA MAESTRA: el sistema Farmers manda ═══
+  var cmp = window.msCompararConCatalogo(productosNorm);
+
+  // Si hay refs sin match, abrir modal de resolución manual
+  if (cmp.sinMatch && cmp.sinMatch.length > 0) {
+    msSetProgress(92, 'Esperando resolución de ' + cmp.sinMatch.length + ' referencia(s) sin match...');
+    var resolucion = await window.msResolverRefsSinMatch(cmp.sinMatch);
+    if (resolucion.cancelado) {
+      msSetProgress(0, 'Pedido cancelado');
+      try { if (input) input.value = ''; } catch(e) {}
+      return;
+    }
+    // Aplicar resoluciones: actualizar ref en productosNorm y re-comparar
+    resolucion.resueltas.forEach(function(r){
+      if (r.idxOriginal >= 0 && r.idxOriginal < productosNorm.length) {
+        productosNorm[r.idxOriginal].ref = r.refNueva;
+      }
+    });
+    // Filtrar saltadas
+    if (resolucion.saltadas.length > 0) {
+      var setSalt = {};
+      resolucion.saltadas.forEach(function(i){ setSalt[i] = true; });
+      productosNorm = productosNorm.filter(function(_, i){ return !setSalt[i]; });
+    }
+    // Recomparar con el catálogo ahora que las refs fueron resueltas
+    cmp = window.msCompararConCatalogo(productosNorm);
+  }
+
+  // Aplicar datos del sistema a productosNorm (descripción, precio, etc.)
+  productosNorm = cmp.productos.map(function(p){
+    return {
+      ref:         p.ref,
+      desc:        p.desc,
+      stock:       p.stock || 0,
+      pedidos:     p.pedidos,
+      precio_usd:  p.precio_usd,
+      codigoBarra: p.codigoBarra || '',
+      codigoProv:  p.codigoProv || '',
+      marca:       p.marca || '',
+      empaque:     p.empaque || '',
+      udsBulto:    p.udsBulto || 0,
+      _descCliente:   p._descCliente,
+      _precioCliente: p._precioCliente,
+      _barraCliente:  p._barraCliente,
+      _diferencias:   p._diferencias || [],
+      _sinMatchCatalogo: p._sinMatchCatalogo || false,
+      _origenDesc:       p._origenDesc,
+    };
+  });
+
+  // Si hay diferencias, mostrar modal dedicado (en paralelo con auditoría)
   msSetProgress(95, 'Auditando pedido...');
   var audit = msAuditarPedido(productosNorm, sucursales, 'PDF');
+  audit._comparacion = cmp;  // ← exponer al modal de auditoría
   msSetProgress(100, 'Listo');
 
   try { if (input) input.value = ''; } catch(e) {}
 
-  msMostrarAuditoria(audit, function(){
-    msCalcularDistribucion(productosNorm);
-    setTimeout(function(){ msRenderResultados(); }, 300);
-  }, productosNorm);
+  // Flujo: si hay diferencias → modal diferencias → modal auditoría → continuar
+  function abrirAuditoria(){
+    msMostrarAuditoria(audit, function(){
+      msCalcularDistribucion(productosNorm);
+      setTimeout(function(){ msRenderResultados(); }, 300);
+    }, productosNorm);
+  }
+
+  if (cmp.totalDif > 0) {
+    window.msMostrarDiferenciasModal(cmp, abrirAuditoria);
+  } else {
+    abrirAuditoria();
+  }
 }
 
 
@@ -28343,6 +28506,423 @@ function msPromptIA() { return ''; // No se usa — reemplazado por lógica en d
 // MÓDULO AUDITORÍA — ejecuta antes de procesar cada pedido
 // ═══════════════════════════════════════════════════════════════════
 
+// ═══════════════════════════════════════════════════════════════════════════
+// REGLA MAESTRA DE PEDIDOS — "El sistema Farmers manda, el cliente propone"
+// ═══════════════════════════════════════════════════════════════════════════
+// Para cada producto del pedido entrante:
+//   1. Si la REF existe en nuestro catálogo → usamos nuestros datos (desc,
+//      precio, código barra, marca, empaque, unidades/bulto).
+//   2. Reportamos las diferencias detectadas vs lo que envió el cliente.
+//   3. Si la REF NO existe → queda marcado como "sin match" para resolución
+//      manual por Omar (modal msResolverRefsSinMatch).
+//
+// Uso: var cmp = msCompararConCatalogo(productosNorm);
+//   cmp.productos = array con datos del sistema aplicados + _diferencias
+//   cmp.diferencias = reporte consolidado por campo
+//   cmp.sinMatch = array de productos sin REF en catálogo (requieren resolución)
+// ═══════════════════════════════════════════════════════════════════════════
+
+window.msCompararConCatalogo = function(productosNorm) {
+  var CAMPOS = [
+    { k: 'd',  label: 'Descripción',       tipo: 'texto' },
+    { k: 'u',  label: 'Precio USD',        tipo: 'num' },
+    { k: 'b',  label: 'Código de barras',  tipo: 'texto' },
+    { k: 'br', label: 'Marca',             tipo: 'texto' },
+    { k: 'e',  label: 'Empaque',           tipo: 'texto' },
+    { k: 'm',  label: 'Uds/Bulto',         tipo: 'num' },
+  ];
+
+  var diferenciasPorCampo = {};
+  CAMPOS.forEach(function(c){ diferenciasPorCampo[c.k] = []; });
+
+  var sinMatch = [];
+  var productosAplicados = [];
+
+  productosNorm.forEach(function(p, idx){
+    // Guardamos SIEMPRE lo que envió el cliente (para reporte)
+    var clienteDesc = p._descCliente || p.desc || '';
+    var clientePrecio = p.precio_usd || p._precioCliente || 0;
+    var clienteBarra = p._barraCliente || '';
+    var clienteCodigo = p._codigoCliente || '';
+
+    // Buscar en catálogo
+    var prodSistema = null;
+    if (p.ref) {
+      var refUp = String(p.ref).toUpperCase().trim();
+      for (var pi = 0; pi < PRODUCTS.length; pi++) {
+        if (String(PRODUCTS[pi].r||'').toUpperCase() === refUp) {
+          prodSistema = PRODUCTS[pi]; break;
+        }
+      }
+    }
+
+    if (!prodSistema) {
+      // Sin match: guardamos para resolución manual
+      sinMatch.push({
+        idx: idx,
+        refCliente: p.ref || '',
+        descCliente: clienteDesc,
+        barraCliente: clienteBarra,
+        codigoCliente: clienteCodigo,
+        precioCliente: clientePrecio,
+        pedidos: p.pedidos,
+        _srcProducto: p,
+      });
+      // Mantenemos tal cual en productosAplicados por ahora — Omar resolverá
+      productosAplicados.push(Object.assign({}, p, {
+        _sinMatchCatalogo: true,
+        _origenDesc: 'cliente',
+      }));
+      return;
+    }
+
+    // Con match: aplicamos datos del sistema y calculamos diferencias
+    var diferencias = [];
+    CAMPOS.forEach(function(c){
+      var sistema = prodSistema[c.k];
+      var cliente = null;
+      if (c.k === 'd')  cliente = clienteDesc;
+      else if (c.k === 'u')  cliente = clientePrecio;
+      else if (c.k === 'b')  cliente = clienteBarra;
+      else if (c.k === 'br') cliente = null; // cliente no suele enviar marca
+      else if (c.k === 'e')  cliente = null; // ni empaque
+      else if (c.k === 'm')  cliente = null; // ni uds/bulto
+      if (cliente === null || cliente === '' || cliente === undefined || cliente === 0) return;
+
+      var iguales = false;
+      if (c.tipo === 'num') {
+        iguales = Math.abs(parseFloat(sistema||0) - parseFloat(cliente||0)) < 0.01;
+      } else {
+        iguales = String(sistema||'').trim().toUpperCase() === String(cliente||'').trim().toUpperCase();
+      }
+      if (!iguales) {
+        var diff = {
+          ref: p.ref,
+          campo: c.k,
+          label: c.label,
+          sistema: sistema,
+          cliente: cliente,
+        };
+        diferencias.push(diff);
+        diferenciasPorCampo[c.k].push(diff);
+      }
+    });
+
+    // Construir producto con datos del SISTEMA (regla maestra)
+    productosAplicados.push({
+      ref:        prodSistema.r,
+      desc:       prodSistema.d,                  // ← del sistema
+      stock:      p.stock,
+      pedidos:    p.pedidos,
+      precio_usd: prodSistema.u || 0,             // ← del sistema
+      codigoBarra: prodSistema.b || '',           // ← del sistema
+      codigoProv:  prodSistema.c || '',           // ← del sistema
+      marca:       prodSistema.br || '',          // ← del sistema
+      empaque:     prodSistema.e || '',           // ← del sistema
+      udsBulto:    prodSistema.m || 0,            // ← del sistema
+      _sinMatchCatalogo: false,
+      _origenDesc: 'sistema',
+      _descCliente: clienteDesc,
+      _precioCliente: clientePrecio,
+      _barraCliente: clienteBarra,
+      _diferencias: diferencias,
+    });
+  });
+
+  // Contar total de diferencias
+  var totalDif = 0;
+  Object.keys(diferenciasPorCampo).forEach(function(k){ totalDif += diferenciasPorCampo[k].length; });
+
+  console.log('[Comparación Cliente vs Sistema] ' +
+    productosAplicados.filter(function(p){ return !p._sinMatchCatalogo; }).length + ' con match · ' +
+    sinMatch.length + ' sin match · ' +
+    totalDif + ' diferencias totales');
+
+  return {
+    productos: productosAplicados,
+    diferencias: diferenciasPorCampo,
+    totalDif: totalDif,
+    sinMatch: sinMatch,
+    campos: CAMPOS,
+  };
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+// MODAL: Resolver referencias sin match en el catálogo
+// ═══════════════════════════════════════════════════════════════════════════
+// Omar decide cada caso: buscar ref correcta, saltar producto, o agregar.
+// Retorna Promise que resuelve con:
+//   { resueltas: [{idxOriginal, refCliente, refNueva}], saltadas: [idx], agregar: [...] }
+// ═══════════════════════════════════════════════════════════════════════════
+
+window.msResolverRefsSinMatch = function(sinMatch) {
+  return new Promise(function(resolve){
+    if (!sinMatch || !sinMatch.length) { resolve({ resueltas: [], saltadas: [], cancelado: false }); return; }
+
+    var ex = document.getElementById('ms-resolver-ov'); if (ex) ex.remove();
+    var ov = document.createElement('div');
+    ov.id = 'ms-resolver-ov';
+    ov.style.cssText = 'position:fixed;inset:0;z-index:99400;background:rgba(0,0,0,.80);display:flex;align-items:center;justify-content:center;padding:16px;box-sizing:border-box;';
+
+    var box = document.createElement('div');
+    box.style.cssText = 'background:#fff;border-radius:14px;width:100%;max-width:1100px;height:calc(100vh - 32px);display:flex;flex-direction:column;overflow:hidden;box-shadow:0 24px 80px rgba(0,0,0,.5);';
+
+    // Header
+    var hdr = document.createElement('div');
+    hdr.style.cssText = 'background:linear-gradient(135deg,#d97706,#92400e);padding:16px 24px;flex-shrink:0;color:#fff;';
+    hdr.innerHTML =
+      '<div style="display:flex;align-items:center;gap:12px;">' +
+        '<div style="font-size:1.6rem;">🔍</div>' +
+        '<div>' +
+          '<div style="font-size:1rem;font-weight:800;">Referencias sin coincidencia — ' + sinMatch.length + ' producto(s)</div>' +
+          '<div style="font-size:.72rem;color:rgba(255,255,255,.8);margin-top:2px;">El cliente envió referencias que no están en nuestro catálogo. Selecciona la referencia correcta o salta el producto.</div>' +
+        '</div>' +
+      '</div>';
+    box.appendChild(hdr);
+
+    // Cuerpo scrollable
+    var body = document.createElement('div');
+    body.style.cssText = 'flex:1;overflow-y:auto;padding:16px 24px;background:#f8fafc;';
+
+    // Estado interno: decisiones del usuario
+    var decisiones = {};
+    sinMatch.forEach(function(sm, i){
+      decisiones[i] = { accion: 'pendiente', refNueva: '' };
+    });
+
+    function renderFila(sm, i){
+      var fila = document.createElement('div');
+      fila.id = 'resolv-fila-' + i;
+      fila.style.cssText = 'background:#fff;border:2px solid #e2e8f0;border-radius:10px;padding:14px 16px;margin-bottom:10px;';
+
+      var info =
+        '<div style="display:flex;gap:14px;align-items:flex-start;margin-bottom:10px;">' +
+          '<div style="font-family:monospace;font-weight:700;color:#92400e;background:#fef3c7;padding:4px 10px;border-radius:6px;font-size:.78rem;white-space:nowrap;">' + (sm.refCliente || '(sin REF)') + '</div>' +
+          '<div style="flex:1;">' +
+            '<div style="font-size:.78rem;color:#1e293b;font-weight:600;">' + (sm.descCliente || '(sin descripción)') + '</div>' +
+            (sm.barraCliente ? '<div style="font-size:.65rem;color:#64748b;margin-top:2px;">Código barra del cliente: <span style="font-family:monospace;">' + sm.barraCliente + '</span></div>' : '') +
+            (sm.codigoCliente ? '<div style="font-size:.65rem;color:#64748b;margin-top:2px;">Código del cliente: <span style="font-family:monospace;">' + sm.codigoCliente + '</span></div>' : '') +
+          '</div>' +
+        '</div>';
+
+      var acciones =
+        '<div style="display:flex;gap:8px;flex-wrap:wrap;">' +
+          '<input type="text" id="resolv-search-' + i + '" placeholder="Buscar referencia en catálogo…" ' +
+            'style="flex:1;min-width:220px;padding:7px 12px;border:1px solid #cbd5e1;border-radius:6px;font-size:.75rem;" autocomplete="off" />' +
+          '<button id="resolv-saltar-' + i + '" style="padding:7px 14px;background:#ef4444;color:#fff;border:none;border-radius:6px;font-size:.7rem;font-weight:700;cursor:pointer;">Saltar este producto</button>' +
+        '</div>' +
+        '<div id="resolv-sugerencias-' + i + '" style="margin-top:8px;max-height:180px;overflow-y:auto;display:none;background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;"></div>' +
+        '<div id="resolv-estado-' + i + '" style="margin-top:8px;font-size:.7rem;font-weight:700;display:none;"></div>';
+
+      fila.innerHTML = info + acciones;
+      return fila;
+    }
+
+    sinMatch.forEach(function(sm, i){ body.appendChild(renderFila(sm, i)); });
+    box.appendChild(body);
+
+    // Footer
+    var ftr = document.createElement('div');
+    ftr.style.cssText = 'padding:14px 24px;background:#fff;border-top:1px solid #e2e8f0;display:flex;gap:10px;align-items:center;justify-content:space-between;flex-shrink:0;';
+    ftr.innerHTML =
+      '<div id="resolv-resumen" style="font-size:.74rem;color:#475569;">Pendientes: <strong>' + sinMatch.length + '</strong></div>' +
+      '<div style="display:flex;gap:8px;">' +
+        '<button id="resolv-cancelar" style="padding:10px 18px;background:#e2e8f0;color:#334155;border:none;border-radius:8px;font-weight:700;font-size:.78rem;cursor:pointer;">Cancelar pedido</button>' +
+        '<button id="resolv-confirmar" style="padding:10px 22px;background:#059669;color:#fff;border:none;border-radius:8px;font-weight:800;font-size:.78rem;cursor:pointer;" disabled>Confirmar resoluciones</button>' +
+      '</div>';
+    box.appendChild(ftr);
+    ov.appendChild(box); document.body.appendChild(ov);
+
+    function actualizarResumen(){
+      var resueltos = 0, saltados = 0, pendientes = 0;
+      Object.keys(decisiones).forEach(function(k){
+        if (decisiones[k].accion === 'resuelto') resueltos++;
+        else if (decisiones[k].accion === 'saltado') saltados++;
+        else pendientes++;
+      });
+      document.getElementById('resolv-resumen').innerHTML =
+        'Pendientes: <strong>' + pendientes + '</strong> · ' +
+        'Resueltos: <strong style="color:#059669;">' + resueltos + '</strong> · ' +
+        'Saltados: <strong style="color:#ef4444;">' + saltados + '</strong>';
+      document.getElementById('resolv-confirmar').disabled = (pendientes > 0);
+    }
+
+    // Buscador por fila
+    sinMatch.forEach(function(sm, i){
+      var inputEl = document.getElementById('resolv-search-' + i);
+      var sugEl = document.getElementById('resolv-sugerencias-' + i);
+      var estadoEl = document.getElementById('resolv-estado-' + i);
+      var saltarBtn = document.getElementById('resolv-saltar-' + i);
+
+      // Pre-llenar con refCliente para facilitar búsqueda
+      if (sm.refCliente) inputEl.value = sm.refCliente;
+
+      function buscar(){
+        var q = inputEl.value.trim().toUpperCase();
+        if (q.length < 2) { sugEl.style.display = 'none'; return; }
+        var matches = [];
+        for (var pi = 0; pi < PRODUCTS.length && matches.length < 15; pi++) {
+          var prod = PRODUCTS[pi];
+          var ref = String(prod.r||'').toUpperCase();
+          var desc = String(prod.d||'').toUpperCase();
+          var barra = String(prod.b||'');
+          var codigo = String(prod.c||'').toUpperCase();
+          if (ref.indexOf(q) >= 0 || desc.indexOf(q) >= 0 || barra.indexOf(q) >= 0 || codigo.indexOf(q) >= 0) {
+            matches.push(prod);
+          }
+        }
+        if (!matches.length) { sugEl.innerHTML = '<div style="padding:8px 12px;font-size:.7rem;color:#64748b;">Sin resultados</div>'; sugEl.style.display = 'block'; return; }
+        sugEl.innerHTML = matches.map(function(p){
+          return '<div class="resolv-opt" data-ref="' + p.r + '" data-idx="' + i + '" style="padding:8px 12px;cursor:pointer;border-bottom:1px solid #e2e8f0;font-size:.72rem;display:flex;gap:10px;align-items:center;" onmouseover="this.style.background=\'#e0e7ff\'" onmouseout="this.style.background=\'#f8fafc\'">' +
+            '<span style="font-family:monospace;font-weight:700;color:#1d4ed8;min-width:72px;">' + p.r + '</span>' +
+            '<span style="flex:1;color:#334155;">' + (p.d||'') + '</span>' +
+            '<span style="color:#64748b;font-size:.62rem;">' + (p.br||'') + ' · $' + (p.u||0).toFixed(2) + '</span>' +
+          '</div>';
+        }).join('');
+        sugEl.style.display = 'block';
+        // Click en opción
+        sugEl.querySelectorAll('.resolv-opt').forEach(function(el){
+          el.addEventListener('click', function(){
+            var refSel = el.getAttribute('data-ref');
+            decisiones[i] = { accion: 'resuelto', refNueva: refSel };
+            estadoEl.style.display = 'block';
+            estadoEl.style.color = '#059669';
+            estadoEl.innerHTML = '✓ Resuelto: <span style="font-family:monospace;">' + refSel + '</span>';
+            sugEl.style.display = 'none';
+            document.getElementById('resolv-fila-' + i).style.borderColor = '#059669';
+            actualizarResumen();
+          });
+        });
+      }
+      inputEl.addEventListener('input', buscar);
+      inputEl.addEventListener('focus', buscar);
+
+      saltarBtn.addEventListener('click', function(){
+        decisiones[i] = { accion: 'saltado', refNueva: '' };
+        estadoEl.style.display = 'block';
+        estadoEl.style.color = '#ef4444';
+        estadoEl.innerHTML = '✗ Saltado: este producto NO se incluirá en el pedido';
+        sugEl.style.display = 'none';
+        document.getElementById('resolv-fila-' + i).style.borderColor = '#ef4444';
+        document.getElementById('resolv-fila-' + i).style.opacity = '.6';
+        actualizarResumen();
+      });
+
+      // Disparar búsqueda inicial para pre-llenar sugerencias
+      setTimeout(buscar, 50);
+    });
+
+    actualizarResumen();
+
+    document.getElementById('resolv-cancelar').addEventListener('click', function(){
+      ov.remove();
+      resolve({ resueltas: [], saltadas: [], cancelado: true });
+    });
+    document.getElementById('resolv-confirmar').addEventListener('click', function(){
+      var resueltas = [], saltadas = [];
+      Object.keys(decisiones).forEach(function(k){
+        var d = decisiones[k];
+        var sm = sinMatch[parseInt(k)];
+        if (d.accion === 'resuelto') {
+          resueltas.push({ idxOriginal: sm.idx, refCliente: sm.refCliente, refNueva: d.refNueva });
+        } else if (d.accion === 'saltado') {
+          saltadas.push(sm.idx);
+        }
+      });
+      ov.remove();
+      resolve({ resueltas: resueltas, saltadas: saltadas, cancelado: false });
+    });
+  });
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+// MODAL: Mostrar diferencias cliente vs sistema
+// ═══════════════════════════════════════════════════════════════════════════
+
+window.msMostrarDiferenciasModal = function(cmp, onContinuar){
+  var ex = document.getElementById('ms-dif-ov'); if (ex) ex.remove();
+  if (!cmp || cmp.totalDif === 0) {
+    // Nada que mostrar — continuar
+    if (typeof onContinuar === 'function') onContinuar();
+    return;
+  }
+
+  var ov = document.createElement('div');
+  ov.id = 'ms-dif-ov';
+  ov.style.cssText = 'position:fixed;inset:0;z-index:99350;background:rgba(0,0,0,.78);display:flex;align-items:center;justify-content:center;padding:16px;box-sizing:border-box;';
+
+  var box = document.createElement('div');
+  box.style.cssText = 'background:#fff;border-radius:14px;width:100%;max-width:1150px;height:calc(100vh - 32px);display:flex;flex-direction:column;overflow:hidden;box-shadow:0 24px 80px rgba(0,0,0,.4);';
+
+  var hdr = document.createElement('div');
+  hdr.style.cssText = 'background:linear-gradient(135deg,#2563eb,#1e40af);padding:16px 24px;flex-shrink:0;color:#fff;';
+  hdr.innerHTML =
+    '<div style="display:flex;align-items:center;gap:12px;">' +
+      '<div style="font-size:1.6rem;">🔎</div>' +
+      '<div>' +
+        '<div style="font-size:1rem;font-weight:800;">Diferencias detectadas — cliente vs nuestro sistema</div>' +
+        '<div style="font-size:.72rem;color:rgba(255,255,255,.8);margin-top:2px;">Se encontraron ' + cmp.totalDif + ' diferencia(s). Usaremos los datos de nuestro sistema para el pedido.</div>' +
+      '</div>' +
+    '</div>';
+  box.appendChild(hdr);
+
+  var body = document.createElement('div');
+  body.style.cssText = 'flex:1;overflow-y:auto;padding:16px 24px;background:#f8fafc;';
+
+  cmp.campos.forEach(function(c){
+    var difs = cmp.diferencias[c.k];
+    if (!difs || !difs.length) return;
+
+    var sec = document.createElement('div');
+    sec.style.cssText = 'margin-bottom:18px;background:#fff;border:1px solid #e2e8f0;border-radius:10px;overflow:hidden;';
+    sec.innerHTML =
+      '<div style="padding:10px 14px;background:#eff6ff;border-bottom:1px solid #dbeafe;font-size:.78rem;font-weight:800;color:#1e40af;">' +
+        c.label + ' — ' + difs.length + ' diferencia(s)' +
+      '</div>' +
+      '<table style="width:100%;border-collapse:collapse;font-size:.72rem;">' +
+        '<thead>' +
+          '<tr style="background:#f1f5f9;">' +
+            '<th style="padding:7px 12px;text-align:left;font-weight:700;color:#475569;width:90px;">REF</th>' +
+            '<th style="padding:7px 12px;text-align:left;font-weight:700;color:#dc2626;">Cliente envió</th>' +
+            '<th style="padding:7px 12px;text-align:left;font-weight:700;color:#059669;">Sistema (usado)</th>' +
+          '</tr>' +
+        '</thead>' +
+        '<tbody>' +
+          difs.map(function(d, i){
+            var bg = i % 2 === 0 ? '#fff' : '#f8fafc';
+            var valCliente = (c.tipo === 'num') ? (parseFloat(d.cliente||0).toFixed(2)) : String(d.cliente||'(vacío)');
+            var valSistema = (c.tipo === 'num') ? (parseFloat(d.sistema||0).toFixed(2)) : String(d.sistema||'(vacío)');
+            return '<tr style="background:' + bg + ';">' +
+              '<td style="padding:6px 12px;font-family:monospace;font-weight:700;color:#1e293b;">' + d.ref + '</td>' +
+              '<td style="padding:6px 12px;color:#991b1b;text-decoration:line-through;opacity:.85;">' + valCliente + '</td>' +
+              '<td style="padding:6px 12px;color:#166534;font-weight:600;">' + valSistema + '</td>' +
+            '</tr>';
+          }).join('') +
+        '</tbody>' +
+      '</table>';
+    body.appendChild(sec);
+  });
+
+  box.appendChild(body);
+
+  var ftr = document.createElement('div');
+  ftr.style.cssText = 'padding:14px 24px;background:#fff;border-top:1px solid #e2e8f0;display:flex;gap:10px;align-items:center;justify-content:space-between;flex-shrink:0;';
+  ftr.innerHTML =
+    '<div style="font-size:.72rem;color:#475569;">Las diferencias también aparecen en el reporte de auditoría.</div>' +
+    '<div style="display:flex;gap:8px;">' +
+      '<button id="dif-cancelar" style="padding:10px 18px;background:#e2e8f0;color:#334155;border:none;border-radius:8px;font-weight:700;font-size:.78rem;cursor:pointer;">Cancelar</button>' +
+      '<button id="dif-continuar" style="padding:10px 22px;background:#059669;color:#fff;border:none;border-radius:8px;font-weight:800;font-size:.78rem;cursor:pointer;">Continuar con datos del sistema</button>' +
+    '</div>';
+  box.appendChild(ftr);
+  ov.appendChild(box); document.body.appendChild(ov);
+
+  document.getElementById('dif-cancelar').addEventListener('click', function(){ ov.remove(); });
+  document.getElementById('dif-continuar').addEventListener('click', function(){
+    ov.remove();
+    if (typeof onContinuar === 'function') onContinuar();
+  });
+};
+
 function msAuditarPedido(productosNorm, sucursales, fuente) {
   var errores = [], alertas = [], conDatos = 0;
 
@@ -28516,6 +29096,34 @@ function msMostrarAuditoria(audit, onContinuar, productosNorm) {
     altHtml += '</div>';
     altDiv.innerHTML = altHtml;
     body.appendChild(altDiv);
+  }
+
+  // ── Sección Diferencias Cliente vs Sistema ──
+  if (audit._comparacion && audit._comparacion.totalDif > 0) {
+    var cmp = audit._comparacion;
+    var difDiv = document.createElement('div');
+    difDiv.style.cssText = 'margin-bottom:14px;';
+    var header = '<div style="font-size:.7rem;font-weight:800;color:#1e40af;text-transform:uppercase;letter-spacing:.8px;margin-bottom:6px;">🔎 ' + cmp.totalDif + ' diferencia(s) cliente vs nuestro sistema (se usaron datos del sistema)</div>';
+    var contenedor = '<div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:10px 14px;max-height:240px;overflow-y:auto;">';
+    var filas = '';
+    cmp.campos.forEach(function(c){
+      var lista = cmp.diferencias[c.k];
+      if (!lista || !lista.length) return;
+      filas += '<div style="font-size:.66rem;font-weight:700;color:#1e3a8a;margin:6px 0 4px;">' + c.label + ' (' + lista.length + ')</div>';
+      lista.slice(0, 8).forEach(function(d){
+        var vc = (c.tipo === 'num') ? parseFloat(d.cliente||0).toFixed(2) : String(d.cliente||'(vacío)');
+        var vs = (c.tipo === 'num') ? parseFloat(d.sistema||0).toFixed(2) : String(d.sistema||'(vacío)');
+        filas += '<div style="display:flex;gap:10px;padding:2px 0;font-size:.66rem;line-height:1.4;">' +
+          '<span style="font-family:monospace;font-weight:700;color:#1e293b;min-width:70px;">' + d.ref + '</span>' +
+          '<span style="color:#991b1b;text-decoration:line-through;opacity:.75;">' + vc + '</span>' +
+          '<span style="color:#64748b;">→</span>' +
+          '<span style="color:#166534;font-weight:600;">' + vs + '</span>' +
+        '</div>';
+      });
+      if (lista.length > 8) filas += '<div style="font-size:.62rem;color:#64748b;padding-left:80px;">· y ' + (lista.length - 8) + ' más...</div>';
+    });
+    difDiv.innerHTML = header + contenedor + filas + '</div>';
+    body.appendChild(difDiv);
   }
 
   // OK banner
