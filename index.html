@@ -6347,6 +6347,15 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
     try { await setDoc(doc(db, 'portal_tokens', token), data); return true; }
     catch(e) { console.error('fbSavePortalToken:', e); return false; }
   };
+  // pt_data (Ordenada) — publicar a Firestore para que el portal lo lea cuando el token tenga mostrarOrdenada:true
+  window.fbSavePT = async () => {
+    try {
+      var ptData = localStorage.getItem('farmers_pt_data') || '{}';
+      await setDoc(doc(db, 'data', 'pt_data'), { v: ptData });
+      console.log('[fbSavePT] pt_data publicado a Firestore (' + Object.keys(JSON.parse(ptData)).length + ' refs)');
+      return true;
+    } catch(e) { console.error('fbSavePT:', e); return false; }
+  };
   window.fbGetPortalTokens = async () => {
     try {
       const snap = await getDocs(collection(db, 'portal_tokens'));
@@ -47645,7 +47654,7 @@ function pcAbrirFormToken(existente, clDB) {
     clienteNombre: '',
     rifEsperado: '',
     activo: true,
-    configVista: { moneda: 'USD', mostrarStock: 'disponibilidad', marcasVisibles: [], ocultarAgotados: false },
+    configVista: { moneda: 'USD', mostrarStock: 'disponibilidad', marcasVisibles: [], ocultarAgotados: false, mostrarOrdenada: false },
     pedidosRealizados: 0,
     creado: Date.now(),
   };
@@ -47703,6 +47712,8 @@ function pcAbrirFormToken(existente, clDB) {
 
       '<label style="display:flex;align-items:center;gap:8px;font-size:.78rem;color:#475569;margin-bottom:10px;cursor:pointer;"><input type="checkbox" id="pc-ocultar-agotados"' + (data.configVista.ocultarAgotados ? ' checked' : '') + '> Ocultar productos agotados del catálogo</label>' +
 
+      '<label style="display:flex;align-items:center;gap:8px;font-size:.78rem;color:#475569;margin-bottom:10px;cursor:pointer;"><input type="checkbox" id="pc-mostrar-ordenada"' + (data.configVista.mostrarOrdenada ? ' checked' : '') + '> Mostrar cantidad 📦 Ordenada (cantidad en camino) al cliente</label>' +
+
       '<label style="display:block;font-size:.72rem;font-weight:700;color:#475569;margin-bottom:4px;">Marcas visibles (vacío = todas)</label>' +
       '<div id="pc-marcas-chk" style="margin-bottom:16px;background:#f8fafc;padding:10px;border-radius:8px;max-height:140px;overflow-y:auto;">' + (marcasChecks || '<span style="color:#64748b;font-size:.72rem;">No hay marcas en el catálogo</span>') + '</div>' +
 
@@ -47738,6 +47749,7 @@ function pcAbrirFormToken(existente, clDB) {
       moneda: document.getElementById('pc-moneda').value,
       mostrarStock: document.getElementById('pc-stock').value,
       ocultarAgotados: document.getElementById('pc-ocultar-agotados').checked,
+      mostrarOrdenada: document.getElementById('pc-mostrar-ordenada').checked,
       marcasVisibles: marcasSeleccionadas,
     };
 
@@ -47748,6 +47760,10 @@ function pcAbrirFormToken(existente, clDB) {
     try {
       if (typeof window.fbSavePortalToken === 'function') {
         await window.fbSavePortalToken(data.token, data);
+      }
+      // Si el token activa "Mostrar Ordenada", sincronizar pt_data a Firestore (fire-and-forget)
+      if (data.configVista.mostrarOrdenada && typeof window.fbSavePT === 'function') {
+        window.fbSavePT().catch(function(e){ console.warn('fbSavePT falló:', e); });
       }
       // Actualizar caché
       if (isEdit) {
@@ -48180,32 +48196,32 @@ function pcDescargarPedidoPDF(id) {
     '<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8">' +
     '<title>' + filename + '</title>' +
     '<style>' +
-      '@page { size: A4 portrait; margin: 5mm 6mm; }' +
+      '@page { size: A4 landscape; margin: 5mm 6mm; }' +
       '* { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; color-adjust: exact !important; }' +
       'body { font-family: -apple-system, "Segoe UI", Roboto, Arial, sans-serif; margin: 0; color: #1e293b; font-size: 10px; }' +
-      '.header { background: linear-gradient(135deg, #1B1F6B, #9B6FD4); color: #fff; padding: 14px 18px; display: flex; align-items: center; gap: 14px; border-radius: 6px 6px 0 0; }' +
-      '.header .logo { height: 52px; background: #fff; border-radius: 6px; padding: 6px 10px; }' +
+      '.header { background: linear-gradient(135deg, #1B1F6B, #9B6FD4); color: #fff; padding: 12px 18px; display: flex; align-items: center; gap: 14px; border-radius: 6px 6px 0 0; }' +
+      '.header .logo { height: 48px; background: #fff; border-radius: 6px; padding: 5px 9px; }' +
       '.header .title { flex: 1; }' +
-      '.header h1 { margin: 0; font-size: 16px; letter-spacing: 1px; font-weight: 900; }' +
-      '.header .num { font-size: 11px; opacity: .95; font-family: "Courier New", monospace; font-weight: 700; margin-top: 2px; }' +
-      '.header .date { font-size: 10px; opacity: .85; margin-top: 2px; }' +
-      '.client-info { background: #f8faff; padding: 10px 18px; border-left: 3px solid #F47B3E; }' +
-      '.client-info table { width: 100%; font-size: 10px; }' +
+      '.header h1 { margin: 0; font-size: 15px; letter-spacing: 1px; font-weight: 900; }' +
+      '.header .num { font-size: 10px; opacity: .95; font-family: "Courier New", monospace; font-weight: 700; margin-top: 2px; }' +
+      '.header .date { font-size: 9px; opacity: .85; margin-top: 2px; }' +
+      '.client-info { background: #f8faff; padding: 8px 18px; border-left: 3px solid #F47B3E; }' +
+      '.client-info table { width: 100%; font-size: 9px; }' +
       '.client-info td { padding: 2px 0; }' +
-      '.client-info td.lbl { font-weight: 800; color: #475569; width: 90px; text-transform: uppercase; font-size: 9px; letter-spacing: .5px; }' +
+      '.client-info td.lbl { font-weight: 800; color: #475569; width: 90px; text-transform: uppercase; font-size: 8px; letter-spacing: .5px; }' +
       '.client-info td.val { color: #1e293b; font-weight: 600; }' +
-      'table.items { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 9px; }' +
-      'table.items th { background: #1B1F6B; color: #fff; padding: 6px 7px; text-align: left; font-size: 9px; font-weight: 800; letter-spacing: .3px; }' +
-      'table.items td { padding: 5px 7px; border-bottom: 1px solid #e2e8f0; }' +
+      'table.items { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 8.5px; }' +
+      'table.items th { background: #1B1F6B; color: #fff; padding: 5px 5px; text-align: left; font-size: 8px; font-weight: 800; letter-spacing: .3px; }' +
+      'table.items td { padding: 4px 5px; border-bottom: 1px solid #e2e8f0; }' +
       'table.items tr:nth-child(even) { background: #f8fafc; }' +
-      'table.items .ref { font-family: "Courier New", monospace; font-weight: 700; color: #1B1F6B; }' +
+      'table.items .ref { font-family: "Courier New", monospace; font-weight: 700; color: #1B1F6B; font-size: 8px; }' +
       'table.items .num, table.items .qty { text-align: center; font-weight: 700; }' +
       'table.items .price { text-align: right; }' +
       'table.items .sub { text-align: right; font-weight: 800; color: #059669; }' +
-      '.totals { margin-top: 8px; background: #1B1F6B; color: #fff; padding: 10px 18px; display: flex; justify-content: space-between; align-items: center; border-radius: 0 0 6px 6px; }' +
+      '.totals { margin-top: 6px; background: #1B1F6B; color: #fff; padding: 9px 18px; display: flex; justify-content: space-between; align-items: center; border-radius: 0 0 6px 6px; }' +
       '.totals .lbl { font-size: 11px; font-weight: 800; letter-spacing: 1px; }' +
       '.totals .val { font-size: 15px; font-weight: 900; }' +
-      '.footer-note { margin-top: 12px; padding: 8px 18px; background: #fef3c7; border-left: 3px solid #d97706; font-size: 9px; color: #78350f; border-radius: 4px; }' +
+      '.footer-note { margin-top: 10px; padding: 7px 18px; background: #fef3c7; border-left: 3px solid #d97706; font-size: 9px; color: #78350f; border-radius: 4px; }' +
       '.noprint { text-align: center; padding: 20px; }' +
       '.print-btn { background: #1B1F6B; color: #fff; border: none; border-radius: 8px; padding: 11px 32px; font-size: 13px; font-weight: 700; cursor: pointer; box-shadow: 0 4px 14px rgba(27,31,107,.3); }' +
       '@media print { .noprint { display: none !important; } }' +
@@ -48228,20 +48244,28 @@ function pcDescargarPedidoPDF(id) {
     '</table></div>' +
     '<table class="items">' +
       '<thead><tr>' +
-        '<th style="width:11%;">REF</th>' +
+        '<th style="width:9%;">REF</th>' +
+        '<th style="width:11%;">CÓD. BARRAS</th>' +
+        '<th style="width:9%;">CÓDIGO</th>' +
         '<th>DESCRIPCIÓN</th>' +
-        '<th style="width:10%;">MARCA</th>' +
-        '<th style="width:7%;text-align:center;">CANT</th>' +
-        '<th style="width:11%;text-align:right;">P.U.</th>' +
-        '<th style="width:12%;text-align:right;">SUBTOTAL</th>' +
+        '<th style="width:8%;">MARCA</th>' +
+        '<th style="width:8%;">EMPAQUE</th>' +
+        '<th style="width:5%;text-align:center;">MED</th>' +
+        '<th style="width:6%;text-align:center;">CANT</th>' +
+        '<th style="width:10%;text-align:right;">P.U.</th>' +
+        '<th style="width:11%;text-align:right;">SUBTOTAL</th>' +
       '</tr></thead>' +
       '<tbody>' +
         (p.items || []).map(function(it){
           var sub = (parseFloat(it.qty)||0) * (parseFloat(it.precioMostrado)||0);
           return '<tr>' +
             '<td class="ref">' + esc(it.ref || '—') + '</td>' +
+            '<td class="ref">' + esc(it.codigoBarra || '—') + '</td>' +
+            '<td class="ref">' + esc(it.codigoInterno || '—') + '</td>' +
             '<td>' + esc(it.desc || '—') + '</td>' +
             '<td>' + esc(it.marca || '—') + '</td>' +
+            '<td>' + esc(it.empaque || '—') + '</td>' +
+            '<td class="qty">' + esc(it.medida || '—') + '</td>' +
             '<td class="qty">' + (it.qty || 0) + '</td>' +
             '<td class="price">' + simb + (parseFloat(it.precioMostrado)||0).toFixed(2) + '</td>' +
             '<td class="sub">' + simb + sub.toFixed(2) + '</td>' +
@@ -48290,24 +48314,30 @@ function pcDescargarPedidoExcel(id) {
     (p.cliente.correo ? ['Correo', p.cliente.correo] : ['', '']),
     [],
     ['DETALLE DE PRODUCTOS'],
-    ['REFERENCIA', 'DESCRIPCIÓN', 'CÓDIGO BARRA', 'MARCA', 'CANTIDAD', 'PRECIO ' + (p.moneda || 'USD'), 'SUBTOTAL ' + (p.moneda || 'USD')]
+    ['REFERENCIA', 'CÓDIGO BARRA', 'CÓDIGO INTERNO', 'DESCRIPCIÓN', 'MARCA', 'EMPAQUE', 'MEDIDA', 'CANTIDAD', 'PRECIO USD', 'PRECIO BCV', 'PRECIO TF', 'PRECIO ' + (p.moneda || 'USD'), 'SUBTOTAL ' + (p.moneda || 'USD')]
   ];
 
   (p.items || []).forEach(function(it){
     var sub = (parseFloat(it.qty)||0) * (parseFloat(it.precioMostrado)||0);
     data.push([
       it.ref || '',
-      it.desc || '',
       it.codigoBarra || '',
+      it.codigoInterno || '',
+      it.desc || '',
       it.marca || '',
+      it.empaque || '',
+      it.medida || '',
       parseFloat(it.qty) || 0,
+      parseFloat(it.precioUSD || 0),
+      parseFloat(it.precioBCV || 0),
+      parseFloat(it.precioTF  || 0),
       parseFloat(it.precioMostrado) || 0,
       sub
     ]);
   });
 
   data.push([]);
-  data.push(['', '', '', '', 'TOTAL:', '', p.total || 0]);
+  data.push(['', '', '', '', '', '', '', '', '', '', '', 'TOTAL:', p.total || 0]);
 
   if (p.estado === 'rechazado') {
     data.push([]);
@@ -48320,8 +48350,8 @@ function pcDescargarPedidoExcel(id) {
   }
 
   var ws = XLSX.utils.aoa_to_sheet(data);
-  // Anchos de columna
-  ws['!cols'] = [ {wch:15}, {wch:42}, {wch:16}, {wch:12}, {wch:10}, {wch:13}, {wch:14} ];
+  // Anchos de columna: REF, CB, CódInt, DESC, MARCA, EMP, MED, CANT, USD, BCV, TF, PRECIO, SUB
+  ws['!cols'] = [ {wch:12}, {wch:16}, {wch:14}, {wch:42}, {wch:12}, {wch:12}, {wch:8}, {wch:10}, {wch:12}, {wch:12}, {wch:12}, {wch:13}, {wch:14} ];
 
   var wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Pedido');
