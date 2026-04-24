@@ -27304,22 +27304,116 @@ function msRowsToText(rows) {
 async function msDetectarEstructura(rows) {
   // Detector MULTI-FORMATO — tolera Excel sin columna REFERENCIA
   // Formatos soportados:
-  //   A) Excel con REFERENCIA explícita (formato clásico)
-  //   B) Excel con CÓDIGO DE BARRAS y/o DESCRIPCIÓN sin REFERENCIA → se deriva la ref
-  //   C) Excel solo con DESCRIPCIÓN → matching por fuzzy con catálogo
-  var muestra = msRowsToText(rows.slice(0, 6));
+  //   A) Excel propio de FARMERS (despacho/pedido) — detección directa sin IA
+  //   B) Excel con REFERENCIA explícita (formato clásico)
+  //   C) Excel con CÓDIGO DE BARRAS y/o DESCRIPCIÓN sin REFERENCIA → se deriva la ref
+  //   D) Excel solo con DESCRIPCIÓN → matching por fuzzy con catálogo
+
+  // ── CAPA 1: Detector rápido Farmers (sin IA) ──
+  // Busca en las primeras 15 filas una fila que contenga "REFERENCIA" y "DESCRIPCIÓN"
+  // (o variantes). Si la encontramos, usamos esa como headerRow sin llamar a la IA.
+  var farmersHeaderIdx = -1;
+  var maxScan = Math.min(rows.length, 15);
+  for (var fi = 0; fi < maxScan; fi++) {
+    var fr = rows[fi] || [];
+    var celdas = fr.map(function(c){ return String(c||'').trim().toUpperCase(); });
+    var tieneRef = celdas.some(function(c){ return c === 'REFERENCIA' || c === 'REF' || c === 'COD' || c === 'CODIGO' || c === 'CÓDIGO'; });
+    var tieneDesc = celdas.some(function(c){ return c === 'DESCRIPCIÓN' || c === 'DESCRIPCION' || c === 'DESC' || c === 'PRODUCTO' || c === 'NOMBRE' || c === 'ARTICULO' || c === 'ARTÍCULO'; });
+    var tieneCant = celdas.some(function(c){
+      return c === 'PEDIDO' || c === 'PIDE' || c === 'CANTIDAD' || c === 'CANT' ||
+             c === 'QTY' || c === 'UNID' || c === 'UNIDADES' || c === 'ORDEN';
+    });
+    if (tieneRef && tieneDesc && tieneCant) {
+      farmersHeaderIdx = fi;
+      break;
+    }
+  }
+
+  if (farmersHeaderIdx >= 0) {
+    // ── Formato Farmers detectado — mapeo directo ──
+    var headerFR = rows[farmersHeaderIdx];
+    var refCol = -1, descCol = -1, barraCol = -1, codigoCol = -1, invCol = -1;
+    var sucursalesColsFR = [];
+
+    headerFR.forEach(function(cell, idx){
+      var h = String(cell||'').trim().toUpperCase();
+      if (!h) return;
+      // Identificadores del producto
+      if (h === 'REFERENCIA' || h === 'REF')                                         refCol = idx;
+      else if (h === 'DESCRIPCIÓN' || h === 'DESCRIPCION' || h === 'DESC' ||
+               h === 'PRODUCTO' || h === 'NOMBRE' || h === 'ARTICULO' || h === 'ARTÍCULO') descCol = idx;
+      else if (h === 'CÓD.BARRA' || h === 'COD.BARRA' || h === 'CÓDIGO DE BARRA' ||
+               h === 'CODIGO DE BARRA' || h === 'CÓDIGO BARRAS' || h === 'CODIGO BARRAS' ||
+               h === 'BARRA' || h === 'BARRAS' || h === 'EAN' || h === 'UPC')        barraCol = idx;
+      else if (h === 'CÓDIGO' || h === 'CODIGO' || h === 'COD' || h === 'COD.PROV' ||
+               h === 'COD. INTERNO' || h === 'SKU')                                   codigoCol = idx;
+      else if (h === 'STOCK' || h === 'EXISTENCIA' || h === 'INVENTARIO' ||
+               h === 'DISPONIBLE' || h === 'EN STOCK')                                invCol = idx;
+      // Columnas de cantidad — la principal es PEDIDO/PIDE
+      else if (h === 'PEDIDO' || h === 'PIDE' || h === 'CANTIDAD' || h === 'CANT' ||
+               h === 'QTY' || h === 'UNID' || h === 'UNIDADES' || h === 'ORDEN')     sucursalesColsFR.push(idx);
+      // Ignoramos DESPACHO, DIFERENCIA, P.XXX, VENTA (no son cantidades pedidas)
+    });
+
+    if (sucursalesColsFR.length === 0) {
+      // Fallback: si no hay PEDIDO explícito, usar la primera columna numérica posterior a invCol
+      for (var ci = Math.max(0, invCol+1); ci < headerFR.length; ci++) {
+        if ([refCol, descCol, barraCol, codigoCol, invCol].indexOf(ci) >= 0) continue;
+        var hh = String(headerFR[ci]||'').trim();
+        if (hh && !/^(P\.|PRECIO|VENTA|TOTAL|\$)/i.test(hh)) { sucursalesColsFR.push(ci); break; }
+      }
+    }
+
+    if (refCol < 0 && descCol < 0 && barraCol < 0 && codigoCol < 0) {
+      throw new Error('Formato Farmers detectado pero sin columnas identificables. Encabezados fila ' + (farmersHeaderIdx+1) + ': ' +
+        headerFR.map(function(h,i){ return i+'='+(h||'null'); }).join(' | '));
+    }
+
+    if (sucursalesColsFR.length === 0) {
+      throw new Error('Formato Farmers detectado pero sin columna de cantidad. Encabezados: ' +
+        headerFR.map(function(h,i){ return i+'='+(h||'null'); }).join(' | '));
+    }
+
+    var sucursalesNom = sucursalesColsFR.map(function(col){
+      if (MS._clienteUnica && MS._clienteUnica.nombre) return MS._clienteUnica.nombre;
+      var raw = String(headerFR[col]||'').trim();
+      return raw || 'PEDIDO';
+    });
+
+    console.log('[Excel Farmers] Formato propio detectado. Fila encabezado: ' + (farmersHeaderIdx+1) +
+                ' · refCol=' + refCol + ' descCol=' + descCol + ' barraCol=' + barraCol +
+                ' codigoCol=' + codigoCol + ' invCol=' + invCol + ' pedidoCols=' + JSON.stringify(sucursalesColsFR));
+
+    return {
+      headerRow:      farmersHeaderIdx,
+      refCol:         refCol,
+      descCol:        descCol,
+      barraCol:       barraCol,
+      codigoCol:      codigoCol,
+      invCol:         invCol,
+      sucursalesCols: sucursalesColsFR,
+      sucursales:     sucursalesNom
+    };
+  }
+
+  // ── CAPA 2: Detector IA (ventana ampliada) ──
+  // Enviamos las primeras 15 filas (antes eran 6) — cubre Excel con metadatos extensos arriba.
+  var muestra = msRowsToText(rows.slice(0, 15));
   var prompt =
-    'Analiza estas primeras filas de un Excel de pedidos. Puede venir en formatos variados.\n\n' +
+    'Analiza estas primeras filas de un Excel de pedidos. Puede venir en formatos variados y la fila de encabezados PUEDE NO SER LA FILA 0.\n\n' +
     muestra + '\n\n' +
+    'El Excel puede tener filas de metadatos (cliente, fecha, dirección) antes de la tabla real.\n' +
+    'Busca la fila que contiene palabras como "REFERENCIA", "DESCRIPCIÓN", "CÓDIGO", "PEDIDO", "CANTIDAD" — esa es headerRow.\n\n' +
     'Identifica índices de columna (0-based). Si una columna no existe, usa -1.\n' +
-    '1. headerRow: fila con los encabezados (normalmente 0)\n' +
+    '1. headerRow: fila con los encabezados (puede ser 0, 5, 7, etc. según el archivo)\n' +
     '2. refCol: columna con REFERENCIA INTERNA del producto (ej: EXC001, MAT030, GEN019). -1 si no hay.\n' +
     '3. descCol: columna con DESCRIPCIÓN del producto (ej: "BIBERON 2OZ GENIAL"). -1 si no hay.\n' +
     '4. barraCol: columna con CÓDIGO DE BARRAS (ej: números de 12-14 dígitos tipo 7453...). -1 si no hay.\n' +
     '5. codigoCol: columna con CÓDIGO secundario tipo GN-BC5025, GN-YETH1. -1 si no hay.\n' +
     '6. invCol: columna con INVENTARIO/STOCK disponible del proveedor. -1 si no hay.\n' +
     '7. sucursalesCols: array de columnas con CANTIDADES PEDIDAS por sucursal.\n' +
-    '   Si solo hay UNA columna de cantidad (ej: CANTIDAD, PEDIDO, PIDE, UNID), ponla sola en el array.\n\n' +
+    '   Si solo hay UNA columna de cantidad (ej: CANTIDAD, PEDIDO, PIDE, UNID), ponla sola en el array.\n' +
+    '   NO incluyas columnas de DESPACHO, DIFERENCIA, PRECIO, VENTA, TOTAL.\n\n' +
     'IMPORTANTE: Al menos UNO de refCol/descCol/barraCol debe ser >= 0 (necesitas al menos una forma de identificar el producto).\n' +
     'Y sucursalesCols debe tener al menos 1 elemento.\n\n' +
     'RESPONDE SOLO JSON sin markdown:\n' +
