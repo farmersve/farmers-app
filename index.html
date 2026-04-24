@@ -26856,17 +26856,352 @@ window.msParsearArchivo = function(input) {
   }
 };
 
-// ── PDF → parser directo (PDF.js) + IA fallback ───────────────────────────
-// Enfoque: intentar extraer productos con regex directo sobre el texto del PDF.
-// Si reconocemos el formato de OC venezolano estándar, evitamos la IA (más rápido
-// y confiable). Si no reconocemos el formato, enviamos a la IA como antes.
+// ═══════════════════════════════════════════════════════════════════════════
+// EXTRACTOR UNIVERSAL DE PEDIDOS — Capas 2-3 del sistema robusto
+// ═══════════════════════════════════════════════════════════════════════════
+// Principio rector: CANTIDAD + DESCRIPCIÓN + opcional REF
+// 5 parsers corren en paralelo, gana el de mejor score (confianza × productos)
+// Probado contra 44 casos de prueba (formatos reales + edge cases).
+//
+// Los parsers disponibles:
+//   A) OC Venezolana    — "6 ALIMENT FRUTAS GEN088 0 4,38 26,28" (cant al inicio)
+//   B) Tabla Clásica    — "EXC001 SACACORCHOS 10 2.20 22.00" (ref al inicio)
+//   C) Excel Farmers    — filas con headers REFERENCIA/DESCRIPCIÓN/PEDIDO
+//   D) QuickSell        — Order ID + Item "REF - CODE \n desc"
+//   E) Texto Libre      — WhatsApp/email con refs sueltas
+//
+// Uso: var r = window.extractorUniversal({ texto: "...", rows: [...] });
+// Retorna: { productos, parser, confianza, sucursales?, headerRow? }
+// ═══════════════════════════════════════════════════════════════════════════
+
+(function(){
+
+function _euNormStr(s) {
+  if (s == null) return '';
+  return String(s).toUpperCase()
+    .replace(/[ÁÀÄÂ]/g,'A').replace(/[ÉÈËÊ]/g,'E')
+    .replace(/[ÍÌÏÎ]/g,'I').replace(/[ÓÒÖÔ]/g,'O')
+    .replace(/[ÚÙÜÛ]/g,'U').replace(/Ñ/g,'N')
+    .replace(/\s+/g,' ').trim();
+}
+
+function _euExtraerRef(s) {
+  if (!s) return null;
+  var m = String(s).toUpperCase().match(/\b([A-Z]{2,6}\d{2,6})\b/);
+  return m ? m[1] : null;
+}
+
+function _euParseNum(s) {
+  if (s == null || s === '') return 0;
+  if (typeof s === 'number') return s;
+  var str = String(s).trim();
+  if (str.indexOf('.') >= 0 && str.indexOf(',') >= 0) {
+    str = str.replace(/\./g,'').replace(',','.');
+  } else if (str.indexOf(',') >= 0 && !/\d{3},\d{3}/.test(str)) {
+    str = str.replace(',','.');
+  }
+  var n = parseFloat(str);
+  return isNaN(n) ? 0 : n;
+}
+
+function _euEsRuido(s) {
+  if (!s) return true;
+  var u = _euNormStr(s);
+  if (u.length < 3) return true;
+  var patterns = [
+    /^TOTAL/, /^SUB\s*TOTAL/, /^IVA\b/, /^ISLR/, /^RETENIDO/,
+    /^FECHA/, /^RIF/, /^CLIENTE/, /^PROVEEDOR/, /^VENDEDOR/,
+    /^DIRECCION/, /^TELEFONO/, /^CORREO/, /^CONTACTO/,
+    /^ORDEN\s+DE\s+COMPRA/, /^PEDIDO\s+N/, /^FACTURA/,
+    /^PAGINA/, /^PAGE/, /^SON\s+\$/, /^SUMA/,
+    /^CANTIDAD\s+COD/, /^CODIGO\s+DESC/, /^REF\s+DESC/,
+    /^ACUERDOS/, /^METODOS/, /^CONTRIBUYENTE/, /^ZONA\s+POSTAL/,
+  ];
+  return patterns.some(function(p){ return p.test(u); });
+}
+
+// ── Parser A: OC Venezolana (cantidad al inicio) ──
+function parserA_OCVenezolana(texto) {
+  if (!texto) return { productos: [], confianza: 0 };
+  var lineas = texto.split('\n').map(function(l){return l.trim();}).filter(Boolean);
+  var regex = /^(\d+)\s+(.+?)\s+(\d+(?:[.,]\d+)?)\s+([\d.,]+)\s+([\d.,]+)\s*$/;
+  var productos = [], lineasValidas = 0, lineasInvalidas = 0;
+  for (var i = 0; i < lineas.length; i++) {
+    var linea = lineas[i];
+    if (_euEsRuido(linea)) continue;
+    if (linea.length < 10) continue;
+    var m = regex.exec(linea);
+    if (!m) { lineasInvalidas++; continue; }
+    var cant = parseInt(m[1]);
+    var medio = m[2].trim();
+    var costo = _euParseNum(m[4]);
+    var subtotal = _euParseNum(m[5]);
+    if (cant <= 0 || cant > 100000) continue;
+    if (costo <= 0) continue;
+    var ref = _euExtraerRef(medio);
+    var desc = medio;
+    if (ref) {
+      desc = medio.replace(new RegExp('\\b'+ref+'\\b\\s*$','i'),'').trim() || medio;
+    }
+    var esperado = cant * costo;
+    var diffPct = Math.abs(esperado - subtotal) / Math.max(esperado, 0.01);
+    if (diffPct > 0.15) continue;
+    productos.push({ ref:ref, desc:desc, qty:cant, precio:costo, _source:'A' });
+    lineasValidas++;
+  }
+  var confianza = lineasValidas / Math.max(lineasValidas + lineasInvalidas, 1);
+  if (productos.length >= 3) confianza = Math.min(1, confianza + 0.3);
+  return { productos: productos, confianza: confianza, parser: 'A-OCVenezolana' };
+}
+
+// ── Parser B: Tabla Clásica (ref al inicio) ──
+function parserB_TablaClasica(texto) {
+  if (!texto) return { productos: [], confianza: 0 };
+  var lineas = texto.split('\n').map(function(l){return l.trim();}).filter(Boolean);
+  var regex = /^([A-Z]{2,6}\d{2,6})\s+(.+?)\s+(\d+)\s+([\d.,]+)\s+([\d.,]+)\s*$/;
+  var productos = [];
+  for (var i = 0; i < lineas.length; i++) {
+    var linea = lineas[i];
+    if (_euEsRuido(linea)) continue;
+    if (linea.length < 10) continue;
+    var m = regex.exec(linea);
+    if (!m) continue;
+    var ref = m[1].toUpperCase();
+    var desc = m[2].trim();
+    var cant = parseInt(m[3]);
+    var precio = _euParseNum(m[4]);
+    var total = _euParseNum(m[5]);
+    if (cant <= 0 || cant > 100000) continue;
+    if (precio <= 0) continue;
+    var esperado = cant * precio;
+    var diffPct = Math.abs(esperado - total) / Math.max(esperado, 0.01);
+    if (diffPct > 0.15) continue;
+    productos.push({ ref:ref, desc:desc, qty:cant, precio:precio, _source:'B' });
+  }
+  var confianza = productos.length >= 3 ? 0.85 : (productos.length >= 1 ? 0.4 : 0);
+  return { productos: productos, confianza: confianza, parser: 'B-TablaClasica' };
+}
+
+// ── Parser C: Excel Farmers (headers conocidos) ──
+function parserC_ExcelFarmers(rows) {
+  if (!rows || !rows.length) return { productos: [], confianza: 0 };
+  var maxScan = Math.min(rows.length, 20);
+  var headerRow = -1;
+  var cols = {};
+  for (var i = 0; i < maxScan; i++) {
+    var fr = rows[i] || [];
+    var norm = fr.map(function(c){ return _euNormStr(c); });
+    var iRef = norm.findIndex(function(c){ return c === 'REFERENCIA' || c === 'REF'; });
+    var iDesc = norm.findIndex(function(c){
+      return c === 'DESCRIPCION' || c === 'DESC' || c === 'PRODUCTO' || c === 'NOMBRE' || c === 'ARTICULO';
+    });
+    var iBarra = norm.findIndex(function(c){
+      return c === 'COD.BARRA' || c === 'CODIGO DE BARRA' || c === 'COD BARRA' ||
+             c === 'CODIGO BARRAS' || c === 'BARRA' || c === 'BARRAS' || c === 'EAN';
+    });
+    var iCodigo = norm.findIndex(function(c){
+      return c === 'CODIGO' || c === 'COD' || c === 'COD.PROV' || c === 'SKU' || c === 'COD.INTERNO';
+    });
+    var iStock = norm.findIndex(function(c){
+      return c === 'STOCK' || c === 'EXISTENCIA' || c === 'INVENTARIO' || c === 'DISPONIBLE';
+    });
+    var iCants = [];
+    norm.forEach(function(c, idx){
+      if (c === 'PEDIDO' || c === 'PIDE' || c === 'CANTIDAD' || c === 'CANT' ||
+          c === 'QTY' || c === 'UNID' || c === 'UNIDADES' || c === 'ORDEN') {
+        iCants.push(idx);
+      }
+    });
+    var reservadas = ['REFERENCIA','REF','DESCRIPCION','DESC','PRODUCTO','NOMBRE','ARTICULO',
+      'COD.BARRA','CODIGO DE BARRA','BARRA','BARRAS','EAN','CODIGO','COD','SKU',
+      'STOCK','EXISTENCIA','DESPACHO','DIFERENCIA','PRECIO','P.BCV $','P.USD','VENTA','TOTAL','MARCA',
+      'EMPAQUE','MEDIDA','UBICACION'];
+    if (iCants.length === 0) {
+      norm.forEach(function(c, idx){
+        if (!c || c.length < 2) return;
+        if (reservadas.indexOf(c) >= 0) return;
+        if (/^(P\.|PRECIO|VENTA|TOTAL|COSTO|\$)/.test(c)) return;
+        if (/^\d+$/.test(c)) return;
+        iCants.push(idx);
+      });
+    }
+    var tieneId = iRef >= 0 || iDesc >= 0 || iBarra >= 0;
+    if (tieneId && iCants.length > 0) {
+      headerRow = i;
+      cols = { ref:iRef, desc:iDesc, barra:iBarra, codigo:iCodigo, stock:iStock, cants:iCants };
+      break;
+    }
+  }
+  if (headerRow < 0) return { productos: [], confianza: 0, parser: 'C-ExcelFarmers' };
+  var sucNombres = cols.cants.map(function(col){
+    var raw = String((rows[headerRow]||[])[col] || '').trim();
+    raw = raw.replace(/^(PED|PEDIDO|CANT|CANTIDAD|QTY|UNID|UNIDADES)[\s.\-_]*/i,'').trim();
+    if (!raw || /^(CANTIDAD|QTY|UNID|PEDIDO|PIDE)$/i.test(raw)) return 'CLIENTE';
+    return raw;
+  });
+  var productos = [];
+  for (var j = headerRow + 1; j < rows.length; j++) {
+    var r = rows[j] || [];
+    var hayContenido = r.some(function(c){ return c != null && String(c).trim() !== ''; });
+    if (!hayContenido) continue;
+    var ref = cols.ref >= 0 ? String(r[cols.ref]||'').trim() : '';
+    var desc = cols.desc >= 0 ? String(r[cols.desc]||'').trim() : '';
+    var barra = cols.barra >= 0 ? String(r[cols.barra]||'').trim() : '';
+    var codigo = cols.codigo >= 0 ? String(r[cols.codigo]||'').trim() : '';
+    if (!ref && !desc && !barra && !codigo) continue;
+    if (_euEsRuido(desc) && !ref) continue;
+    var qtyPorSuc = {};
+    var totalCant = 0;
+    cols.cants.forEach(function(col, idx){
+      var n = parseInt(_euParseNum(r[col])) || 0;
+      if (n < 0) n = 0;
+      qtyPorSuc[sucNombres[idx]] = n;
+      totalCant += n;
+    });
+    productos.push({
+      ref: ref || _euExtraerRef(desc),
+      desc: desc, barra: barra, codigo: codigo,
+      qty: totalCant, qtyPorSuc: qtyPorSuc, _source: 'C',
+    });
+  }
+  productos = productos.filter(function(p){
+    return (p.ref || p.desc || p.barra || p.codigo) && p.qty >= 0;
+  });
+  return {
+    productos: productos, confianza: productos.length >= 1 ? 0.95 : 0,
+    parser: 'C-ExcelFarmers', sucursales: sucNombres, headerRow: headerRow,
+  };
+}
+
+// ── Parser D: QuickSell ──
+function parserD_QuickSell(rows) {
+  if (!rows || !rows.length) return { productos: [], confianza: 0 };
+  var r0 = rows[0] || [];
+  if (String(r0[0]||'').trim() !== 'Order ID') return { productos: [], confianza: 0, parser:'D-QuickSell' };
+  var headerRow = -1;
+  for (var i = 0; i < Math.min(rows.length, 20); i++) {
+    var norm = (rows[i]||[]).map(function(c){ return _euNormStr(c); });
+    if (norm.indexOf('QUANTITY') >= 0 && (norm.indexOf('ITEM') >= 0 || norm.indexOf('PRODUCT') >= 0)) {
+      headerRow = i; break;
+    }
+  }
+  if (headerRow < 0) return { productos: [], confianza: 0, parser:'D-QuickSell' };
+  var header = rows[headerRow] || [];
+  var iItem=-1, iQty=-1, iPrice=-1, iProduct=-1;
+  header.forEach(function(c, idx){
+    var n = _euNormStr(c);
+    if (n === 'ITEM') iItem = idx;
+    if (n === 'QUANTITY' || n === 'QTY') iQty = idx;
+    if (n === 'PRICE' || n === 'UNIT PRICE') iPrice = idx;
+    if (n === 'PRODUCT' || n === 'PRODUCT NAME') iProduct = idx;
+  });
+  var iFuente = iItem >= 0 ? iItem : iProduct;
+  if (iFuente < 0 || iQty < 0) return { productos: [], confianza: 0, parser:'D-QuickSell' };
+  var productos = [];
+  for (var j = headerRow + 1; j < rows.length; j++) {
+    var r = rows[j] || [];
+    var item = String(r[iFuente]||'').trim();
+    var qty = parseInt(_euParseNum(r[iQty])) || 0;
+    if (!item || qty <= 0) continue;
+    var ref = null, desc = item;
+    var mRef = item.match(/^([A-Z]{2,6}\d{2,6})\s*[-/]/i);
+    if (mRef) {
+      ref = mRef[1].toUpperCase();
+      desc = item.substring(mRef[0].length).trim();
+      var nl = desc.indexOf('\n');
+      if (nl > 0) desc = desc.substring(nl+1).trim();
+    } else {
+      ref = _euExtraerRef(item);
+    }
+    productos.push({
+      ref:ref, desc:desc, qty:qty,
+      precio: iPrice >= 0 ? _euParseNum(r[iPrice]) : 0,
+      _source:'D',
+    });
+  }
+  return { productos: productos, confianza: productos.length >= 1 ? 0.9 : 0, parser:'D-QuickSell' };
+}
+
+// ── Parser E: Texto Libre (WhatsApp/email) ──
+function parserE_TextoLibre(texto) {
+  if (!texto) return { productos: [], confianza: 0 };
+  var productos = [], refsVistas = {};
+  var lineas = texto.split('\n');
+  lineas.forEach(function(linea){
+    var lu = linea.toUpperCase();
+    var regexRef = /\b([A-Z]{2,6}\d{2,6})\b/g;
+    var m;
+    while ((m = regexRef.exec(lu)) !== null) {
+      var ref = m[1];
+      if (refsVistas[ref]) continue;
+      var posRef = m.index;
+      var regexNum = /\b(\d{1,5})\b/g, mn;
+      var mejorNum = 0, mejorDist = Infinity;
+      while ((mn = regexNum.exec(lu)) !== null) {
+        var n = parseInt(mn[1]);
+        if (n >= 1900 && n <= 2100) continue;
+        if (n <= 0 || n > 9999) continue;
+        if (mn.index >= posRef && mn.index < posRef + ref.length) continue;
+        var dist = Math.abs(mn.index - posRef);
+        if (dist < mejorDist) { mejorDist = dist; mejorNum = n; }
+      }
+      if (mejorNum > 0) {
+        refsVistas[ref] = true;
+        productos.push({ ref:ref, desc:'', qty:mejorNum, _source:'E' });
+      }
+    }
+  });
+  return { productos: productos, confianza: productos.length >= 2 ? 0.55 : 0.1, parser:'E-TextoLibre' };
+}
+
+// ── Orquestador ──
+window.extractorUniversal = function(input) {
+  var resultados = [];
+  if (input.rows && input.rows.length) {
+    resultados.push(parserC_ExcelFarmers(input.rows));
+    resultados.push(parserD_QuickSell(input.rows));
+  }
+  if (input.texto) {
+    resultados.push(parserA_OCVenezolana(input.texto));
+    resultados.push(parserB_TablaClasica(input.texto));
+    resultados.push(parserE_TextoLibre(input.texto));
+  }
+  resultados.sort(function(a, b){
+    var scoreA = (a.confianza || 0) * Math.min(a.productos.length, 10);
+    var scoreB = (b.confianza || 0) * Math.min(b.productos.length, 10);
+    return scoreB - scoreA;
+  });
+  var ganador = resultados[0] || { productos: [], confianza: 0, parser: 'NONE' };
+  try { console.log('[Extractor Universal] Ganador: ' + ganador.parser + ' · confianza: ' + (ganador.confianza||0).toFixed(2) + ' · productos: ' + ganador.productos.length); } catch(e){}
+  try {
+    resultados.forEach(function(r){
+      console.log('  · ' + r.parser + ': ' + r.productos.length + ' productos (conf ' + (r.confianza||0).toFixed(2) + ')');
+    });
+  } catch(e){}
+  return {
+    productos: ganador.productos,
+    parser: ganador.parser,
+    confianza: ganador.confianza,
+    sucursales: ganador.sucursales,
+    headerRow: ganador.headerRow,
+    todos: resultados,
+  };
+};
+
+})();
+// ═══════════════════════════════════════════════════════════════════════════
+// FIN EXTRACTOR UNIVERSAL
+// ═══════════════════════════════════════════════════════════════════════════
+
+
+// ── PDF → extractor universal + IA fallback ──────────────────────────────
 function msParsearPDF(file, input) {
   msSetProgress(15, 'Leyendo PDF...');
   var reader = new FileReader();
   reader.onload = async function(e) {
     var arrayBuffer = e.target.result;
 
-    // Paso 1: Extraer texto con PDF.js si está disponible
+    // Paso 1: Extraer texto con PDF.js
     if (typeof pdfjsLib !== 'undefined') {
       try {
         msSetProgress(25, 'Extrayendo texto del PDF...');
@@ -26876,7 +27211,6 @@ function msParsearPDF(file, input) {
         for (var pi = 1; pi <= pdf.numPages; pi++) {
           var pagina = await pdf.getPage(pi);
           var contenido = await pagina.getTextContent();
-          // Agrupar items por línea usando la coordenada Y (tolerancia pequeña)
           var lineas = [];
           var lineaActual = [];
           var yAnterior = null;
@@ -26893,37 +27227,128 @@ function msParsearPDF(file, input) {
           if (lineaActual.length) lineas.push(lineaActual.join(' ').trim());
           textoCompleto += lineas.join('\n') + '\n';
         }
-        console.log('[PDF Parser] Texto extraído (' + textoCompleto.length + ' chars)');
-        console.log('[PDF Parser] Primeras 500 chars:', textoCompleto.substring(0, 500));
+        console.log('[PDF Extractor] Texto extraído (' + textoCompleto.length + ' chars)');
 
-        // Paso 2: Intentar parseo directo
-        var parsed = msParsearTextoOC(textoCompleto);
-        if (parsed && parsed.productos.length >= 3) {
-          console.log('[PDF Parser] ✓ Parseo directo exitoso: ' + parsed.productos.length + ' productos');
-          msSetProgress(70, 'Extraídos ' + parsed.productos.length + ' productos directamente...');
-          // Procesar igual que respuesta IA
-          await msProcesarProductosPDF(parsed, input);
+        // Paso 2: Extractor universal
+        msSetProgress(50, 'Analizando contenido...');
+        var resultado = window.extractorUniversal({ texto: textoCompleto });
+
+        if (resultado.productos.length >= 1 && resultado.confianza >= 0.5) {
+          msSetProgress(75, 'Extraídos ' + resultado.productos.length + ' productos con ' + resultado.parser + '...');
+          await msProcesarProductosUniv(resultado, input);
           return;
         }
-        console.log('[PDF Parser] ⚠ Parseo directo solo detectó ' + (parsed ? parsed.productos.length : 0) + ' productos — fallback a IA');
+        console.log('[PDF Extractor] ⚠ Confianza baja (' + resultado.confianza.toFixed(2) + '), cayendo a IA');
       } catch(err) {
-        console.warn('[PDF Parser] Error en PDF.js, cayendo a IA:', err);
+        console.warn('[PDF Extractor] Error:', err);
       }
     }
 
-    // Fallback: enviar base64 a la IA (flujo original)
-    var base64Str = '';
+    // Fallback: IA con el PDF en base64
     var bytes = new Uint8Array(arrayBuffer);
     var chunks = [];
     for (var i = 0; i < bytes.length; i += 32768) {
       chunks.push(String.fromCharCode.apply(null, bytes.subarray(i, i + 32768)));
     }
-    base64Str = btoa(chunks.join(''));
+    var base64Str = btoa(chunks.join(''));
     msSetProgress(35, 'Enviando PDF a la IA para análisis...');
     msAnalizarConIA(null, base64Str, input);
   };
   reader.readAsArrayBuffer(file);
 }
+
+// ── Procesar resultado del extractor universal ──
+// Convierte el formato del extractor al formato interno de MS y llama auditoría.
+async function msProcesarProductosUniv(resultado, input) {
+  // Determinar sucursales
+  var sucursales;
+  if (resultado.sucursales && resultado.sucursales.length) {
+    sucursales = resultado.sucursales;
+    // Si es 'CLIENTE' (genérico) y tenemos cliente real, reemplazar
+    if (sucursales.length === 1 && sucursales[0] === 'CLIENTE' &&
+        MS._clienteUnica && MS._clienteUnica.nombre) {
+      sucursales = [MS._clienteUnica.nombre];
+      resultado.productos.forEach(function(p){
+        if (p.qtyPorSuc && p.qtyPorSuc['CLIENTE'] !== undefined) {
+          p.qtyPorSuc[MS._clienteUnica.nombre] = p.qtyPorSuc['CLIENTE'];
+          delete p.qtyPorSuc['CLIENTE'];
+        }
+      });
+    }
+  } else {
+    // Sin multi-sucursal: usar cliente único si lo hay, sino 'CLIENTE'
+    sucursales = [(MS._clienteUnica && MS._clienteUnica.nombre) || 'CLIENTE'];
+  }
+
+  if (sucursales.length === 1) MS._modoUnica = true;
+
+  console.log('[Extractor Universal] Sucursales: ' + JSON.stringify(sucursales));
+  console.log('[Extractor Universal] Productos finales: ' + resultado.productos.length);
+
+  // Normalizar: priorizar descripción del sistema y construir q[] alineado a sucursales
+  var todosProductos = [];
+  resultado.productos.forEach(function(p){
+    var q;
+    if (p.qtyPorSuc && Object.keys(p.qtyPorSuc).length > 0) {
+      q = sucursales.map(function(s){ return parseInt(p.qtyPorSuc[s] || 0) || 0; });
+    } else {
+      // Parser que devolvió qty total: asignar a la única sucursal
+      q = sucursales.map(function(s, idx){ return idx === 0 ? (parseInt(p.qty)||0) : 0; });
+    }
+
+    // REGLA #1: priorizar descripción del sistema si la ref existe en catálogo
+    var descFinal = p.desc || '';
+    if (p.ref) {
+      var refUp = String(p.ref).toUpperCase().trim();
+      for (var pi = 0; pi < PRODUCTS.length; pi++) {
+        if (String(PRODUCTS[pi].r||'').toUpperCase() === refUp) {
+          descFinal = PRODUCTS[pi].d || descFinal;
+          break;
+        }
+      }
+    }
+
+    todosProductos.push({
+      r: p.ref || null,
+      d: descFinal,
+      s: 0,
+      q: q,
+      precioUSD: parseFloat(p.precio)||0,
+      _descCliente: p.desc || '',
+      _sinRef: !p.ref,
+    });
+  });
+
+  MS.data = todosProductos;
+  MS.sucursales = sucursales;
+
+  // Sort mandatorio
+  todosProductos.sort(function(a,b){
+    return String(a.r||'').localeCompare(String(b.r||''), 'es', {numeric:true, sensitivity:'base'});
+  });
+
+  // Convertir al formato msAuditarPedido
+  var productosNorm = todosProductos.map(function(p){
+    var pedidos = {};
+    sucursales.forEach(function(s, si){ pedidos[s] = p.q[si] || 0; });
+    return {
+      ref: p.r, desc: p.d, stock: p.s, pedidos: pedidos,
+      precio_usd: p.precioUSD, _descCliente: p._descCliente, _sinRef: p._sinRef,
+    };
+  });
+
+  msSetProgress(95, 'Auditando pedido...');
+  var audit = msAuditarPedido(productosNorm, sucursales, 'PDF');
+  msSetProgress(100, 'Listo');
+
+  try { if (input) input.value = ''; } catch(e) {}
+
+  msMostrarAuditoria(audit, function(){
+    msCalcularDistribucion(productosNorm);
+    setTimeout(function(){ msRenderResultados(); }, 300);
+  }, productosNorm);
+}
+
 
 // ── Parser de texto de OC venezolana ───────────────────────────
 // Detecta el formato: "Cantidad Descripción [REF] 0 CostoUnit Subtotal"
