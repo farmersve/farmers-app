@@ -16941,7 +16941,9 @@ function _detectarAnomalias(items) {
     }
 
     // 3 — Descripción diferente (si el pedido trae descripción)
-    var descPedido = String(it.desc || it.d || it.descripcion || '').trim().toUpperCase();
+    // Prioridad: _descCliente (descripción original del cliente, preservada en el normalizador PDF)
+    // Fallback: it.desc / it.d para flujos Excel/imagen que no preservan la original
+    var descPedido = String(it._descCliente || it.desc || it.d || it.descripcion || '').trim().toUpperCase();
     var descSistema = String(prod.d || '').trim().toUpperCase();
     if (descPedido && descSistema && descPedido !== descSistema) {
       // Solo alertar si la diferencia no es trivial (más de 5 chars de diferencia)
@@ -16951,7 +16953,7 @@ function _detectarAnomalias(items) {
           tipo: 'desc',
           ref: refPedido,
           campo: 'Descripción',
-          valorPedido: it.desc || it.d || '',
+          valorPedido: it._descCliente || it.desc || it.d || '',
           valorSistema: prod.d || '',
           diff: 'media',
           msg: refPedido + ': descripción no coincide'
@@ -27353,20 +27355,47 @@ async function msAnalizarConIA(rows, pdfBase64, input) {
       // ── PDF: una sola llamada con documento ──
       var clienteUnicaNombre = (MS._clienteUnica && MS._clienteUnica.nombre) || '';
       var prompt =
-        'Analiza este PDF de pedido de productos y extrae TODOS los productos.\n' +
-        'Puede ser uno de estos dos formatos:\n\n' +
-        'FORMATO A — Multi-sucursal (tabla con columnas por sucursal):\n' +
-        'Cada fila tiene: referencia del producto, descripción, cantidades por sucursal.\n' +
-        'Las sucursales pueden llamarse: HIPER, MXM, MAXI, MERCAMAX, ORIENTE, etc.\n\n' +
-        'FORMATO B — Factura única QuickSell (una sola tienda, lista de productos):\n' +
-        'Encabezado con Order ID, Customer Name, Total. Tabla con: No., Product (imagen), Item (REF - CODIGO / descripción / SKU), Qty, Price, Total.\n' +
-        'La referencia está al inicio del campo Item, antes del " - " (ej: EXC132 de "EXC132 - A151-KF1904-5BLS").\n' +
-        (clienteUnicaNombre ? 'Cliente: '+clienteUnicaNombre+'\n' : '') +
-        '\nCódigos de producto son como: EXC001, GEN045, LUM011, MAT030, MAXK006, etc.\n\n' +
-        'TAREA: Extrae TODOS los productos. Si es Formato B, usa "'+( clienteUnicaNombre || 'CLIENTE')+'" como única sucursal.\n' +
+        'Analiza este PDF de orden de compra/pedido y extrae TODOS los productos sin excepción.\n\n' +
+        'EL PDF PUEDE TENER UNO DE TRES FORMATOS:\n\n' +
+        '═══ FORMATO A — Multi-sucursal (tabla con columnas por sucursal) ═══\n' +
+        'Cada fila tiene: referencia, descripción, cantidades por sucursal.\n' +
+        'Sucursales pueden llamarse: HIPER, MXM, MAXI, MERCAMAX, ORIENTE, etc.\n\n' +
+        '═══ FORMATO B — Factura única QuickSell ═══\n' +
+        'Encabezado: Order ID, Customer Name, Total. Columnas: No., Product (imagen), Item, Qty, Price, Total.\n' +
+        'La referencia está al inicio del campo Item, antes del " - " (ej: EXC132 de "EXC132 - A151-KF1904-5BLS").\n\n' +
+        '═══ FORMATO C — Orden de Compra (formato común venezolano) ═══\n' +
+        'Encabezado tipo: "Cantidad | Código | Descripción | IVA | Prts | Costo$ | Sub Total $"\n' +
+        'PERO ¡CUIDADO! A pesar del encabezado, el CÓDIGO frecuentemente NO tiene columna propia.\n' +
+        'Cada fila empieza con la CANTIDAD y el código va embebido DENTRO de la descripción (al final).\n' +
+        'Ejemplos REALES de líneas de este formato:\n' +
+        '  "6 ALIMENT FRUTAS GEN088 0 4,38 26,28"\n' +
+        '  "12 CORTA UÑAS COLA CASTOR GEN132 0 0,45 5,40"\n' +
+        '  "6 MORD SONAJ SILIC INFANT GEN141 0 2,56 15,36"\n' +
+        'INTERPRETACIÓN CORRECTA:\n' +
+        '  - PRIMER NÚMERO = CANTIDAD (6, 12, etc.) — NUNCA es el IVA\n' +
+        '  - ÚLTIMO TOKEN alfanumérico tipo PREFIJO+NÚMERO (GEN088, EXC045, etc.) = REFERENCIA\n' +
+        '  - TEXTO ENTRE medio = DESCRIPCIÓN\n' +
+        '  - Los números 0, 4.38, 26.28 al final son IVA, costo unitario, subtotal\n' +
+        'ALGUNAS LÍNEAS NO TIENEN REFERENCIA al final — son productos sin código del proveedor:\n' +
+        '  "6 BIBERON DE CUELLO ESTANDAR (60ML/2OZ) 0 1,84 11,04" → cantidad=6, ref=null, desc="BIBERON DE CUELLO ESTANDAR (60ML/2OZ)"\n' +
+        '  "6 MORDEDOR RELLENO DE AGUA (ANIMALES) 0 1,70 10,20" → cantidad=6, ref=null, desc="MORDEDOR RELLENO DE AGUA (ANIMALES)"\n' +
+        'ESTOS PRODUCTOS SIN REF TAMBIÉN DEBEN EXTRAERSE con ref=null (los procesaremos por descripción).\n\n' +
+        (clienteUnicaNombre ? 'CLIENTE: '+clienteUnicaNombre+'\n' : '') +
+        'Códigos de producto típicos: EXC001, GEN045, LUM011, MAT030, MAXK006, VAR012.\n\n' +
+        '═══ TAREA ═══\n' +
+        '1. Identifica cuál de los 3 formatos es el PDF.\n' +
+        '2. Extrae TODOS y cada uno de los productos/renglones — NO OMITAS NINGUNO.\n' +
+        '3. Si aparece "Total Items / Renglones: N" al final del PDF, tu array "productos" debe tener exactamente N elementos (o más, si cuentas productos sin ref).\n' +
+        '4. Para Formato B o C con un solo cliente, usa "'+( clienteUnicaNombre || 'CLIENTE')+'" como única sucursal.\n' +
+        '5. La cantidad SIEMPRE es un entero positivo. Si ves 0 como cantidad probablemente te equivocaste y era el IVA — revisa.\n\n' +
         'RESPONDE ÚNICAMENTE con JSON válido, sin texto adicional, sin markdown:\n' +
-        '{"sucursales":["SUC1"],"productos":[{"ref":"EXC001","desc":"DESCRIPCION","stock":0,"precio_usd":1.80,"pedidos":{"SUC1":12}}]}\n' +
-        'IMPORTANTE: Incluye precio_usd por unidad si aparece. Extrae TODOS los productos sin omitir ninguno.';
+        '{"sucursales":["SUC1"],"productos":[{"ref":"GEN088","desc":"ALIMENT FRUTAS","stock":0,"precio_usd":4.38,"pedidos":{"SUC1":6}},{"ref":null,"desc":"BIBERON DE CUELLO ESTANDAR (60ML/2OZ)","stock":0,"precio_usd":1.84,"pedidos":{"SUC1":6}}]}\n' +
+        'REGLAS FINALES:\n' +
+        '- ref = código alfanumérico (GEN088) o null si no hay\n' +
+        '- desc = descripción SIN la referencia al final (si la ref está embebida, quítala)\n' +
+        '- precio_usd = costo unitario en $ (el primer decimal pequeño tipo 4.38, no el subtotal)\n' +
+        '- pedidos = objeto con cantidad por sucursal (numero entero > 0)\n' +
+        '- Incluye TODOS los productos, incluyendo los que no tienen ref.';
       var messages = [{
         role: 'user',
         content: [
@@ -27379,7 +27408,7 @@ async function msAnalizarConIA(rows, pdfBase64, input) {
         method: 'POST', headers: {'Content-Type':'application/json'},
         body: JSON.stringify({
           model:'claude-sonnet-4-20250514',
-          max_tokens:8000,
+          max_tokens:16000,  // Ampliado de 8000 a 16000 para cubrir PDFs con muchos renglones sin truncar
           messages: messages,
           betas: ['pdfs-2024-09-25']
         })
@@ -27431,10 +27460,41 @@ async function msAnalizarConIA(rows, pdfBase64, input) {
         });
         MS._modoUnica = true;
       }
+
+      // ── Diagnóstico: cantidad de productos que trajo la IA ──
+      console.log('[PDF IA] Productos extraídos por IA: ' + parsedPDF.productos.length);
+      var _sinRef = parsedPDF.productos.filter(function(p){ return !p.ref; }).length;
+      var _cantCero = parsedPDF.productos.filter(function(p){
+        var suma = 0; if(p.pedidos) Object.keys(p.pedidos).forEach(function(k){ suma += parseInt(p.pedidos[k])||0; });
+        return suma === 0;
+      }).length;
+      console.log('[PDF IA] Sin REF: ' + _sinRef + ' · Con cantidad=0: ' + _cantCero);
+
       // Normalizar formato PDF al mismo que Excel — incluir precio_usd
+      // REGLA #1 de Omar: priorizar descripción del sistema sobre la del cliente.
+      // Si la ref existe en el catálogo, usamos p.d del catálogo; sino conservamos la del cliente.
       parsedPDF.productos.forEach(function(p){
         var q = sucursales.map(function(s){ return parseInt((p.pedidos||{})[s])||0; });
-        todosProductos.push({ r:p.ref, d:p.desc||'', s:parseInt(p.stock)||0, q:q, precioUSD:parseFloat(p.precio_usd)||0 });
+        var descFinal = p.desc || '';
+        // Buscar ref en catálogo para priorizar descripción del sistema
+        if (p.ref) {
+          var refUp = String(p.ref).toUpperCase().trim();
+          for (var pi = 0; pi < PRODUCTS.length; pi++) {
+            if (String(PRODUCTS[pi].r||'').toUpperCase() === refUp) {
+              descFinal = PRODUCTS[pi].d || descFinal;  // priorizar sistema
+              break;
+            }
+          }
+        }
+        todosProductos.push({
+          r: p.ref || null,
+          d: descFinal,
+          s: parseInt(p.stock)||0,
+          q: q,
+          precioUSD: parseFloat(p.precio_usd)||0,
+          _descCliente: p.desc || '',  // guardar también la del cliente para la alerta de anomalías
+          _sinRef: !p.ref  // marcar productos sin referencia para resaltarlos
+        });
       });
 
     } else {
@@ -27544,7 +27604,16 @@ function msAuditarPedido(productosNorm, sucursales, fuente) {
   productosNorm.forEach(function(p, idx) {
     var fila = idx + 1;
     if(!p.ref || p.ref.length < 2) {
-      errores.push({ fila:fila, ref:p.ref||'—', desc:p.desc||'—', tipo:'Referencia vacía o inválida' });
+      // ── Productos sin REF: alerta (no error). El cliente los pidió pero no están en nuestro catálogo.
+      // Se muestran en el modal para que el usuario los mapee o los agregue manualmente.
+      if (p.desc && p.desc.length >= 3) {
+        alertas.push({
+          fila:fila, ref:'—', desc:p.desc,
+          tipo:'Sin referencia interna — producto no identificado (requiere mapeo manual)'
+        });
+      } else {
+        errores.push({ fila:fila, ref:p.ref||'—', desc:p.desc||'—', tipo:'Referencia vacía o inválida' });
+      }
       return;
     }
     sucursales.forEach(function(s) {
