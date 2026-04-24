@@ -6341,6 +6341,46 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
     }, 2000);
   });
 
+  // ═══ Funciones Portal Cliente ═══
+  // portal_tokens: 1 doc por token
+  window.fbSavePortalToken = async (token, data) => {
+    try { await setDoc(doc(db, 'portal_tokens', token), data); return true; }
+    catch(e) { console.error('fbSavePortalToken:', e); return false; }
+  };
+  window.fbGetPortalTokens = async () => {
+    try {
+      const snap = await getDocs(collection(db, 'portal_tokens'));
+      const tokens = [];
+      snap.forEach(d => { tokens.push(Object.assign({}, d.data(), { token: d.id })); });
+      return tokens;
+    } catch(e) { console.error('fbGetPortalTokens:', e); return []; }
+  };
+  // portal_pedidos
+  window.fbSavePortalPedido = async (id, data) => {
+    try { await setDoc(doc(db, 'portal_pedidos', id), data); return true; }
+    catch(e) { console.error('fbSavePortalPedido:', e); return false; }
+  };
+  window.fbGetPortalPedidos = async () => {
+    try {
+      const snap = await getDocs(collection(db, 'portal_pedidos'));
+      const peds = [];
+      snap.forEach(d => { peds.push(Object.assign({}, d.data(), { id: d.id })); });
+      // Ordenar por fecha desc
+      peds.sort((a, b) => {
+        const fa = a.fechaStr ? new Date(a.fechaStr).getTime() : 0;
+        const fb = b.fechaStr ? new Date(b.fechaStr).getTime() : 0;
+        return fb - fa;
+      });
+      return peds;
+    } catch(e) { console.error('fbGetPortalPedidos:', e); return []; }
+  };
+
+  // Guardar logo en Firestore para que portal.html pueda cargarlo
+  window.fbSavePortalLogo = async (b64) => {
+    try { await setDoc(doc(db, 'data', 'config_logo'), { v: b64 }); return true; }
+    catch(e) { console.error('fbSavePortalLogo:', e); return false; }
+  };
+
 </script>
 <script>
 
@@ -6525,6 +6565,19 @@ async function loadFromFirebase() {
       } catch(eNC) { console.warn('loadFromFirebase NC:', eNC); }
     }
   } catch(e) { console.warn('loadFromFirebase:', e); }
+
+  // Auto-subir logo Farmers a Firestore para que el portal pueda descargarlo
+  try {
+    if (typeof FARMERS_LOGO_B64 !== 'undefined' && typeof window.fbSavePortalLogo === 'function') {
+      // Solo subirlo una vez por sesión (ahorrar writes)
+      if (!sessionStorage.getItem('farmers_logo_uploaded')) {
+        window.fbSavePortalLogo(FARMERS_LOGO_B64).then(function(){
+          sessionStorage.setItem('farmers_logo_uploaded', '1');
+          console.log('[Portal] Logo sincronizado con Firestore');
+        });
+      }
+    }
+  } catch(ep) { console.warn('Upload logo portal:', ep); }
 
   // Auto-corregir clientes MS después de cargar — asegura sincronización permanente
   try {
@@ -42948,6 +43001,16 @@ window.cxcMostrarReconciliacion = cxcMostrarReconciliacion;
         </div>
       </div>
 
+      <div class="vt-card" onclick="vtOpenModule(pcAbrirModulo)">
+        <div class="vt-card-bar" style="background:linear-gradient(90deg,#1B1F6B,#9B6FD4);"></div>
+        <div class="vt-card-inner">
+          <div class="vt-card-icon" style="background:rgba(27,31,107,.12);color:#1B1F6B;">🌐</div>
+          <div class="vt-card-name">Portal Cliente</div>
+          <div class="vt-card-desc">Genera links personalizados para cada cliente. El cliente entra al portal, ve tu catálogo y hace sus pedidos online. Los pedidos llegan aquí automáticamente.</div>
+          <div class="vt-badge" style="background:rgba(27,31,107,.14);color:#1B1F6B;"><span class="vt-dot" style="background:#1B1F6B;"></span>NUEVO</div>
+        </div>
+      </div>
+
       <div class="vt-card vt-card-soon">
         <div class="vt-card-bar" style="background:linear-gradient(90deg,#64748b,#475569);"></div>
         <div class="vt-card-inner">
@@ -47359,6 +47422,574 @@ window.msGenerarEtiquetasDespacho = function(sucsFiltradas) {
   else showToast('Permite ventanas emergentes','warn');
   showToast('📦 '+etiquetasDespacho.length+' etiquetas de despacho generadas','success');
 };
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+// MÓDULO PORTAL CLIENTE — Fase 1
+// ═══════════════════════════════════════════════════════════════════════════
+// Gestión de tokens (links únicos por cliente) + inbox de pedidos entrantes
+// Firestore collections:
+//   portal_tokens/{token} — datos y configuración del link por cliente
+//   portal_pedidos/{id}    — pedidos entrantes del portal
+// ═══════════════════════════════════════════════════════════════════════════
+
+window.portalTokens = [];      // caché local de tokens
+window.portalPedidos = [];     // caché local de pedidos entrantes
+
+// Generar token aleatorio seguro
+function _pcGenerarToken() {
+  var chars = 'abcdefghjkmnpqrstuvwxyzABCDEFGHJKMNPQRSTUVWXYZ23456789';
+  var len = 12;
+  var t = '';
+  for (var i = 0; i < len; i++) t += chars[Math.floor(Math.random() * chars.length)];
+  return t;
+}
+
+// URL base del portal (editable desde UI)
+window.getPortalBaseUrl = function() {
+  return localStorage.getItem('farmers_portal_url') || 'https://farmersve.github.io/farmers-portal/';
+};
+
+window.pcAbrirModulo = async function() {
+  var ex = document.getElementById('pc-modal');
+  if (ex) ex.remove();
+
+  var ov = document.createElement('div');
+  ov.id = 'pc-modal';
+  ov.style.cssText = 'position:fixed;inset:0;z-index:99500;background:rgba(0,0,0,.78);display:flex;align-items:center;justify-content:center;padding:16px;box-sizing:border-box;';
+
+  var box = document.createElement('div');
+  box.style.cssText = 'background:#fff;border-radius:14px;width:100%;max-width:1200px;height:calc(100vh - 32px);display:flex;flex-direction:column;overflow:hidden;box-shadow:0 24px 80px rgba(0,0,0,.4);';
+
+  var hdr = document.createElement('div');
+  hdr.style.cssText = 'background:linear-gradient(135deg,#1B1F6B,#9B6FD4);padding:16px 24px;flex-shrink:0;color:#fff;display:flex;align-items:center;justify-content:space-between;';
+  hdr.innerHTML =
+    '<div>' +
+      '<div style="font-size:1.1rem;font-weight:800;">🌐 Portal Cliente</div>' +
+      '<div style="font-size:.7rem;color:rgba(255,255,255,.8);margin-top:2px;">Genera links únicos para que tus clientes vean tu catálogo y hagan pedidos</div>' +
+    '</div>' +
+    '<button id="pc-close" style="background:rgba(255,255,255,.2);border:none;color:#fff;font-size:1.2rem;width:32px;height:32px;border-radius:6px;cursor:pointer;">×</button>';
+  box.appendChild(hdr);
+
+  var tabs = document.createElement('div');
+  tabs.style.cssText = 'display:flex;gap:0;background:#f1f5f9;border-bottom:1px solid #e2e8f0;flex-shrink:0;';
+  tabs.innerHTML =
+    '<button class="pc-tab active" data-tab="tokens" style="flex:1;padding:12px;border:none;background:#fff;font-weight:700;font-size:.78rem;color:#1B1F6B;border-bottom:3px solid #1B1F6B;cursor:pointer;">🔗 Links por cliente</button>' +
+    '<button class="pc-tab" data-tab="pedidos" style="flex:1;padding:12px;border:none;background:#f1f5f9;font-weight:700;font-size:.78rem;color:#475569;border-bottom:3px solid transparent;cursor:pointer;">📥 Pedidos entrantes <span id="pc-pedidos-badge" style="background:#F47B3E;color:#fff;border-radius:999px;padding:0 7px;font-size:.65rem;margin-left:4px;display:none;">0</span></button>' +
+    '<button class="pc-tab" data-tab="config" style="flex:1;padding:12px;border:none;background:#f1f5f9;font-weight:700;font-size:.78rem;color:#475569;border-bottom:3px solid transparent;cursor:pointer;">⚙️ Configuración</button>';
+  box.appendChild(tabs);
+
+  var body = document.createElement('div');
+  body.id = 'pc-body';
+  body.style.cssText = 'flex:1;overflow-y:auto;padding:16px 24px;background:#f8fafc;';
+  box.appendChild(body);
+
+  ov.appendChild(box);
+  document.body.appendChild(ov);
+
+  document.getElementById('pc-close').addEventListener('click', function(){ ov.remove(); });
+
+  tabs.querySelectorAll('.pc-tab').forEach(function(t){
+    t.addEventListener('click', function(){
+      tabs.querySelectorAll('.pc-tab').forEach(function(x){
+        x.classList.remove('active');
+        x.style.background = '#f1f5f9';
+        x.style.color = '#475569';
+        x.style.borderBottom = '3px solid transparent';
+      });
+      t.classList.add('active');
+      t.style.background = '#fff';
+      t.style.color = '#1B1F6B';
+      t.style.borderBottom = '3px solid #1B1F6B';
+      pcRenderTab(t.dataset.tab);
+    });
+  });
+
+  // Cargar datos iniciales
+  await pcCargarDatos();
+  pcRenderTab('tokens');
+};
+
+async function pcCargarDatos() {
+  try {
+    // Cargar tokens
+    if (typeof window.fbGetPortalTokens === 'function') {
+      var tokens = await window.fbGetPortalTokens();
+      window.portalTokens = tokens || [];
+    }
+    // Cargar pedidos
+    if (typeof window.fbGetPortalPedidos === 'function') {
+      var peds = await window.fbGetPortalPedidos();
+      window.portalPedidos = peds || [];
+    }
+    // Badge
+    var pendientes = window.portalPedidos.filter(function(p){ return p.estado === 'pendiente'; }).length;
+    var badge = document.getElementById('pc-pedidos-badge');
+    if (badge) {
+      badge.textContent = pendientes;
+      badge.style.display = pendientes > 0 ? 'inline-block' : 'none';
+    }
+  } catch(e) {
+    console.error('[Portal Cliente] Error cargando datos:', e);
+  }
+}
+
+function pcRenderTab(tabName) {
+  var body = document.getElementById('pc-body');
+  if (!body) return;
+
+  if (tabName === 'tokens') {
+    pcRenderTokens(body);
+  } else if (tabName === 'pedidos') {
+    pcRenderPedidos(body);
+  } else if (tabName === 'config') {
+    pcRenderConfig(body);
+  }
+}
+
+function pcRenderTokens(body) {
+  var clDB = (typeof getClientsDB === 'function') ? getClientsDB() : [];
+
+  body.innerHTML =
+    '<div style="margin-bottom:14px;display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;">' +
+      '<div>' +
+        '<div style="font-size:.9rem;font-weight:800;color:#1B1F6B;">Links activos: ' + window.portalTokens.length + '</div>' +
+        '<div style="font-size:.72rem;color:#64748b;margin-top:2px;">Cada cliente recibe un link único que tú controlas</div>' +
+      '</div>' +
+      '<button id="pc-new-token" style="background:#1B1F6B;color:#fff;border:none;border-radius:8px;padding:10px 18px;font-weight:800;font-size:.78rem;cursor:pointer;">+ Nuevo link</button>' +
+    '</div>' +
+    '<div id="pc-tokens-list"></div>';
+
+  document.getElementById('pc-new-token').addEventListener('click', function(){
+    pcAbrirNuevoToken(clDB);
+  });
+
+  pcRenderTokensList();
+}
+
+function pcRenderTokensList() {
+  var cont = document.getElementById('pc-tokens-list');
+  if (!cont) return;
+
+  if (window.portalTokens.length === 0) {
+    cont.innerHTML = '<div style="text-align:center;padding:40px 20px;color:#64748b;font-size:.85rem;background:#fff;border-radius:10px;border:2px dashed #e2e8f0;">Aún no has creado ningún link. Haz click en "Nuevo link" para generar el primero.</div>';
+    return;
+  }
+
+  cont.innerHTML = window.portalTokens.map(function(t){
+    var url = getPortalBaseUrl() + '?token=' + t.token;
+    var ultimoAcceso = t.ultimoAcceso ? new Date(t.ultimoAcceso).toLocaleString('es-VE') : 'Nunca';
+    var moneda = (t.configVista && t.configVista.moneda) || 'USD';
+    var stockMode = (t.configVista && t.configVista.mostrarStock) || 'disponibilidad';
+    var stockLabel = { oculto: 'Oculto', disponibilidad: 'Disponible/Agotado', exacto: 'Cantidad exacta' }[stockMode];
+    var activo = t.activo !== false;
+
+    return '<div style="background:#fff;border:1px solid ' + (activo ? '#e2e8f0' : '#fca5a5') + ';border-radius:10px;padding:14px;margin-bottom:10px;' + (activo ? '' : 'opacity:.7;') + '">' +
+      '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;">' +
+        '<div style="flex:1;min-width:220px;">' +
+          '<div style="font-size:.92rem;font-weight:800;color:#1B1F6B;">' + (t.clienteNombre || '(sin nombre)') + (activo ? '' : ' <span style="color:#dc2626;font-size:.7rem;">(DESACTIVADO)</span>') + '</div>' +
+          '<div style="font-size:.7rem;color:#64748b;margin-top:2px;">RIF: ' + (t.rifEsperado || '—') + ' · Moneda: ' + moneda + ' · Stock: ' + stockLabel + '</div>' +
+          '<div style="font-size:.65rem;color:#94a3b8;margin-top:4px;">Último acceso: ' + ultimoAcceso + ' · Pedidos: ' + (t.pedidosRealizados || 0) + '</div>' +
+        '</div>' +
+        '<div style="display:flex;gap:6px;flex-wrap:wrap;">' +
+          '<button data-action="copy" data-url="' + url + '" style="background:#F47B3E;color:#fff;border:none;border-radius:6px;padding:7px 12px;font-weight:700;font-size:.72rem;cursor:pointer;">📋 Copiar link</button>' +
+          '<button data-action="edit" data-token="' + t.token + '" style="background:#f1f5f9;color:#334155;border:1px solid #e2e8f0;border-radius:6px;padding:7px 12px;font-weight:700;font-size:.72rem;cursor:pointer;">✏️ Editar</button>' +
+          '<button data-action="toggle" data-token="' + t.token + '" style="background:' + (activo ? '#fef3c7' : '#dcfce7') + ';color:' + (activo ? '#92400e' : '#166534') + ';border:1px solid ' + (activo ? '#fde68a' : '#bbf7d0') + ';border-radius:6px;padding:7px 12px;font-weight:700;font-size:.72rem;cursor:pointer;">' + (activo ? '⏸ Desactivar' : '▶ Reactivar') + '</button>' +
+        '</div>' +
+      '</div>' +
+      '<div style="margin-top:8px;padding:8px 10px;background:#f8fafc;border-radius:6px;font-family:monospace;font-size:.7rem;color:#475569;word-break:break-all;">' + url + '</div>' +
+    '</div>';
+  }).join('');
+
+  cont.querySelectorAll('button[data-action]').forEach(function(btn){
+    btn.addEventListener('click', async function(){
+      var action = btn.dataset.action;
+      if (action === 'copy') {
+        try {
+          await navigator.clipboard.writeText(btn.dataset.url);
+          showToast('Link copiado al portapapeles', 'success');
+        } catch(e) {
+          prompt('Copia el link manualmente:', btn.dataset.url);
+        }
+      } else if (action === 'toggle') {
+        await pcToggleToken(btn.dataset.token);
+      } else if (action === 'edit') {
+        pcEditarToken(btn.dataset.token);
+      }
+    });
+  });
+}
+
+function pcAbrirNuevoToken(clDB) {
+  pcAbrirFormToken(null, clDB);
+}
+
+function pcEditarToken(token) {
+  var t = window.portalTokens.find(function(x){ return x.token === token; });
+  if (!t) return;
+  var clDB = (typeof getClientsDB === 'function') ? getClientsDB() : [];
+  pcAbrirFormToken(t, clDB);
+}
+
+function pcAbrirFormToken(existente, clDB) {
+  var ex = document.getElementById('pc-form-ov');
+  if (ex) ex.remove();
+
+  var ov = document.createElement('div');
+  ov.id = 'pc-form-ov';
+  ov.style.cssText = 'position:fixed;inset:0;z-index:99600;background:rgba(0,0,0,.8);display:flex;align-items:center;justify-content:center;padding:16px;';
+
+  var isEdit = !!existente;
+  var data = existente || {
+    token: _pcGenerarToken(),
+    clienteNombre: '',
+    rifEsperado: '',
+    activo: true,
+    configVista: { moneda: 'USD', mostrarStock: 'disponibilidad', marcasVisibles: [], ocultarAgotados: false },
+    pedidosRealizados: 0,
+    creado: Date.now(),
+  };
+
+  // Marcas únicas del catálogo
+  var marcasSet = new Set();
+  if (typeof PRODUCTS !== 'undefined') {
+    PRODUCTS.forEach(function(p){ if (p.br) marcasSet.add(String(p.br).toUpperCase()); });
+  }
+  var marcas = Array.from(marcasSet).sort();
+
+  // Opciones de clientes
+  var clienteOpts = '<option value="">-- Sin vincular --</option>';
+  clDB.forEach(function(c){
+    var sel = (existente && existente.clienteNombre === c.nombre) ? 'selected' : '';
+    clienteOpts += '<option value="' + encodeURIComponent(c.nombre) + '" data-rif="' + (c.rif || '') + '" ' + sel + '>' + c.nombre + '</option>';
+  });
+
+  var marcasChecks = marcas.map(function(m){
+    var checked = (data.configVista.marcasVisibles || []).includes(m) ? 'checked' : '';
+    return '<label style="display:inline-flex;align-items:center;gap:5px;margin:3px 6px 3px 0;padding:4px 8px;background:#f1f5f9;border-radius:6px;font-size:.72rem;cursor:pointer;"><input type="checkbox" class="pc-marca-chk" value="' + m + '" ' + checked + '> ' + m + '</label>';
+  }).join('');
+
+  ov.innerHTML =
+    '<div style="background:#fff;border-radius:14px;width:100%;max-width:560px;max-height:90vh;overflow-y:auto;padding:24px;">' +
+      '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">' +
+        '<h3 style="margin:0;color:#1B1F6B;font-size:1.1rem;">' + (isEdit ? 'Editar link' : 'Nuevo link de cliente') + '</h3>' +
+        '<button id="pc-form-close" style="background:none;border:none;font-size:1.6rem;color:#64748b;cursor:pointer;">×</button>' +
+      '</div>' +
+
+      '<label style="display:block;font-size:.72rem;font-weight:700;color:#475569;margin-bottom:4px;">Cliente (vincular con CRM)</label>' +
+      '<select id="pc-cliente" style="width:100%;padding:9px 11px;border:1px solid #e2e8f0;border-radius:8px;font-size:.82rem;margin-bottom:12px;">' + clienteOpts + '</select>' +
+
+      '<label style="display:block;font-size:.72rem;font-weight:700;color:#475569;margin-bottom:4px;">Nombre visible *</label>' +
+      '<input type="text" id="pc-nombre" value="' + (data.clienteNombre || '').replace(/"/g, '&quot;') + '" placeholder="Ej: INVERSIONES ORIENTE" style="width:100%;padding:9px 11px;border:1px solid #e2e8f0;border-radius:8px;font-size:.82rem;margin-bottom:12px;">' +
+
+      '<label style="display:block;font-size:.72rem;font-weight:700;color:#475569;margin-bottom:4px;">RIF esperado (opcional)</label>' +
+      '<input type="text" id="pc-rif" value="' + (data.rifEsperado || '').replace(/"/g, '&quot;') + '" placeholder="Ej: J-40064057-1" style="width:100%;padding:9px 11px;border:1px solid #e2e8f0;border-radius:8px;font-size:.82rem;margin-bottom:16px;">' +
+
+      '<div style="border-top:1px solid #e2e8f0;padding-top:14px;margin-bottom:4px;font-size:.78rem;font-weight:800;color:#1B1F6B;">Configuración de vista del catálogo</div>' +
+
+      '<label style="display:block;font-size:.72rem;font-weight:700;color:#475569;margin:12px 0 4px;">Moneda mostrada</label>' +
+      '<select id="pc-moneda" style="width:100%;padding:9px 11px;border:1px solid #e2e8f0;border-radius:8px;font-size:.82rem;margin-bottom:12px;">' +
+        '<option value="USD"' + (data.configVista.moneda === 'USD' ? ' selected' : '') + '>USD ($)</option>' +
+        '<option value="BCV"' + (data.configVista.moneda === 'BCV' ? ' selected' : '') + '>BCV (Bs)</option>' +
+        '<option value="TF"' + (data.configVista.moneda === 'TF' ? ' selected' : '') + '>TF (Bs)</option>' +
+      '</select>' +
+
+      '<label style="display:block;font-size:.72rem;font-weight:700;color:#475569;margin-bottom:4px;">Cómo mostrar stock</label>' +
+      '<select id="pc-stock" style="width:100%;padding:9px 11px;border:1px solid #e2e8f0;border-radius:8px;font-size:.82rem;margin-bottom:12px;">' +
+        '<option value="oculto"' + (data.configVista.mostrarStock === 'oculto' ? ' selected' : '') + '>No mostrar</option>' +
+        '<option value="disponibilidad"' + (data.configVista.mostrarStock === 'disponibilidad' ? ' selected' : '') + '>Solo Disponible / Pocas uds / Agotado</option>' +
+        '<option value="exacto"' + (data.configVista.mostrarStock === 'exacto' ? ' selected' : '') + '>Cantidad exacta disponible</option>' +
+      '</select>' +
+
+      '<label style="display:flex;align-items:center;gap:8px;font-size:.78rem;color:#475569;margin-bottom:10px;cursor:pointer;"><input type="checkbox" id="pc-ocultar-agotados"' + (data.configVista.ocultarAgotados ? ' checked' : '') + '> Ocultar productos agotados del catálogo</label>' +
+
+      '<label style="display:block;font-size:.72rem;font-weight:700;color:#475569;margin-bottom:4px;">Marcas visibles (vacío = todas)</label>' +
+      '<div id="pc-marcas-chk" style="margin-bottom:16px;background:#f8fafc;padding:10px;border-radius:8px;max-height:140px;overflow-y:auto;">' + (marcasChecks || '<span style="color:#64748b;font-size:.72rem;">No hay marcas en el catálogo</span>') + '</div>' +
+
+      '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px;">' +
+        '<button id="pc-form-cancel" style="padding:10px 18px;background:#f1f5f9;color:#334155;border:1px solid #e2e8f0;border-radius:8px;font-weight:700;font-size:.78rem;cursor:pointer;">Cancelar</button>' +
+        '<button id="pc-form-save" style="padding:10px 22px;background:#1B1F6B;color:#fff;border:none;border-radius:8px;font-weight:800;font-size:.78rem;cursor:pointer;">' + (isEdit ? 'Guardar cambios' : 'Crear link') + '</button>' +
+      '</div>' +
+    '</div>';
+  document.body.appendChild(ov);
+
+  document.getElementById('pc-cliente').addEventListener('change', function(e){
+    var sel = e.target.options[e.target.selectedIndex];
+    if (sel.value) {
+      document.getElementById('pc-nombre').value = decodeURIComponent(sel.value);
+      if (sel.dataset.rif) document.getElementById('pc-rif').value = sel.dataset.rif;
+    }
+  });
+
+  document.getElementById('pc-form-close').addEventListener('click', function(){ ov.remove(); });
+  document.getElementById('pc-form-cancel').addEventListener('click', function(){ ov.remove(); });
+
+  document.getElementById('pc-form-save').addEventListener('click', async function(){
+    var nombre = document.getElementById('pc-nombre').value.trim();
+    var rif = document.getElementById('pc-rif').value.trim();
+    if (!nombre || nombre.length < 3) { alert('El nombre es obligatorio (mínimo 3 caracteres)'); return; }
+
+    var marcasSeleccionadas = [];
+    document.querySelectorAll('.pc-marca-chk:checked').forEach(function(chk){ marcasSeleccionadas.push(chk.value); });
+
+    data.clienteNombre = nombre;
+    data.rifEsperado = rif;
+    data.configVista = {
+      moneda: document.getElementById('pc-moneda').value,
+      mostrarStock: document.getElementById('pc-stock').value,
+      ocultarAgotados: document.getElementById('pc-ocultar-agotados').checked,
+      marcasVisibles: marcasSeleccionadas,
+    };
+
+    var btn = document.getElementById('pc-form-save');
+    btn.disabled = true;
+    btn.textContent = 'Guardando...';
+
+    try {
+      if (typeof window.fbSavePortalToken === 'function') {
+        await window.fbSavePortalToken(data.token, data);
+      }
+      // Actualizar caché
+      if (isEdit) {
+        var idx = window.portalTokens.findIndex(function(x){ return x.token === data.token; });
+        if (idx >= 0) window.portalTokens[idx] = data;
+      } else {
+        window.portalTokens.push(data);
+      }
+      ov.remove();
+      pcRenderTokensList();
+      showToast(isEdit ? 'Link actualizado' : 'Link creado — copia el enlace y mándaselo al cliente', 'success');
+    } catch(e) {
+      console.error(e);
+      alert('Error al guardar: ' + e.message);
+      btn.disabled = false;
+      btn.textContent = isEdit ? 'Guardar cambios' : 'Crear link';
+    }
+  });
+}
+
+async function pcToggleToken(token) {
+  var t = window.portalTokens.find(function(x){ return x.token === token; });
+  if (!t) return;
+  var nuevoEstado = t.activo === false;
+  if (!confirm(nuevoEstado ? '¿Reactivar este link? El cliente podrá volver a acceder.' : '¿Desactivar este link? El cliente ya no podrá acceder al portal.')) return;
+  t.activo = nuevoEstado;
+  try {
+    if (typeof window.fbSavePortalToken === 'function') {
+      await window.fbSavePortalToken(t.token, t);
+    }
+    pcRenderTokensList();
+    showToast(nuevoEstado ? 'Link reactivado' : 'Link desactivado', 'success');
+  } catch(e) {
+    alert('Error: ' + e.message);
+  }
+}
+
+function pcRenderPedidos(body) {
+  var pendientes = window.portalPedidos.filter(function(p){ return p.estado === 'pendiente'; });
+  var procesados = window.portalPedidos.filter(function(p){ return p.estado !== 'pendiente'; });
+
+  body.innerHTML =
+    '<div style="margin-bottom:14px;">' +
+      '<div style="font-size:.9rem;font-weight:800;color:#1B1F6B;">Pedidos entrantes desde el portal</div>' +
+      '<div style="font-size:.72rem;color:#64748b;margin-top:2px;">Revisa los pedidos que hicieron tus clientes e impórtalos al sistema</div>' +
+    '</div>' +
+    (pendientes.length === 0 && procesados.length === 0 ?
+      '<div style="text-align:center;padding:40px 20px;color:#64748b;font-size:.85rem;background:#fff;border-radius:10px;border:2px dashed #e2e8f0;">Aún no hay pedidos desde el portal.</div>' :
+      '<div id="pc-pedidos-pend"></div>' +
+      (procesados.length > 0 ? '<div style="margin-top:20px;font-size:.78rem;font-weight:800;color:#64748b;">Procesados (' + procesados.length + ')</div><div id="pc-pedidos-proc"></div>' : '')
+    );
+
+  if (pendientes.length > 0) {
+    var cont = document.getElementById('pc-pedidos-pend');
+    cont.innerHTML = pendientes.map(pcRenderPedidoCard).join('');
+    pcAttachPedidoHandlers(cont);
+  }
+  if (procesados.length > 0) {
+    var cont2 = document.getElementById('pc-pedidos-proc');
+    cont2.innerHTML = procesados.map(pcRenderPedidoCard).join('');
+    pcAttachPedidoHandlers(cont2);
+  }
+}
+
+function pcRenderPedidoCard(p) {
+  var fecha = p.fechaStr ? new Date(p.fechaStr).toLocaleString('es-VE') : '—';
+  var numItems = (p.items || []).length;
+  var simb = p.moneda === 'USD' ? '$' : 'Bs ';
+  var esPendiente = p.estado === 'pendiente';
+
+  return '<div style="background:#fff;border:2px solid ' + (esPendiente ? '#F47B3E' : '#e2e8f0') + ';border-radius:10px;padding:14px;margin-bottom:10px;">' +
+    '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap;">' +
+      '<div style="flex:1;min-width:220px;">' +
+        '<div style="font-size:.88rem;font-weight:800;color:#1B1F6B;">' + (p.cliente && p.cliente.razon ? p.cliente.razon : 'Sin cliente') + '</div>' +
+        '<div style="font-size:.7rem;color:#64748b;margin-top:2px;">RIF: ' + (p.cliente && p.cliente.rif ? p.cliente.rif : '—') + ' · Tel: ' + (p.cliente && p.cliente.telefono ? p.cliente.telefono : '—') + '</div>' +
+        '<div style="font-size:.66rem;color:#94a3b8;margin-top:3px;">' + fecha + ' · ' + numItems + ' productos · ' + simb + (p.total || 0).toFixed(2) + '</div>' +
+      '</div>' +
+      '<div style="display:flex;gap:6px;flex-wrap:wrap;">' +
+        '<button data-action="ver" data-id="' + p.id + '" style="background:#f1f5f9;color:#334155;border:1px solid #e2e8f0;border-radius:6px;padding:7px 12px;font-weight:700;font-size:.72rem;cursor:pointer;">👁 Ver detalle</button>' +
+        (esPendiente ? '<button data-action="importar" data-id="' + p.id + '" style="background:#059669;color:#fff;border:none;border-radius:6px;padding:7px 12px;font-weight:700;font-size:.72rem;cursor:pointer;">✓ Importar a Monitor</button>' : '<span style="padding:7px 12px;background:#f0fdf4;color:#166534;border-radius:6px;font-size:.7rem;font-weight:700;">✓ Procesado</span>') +
+      '</div>' +
+    '</div>' +
+  '</div>';
+}
+
+function pcAttachPedidoHandlers(cont) {
+  cont.querySelectorAll('button[data-action]').forEach(function(btn){
+    btn.addEventListener('click', function(){
+      var action = btn.dataset.action;
+      var id = btn.dataset.id;
+      if (action === 'ver') pcVerPedido(id);
+      else if (action === 'importar') pcImportarPedido(id);
+    });
+  });
+}
+
+function pcVerPedido(id) {
+  var p = window.portalPedidos.find(function(x){ return x.id === id; });
+  if (!p) return;
+  var simb = p.moneda === 'USD' ? '$' : 'Bs ';
+  var fecha = p.fechaStr ? new Date(p.fechaStr).toLocaleString('es-VE') : '—';
+
+  var html = '<div style="padding:14px 20px;">' +
+    '<h3 style="margin:0 0 10px 0;color:#1B1F6B;">Pedido ' + id.substring(0, 8).toUpperCase() + '</h3>' +
+    '<div style="font-size:.78rem;color:#475569;margin-bottom:10px;"><strong>Cliente:</strong> ' + p.cliente.razon + '<br><strong>RIF:</strong> ' + p.cliente.rif + '<br><strong>Tel:</strong> ' + p.cliente.telefono + '<br><strong>Fecha:</strong> ' + fecha + '</div>' +
+    '<table style="width:100%;border-collapse:collapse;font-size:.75rem;margin-top:10px;">' +
+      '<thead><tr style="background:#1B1F6B;color:#fff;"><th style="padding:6px;text-align:left;">REF</th><th style="padding:6px;text-align:left;">DESC</th><th style="padding:6px;text-align:center;">CANT</th><th style="padding:6px;text-align:right;">P.U.</th><th style="padding:6px;text-align:right;">TOTAL</th></tr></thead>' +
+      '<tbody>' +
+        (p.items || []).map(function(it, i){
+          return '<tr style="background:' + (i % 2 === 0 ? '#fff' : '#f8fafc') + ';">' +
+            '<td style="padding:5px 6px;font-family:monospace;">' + it.ref + '</td>' +
+            '<td style="padding:5px 6px;">' + it.desc + '</td>' +
+            '<td style="padding:5px 6px;text-align:center;font-weight:700;">' + it.qty + '</td>' +
+            '<td style="padding:5px 6px;text-align:right;">' + simb + it.precioMostrado.toFixed(2) + '</td>' +
+            '<td style="padding:5px 6px;text-align:right;font-weight:700;">' + simb + (it.qty * it.precioMostrado).toFixed(2) + '</td>' +
+          '</tr>';
+        }).join('') +
+      '</tbody>' +
+      '<tfoot><tr style="background:#1B1F6B;color:#fff;"><td colspan="4" style="padding:8px;text-align:right;font-weight:800;">TOTAL:</td><td style="padding:8px;text-align:right;font-weight:900;">' + simb + (p.total || 0).toFixed(2) + '</td></tr></tfoot>' +
+    '</table>' +
+  '</div>';
+
+  var ov = document.createElement('div');
+  ov.style.cssText = 'position:fixed;inset:0;z-index:99700;background:rgba(0,0,0,.8);display:flex;align-items:center;justify-content:center;padding:16px;';
+  ov.innerHTML = '<div style="background:#fff;border-radius:14px;max-width:800px;width:100%;max-height:90vh;overflow-y:auto;">' + html + '<div style="padding:14px 20px;border-top:1px solid #e2e8f0;text-align:right;"><button id="pc-ver-close" style="padding:9px 18px;background:#1B1F6B;color:#fff;border:none;border-radius:6px;font-weight:700;cursor:pointer;">Cerrar</button></div></div>';
+  document.body.appendChild(ov);
+  document.getElementById('pc-ver-close').addEventListener('click', function(){ ov.remove(); });
+}
+
+async function pcImportarPedido(id) {
+  var p = window.portalPedidos.find(function(x){ return x.id === id; });
+  if (!p) return;
+  if (!confirm('¿Importar este pedido al Monitor de Pedidos?\n\nCliente: ' + p.cliente.razon + '\nProductos: ' + p.items.length + '\nTotal: ' + (p.moneda === 'USD' ? '$' : 'Bs ') + p.total.toFixed(2))) return;
+
+  try {
+    // Convertir pedido a formato MS (similar a QuickSell)
+    var sucursales = [p.cliente.razon];
+    var productosNorm = p.items.map(function(it){
+      var pedidos = {};
+      pedidos[p.cliente.razon] = it.qty;
+      return {
+        ref: it.ref,
+        desc: it.desc,
+        stock: 0,
+        pedidos: pedidos,
+        precio_usd: it.precioMostrado,
+        _descCliente: it.desc,
+        _sinRef: !it.ref,
+      };
+    });
+
+    // Guardar estado MS y redirigir
+    if (typeof MS !== 'undefined') {
+      MS.data = productosNorm.map(function(p2){
+        var q = sucursales.map(function(s){ return p2.pedidos[s] || 0; });
+        return { r: p2.ref, d: p2.desc, s: 0, q: q, precioUSD: p2.precio_usd, _descCliente: p2._descCliente, _sinRef: p2._sinRef };
+      });
+      MS.sucursales = sucursales;
+      MS._clienteUnica = { nombre: p.cliente.razon, rif: p.cliente.rif, telefono: p.cliente.telefono };
+      MS._modoUnica = true;
+    }
+
+    // Marcar como sincronizado
+    p.estado = 'sincronizado';
+    p.sincronizadoAFarmers = true;
+    if (typeof window.fbSavePortalPedido === 'function') {
+      await window.fbSavePortalPedido(id, p);
+    }
+
+    // Cerrar módulo portal
+    document.getElementById('pc-modal').remove();
+
+    // Abrir flujo MS
+    showToast('Pedido importado. Revisa y confirma en el Monitor.', 'success');
+
+    if (typeof msCompararConCatalogo === 'function') {
+      var cmp = msCompararConCatalogo(productosNorm);
+      if (cmp.sinMatch && cmp.sinMatch.length > 0 && typeof msResolverRefsSinMatch === 'function') {
+        var resol = await msResolverRefsSinMatch(cmp.sinMatch);
+        if (resol.cancelado) return;
+        resol.resueltas.forEach(function(r){ productosNorm[r.idxOriginal].ref = r.refNueva; });
+        if (resol.saltadas.length > 0) {
+          var setS = {};
+          resol.saltadas.forEach(function(i){ setS[i] = true; });
+          productosNorm = productosNorm.filter(function(_, i){ return !setS[i]; });
+        }
+        cmp = msCompararConCatalogo(productosNorm);
+      }
+      productosNorm = cmp.productos.map(function(pp){
+        return {
+          ref: pp.ref, desc: pp.desc, stock: pp.stock || 0, pedidos: pp.pedidos,
+          precio_usd: pp.precio_usd, codigoBarra: pp.codigoBarra || '', codigoProv: pp.codigoProv || '',
+          marca: pp.marca || '', empaque: pp.empaque || '', udsBulto: pp.udsBulto || 0,
+          _descCliente: pp._descCliente, _diferencias: pp._diferencias || [], _sinMatchCatalogo: pp._sinMatchCatalogo || false,
+        };
+      });
+      var audit = msAuditarPedido(productosNorm, sucursales, 'PORTAL');
+      audit._comparacion = cmp;
+      function abrirAudit() {
+        msMostrarAuditoria(audit, function(){
+          msCalcularDistribucion(productosNorm);
+          setTimeout(function(){ msRenderResultados(); }, 300);
+        }, productosNorm);
+      }
+      if (cmp.totalDif > 0 && typeof msMostrarDiferenciasModal === 'function') {
+        msMostrarDiferenciasModal(cmp, abrirAudit);
+      } else {
+        abrirAudit();
+      }
+    }
+  } catch(e) {
+    console.error(e);
+    alert('Error al importar: ' + e.message);
+  }
+}
+
+function pcRenderConfig(body) {
+  body.innerHTML =
+    '<div style="background:#fff;border-radius:10px;padding:18px;max-width:600px;">' +
+      '<div style="font-size:.9rem;font-weight:800;color:#1B1F6B;margin-bottom:14px;">Configuración del Portal</div>' +
+      '<label style="display:block;font-size:.72rem;font-weight:700;color:#475569;margin-bottom:4px;">URL base del portal</label>' +
+      '<input type="text" id="pc-url" value="' + getPortalBaseUrl() + '" style="width:100%;padding:9px 11px;border:1px solid #e2e8f0;border-radius:8px;font-size:.82rem;margin-bottom:4px;">' +
+      '<div style="font-size:.68rem;color:#64748b;margin-bottom:16px;">El link de cada cliente tendrá la forma: <strong>[URL]?token=XXXXX</strong></div>' +
+      '<button id="pc-save-url" style="padding:10px 18px;background:#1B1F6B;color:#fff;border:none;border-radius:8px;font-weight:800;font-size:.78rem;cursor:pointer;">Guardar URL</button>' +
+      '<div style="margin-top:24px;padding:14px;background:#eff6ff;border-radius:8px;font-size:.72rem;color:#1e40af;line-height:1.6;">' +
+        '<strong>📋 Para poner en marcha el portal:</strong><br>' +
+        '1. Crea un repo nuevo llamado <code>farmers-portal</code> en GitHub<br>' +
+        '2. Sube el archivo <code>portal.html</code> al repo (renómbralo a <code>index.html</code>)<br>' +
+        '3. Habilita GitHub Pages en ese repo<br>' +
+        '4. La URL será: <code>https://farmersve.github.io/farmers-portal/</code><br>' +
+        '5. Crea links aquí y mándalos por WhatsApp a tus clientes' +
+      '</div>' +
+    '</div>';
+
+  document.getElementById('pc-save-url').addEventListener('click', function(){
+    var url = document.getElementById('pc-url').value.trim();
+    if (!url) { alert('URL requerida'); return; }
+    if (!url.endsWith('/')) url += '/';
+    localStorage.setItem('farmers_portal_url', url);
+    showToast('URL guardada', 'success');
+  });
+}
 
 </script>
 </body>
