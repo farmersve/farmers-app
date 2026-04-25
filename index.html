@@ -21435,6 +21435,7 @@ function doRefSearch() {
           '<button onclick="ptImportarConIA()" style="background:linear-gradient(135deg,#dc2626,#b91c1c);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:700;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;" title="Usar IA para interpretar catálogo del proveedor (PDF o Excel)">🤖 IA Catálogo</button>' +
           '<button onclick="ptAplicarRefAlFinalMasivo()" style="background:linear-gradient(135deg,#78350f,#a16207);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:700;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;" title="Aplica REF interna al final de TODAS las descripciones del catálogo (necesario para Valery)">✏️ REF al final</button>' +
           '<button onclick="ptAbrirDiagnosticoInventario()" style="background:linear-gradient(135deg,#7e22ce,#581c87);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:700;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;" title="Ver pedidos reservados, diagnosticar inventario y liberar comprometido huérfano">🔧 Diagnóstico Inventario</button>' +
+          '<button id="pt-btn-sync-portal" onclick="ptSincronizarPortal()" style="background:linear-gradient(135deg,#dc2626,#7f1d1d);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:900;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;box-shadow:0 4px 14px rgba(220,38,38,.4);" title="Fuerza la sincronización inmediata de inventario, comprometido y ordenada al portal del cliente">🔄 Sincronizar Portal</button>' +
         '</div>' +
         '<div id="pt-stats" style="padding:8px 20px;background:#fff;border-bottom:1px solid #eef0f8;display:flex;gap:16px;font-size:.72rem;color:#5a6080;flex-wrap:wrap;"></div>' +
         '<div style="overflow-y:auto;max-height:calc(100vh - 260px);">' +
@@ -21607,6 +21608,145 @@ function ptSaveData(data) {
   // Trigger snapshot del portal: cambios en pt_data afectan ORDENADA
   if (window.fbTriggerPortalSnapshot) window.fbTriggerPortalSnapshot('ptSaveData');
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SINCRONIZACIÓN MANUAL DEL PORTAL — botón "🔄 Sincronizar Portal"
+// Fuerza el envío inmediato de TODOS los datos relevantes a Firestore para
+// que el portal cliente tenga la información idéntica al sistema de pedidos.
+// ═══════════════════════════════════════════════════════════════════════════
+window.ptSincronizarPortal = async function() {
+  var btn = document.getElementById('pt-btn-sync-portal');
+  var btnOrig = btn ? btn.innerHTML : null;
+  if (btn) {
+    btn.disabled = true;
+    btn.style.opacity = '0.7';
+    btn.innerHTML = '⏳ Sincronizando...';
+  }
+
+  // Modal de progreso
+  var existingModal = document.getElementById('sync-portal-modal');
+  if (existingModal) existingModal.remove();
+
+  var modal = document.createElement('div');
+  modal.id = 'sync-portal-modal';
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.75);backdrop-filter:blur(6px);z-index:99999;display:flex;align-items:center;justify-content:center;padding:20px;';
+  modal.innerHTML =
+    '<div style="background:#fff;border-radius:14px;max-width:560px;width:100%;box-shadow:0 30px 70px rgba(15,23,42,.45);overflow:hidden;">' +
+      '<div style="background:linear-gradient(135deg,#dc2626,#7f1d1d);color:#fff;padding:18px 22px;">' +
+        '<div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;font-size:1.15rem;letter-spacing:1.5px;text-transform:uppercase;">🔄 Sincronizando Portal</div>' +
+        '<div style="font-size:.72rem;opacity:.85;margin-top:3px;">Forzando subida de inventario, comprometido y ordenada a Firestore</div>' +
+      '</div>' +
+      '<div id="sync-modal-body" style="padding:20px 22px;font-size:.82rem;color:#1B1F6B;">' +
+        '<div id="sync-step-1">⏳ Subiendo inventario real...</div>' +
+        '<div id="sync-step-2" style="margin-top:8px;color:#94a3b8;">⌛ Esperando...</div>' +
+        '<div id="sync-step-3" style="margin-top:8px;color:#94a3b8;">⌛ Esperando...</div>' +
+        '<div id="sync-step-4" style="margin-top:8px;color:#94a3b8;">⌛ Esperando...</div>' +
+        '<div id="sync-step-5" style="margin-top:8px;color:#94a3b8;">⌛ Esperando...</div>' +
+      '</div>' +
+    '</div>';
+  document.body.appendChild(modal);
+
+  function setStep(n, html) {
+    var el = document.getElementById('sync-step-' + n);
+    if (el) { el.innerHTML = html; el.style.color = '#1B1F6B'; }
+  }
+
+  var resultados = { inventario: 0, comprometido: { refs: 0, uds: 0 }, ordenada: 0, sales: 0 };
+
+  try {
+    // 1) Inventario
+    var invStr = localStorage.getItem('farmers_inv');
+    if (invStr && window.fbSaveInventory) {
+      var invObj = JSON.parse(invStr);
+      await window.fbSaveInventory(invObj);
+      resultados.inventario = Object.keys(invObj).length;
+      setStep(1, '✅ Inventario subido: <strong>' + resultados.inventario + '</strong> refs');
+    } else {
+      setStep(1, '⚠ Inventario sin datos en localStorage');
+    }
+
+    // 2) Comprometido (LO MÁS IMPORTANTE)
+    setStep(2, '⏳ Subiendo comprometido (lo más importante)...');
+    var compStr = localStorage.getItem('farmers_inv_comprometido');
+    if (compStr && window.fbSaveComprometido) {
+      var compObj = JSON.parse(compStr);
+      await window.fbSaveComprometido(compObj);
+      var refsConComp = 0, totalUds = 0;
+      Object.keys(compObj).forEach(function(r){
+        var entry = compObj[r];
+        var q = (entry && typeof entry === 'object') ? (parseInt(entry.qty) || 0) : (parseInt(entry) || 0);
+        if (q > 0) { refsConComp++; totalUds += q; }
+      });
+      resultados.comprometido = { refs: refsConComp, uds: totalUds };
+      setStep(2, '✅ Comprometido subido: <strong>' + refsConComp + '</strong> refs · <strong>' + totalUds + '</strong> uds totales');
+    } else {
+      setStep(2, '⚠ Sin reservas activas en localStorage');
+    }
+
+    // 3) Ordenada (pt_data)
+    setStep(3, '⏳ Subiendo Ordenada (pt_data)...');
+    var ptStr = localStorage.getItem('farmers_pt_data');
+    if (ptStr && window.fbSavePT) {
+      var ptObj = JSON.parse(ptStr);
+      await window.fbSavePT(ptObj);
+      var conOrd = 0;
+      Object.keys(ptObj).forEach(function(r){ if (parseInt((ptObj[r]||{}).exOrdenada || 0) > 0) conOrd++; });
+      resultados.ordenada = conOrd;
+      setStep(3, '✅ Ordenada subida: <strong>' + conOrd + '</strong> refs con ordenada > 0');
+    }
+
+    // 4) Sales (historial)
+    setStep(4, '⏳ Subiendo historial de ventas...');
+    var salesStr = localStorage.getItem('farmers_sales');
+    if (salesStr && window.fbSaveSales) {
+      var salesArr = JSON.parse(salesStr);
+      await window.fbSaveSales(salesArr);
+      resultados.sales = salesArr.length;
+      setStep(4, '✅ Sales subidas: <strong>' + resultados.sales + '</strong> registros');
+    }
+
+    // 5) Snapshot del portal (FUENTE ÚNICA DE VERDAD)
+    setStep(5, '⏳ Publicando snapshot del portal...');
+    if (window.fbSavePortalSnapshot) {
+      await window.fbSavePortalSnapshot();
+      setStep(5, '✅ <strong>Snapshot publicado al portal</strong> — admin y portal sincronizados');
+    }
+
+    // Resumen
+    var body = document.getElementById('sync-modal-body');
+    if (body) {
+      body.innerHTML +=
+        '<div style="margin-top:18px;padding:14px 16px;background:linear-gradient(135deg,#dcfce7,#bbf7d0);border:1.5px solid #16a34a;border-radius:10px;color:#14532d;">' +
+          '<div style="font-weight:900;font-size:.92rem;margin-bottom:6px;">✅ Sincronización completa</div>' +
+          '<div style="font-size:.78rem;line-height:1.5;">El portal del cliente ahora reflejará exactamente lo mismo que el sistema de pedidos:<br>' +
+          '<strong>' + resultados.inventario + '</strong> refs de inventario · <strong>' + resultados.comprometido.refs + '</strong> refs comprometidas (<strong>' + resultados.comprometido.uds + '</strong> uds) · <strong>' + resultados.ordenada + '</strong> refs con Ordenada' +
+          '</div>' +
+          '<div style="margin-top:10px;font-size:.7rem;color:#166534;">💡 Recarga el portal del cliente en incógnito para ver los cambios.</div>' +
+        '</div>' +
+        '<div style="display:flex;gap:8px;margin-top:14px;">' +
+          '<button onclick="document.getElementById(\'sync-portal-modal\').remove()" style="flex:1;padding:11px;background:#1B1F6B;color:#fff;border:none;border-radius:8px;font-weight:900;font-size:.8rem;cursor:pointer;text-transform:uppercase;letter-spacing:.6px;">Cerrar</button>' +
+        '</div>';
+    }
+
+  } catch(e) {
+    console.error('[ptSincronizarPortal] error:', e);
+    var body = document.getElementById('sync-modal-body');
+    if (body) {
+      body.innerHTML +=
+        '<div style="margin-top:14px;padding:12px;background:#fee2e2;border:1.5px solid #dc2626;border-radius:8px;color:#7f1d1d;font-size:.78rem;">' +
+          '✗ Error durante sincronización: ' + (e.message || e) + '<br>' +
+          '<small>Verifica tu conexión a Firebase y vuelve a intentarlo.</small>' +
+        '</div>' +
+        '<button onclick="document.getElementById(\'sync-portal-modal\').remove()" style="margin-top:10px;width:100%;padding:11px;background:#1B1F6B;color:#fff;border:none;border-radius:8px;font-weight:900;cursor:pointer;">Cerrar</button>';
+    }
+  }
+
+  if (btn) {
+    btn.disabled = false;
+    btn.style.opacity = '1';
+    btn.innerHTML = btnOrig || '🔄 Sincronizar Portal';
+  }
+};
 
 // Obtener existencias comprometidas por producto
 // FUENTE OFICIAL: farmers_inv_comprometido (lo que actualizan msComprometerInventario, etc.)
