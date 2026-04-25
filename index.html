@@ -6439,23 +6439,22 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
         if (invStr) inv = JSON.parse(invStr);
       } catch(e) {}
 
-      // 3) Comprometido — calculado desde farmers_sales (idéntico a ptGetComprometidas del admin)
-      var compMap = {}; // ref → cantidad total comprometida
+      // 3) Comprometido — leer farmers_inv_comprometido (FUENTE OFICIAL DEL ADMIN)
+      // Estructura: { ref: { qty: N, pedidos: [...] } }
+      // Esto es exactamente lo que usa window.getDisponible() del admin
+      var compStorage = {};
       try {
-        var salesStr = localStorage.getItem('farmers_sales');
-        if (salesStr) {
-          var sales = JSON.parse(salesStr);
-          (sales || []).forEach(function(s){
-            if (s.tipo !== 'pedido') return; // Solo pedidos pendientes
-            (s.items || []).forEach(function(it){
-              var ref = it.r;
-              if (!ref) return;
-              var qty = parseInt(it.orden) || 0;
-              compMap[ref] = (compMap[ref] || 0) + qty;
-            });
-          });
-        }
+        var compStr = localStorage.getItem('farmers_inv_comprometido');
+        if (compStr) compStorage = JSON.parse(compStr);
       } catch(e) {}
+
+      // Helper idéntico a window.getDisponible del admin (línea ~3635)
+      function _getCompQty(ref) {
+        var entry = compStorage[ref];
+        if (!entry) return 0;
+        if (typeof entry === 'object') return parseInt(entry.qty || 0) || 0;
+        return parseInt(entry) || 0; // Compatibilidad con formato legacy
+      }
 
       // 4) Ordenada — desde farmers_pt_data
       var ptData = {};
@@ -6464,7 +6463,7 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
         if (ptStr) ptData = JSON.parse(ptStr);
       } catch(e) {}
 
-      // 5) Construir snapshot por referencia
+      // 5) Construir snapshot por referencia (lógica idéntica al admin)
       var snapshot = {};
       var stats = { totalRefs: 0, conStock: 0, bajoStock: 0, agotados: 0, conOrdenada: 0 };
 
@@ -6472,7 +6471,7 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
         var ref = p.r;
         if (!ref) return;
         var real = (inv[ref] !== undefined) ? (parseInt(inv[ref]) || 0) : (parseInt(p.ex) || 0);
-        var comp = compMap[ref] || 0;
+        var comp = _getCompQty(ref);
         var disp = Math.max(0, real - comp);
         var ord  = parseInt((ptData[ref] || {}).exOrdenada || 0) || 0;
 
@@ -6527,32 +6526,35 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
     console.log('🔍 DIAGNÓSTICO COMPLETO FARMERS PORTAL');
     console.log('═══════════════════════════════════════════════════');
 
-    // 1) Local — sistema admin
+    // 1) Local — sistema admin (usa exactamente las MISMAS fuentes que la tabla del admin)
     var prods = (typeof PRODUCTS !== 'undefined') ? PRODUCTS : [];
     var inv = {};
-    var sales = [];
+    var compStorage = {};
     var ptData = {};
     try { inv = JSON.parse(localStorage.getItem('farmers_inv') || '{}'); } catch(e){}
-    try { sales = JSON.parse(localStorage.getItem('farmers_sales') || '[]'); } catch(e){}
+    try { compStorage = JSON.parse(localStorage.getItem('farmers_inv_comprometido') || '{}'); } catch(e){}
     try { ptData = JSON.parse(localStorage.getItem('farmers_pt_data') || '{}'); } catch(e){}
 
-    var compMap = {};
-    sales.forEach(function(s){
-      if (s.tipo !== 'pedido') return;
-      (s.items || []).forEach(function(it){
-        if (it.r) compMap[it.r] = (compMap[it.r] || 0) + (parseInt(it.orden) || 0);
-      });
-    });
+    // Helper idéntico a window.getDisponible
+    function _compQty(ref) {
+      var entry = compStorage[ref];
+      if (!entry) return 0;
+      if (typeof entry === 'object') return parseInt(entry.qty || 0) || 0;
+      return parseInt(entry) || 0;
+    }
 
     var conStock = 0, bajoStock = 0, agotado = 0, conOrdenada = 0;
-    var udsTotalDisp = 0, udsTotalOrd = 0;
+    var udsTotalDisp = 0, udsTotalOrd = 0, udsTotalComp = 0;
+    var refsConComp = 0;
     prods.forEach(function(p){
       var real = (inv[p.r] !== undefined) ? (parseInt(inv[p.r]) || 0) : (parseInt(p.ex) || 0);
-      var comp = compMap[p.r] || 0;
+      var comp = _compQty(p.r);
       var disp = Math.max(0, real - comp);
       var ord  = parseInt((ptData[p.r] || {}).exOrdenada || 0) || 0;
       udsTotalDisp += disp;
       udsTotalOrd += ord;
+      udsTotalComp += comp;
+      if (comp > 0) refsConComp++;
       if (disp === 0) agotado++;
       else if (disp <= 10) bajoStock++;
       else conStock++;
@@ -6562,7 +6564,7 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
     console.log('📊 LOCAL (tu admin):');
     console.log('   Productos en catálogo: %d', prods.length);
     console.log('   Inventario refs: %d', Object.keys(inv).length);
-    console.log('   Pedidos pendientes: %d', sales.filter(function(s){return s.tipo==='pedido';}).length);
+    console.log('   Refs con comprometido > 0: %d (%d uds totales)', refsConComp, udsTotalComp);
     console.log('   Refs en pt_data: %d', Object.keys(ptData).length);
     console.log('   ━━━━━━━━━━━━━━━━━━━━━━━━━━━');
     console.log('   ✅ Con stock (>10): %d', conStock);
@@ -6572,6 +6574,12 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
     console.log('   ━━━━━━━━━━━━━━━━━━━━━━━━━━━');
     console.log('   Total uds disponibles: %d', udsTotalDisp);
     console.log('   Total uds Ordenada: %d', udsTotalOrd);
+
+    // Inspección directa de EXC003 si existe
+    if (compStorage['EXC003']) {
+      console.log('');
+      console.log('🔬 EXC003 en comprometido local:', compStorage['EXC003']);
+    }
 
     // 2) Firestore — lo que el portal ve
     console.log('');
@@ -6617,8 +6625,69 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
     console.log('');
     console.log('═══════════════════════════════════════════════════');
     console.log('💡 Para republicar manualmente:  await fbSavePortalSnapshot()');
+    console.log('💡 Para forzar sync completo:    await farmersFix()');
     console.log('═══════════════════════════════════════════════════');
     return 'Diagnóstico completado';
+  };
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // farmersFix() — Forzar sincronización inmediata de TODO a Firestore
+  // Útil cuando datos viejos en localStorage no llegaron antes a Firestore
+  // ══════════════════════════════════════════════════════════════════════════
+  window.farmersFix = async function() {
+    console.log('🔧 SINCRONIZACIÓN FORZADA');
+    console.log('═══════════════════════════════════════════════════');
+
+    try {
+      // 1) Inventario
+      var invStr = localStorage.getItem('farmers_inv');
+      if (invStr && window.fbSaveInventory) {
+        await window.fbSaveInventory(JSON.parse(invStr));
+        console.log('✓ Inventario subido a Firestore');
+      }
+
+      // 2) Comprometido (CRÍTICO)
+      var compStr = localStorage.getItem('farmers_inv_comprometido');
+      if (compStr && window.fbSaveComprometido) {
+        var compObj = JSON.parse(compStr);
+        await window.fbSaveComprometido(compObj);
+        var refsConComp = 0, totalComp = 0;
+        Object.keys(compObj).forEach(function(r){
+          var q = (compObj[r] && typeof compObj[r] === 'object') ? (parseInt(compObj[r].qty) || 0) : (parseInt(compObj[r]) || 0);
+          if (q > 0) { refsConComp++; totalComp += q; }
+        });
+        console.log('✓ Comprometido subido: ' + refsConComp + ' refs (' + totalComp + ' uds totales)');
+      } else if (!compStr) {
+        console.log('⚠ farmers_inv_comprometido vacío en localStorage — no hay reservas activas');
+      }
+
+      // 3) Sales
+      var salesStr = localStorage.getItem('farmers_sales');
+      if (salesStr && window.fbSaveSales) {
+        await window.fbSaveSales(JSON.parse(salesStr));
+        console.log('✓ Sales subidas a Firestore');
+      }
+
+      // 4) PT data
+      var ptStr = localStorage.getItem('farmers_pt_data');
+      if (ptStr && window.fbSavePT) {
+        await window.fbSavePT(JSON.parse(ptStr));
+        console.log('✓ pt_data (Ordenada) subido a Firestore');
+      }
+
+      // 5) Snapshot final
+      if (window.fbSavePortalSnapshot) {
+        await window.fbSavePortalSnapshot();
+        console.log('✓ Portal snapshot publicado');
+      }
+
+      console.log('═══════════════════════════════════════════════════');
+      console.log('✅ TODO SINCRONIZADO. Recarga el portal del cliente para ver los cambios.');
+      return true;
+    } catch(e) {
+      console.error('✗ Error:', e);
+      return false;
+    }
   };
   window.fbGetPortalTokens = async () => {
     try {
@@ -6853,72 +6922,77 @@ async function loadFromFirebase() {
   } catch(ep) { console.warn('Upload logo portal:', ep); }
 
   // ── AUTO-RESYNC al cargar — asegura que el portal siempre vea lo último ──
-  // Antes había un bug: fbSavePT y fbSaveComprometido no estaban implementadas.
-  // Por eso datos viejos pueden estar en localStorage pero no en Firestore.
-  // Esta resync detecta y arregla la situación AUTOMÁTICAMENTE sin que el admin haga nada.
+  // Sincroniza las 3 fuentes oficiales del admin a Firestore:
+  //   1. farmers_inv               → data/inventory   (inventario REAL)
+  //   2. farmers_inv_comprometido  → data/comprometido (comprometido OFICIAL)
+  //   3. farmers_pt_data           → data/pt_data     (Ordenada)
+  // Y luego publica el snapshot completo para el portal.
   try {
     if (!sessionStorage.getItem('farmers_autoresync_done')) {
       sessionStorage.setItem('farmers_autoresync_done', '1');
       setTimeout(async function(){
         try {
-          // 1) Resync inventario (asegura que farmers_inv esté en Firestore)
+          // 1) Resync INVENTARIO REAL (farmers_inv)
           if (typeof window.fbSaveInventory === 'function') {
             var invStr = localStorage.getItem('farmers_inv');
             if (invStr) {
               await window.fbSaveInventory(JSON.parse(invStr));
-              console.log('[AUTO-RESYNC] ✓ inventario resincronizado a Firestore');
+              var invObj = JSON.parse(invStr);
+              console.log('[AUTO-RESYNC] ✓ inventario resincronizado: ' + Object.keys(invObj).length + ' refs');
             }
           }
 
-          // 2) Resync sales (asegura que farmers_sales esté en Firestore — crítico para comprometido)
-          if (typeof window.fbSaveSales === 'function') {
-            var salesStr = localStorage.getItem('farmers_sales');
-            if (salesStr) {
-              var salesArr = JSON.parse(salesStr);
-              await window.fbSaveSales(salesArr);
-              var pedidosCount = (salesArr || []).filter(function(s){ return s.tipo === 'pedido'; }).length;
-              console.log('[AUTO-RESYNC] ✓ sales resincronizado a Firestore (' + pedidosCount + ' pedidos pendientes)');
+          // 2) Resync COMPROMETIDO OFICIAL (farmers_inv_comprometido)
+          // CRÍTICO: esta es la fuente única que usa el admin para calcular DISPONIBLE
+          if (typeof window.fbSaveComprometido === 'function') {
+            var compStr = localStorage.getItem('farmers_inv_comprometido');
+            if (compStr) {
+              var compObj = JSON.parse(compStr);
+              await window.fbSaveComprometido(compObj);
+              var refsConComp = 0, totalComp = 0;
+              Object.keys(compObj).forEach(function(r){
+                var q = (compObj[r] && typeof compObj[r] === 'object') ? (parseInt(compObj[r].qty) || 0) : (parseInt(compObj[r]) || 0);
+                if (q > 0) { refsConComp++; totalComp += q; }
+              });
+              console.log('[AUTO-RESYNC] ✓ comprometido resincronizado: ' + refsConComp + ' refs (' + totalComp + ' uds totales)');
+            } else {
+              console.log('[AUTO-RESYNC] ⚠ farmers_inv_comprometido vacío — no hay reservas en el admin');
             }
           }
 
           // 3) Resync pt_data (Ordenada)
-          if (typeof window.fbSavePT === 'function' && typeof window.fbGetPT === 'function') {
-            var localPT = JSON.parse(localStorage.getItem('farmers_pt_data') || '{}');
-            var localCount = 0;
-            Object.keys(localPT).forEach(function(r){ if (parseInt((localPT[r]||{}).exOrdenada || 0) > 0) localCount++; });
-
-            if (localCount > 0) {
-              var remotePT = await window.fbGetPT();
-              var remoteCount = 0;
-              Object.keys(remotePT.data || {}).forEach(function(r){ if (parseInt((remotePT.data[r]||{}).exOrdenada || 0) > 0) remoteCount++; });
-
-              if (Math.abs(localCount - remoteCount) >= 1) {
-                console.log('[AUTO-RESYNC] Detectado desfase pt_data: local=' + localCount + ' refs, firestore=' + remoteCount + '. Resincronizando...');
-                await window.fbSavePT(localPT);
-                console.log('[AUTO-RESYNC] ✓ pt_data resincronizado al portal');
-              }
+          if (typeof window.fbSavePT === 'function') {
+            var ptStr = localStorage.getItem('farmers_pt_data');
+            if (ptStr) {
+              var ptObj = JSON.parse(ptStr);
+              await window.fbSavePT(ptObj);
+              var conOrd = 0;
+              Object.keys(ptObj).forEach(function(r){ if (parseInt((ptObj[r]||{}).exOrdenada || 0) > 0) conOrd++; });
+              console.log('[AUTO-RESYNC] ✓ pt_data resincronizado: ' + conOrd + ' refs con Ordenada');
             }
           }
 
-          // 4) Resync comprometido (legacy — mantener por compatibilidad)
-          if (typeof window.fbSaveComprometido === 'function') {
-            var compStr = localStorage.getItem('farmers_inv_comprometido');
-            if (compStr) {
-              await window.fbSaveComprometido(JSON.parse(compStr));
-              console.log('[AUTO-RESYNC] ✓ comprometido resincronizado al portal');
+          // 4) Resync sales (para historial — no se usa para comprometido)
+          if (typeof window.fbSaveSales === 'function') {
+            var salesStr = localStorage.getItem('farmers_sales');
+            if (salesStr) {
+              await window.fbSaveSales(JSON.parse(salesStr));
+              console.log('[AUTO-RESYNC] ✓ sales resincronizado a Firestore');
             }
           }
 
           // 5) ⭐ SNAPSHOT COMPLETO PARA PORTAL (fuente única de verdad)
-          // Esto sincroniza inventario + comprometido + ordenada + disponible
-          // exactamente como los ve el sistema de pedidos. Se ejecuta DESPUÉS de los resyncs
-          // anteriores para que tenga la data más actualizada.
+          // Calculado con la lógica IDÉNTICA al admin:
+          //   real = farmers_inv[ref] o p.ex
+          //   comp = farmers_inv_comprometido[ref].qty
+          //   disp = max(0, real - comp)
+          //   ord  = farmers_pt_data[ref].exOrdenada
           if (typeof window.fbSavePortalSnapshot === 'function') {
             await window.fbSavePortalSnapshot();
-            console.log('[AUTO-RESYNC] ✓ Portal snapshot publicado');
+            console.log('[AUTO-RESYNC] ✓ Portal snapshot publicado — admin y portal sincronizados');
           }
         } catch(eAR) { console.warn('[AUTO-RESYNC]', eAR); }
-      }, 1500); // 1.5s después del login para no bloquear UI
+      }, 1500);
     }
   } catch(eAR2) {}
 
@@ -21534,21 +21608,38 @@ function ptSaveData(data) {
   if (window.fbTriggerPortalSnapshot) window.fbTriggerPortalSnapshot('ptSaveData');
 }
 
-// Obtener existencias comprometidas por producto desde farmers_sales (pedidos)
+// Obtener existencias comprometidas por producto
+// FUENTE OFICIAL: farmers_inv_comprometido (lo que actualizan msComprometerInventario, etc.)
+// Estructura del storage: { ref: { qty: N, pedidos: [{numP, cliente, fecha, qty}] } }
+// Esta función devuelve la estructura compatible con la tabla:
+// { ref: [{pedido, cliente, qty, fecha}] }
 function ptGetComprometidas() {
-  var sales = typeof getSales === 'function' ? getSales() : [];
-  var comprometidas = {}; // ref → [{pedido, cliente, qty}]
-  sales.forEach(function(s) {
-    if (s.tipo !== 'pedido') return; // Solo pedidos, no ventas
-    (s.items || []).forEach(function(it) {
-      if (!comprometidas[it.r]) comprometidas[it.r] = [];
-      comprometidas[it.r].push({
-        pedido:  s.numpedido || s.id,
-        cliente: s.cliente   || '—',
-        qty:     parseInt(it.orden) || 0,
-        fecha:   s.fecha     || ''
+  var compStorage = (typeof getComprometido === 'function') ? getComprometido() : {};
+  var comprometidas = {};
+  Object.keys(compStorage).forEach(function(ref) {
+    var entry = compStorage[ref];
+    if (!entry) return;
+    // Estructura oficial: { qty, pedidos: [{numP, cliente, fecha, qty}] }
+    var qtyTotal = (typeof entry === 'object') ? (parseInt(entry.qty) || 0) : (parseInt(entry) || 0);
+    if (qtyTotal <= 0) return;
+    // Si tiene desglose de pedidos, usarlo; si no, generar entrada genérica
+    if (entry.pedidos && entry.pedidos.length > 0) {
+      comprometidas[ref] = entry.pedidos.map(function(p){
+        return {
+          pedido:  p.numP || p.pedido || '—',
+          cliente: p.cliente || '—',
+          qty:     parseInt(p.qty) || 0,
+          fecha:   p.fecha || ''
+        };
       });
-    });
+    } else {
+      comprometidas[ref] = [{
+        pedido:  '—',
+        cliente: '—',
+        qty:     qtyTotal,
+        fecha:   ''
+      }];
+    }
   });
   return comprometidas;
 }
