@@ -6861,7 +6861,27 @@ async function loadFromFirebase() {
       sessionStorage.setItem('farmers_autoresync_done', '1');
       setTimeout(async function(){
         try {
-          // 1) Resync pt_data (Ordenada)
+          // 1) Resync inventario (asegura que farmers_inv esté en Firestore)
+          if (typeof window.fbSaveInventory === 'function') {
+            var invStr = localStorage.getItem('farmers_inv');
+            if (invStr) {
+              await window.fbSaveInventory(JSON.parse(invStr));
+              console.log('[AUTO-RESYNC] ✓ inventario resincronizado a Firestore');
+            }
+          }
+
+          // 2) Resync sales (asegura que farmers_sales esté en Firestore — crítico para comprometido)
+          if (typeof window.fbSaveSales === 'function') {
+            var salesStr = localStorage.getItem('farmers_sales');
+            if (salesStr) {
+              var salesArr = JSON.parse(salesStr);
+              await window.fbSaveSales(salesArr);
+              var pedidosCount = (salesArr || []).filter(function(s){ return s.tipo === 'pedido'; }).length;
+              console.log('[AUTO-RESYNC] ✓ sales resincronizado a Firestore (' + pedidosCount + ' pedidos pendientes)');
+            }
+          }
+
+          // 3) Resync pt_data (Ordenada)
           if (typeof window.fbSavePT === 'function' && typeof window.fbGetPT === 'function') {
             var localPT = JSON.parse(localStorage.getItem('farmers_pt_data') || '{}');
             var localCount = 0;
@@ -6880,7 +6900,7 @@ async function loadFromFirebase() {
             }
           }
 
-          // 2) Resync comprometido
+          // 4) Resync comprometido (legacy — mantener por compatibilidad)
           if (typeof window.fbSaveComprometido === 'function') {
             var compStr = localStorage.getItem('farmers_inv_comprometido');
             if (compStr) {
@@ -6889,9 +6909,10 @@ async function loadFromFirebase() {
             }
           }
 
-          // 3) ⭐ SNAPSHOT COMPLETO PARA PORTAL (fuente única de verdad)
+          // 5) ⭐ SNAPSHOT COMPLETO PARA PORTAL (fuente única de verdad)
           // Esto sincroniza inventario + comprometido + ordenada + disponible
-          // exactamente como los ve el sistema de pedidos
+          // exactamente como los ve el sistema de pedidos. Se ejecuta DESPUÉS de los resyncs
+          // anteriores para que tenga la data más actualizada.
           if (typeof window.fbSavePortalSnapshot === 'function') {
             await window.fbSavePortalSnapshot();
             console.log('[AUTO-RESYNC] ✓ Portal snapshot publicado');
