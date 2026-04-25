@@ -6513,6 +6513,113 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
       window.fbSavePortalSnapshot();
     }, 800);
   };
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // farmersDiag() — COMANDO DE DIAGNÓSTICO COMPLETO PARA EL PORTAL
+  // Pega `farmersDiag()` en la consola del navegador para ver el estado real:
+  //   1. Cuánto inventario tiene tu admin localmente
+  //   2. Cuánto inventario tiene Firestore (lo que el portal ve)
+  //   3. Si están sincronizados o no
+  //   4. Forzar una resincronización al instante
+  // ══════════════════════════════════════════════════════════════════════════
+  window.farmersDiag = async function() {
+    console.log('═══════════════════════════════════════════════════');
+    console.log('🔍 DIAGNÓSTICO COMPLETO FARMERS PORTAL');
+    console.log('═══════════════════════════════════════════════════');
+
+    // 1) Local — sistema admin
+    var prods = (typeof PRODUCTS !== 'undefined') ? PRODUCTS : [];
+    var inv = {};
+    var sales = [];
+    var ptData = {};
+    try { inv = JSON.parse(localStorage.getItem('farmers_inv') || '{}'); } catch(e){}
+    try { sales = JSON.parse(localStorage.getItem('farmers_sales') || '[]'); } catch(e){}
+    try { ptData = JSON.parse(localStorage.getItem('farmers_pt_data') || '{}'); } catch(e){}
+
+    var compMap = {};
+    sales.forEach(function(s){
+      if (s.tipo !== 'pedido') return;
+      (s.items || []).forEach(function(it){
+        if (it.r) compMap[it.r] = (compMap[it.r] || 0) + (parseInt(it.orden) || 0);
+      });
+    });
+
+    var conStock = 0, bajoStock = 0, agotado = 0, conOrdenada = 0;
+    var udsTotalDisp = 0, udsTotalOrd = 0;
+    prods.forEach(function(p){
+      var real = (inv[p.r] !== undefined) ? (parseInt(inv[p.r]) || 0) : (parseInt(p.ex) || 0);
+      var comp = compMap[p.r] || 0;
+      var disp = Math.max(0, real - comp);
+      var ord  = parseInt((ptData[p.r] || {}).exOrdenada || 0) || 0;
+      udsTotalDisp += disp;
+      udsTotalOrd += ord;
+      if (disp === 0) agotado++;
+      else if (disp <= 10) bajoStock++;
+      else conStock++;
+      if (ord > 0) conOrdenada++;
+    });
+
+    console.log('📊 LOCAL (tu admin):');
+    console.log('   Productos en catálogo: %d', prods.length);
+    console.log('   Inventario refs: %d', Object.keys(inv).length);
+    console.log('   Pedidos pendientes: %d', sales.filter(function(s){return s.tipo==='pedido';}).length);
+    console.log('   Refs en pt_data: %d', Object.keys(ptData).length);
+    console.log('   ━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.log('   ✅ Con stock (>10): %d', conStock);
+    console.log('   ⚠ Bajo stock (1-10): %d', bajoStock);
+    console.log('   ❌ Agotados: %d', agotado);
+    console.log('   📦 Con Ordenada > 0: %d', conOrdenada);
+    console.log('   ━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.log('   Total uds disponibles: %d', udsTotalDisp);
+    console.log('   Total uds Ordenada: %d', udsTotalOrd);
+
+    // 2) Firestore — lo que el portal ve
+    console.log('');
+    console.log('📡 FIRESTORE (lo que el portal cliente ve):');
+    try {
+      var snap = await getDoc(doc(db, 'data', 'portal_snapshot'));
+      if (snap.exists() && snap.data().v) {
+        var d = snap.data();
+        var minutos = d.updatedAt ? Math.round((Date.now() - d.updatedAt) / 60000) : null;
+        console.log('   ✓ Snapshot existe');
+        console.log('   Última actualización: %s', minutos !== null ? ('hace ' + minutos + ' min') : 'desconocido');
+        console.log('   Total refs: %d', d.totalRefs || 0);
+        console.log('   Con stock: %d', d.conStock || 0);
+        console.log('   Bajo stock: %d', d.bajoStock || 0);
+        console.log('   Agotados: %d', d.agotados || 0);
+        console.log('   Con Ordenada: %d', d.conOrdenada || 0);
+
+        // Comparación
+        console.log('');
+        console.log('🔬 COMPARACIÓN:');
+        var match = (
+          (d.totalRefs || 0) === prods.length &&
+          (d.conOrdenada || 0) === conOrdenada
+        );
+        if (match) {
+          console.log('   ✅ ADMIN Y PORTAL SINCRONIZADOS PERFECTAMENTE');
+        } else {
+          console.log('   ⚠ DESFASE DETECTADO — el portal no tiene los últimos datos');
+          console.log('   → Ejecutando resincronización automática...');
+          await window.fbSavePortalSnapshot();
+          console.log('   ✓ Snapshot republicado. Recarga el portal para ver los cambios.');
+        }
+      } else {
+        console.log('   ❌ NO HAY SNAPSHOT — el portal está vacío');
+        console.log('   → Publicando snapshot ahora...');
+        await window.fbSavePortalSnapshot();
+        console.log('   ✓ Snapshot publicado. Ahora recarga el portal.');
+      }
+    } catch(e) {
+      console.error('   ✗ Error consultando Firestore:', e);
+    }
+
+    console.log('');
+    console.log('═══════════════════════════════════════════════════');
+    console.log('💡 Para republicar manualmente:  await fbSavePortalSnapshot()');
+    console.log('═══════════════════════════════════════════════════');
+    return 'Diagnóstico completado';
+  };
   window.fbGetPortalTokens = async () => {
     try {
       const snap = await getDocs(collection(db, 'portal_tokens'));
@@ -6790,7 +6897,7 @@ async function loadFromFirebase() {
             console.log('[AUTO-RESYNC] ✓ Portal snapshot publicado');
           }
         } catch(eAR) { console.warn('[AUTO-RESYNC]', eAR); }
-      }, 3000); // Esperar 3 segundos después del login para no bloquear UI
+      }, 1500); // 1.5s después del login para no bloquear UI
     }
   } catch(eAR2) {}
 
