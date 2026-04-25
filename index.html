@@ -3527,6 +3527,12 @@ window.saveProducts = function() {
       if (corregidosC > 5) console.log('  · (y ' + (corregidosC - 5) + ' más...)');
     }
     localStorage.setItem(PRODUCTS_KEY, JSON.stringify(PRODUCTS));
+    // Subir a Firestore para que el portal cliente vea los cambios
+    if (typeof window.fbSaveProducts === 'function') {
+      try { window.fbSaveProducts(PRODUCTS); } catch(eFb) { console.warn('[saveProducts] fbSaveProducts falló:', eFb); }
+    }
+    // Trigger snapshot del portal: cambios en PRODUCTS pueden afectar campos visibles (medida, empaque, descripción)
+    if (window.fbTriggerPortalSnapshot) window.fbTriggerPortalSnapshot('saveProducts');
     return true;
   } catch(e) {
     console.error('[saveProducts] error:', e);
@@ -3643,6 +3649,8 @@ window.getMsPedidos = function() {
 window.saveMsPedidos = function(pedidos) {
   try { localStorage.setItem(MS_PEDIDOS_KEY, JSON.stringify(pedidos)); } catch(e){}
   if(window.fbSaveMsPedidos) window.fbSaveMsPedidos(pedidos);
+  // Trigger snapshot del portal — los ms_pedidos afectan el comprometido visible
+  if(window.fbTriggerPortalSnapshot) window.fbTriggerPortalSnapshot('saveMsPedidos');
 };
 
 function sortProducts() {
@@ -6393,6 +6401,32 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
       return true;
     } catch(e) { console.error('[fbSavePT] ✗ error:', e); return false; }
   };
+  // ms_pedidos (Multi-Sucursal): pedidos pendientes/parciales para el monitor
+  window.fbSaveMsPedidos = async (pedidosArr) => {
+    try {
+      var arr = Array.isArray(pedidosArr) ? pedidosArr : (function(){
+        try { return JSON.parse(localStorage.getItem('farmers_ms_pedidos') || '[]'); } catch(e) { return []; }
+      })();
+      await setDoc(doc(db, 'data', 'ms_pedidos'), { v: JSON.stringify(arr), updatedAt: Date.now(), count: arr.length });
+      return true;
+    } catch(e) { console.error('[fbSaveMsPedidos] ✗ error:', e); return false; }
+  };
+  window.fbGetMsPedidos = async () => {
+    try {
+      var snap = await getDoc(doc(db, 'data', 'ms_pedidos'));
+      if (!snap.exists() || !snap.data().v) return [];
+      return JSON.parse(snap.data().v);
+    } catch(e) { return []; }
+  };
+  // Notas de Crédito (no estaba con setDoc explícito antes)
+  if (!window.fbSaveNotasCredito) {
+    window.fbSaveNotasCredito = async (data) => {
+      try {
+        await setDoc(doc(db, 'data', 'notas_credito'), { v: JSON.stringify(data || []), updatedAt: Date.now() });
+        return true;
+      } catch(e) { console.error('[fbSaveNotasCredito]', e); return false; }
+    };
+  }
   // Leer pt_data desde Firestore (para auditoría — ver lo que el portal ve realmente)
   window.fbGetPT = async () => {
     try {
@@ -6932,6 +6966,16 @@ async function loadFromFirebase() {
       sessionStorage.setItem('farmers_autoresync_done', '1');
       setTimeout(async function(){
         try {
+          // 0) Resync CATÁLOGO PRODUCTS (medidas, empaques, descripciones, precios)
+          // CRÍTICO: el portal lee data/products. Si admin actualiza p.m (medida) o p.e (empaque)
+          // hay que asegurar que llegue a Firestore.
+          if (typeof window.fbSaveProducts === 'function' && typeof PRODUCTS !== 'undefined' && PRODUCTS.length > 0) {
+            try {
+              await window.fbSaveProducts(PRODUCTS);
+              console.log('[AUTO-RESYNC] ✓ catálogo resincronizado: ' + PRODUCTS.length + ' productos');
+            } catch(eFP) { console.warn('[AUTO-RESYNC] fbSaveProducts:', eFP); }
+          }
+
           // 1) Resync INVENTARIO REAL (farmers_inv)
           if (typeof window.fbSaveInventory === 'function') {
             var invStr = localStorage.getItem('farmers_inv');
@@ -10137,7 +10181,7 @@ window.ocWizardConfirmar = function() {
         ptData[it.refFarmers].exOrdenada = prev + (parseInt(it.cantidad)||0);
         sumado[it.refFarmers] = parseInt(it.cantidad)||0;
       });
-      localStorage.setItem('farmers_pt_data', JSON.stringify(ptData));
+      ptSaveData(ptData);
       _ocDraft.sumadaAOrdenada = true;
       _ocDraft.ordenadaSumada = sumado;
       _ocDraft.modoOrdenada = 'sumar';  // Consistencia con eliminar
@@ -11166,7 +11210,7 @@ window.ocImpConfirmar = function() {
           sumado[it.refFarmers] = nuevaCant - prev; // Diferencia neta
         }
       });
-      localStorage.setItem('farmers_pt_data', JSON.stringify(ptData));
+      ptSaveData(ptData);
       oc.sumadaAOrdenada = true;
       oc.ordenadaSumada = sumado;
       if (modoOrdenada === 'reemplazar') oc.ordenadaReemplazoAnterior = reemplazoAnterior;
@@ -12189,7 +12233,7 @@ window.ocSyncAplicar = function() {
       }
     });
 
-    localStorage.setItem('farmers_pt_data', JSON.stringify(ptData));
+    ptSaveData(ptData);
     if (typeof window.ptData !== 'undefined') window.ptData = ptData;
     if (typeof saveProducts === 'function') saveProducts();
     if (typeof window.fbSaveProducts === 'function') window.fbSaveProducts(PRODUCTS);
@@ -13167,7 +13211,7 @@ window.ocImpMedGuardar = function() {
       actualizadas++;
     });
 
-    localStorage.setItem('farmers_pt_data', JSON.stringify(ptData));
+    ptSaveData(ptData);
     if (typeof window.ptData !== 'undefined') window.ptData = ptData;
 
     document.getElementById('oc-impmed-rev-ov').remove();
@@ -15300,7 +15344,7 @@ window._ocRecepGuardar = function(ocId) {
       }
     });
 
-    localStorage.setItem('farmers_pt_data', JSON.stringify(ptData));
+    ptSaveData(ptData);
     if (typeof window.ptData !== 'undefined') window.ptData = ptData;
 
     // Persistir PRODUCTS si hay función saveProducts o similar
@@ -15402,7 +15446,7 @@ window.ocRecepEliminar = function(ocId, recId) {
       ptData[ri.refFarmers].exOrdenada = (parseInt(ptData[ri.refFarmers].exOrdenada) || 0) + ri.cantidadRecibida;
     });
 
-    localStorage.setItem('farmers_pt_data', JSON.stringify(ptData));
+    ptSaveData(ptData);
     if (typeof window.ptData !== 'undefined') window.ptData = ptData;
     if (typeof saveProducts === 'function') saveProducts();
     if (typeof window.fbSaveProducts === 'function') window.fbSaveProducts(PRODUCTS);
@@ -15470,7 +15514,7 @@ window.ocEliminar = function(id) {
           ptDataR[ri.refFarmers].exOrdenada = (parseInt(ptDataR[ri.refFarmers].exOrdenada) || 0) + ri.cantidadRecibida;
         });
       });
-      localStorage.setItem('farmers_pt_data', JSON.stringify(ptDataR));
+      ptSaveData(ptDataR);
       if (typeof window.ptData !== 'undefined') window.ptData = ptDataR;
       if (typeof saveProducts === 'function') saveProducts();
       if (typeof window.fbSaveProducts === 'function') window.fbSaveProducts(PRODUCTS);
@@ -15497,7 +15541,7 @@ window.ocEliminar = function(id) {
           }
         });
       }
-      localStorage.setItem('farmers_pt_data', JSON.stringify(ptData));
+      ptSaveData(ptData);
       if (typeof window.ptData !== 'undefined') window.ptData = ptData;
     } catch(e) { console.error('Error revirtiendo ordenada:', e); }
   }
@@ -21634,10 +21678,11 @@ window.ptSincronizarPortal = async function() {
     '<div style="background:#fff;border-radius:14px;max-width:560px;width:100%;box-shadow:0 30px 70px rgba(15,23,42,.45);overflow:hidden;">' +
       '<div style="background:linear-gradient(135deg,#dc2626,#7f1d1d);color:#fff;padding:18px 22px;">' +
         '<div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;font-size:1.15rem;letter-spacing:1.5px;text-transform:uppercase;">🔄 Sincronizando Portal</div>' +
-        '<div style="font-size:.72rem;opacity:.85;margin-top:3px;">Forzando subida de inventario, comprometido y ordenada a Firestore</div>' +
+        '<div style="font-size:.72rem;opacity:.85;margin-top:3px;">Forzando subida de catálogo, inventario, comprometido y ordenada a Firestore</div>' +
       '</div>' +
       '<div id="sync-modal-body" style="padding:20px 22px;font-size:.82rem;color:#1B1F6B;">' +
-        '<div id="sync-step-1">⏳ Subiendo inventario real...</div>' +
+        '<div id="sync-step-0">⏳ Subiendo catálogo (productos)...</div>' +
+        '<div id="sync-step-1" style="margin-top:8px;color:#94a3b8;">⌛ Esperando...</div>' +
         '<div id="sync-step-2" style="margin-top:8px;color:#94a3b8;">⌛ Esperando...</div>' +
         '<div id="sync-step-3" style="margin-top:8px;color:#94a3b8;">⌛ Esperando...</div>' +
         '<div id="sync-step-4" style="margin-top:8px;color:#94a3b8;">⌛ Esperando...</div>' +
@@ -21651,10 +21696,20 @@ window.ptSincronizarPortal = async function() {
     if (el) { el.innerHTML = html; el.style.color = '#1B1F6B'; }
   }
 
-  var resultados = { inventario: 0, comprometido: { refs: 0, uds: 0 }, ordenada: 0, sales: 0 };
+  var resultados = { productos: 0, inventario: 0, comprometido: { refs: 0, uds: 0 }, ordenada: 0, sales: 0 };
 
   try {
+    // 0) PRODUCTS (catálogo completo: medidas, empaques, descripciones, precios)
+    if (typeof PRODUCTS !== 'undefined' && PRODUCTS.length > 0 && window.fbSaveProducts) {
+      await window.fbSaveProducts(PRODUCTS);
+      resultados.productos = PRODUCTS.length;
+      setStep(0, '✅ Catálogo subido: <strong>' + resultados.productos + '</strong> productos (con medidas, empaques, precios actualizados)');
+    } else {
+      setStep(0, '⚠ Catálogo sin datos');
+    }
+
     // 1) Inventario
+    setStep(1, '⏳ Subiendo inventario real...');
     var invStr = localStorage.getItem('farmers_inv');
     if (invStr && window.fbSaveInventory) {
       var invObj = JSON.parse(invStr);
@@ -21719,7 +21774,7 @@ window.ptSincronizarPortal = async function() {
         '<div style="margin-top:18px;padding:14px 16px;background:linear-gradient(135deg,#dcfce7,#bbf7d0);border:1.5px solid #16a34a;border-radius:10px;color:#14532d;">' +
           '<div style="font-weight:900;font-size:.92rem;margin-bottom:6px;">✅ Sincronización completa</div>' +
           '<div style="font-size:.78rem;line-height:1.5;">El portal del cliente ahora reflejará exactamente lo mismo que el sistema de pedidos:<br>' +
-          '<strong>' + resultados.inventario + '</strong> refs de inventario · <strong>' + resultados.comprometido.refs + '</strong> refs comprometidas (<strong>' + resultados.comprometido.uds + '</strong> uds) · <strong>' + resultados.ordenada + '</strong> refs con Ordenada' +
+          '<strong>' + resultados.productos + '</strong> productos del catálogo · <strong>' + resultados.inventario + '</strong> refs de inventario · <strong>' + resultados.comprometido.refs + '</strong> refs comprometidas (<strong>' + resultados.comprometido.uds + '</strong> uds) · <strong>' + resultados.ordenada + '</strong> refs con Ordenada' +
           '</div>' +
           '<div style="margin-top:10px;font-size:.7rem;color:#166534;">💡 Recarga el portal del cliente en incógnito para ver los cambios.</div>' +
         '</div>' +
@@ -22912,7 +22967,7 @@ function ptMaestroConfirmar() {
   // Guardar inventario si hubo cambios de stock
   if (rows.some(function(r){ return r.actual !== undefined; })) {
     if (typeof saveInventory === 'function') saveInventory(invActual);
-    else localStorage.setItem('farmers_inventory', JSON.stringify(invActual));
+    else { localStorage.setItem('farmers_inv', JSON.stringify(invActual)); if (window.fbSaveInventory) window.fbSaveInventory(invActual); if (window.fbTriggerPortalSnapshot) window.fbTriggerPortalSnapshot('saveInventory-fallback'); }
   }
 
   // Cerrar modal y refrescar tabla
@@ -24124,7 +24179,7 @@ function ptResetOrdenadaProcess(file) {
       }
 
       // Guardar
-      localStorage.setItem('farmers_pt_data', JSON.stringify(ptData));
+      ptSaveData(ptData);
       window.ptData = ptData; // sincronizar RAM para filtro ORD
       if (window.fbSavePT) {
         try { window.fbSavePT(ptData); } catch(e3) {}
@@ -24391,6 +24446,10 @@ function ptImpConfirmar() {
 
   // Ordenar PRODUCTS alfanuméricamente después de agregar nuevos
   if (typeof sortProducts === 'function') sortProducts();
+
+  // Persistir PRODUCTS principal a Firestore (CRÍTICO para que el portal vea los cambios)
+  if (typeof saveProducts === 'function') saveProducts();
+  if (typeof window.fbSaveProducts === 'function') window.fbSaveProducts(PRODUCTS);
 
   // Persistir productos nuevos en Firebase + localStorage para sobrevivir recargas
   if (newProductsCreated.length > 0) {
@@ -24869,6 +24928,11 @@ function ptGuardarFicha(refOriginal) {
     upd.ex = 0;
     PRODUCTS.push(upd);
   }
+
+  // Persistir cambios en PRODUCTS (incluye campos m=medida, e=empaque, descripción, etc.)
+  // CRÍTICO: garantiza que el portal cliente vea los cambios al instante
+  if (typeof saveProducts === 'function') saveProducts();
+  if (typeof window.fbSaveProducts === 'function') window.fbSaveProducts(PRODUCTS);
 
   ptCerrarFicha();
   if(typeof showToast==='function') showToast('✅ Ficha guardada: ' + ref, 'success');
@@ -26625,6 +26689,9 @@ window.confirmImportPrices=function(){
   });
   if(typeof saveInventory==='function')saveInventory(inv);
   if(typeof syncInventoryToProducts==='function')syncInventoryToProducts();
+  // Persistir PRODUCTS (precios, descripciones y nuevos productos) — CRÍTICO para sincronizar portal
+  if(typeof saveProducts==='function')saveProducts();
+  if(typeof window.fbSaveProducts==='function')window.fbSaveProducts(PRODUCTS);
   if(typeof renderTable==='function')renderTable();
   document.getElementById('ip-action-msg').textContent='✅ '+applied+' cambios aplicados.';
   btn.textContent='✅ Aplicado';
@@ -31356,7 +31423,7 @@ window.msConfirmarSeleccionadas = function(numP, sel, hayPendientes, ovEmision){
           pt.et=Math.max(0,(parseInt(pt.et)||0)-td);
         }
       });
-      localStorage.setItem('farmers_pt_data',JSON.stringify(ptArr));
+      ptSaveData(ptArr);
       if(window.ptData) window.ptData=ptArr;
     }
   }catch(e){}
