@@ -3627,6 +3627,7 @@ window.getComprometido = function() {
 window.saveComprometido = function(comp) {
   try { localStorage.setItem(COMP_KEY, JSON.stringify(comp)); } catch(e){}
   if(window.fbSaveComprometido) window.fbSaveComprometido(comp);
+  if(window.fbTriggerPortalSnapshot) window.fbTriggerPortalSnapshot('saveComprometido');
 };
 window.getDisponible = function(ref) {
   var inv  = typeof getInventory==='function' ? getInventory() : {};
@@ -4439,13 +4440,23 @@ function getInventory() {
   try { const r=localStorage.getItem('farmers_inv'); if(r) return JSON.parse(r); } catch(e){}
   const inv={}; PRODUCTS.forEach(p=>{ inv[p.r]=p.ex; }); saveInventory(inv); return inv;
 }
-function saveInventory(inv){ localStorage.setItem('farmers_inv', JSON.stringify(inv)); if(window.fbSaveInventory) window.fbSaveInventory(inv); }
+function saveInventory(inv){
+  localStorage.setItem('farmers_inv', JSON.stringify(inv));
+  if(window.fbSaveInventory) window.fbSaveInventory(inv);
+  // Trigger snapshot del portal (debounced)
+  if(window.fbTriggerPortalSnapshot) window.fbTriggerPortalSnapshot('saveInventory');
+}
 
 function getSales() {
   try { const r=localStorage.getItem('farmers_sales'); if(r) return JSON.parse(r); } catch(e){}
   return [];
 }
-function saveSales(s){ localStorage.setItem('farmers_sales', JSON.stringify(s)); if(window.fbSaveSales) window.fbSaveSales(s); }
+function saveSales(s){
+  localStorage.setItem('farmers_sales', JSON.stringify(s));
+  if(window.fbSaveSales) window.fbSaveSales(s);
+  // Trigger snapshot del portal: cambios en sales afectan COMPROMETIDO
+  if(window.fbTriggerPortalSnapshot) window.fbTriggerPortalSnapshot('saveSales');
+}
 
 function syncInventoryToProducts(){
   const inv=getInventory();
@@ -6391,6 +6402,117 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
       return { exists: true, data: data, updatedAt: snap.data().updatedAt || null };
     } catch(e) { console.error('[fbGetPT] ✗ error:', e); return { exists: false, data: {}, error: e.message }; }
   };
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // fbSavePortalSnapshot — FUENTE ÚNICA DE VERDAD PARA EL PORTAL
+  // ──────────────────────────────────────────────────────────────────────────
+  // Calcula y publica a Firestore un snapshot completo con TODA la información
+  // que el portal cliente necesita para mostrar inventario perfectamente
+  // sincronizado con lo que ve el admin en el sistema de pedidos.
+  //
+  // Estructura del snapshot publicado en Firestore data/portal_snapshot:
+  //   {
+  //     v: { ref: { real, comprometido, disponible, ordenada } },
+  //     updatedAt: timestamp,
+  //     totalRefs: N
+  //   }
+  //
+  // Lógica de cálculo (idéntica a la que usa el admin en su tabla):
+  //   • real         = inventario actual (PRODUCTS[i].ex o farmers_inv[ref])
+  //   • comprometido = suma de (it.orden) de todos los pedidos pendientes en farmers_sales
+  //   • disponible   = max(0, real − comprometido)
+  //   • ordenada     = ptData[ref].exOrdenada
+  // ══════════════════════════════════════════════════════════════════════════
+  window.fbSavePortalSnapshot = async () => {
+    try {
+      // 1) Productos del catálogo
+      var products = (typeof PRODUCTS !== 'undefined') ? PRODUCTS : [];
+      if (!products || products.length === 0) {
+        console.warn('[fbSavePortalSnapshot] PRODUCTS vacío, abortando');
+        return false;
+      }
+
+      // 2) Inventario actual (real)
+      var inv = {};
+      try {
+        var invStr = localStorage.getItem('farmers_inv');
+        if (invStr) inv = JSON.parse(invStr);
+      } catch(e) {}
+
+      // 3) Comprometido — calculado desde farmers_sales (idéntico a ptGetComprometidas del admin)
+      var compMap = {}; // ref → cantidad total comprometida
+      try {
+        var salesStr = localStorage.getItem('farmers_sales');
+        if (salesStr) {
+          var sales = JSON.parse(salesStr);
+          (sales || []).forEach(function(s){
+            if (s.tipo !== 'pedido') return; // Solo pedidos pendientes
+            (s.items || []).forEach(function(it){
+              var ref = it.r;
+              if (!ref) return;
+              var qty = parseInt(it.orden) || 0;
+              compMap[ref] = (compMap[ref] || 0) + qty;
+            });
+          });
+        }
+      } catch(e) {}
+
+      // 4) Ordenada — desde farmers_pt_data
+      var ptData = {};
+      try {
+        var ptStr = localStorage.getItem('farmers_pt_data');
+        if (ptStr) ptData = JSON.parse(ptStr);
+      } catch(e) {}
+
+      // 5) Construir snapshot por referencia
+      var snapshot = {};
+      var stats = { totalRefs: 0, conStock: 0, bajoStock: 0, agotados: 0, conOrdenada: 0 };
+
+      products.forEach(function(p){
+        var ref = p.r;
+        if (!ref) return;
+        var real = (inv[ref] !== undefined) ? (parseInt(inv[ref]) || 0) : (parseInt(p.ex) || 0);
+        var comp = compMap[ref] || 0;
+        var disp = Math.max(0, real - comp);
+        var ord  = parseInt((ptData[ref] || {}).exOrdenada || 0) || 0;
+
+        snapshot[ref] = { real: real, comprometido: comp, disponible: disp, ordenada: ord };
+        stats.totalRefs++;
+        if (disp === 0) stats.agotados++;
+        else if (disp <= 10) stats.bajoStock++;
+        else stats.conStock++;
+        if (ord > 0) stats.conOrdenada++;
+      });
+
+      var snapshotString = JSON.stringify(snapshot);
+      await setDoc(doc(db, 'data', 'portal_snapshot'), {
+        v: snapshotString,
+        updatedAt: Date.now(),
+        totalRefs: stats.totalRefs,
+        conStock: stats.conStock,
+        bajoStock: stats.bajoStock,
+        agotados: stats.agotados,
+        conOrdenada: stats.conOrdenada
+      });
+      console.log('[fbSavePortalSnapshot] ✓ Snapshot publicado: ' + stats.totalRefs + ' refs (' + stats.conStock + ' con stock, ' + stats.bajoStock + ' bajo, ' + stats.agotados + ' agotadas, ' + stats.conOrdenada + ' con Ordenada)');
+      return true;
+    } catch(e) {
+      console.error('[fbSavePortalSnapshot] ✗ error:', e);
+      return false;
+    }
+  };
+
+  // Trigger debounced: cada vez que cambia inventario/ventas/ptData, se publica el snapshot
+  // Espera 800ms después del último cambio para evitar spam de writes
+  var _portalSnapshotTimer = null;
+  window.fbTriggerPortalSnapshot = function(reason) {
+    if (_portalSnapshotTimer) clearTimeout(_portalSnapshotTimer);
+    _portalSnapshotTimer = setTimeout(function(){
+      _portalSnapshotTimer = null;
+      console.log('[fbTriggerPortalSnapshot] disparado por: ' + (reason || 'desconocido'));
+      window.fbSavePortalSnapshot();
+    }, 800);
+  };
   window.fbGetPortalTokens = async () => {
     try {
       const snap = await getDocs(collection(db, 'portal_tokens'));
@@ -6658,6 +6780,14 @@ async function loadFromFirebase() {
               await window.fbSaveComprometido(JSON.parse(compStr));
               console.log('[AUTO-RESYNC] ✓ comprometido resincronizado al portal');
             }
+          }
+
+          // 3) ⭐ SNAPSHOT COMPLETO PARA PORTAL (fuente única de verdad)
+          // Esto sincroniza inventario + comprometido + ordenada + disponible
+          // exactamente como los ve el sistema de pedidos
+          if (typeof window.fbSavePortalSnapshot === 'function') {
+            await window.fbSavePortalSnapshot();
+            console.log('[AUTO-RESYNC] ✓ Portal snapshot publicado');
           }
         } catch(eAR) { console.warn('[AUTO-RESYNC]', eAR); }
       }, 3000); // Esperar 3 segundos después del login para no bloquear UI
@@ -21272,6 +21402,8 @@ function ptSaveData(data) {
   localStorage.setItem(PT_STORAGE_KEY, JSON.stringify(data));
   window.ptData = data; // mantener RAM sincronizada
   if (window.fbSavePT) window.fbSavePT(data);
+  // Trigger snapshot del portal: cambios en pt_data afectan ORDENADA
+  if (window.fbTriggerPortalSnapshot) window.fbTriggerPortalSnapshot('ptSaveData');
 }
 
 // Obtener existencias comprometidas por producto desde farmers_sales (pedidos)
