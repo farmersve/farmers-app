@@ -3502,7 +3502,7 @@ var _PRODUCTS_FALLBACK = JSON.parse(JSON.stringify(PRODUCTS));
 // ── saveProducts: persiste PRODUCTS a localStorage ──
 // CAPA C de la regla REF al final: ANTES de guardar, aseguramos que todas
 // las descripciones terminen con su ref. Esta es la última red de seguridad.
-window.saveProducts = function() {
+window.saveProducts = async function() {
   try {
     // Capa C: aplicar REF al final a toda descripción que la falte (autocorrección silenciosa)
     // Esta es la red de seguridad final de la regla de integridad "REF al final".
@@ -3526,12 +3526,24 @@ window.saveProducts = function() {
       });
       if (corregidosC > 5) console.log('  · (y ' + (corregidosC - 5) + ' más...)');
     }
+    // 1) localStorage (siempre instantáneo)
     localStorage.setItem(PRODUCTS_KEY, JSON.stringify(PRODUCTS));
-    // Subir a Firestore para que el portal cliente vea los cambios
+    // 2) Firestore: AWAIT para garantizar que el cambio quede persistido antes de continuar
     if (typeof window.fbSaveProducts === 'function') {
-      try { window.fbSaveProducts(PRODUCTS); } catch(eFb) { console.warn('[saveProducts] fbSaveProducts falló:', eFb); }
+      try {
+        await window.fbSaveProducts(PRODUCTS);
+        console.log('[saveProducts] ✓ Firestore actualizado (' + PRODUCTS.length + ' productos)');
+      } catch(eFb) {
+        console.error('[saveProducts] ✗ fbSaveProducts FALLÓ:', eFb);
+        // Marcar como pendiente para reintento
+        window._fbSaveProductsPending = PRODUCTS.slice();
+      }
+    } else {
+      // Firebase aún no listo — encolar
+      window._fbSaveProductsPending = PRODUCTS.slice();
+      console.warn('[saveProducts] ⚠ Firebase no listo, write encolado');
     }
-    // Trigger snapshot del portal: cambios en PRODUCTS pueden afectar campos visibles (medida, empaque, descripción)
+    // 3) Trigger snapshot del portal
     if (window.fbTriggerPortalSnapshot) window.fbTriggerPortalSnapshot('saveProducts');
     return true;
   } catch(e) {
@@ -6673,6 +6685,29 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
     console.log('═══════════════════════════════════════════════════');
 
     try {
+      // 0) PRODUCTS (catálogo principal — incluye medidas, empaques, descripciones, precios)
+      // CRÍTICO: si esto falla, los cambios de medida/empaque NO llegan al portal
+      if (typeof PRODUCTS !== 'undefined' && PRODUCTS.length > 0 && window.fbSaveProducts) {
+        await window.fbSaveProducts(PRODUCTS);
+        console.log('✓ Catálogo subido: ' + PRODUCTS.length + ' productos (medidas, empaques, precios)');
+
+        // 0.5) Limpiar products_ext de refs duplicadas con products principal
+        // Si una ref está en ambos, la versión vieja en products_ext puede contaminar al recargar
+        try {
+          var ext = JSON.parse(localStorage.getItem('farmers_products_ext') || '[]');
+          if (ext.length > 0) {
+            var refsPrincipales = new Set(PRODUCTS.map(function(p){ return p.r; }));
+            var extLimpio = ext.filter(function(p){ return !refsPrincipales.has(p.r); });
+            var eliminadas = ext.length - extLimpio.length;
+            if (eliminadas > 0) {
+              localStorage.setItem('farmers_products_ext', JSON.stringify(extLimpio));
+              if (window.fbSaveProductsExt) await window.fbSaveProductsExt(extLimpio);
+              console.log('✓ products_ext limpiado: ' + eliminadas + ' refs duplicadas eliminadas');
+            }
+          }
+        } catch(eExt) { console.warn('limpieza products_ext:', eExt); }
+      }
+
       // 1) Inventario
       var invStr = localStorage.getItem('farmers_inv');
       if (invStr && window.fbSaveInventory) {
@@ -6767,7 +6802,9 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
 /* loadFromFirebase */
 async function loadFromFirebase() {
   try {
-    // ── Cargar PRODUCTS principal desde Firebase (tiene prioridad sobre localStorage) ──
+    // ── Cargar PRODUCTS principal desde Firebase (TIENE PRIORIDAD ABSOLUTA) ──
+    // El catálogo en data/products es la fuente de verdad. products_ext solo agrega
+    // refs que NO están en products (productos importados que aún no están en el catálogo principal).
     if (window.fbGetProducts) {
       try {
         var fbProds = await window.fbGetProducts();
@@ -6780,13 +6817,17 @@ async function loadFromFirebase() {
         }
       } catch(e) { console.warn('[PRODUCTS] error al cargar desde Firebase:', e); }
     }
-    // ── Cargar productos extendidos (importados) ─────────────────
+    // ── Cargar productos extendidos (importados que NO están en catálogo principal) ──
+    // REGLA CRÍTICA: products_ext NUNCA sobrescribe lo que ya está en data/products.
+    // Solo agrega refs nuevas. Si una ref está en ambas fuentes, gana data/products
+    // (porque es lo que el usuario editó más recientemente vía ptGuardarFicha/saveProducts).
     if (window.fbGetProductsExt) {
       var ext = await window.fbGetProductsExt();
       if (ext && ext.length) {
         // Fusionar: agregar solo los que no existen aún en PRODUCTS
         var existingRefs = new Set(PRODUCTS.map(function(p){ return p.r; }));
         var added = 0;
+        var saltadosPorExistir = 0;
         var corregidosInt = 0;
         ext.forEach(function(p) {
           if (!existingRefs.has(p.r)) {
@@ -6797,11 +6838,26 @@ async function loadFromFirebase() {
             }
             PRODUCTS.push(p);
             added++;
+          } else {
+            saltadosPorExistir++;
           }
         });
         if (corregidosInt > 0) console.log('[loadFromFirebase · Integridad] ' + corregidosInt + ' producto(s) entrantes autocorregidos con REF al final');
+        if (saltadosPorExistir > 0) console.log('[loadFromFirebase] ' + saltadosPorExistir + ' refs de products_ext omitidas (ya están en data/products con valor más reciente)');
         if (added > 0 && typeof sortProducts === 'function') sortProducts();
-        localStorage.setItem('farmers_products_ext', JSON.stringify(ext));
+        // Persistir products_ext en localStorage SOLO con las refs que no están en data/products
+        // para evitar acumulación de basura
+        var extLimpio = ext.filter(function(p){ return !existingRefs.has(p.r); });
+        if (extLimpio.length !== ext.length) {
+          localStorage.setItem('farmers_products_ext', JSON.stringify(extLimpio));
+          // También subir a Firestore la versión limpia (asíncrono, sin bloquear)
+          if (window.fbSaveProductsExt) {
+            window.fbSaveProductsExt(extLimpio).catch(function(e){ console.warn('limpieza ext:', e); });
+          }
+          console.log('[loadFromFirebase] products_ext limpiado: ' + ext.length + ' → ' + extLimpio.length + ' refs (eliminadas las duplicadas con data/products)');
+        } else {
+          localStorage.setItem('farmers_products_ext', JSON.stringify(ext));
+        }
       } else {
         // Intentar desde localStorage como fallback
         try {
@@ -24849,7 +24905,7 @@ function ptCerrarFicha() {
 }
 window.ptCerrarFicha = ptCerrarFicha;
 
-function ptGuardarFicha(refOriginal) {
+async function ptGuardarFicha(refOriginal) {
   var ref = ((document.getElementById('ptf-ref')||{}).value||'').trim().toUpperCase();
   if (!ref) { if(typeof showToast==='function') showToast('La referencia es obligatoria','warning'); return; }
   var nombre = ((document.getElementById('ptf-nombre')||{}).value||'').trim();
@@ -24931,11 +24987,33 @@ function ptGuardarFicha(refOriginal) {
 
   // Persistir cambios en PRODUCTS (incluye campos m=medida, e=empaque, descripción, etc.)
   // CRÍTICO: garantiza que el portal cliente vea los cambios al instante
-  if (typeof saveProducts === 'function') saveProducts();
-  if (typeof window.fbSaveProducts === 'function') window.fbSaveProducts(PRODUCTS);
+  // Y que al recargar admin no se pierda el cambio
+  console.log('[ptGuardarFicha] Guardando ref ' + ref + ' con campos:', upd);
+  if (typeof saveProducts === 'function') {
+    await saveProducts();  // ⚠ AWAIT para esperar confirmación de Firestore
+  }
+
+  // ── LIMPIEZA CRÍTICA: si la ref existe en products_ext, eliminarla ──
+  // products_ext contiene productos importados con valores VIEJOS.
+  // Si editamos una ref que también está en products_ext, al recargar
+  // products_ext no sobrescribe (porque ya existe) PERO si por algún motivo
+  // products falla y products_ext es la fuente, restauraría el valor viejo.
+  // Para garantizar consistencia: removemos la ref de products_ext.
+  try {
+    var ext = JSON.parse(localStorage.getItem('farmers_products_ext') || '[]');
+    var idxExt = ext.findIndex(function(p){ return p.r === ref; });
+    if (idxExt >= 0) {
+      ext.splice(idxExt, 1);
+      localStorage.setItem('farmers_products_ext', JSON.stringify(ext));
+      if (window.fbSaveProductsExt) {
+        try { await window.fbSaveProductsExt(ext); } catch(e){}
+      }
+      console.log('[ptGuardarFicha] ref ' + ref + ' removida de products_ext (estaba con valores viejos)');
+    }
+  } catch(eExt) { console.warn('[ptGuardarFicha] limpieza products_ext:', eExt); }
 
   ptCerrarFicha();
-  if(typeof showToast==='function') showToast('✅ Ficha guardada: ' + ref, 'success');
+  if(typeof showToast==='function') showToast('✅ Ficha guardada y sincronizada: ' + ref, 'success');
   ptRender();
 }
 window.ptGuardarFicha = ptGuardarFicha;
