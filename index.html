@@ -36226,10 +36226,65 @@ window.msAbrirEtiquetas = function() {
   var _etiqData = {};
   try { _etiqData = JSON.parse(localStorage.getItem('ms_etiq_'+MS.numPedido)||'{}'); } catch(e){}
 
+  // ════════════════════════════════════════════════════════════════
+  // CONSTRUIR ETIQDATA LOCAL AUTOCONTENIDO desde localStorage
+  // No depender de MS.data global (puede estar contaminado por otro pedido).
+  // ════════════════════════════════════════════════════════════════
+  var ETIQDATA = [];
+  try {
+    var _pedsLst = (typeof getMsPedidos === 'function') ? getMsPedidos() : [];
+    var _pedActual = _pedsLst.find(function(x){ return x.numP === MS.numPedido; });
+    if (_pedActual) {
+      var _esDespachadoEtiq = (_pedActual.estado || '').toUpperCase() === 'DESPACHADO';
+      // Prioridad 1: ped.data (estructura nueva)
+      if (_pedActual.data && Array.isArray(_pedActual.data) && _pedActual.data.length) {
+        ETIQDATA = _pedActual.data.map(function(p){
+          var pedidos = {}, dist = {};
+          Object.keys(p.pedidos || {}).forEach(function(k){ pedidos[k] = p.pedidos[k] || 0; });
+          Object.keys(p.dist || {}).forEach(function(k){ dist[k] = p.dist[k] || 0; });
+          // Si dist vacío y despachado, asumir dist = pedidos
+          var _dt = Object.values(dist).reduce(function(a,b){return a+(b||0);}, 0);
+          if (_dt === 0 && _esDespachadoEtiq && Object.keys(pedidos).length > 0) {
+            dist = Object.assign({}, pedidos);
+          }
+          return { ref: p.ref, desc: p.desc || p.ref, pedidos: pedidos, dist: dist };
+        });
+      }
+      // Prioridad 2: ped.items (estructura legacy)
+      else if (_pedActual.items && Array.isArray(_pedActual.items) && _pedActual.items.length) {
+        ETIQDATA = _pedActual.items.map(function(item){
+          var pedidos = {}, dist = {};
+          Object.keys(item.sucursales || {}).forEach(function(s){
+            pedidos[s] = parseInt((item.sucursales[s] || {}).pide) || 0;
+            dist[s]    = parseInt((item.sucursales[s] || {}).desp) || 0;
+          });
+          var _dt2 = Object.values(dist).reduce(function(a,b){return a+(b||0);}, 0);
+          if (_dt2 === 0 && _esDespachadoEtiq) {
+            dist = Object.assign({}, pedidos);
+          }
+          return { ref: item.ref, desc: item.desc || item.ref, pedidos: pedidos, dist: dist };
+        });
+      }
+    }
+  } catch(eEtiq){ console.error('[msAbrirEtiquetas] Error construyendo ETIQDATA:', eEtiq); }
+  console.log('[msAbrirEtiquetas] ✓ ETIQDATA construido:', ETIQDATA.length, 'refs para', MS.numPedido);
+
   MS.sucursales.forEach(function(suc){
     var totalRef=0, totalUnd=0;
-    MS.data.forEach(function(p){
-      var d=p.dist[suc]||0;
+    // Usar ETIQDATA local (NO MS.data que puede estar contaminado)
+    ETIQDATA.forEach(function(p){
+      var d = (p.dist && p.dist[suc]) || 0;
+      // Si está despachado y dist es 0, usar pedidos
+      if (d === 0) {
+        var pide = (p.pedidos && p.pedidos[suc]) || 0;
+        var _esDesp = false;
+        try {
+          var _ps = (typeof getMsPedidos === 'function') ? getMsPedidos() : [];
+          var _pp = _ps.find(function(x){ return x.numP === MS.numPedido; });
+          _esDesp = _pp && (_pp.estado || '').toUpperCase() === 'DESPACHADO';
+        } catch(e){}
+        if (_esDesp && pide > 0) d = pide;
+      }
       if(d>0){totalRef++;totalUnd+=d;}
     });
 
@@ -36553,6 +36608,49 @@ window.msGenerarEtiquetasPDF = function(sucsFiltradas) {
     if(_pedFB&&_pedFB.etiqData) Object.assign(_etiqFallback,_pedFB.etiqData);
   }
 
+  // ════════════════════════════════════════════════════════════════
+  // CONSTRUIR LBLDATA LOCAL — autocontenido desde localStorage.
+  // No usar MS.data global (puede estar contaminado de otro pedido).
+  // ════════════════════════════════════════════════════════════════
+  var LBLDATA = [];
+  var _esDespachadoLbl = false;
+  try {
+    var _pedsLbl = (typeof getMsPedidos === 'function') ? getMsPedidos() : [];
+    var _pedActualLbl = _pedsLbl.find(function(x){ return x.numP === numP; });
+    if (_pedActualLbl) {
+      _esDespachadoLbl = (_pedActualLbl.estado || '').toUpperCase() === 'DESPACHADO';
+      // Prioridad 1: ped.data
+      if (_pedActualLbl.data && Array.isArray(_pedActualLbl.data) && _pedActualLbl.data.length) {
+        LBLDATA = _pedActualLbl.data.map(function(p){
+          var pedidos = {}, dist = {};
+          Object.keys(p.pedidos || {}).forEach(function(k){ pedidos[k] = p.pedidos[k] || 0; });
+          Object.keys(p.dist || {}).forEach(function(k){ dist[k] = p.dist[k] || 0; });
+          var _dt = Object.values(dist).reduce(function(a,b){return a+(b||0);}, 0);
+          if (_dt === 0 && _esDespachadoLbl && Object.keys(pedidos).length > 0) {
+            dist = Object.assign({}, pedidos);
+          }
+          return { ref: p.ref, desc: p.desc || p.ref, pedidos: pedidos, dist: dist };
+        });
+      }
+      // Prioridad 2: ped.items
+      else if (_pedActualLbl.items && Array.isArray(_pedActualLbl.items) && _pedActualLbl.items.length) {
+        LBLDATA = _pedActualLbl.items.map(function(item){
+          var pedidos = {}, dist = {};
+          Object.keys(item.sucursales || {}).forEach(function(s){
+            pedidos[s] = parseInt((item.sucursales[s] || {}).pide) || 0;
+            dist[s]    = parseInt((item.sucursales[s] || {}).desp) || 0;
+          });
+          var _dt2 = Object.values(dist).reduce(function(a,b){return a+(b||0);}, 0);
+          if (_dt2 === 0 && _esDespachadoLbl) {
+            dist = Object.assign({}, pedidos);
+          }
+          return { ref: item.ref, desc: item.desc || item.ref, pedidos: pedidos, dist: dist };
+        });
+      }
+    }
+  } catch(eL){ console.error('[msGenerarEtiquetasPDF] Error LBLDATA:', eL); }
+  console.log('[msGenerarEtiquetasPDF] ✓ LBLDATA:', LBLDATA.length, 'refs · pedido:', numP, '· estado:', _esDespachadoLbl?'DESPACHADO':'otro');
+
   sucsAImprimir.forEach(function(suc) {
     var idKey=suc.replace(/\W/g,'_'); // UNA sola regla consistente con \W
     var inp=document.getElementById('cajas-'+idKey);
@@ -36561,28 +36659,22 @@ window.msGenerarEtiquetasPDF = function(sucsFiltradas) {
     var totalRef=0,totalUnd=0,totalVol=0,totalPeso=0;
     var ptD={};
     try{var ptRaw=localStorage.getItem('farmers_pt_data');if(ptRaw){var ptArr=JSON.parse(ptRaw);ptArr.forEach(function(x){ptD[x.r]=x;});}}catch(e){}
-    
-    // ESTRATEGIA 1: Calcular desde MS.data (más preciso)
-    if(typeof MS !== 'undefined' && MS.data && MS.data.length > 0) {
-      // Detectar si el pedido completo está despachado
-      var _esDespachadoEtiq = false;
-      try {
-        var _peds = (typeof getMsPedidos === 'function') ? getMsPedidos() : [];
-        var _ped = _peds.find(function(x){ return x.numP === MS.numPedido; });
-        _esDespachadoEtiq = _ped && (_ped.estado || '').toUpperCase() === 'DESPACHADO';
-      } catch(e){}
 
-      MS.data.forEach(function(p){
-        var pide = p.pedidos ? (p.pedidos[suc] || 0) : 0;
+    // CALCULAR desde LBLDATA local (NO MS.data)
+    if(LBLDATA.length > 0) {
+      LBLDATA.forEach(function(p){
+        var pide = (p.pedidos && p.pedidos[suc]) || 0;
         var d;
         if (p.dist && Object.keys(p.dist).length > 0) {
           d = Math.min(p.dist[suc] || 0, pide);
-        } else if (_esDespachadoEtiq) {
-          // Pedido despachado sin dist[]: lo pedido se despachó al 100%
+        } else if (_esDespachadoLbl) {
           d = pide;
         } else {
           d = pide;
         }
+        // Fallback adicional: si despachado y d=0 pero pide>0
+        if (d === 0 && _esDespachadoLbl && pide > 0) d = pide;
+
         if(d > 0) {
           totalRef++;
           totalUnd += d;
@@ -36591,7 +36683,7 @@ window.msGenerarEtiquetasPDF = function(sucsFiltradas) {
           if(prodData && prodData.medidas) {
             var med = prodData.medidas;
             var volPorBulto = parseFloat(med.volDirecto) || 0;
-            var undPorBulto = getEmpaqueReal(p.ref); // CORREGIDO: usar empaque real, no precios
+            var undPorBulto = (typeof getEmpaqueReal === 'function') ? getEmpaqueReal(p.ref) : 0;
             if(volPorBulto > 0 && undPorBulto > 0) {
               var volPorUnidad = volPorBulto / undPorBulto;
               totalVol += volPorUnidad * d;
