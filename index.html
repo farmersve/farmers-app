@@ -5374,20 +5374,53 @@ function lShowApp(username) {
   // PROTECCIÓN 1: Auto-eliminación de basura legacy ANTES de cualquier escritura
   // farmers_product_images_hq es código obsoleto que ocupaba 3.28 MB. Si vuelve
   // a aparecer (de un import, otra instancia, etc.), lo eliminamos en cada login.
+  // También se limpia el cache de imágenes si está pesado (se rehidrata de Firebase).
   // ════════════════════════════════════════════════════════════════════════
   try {
+    var liberadoMB = 0;
+    // 1) Basura legacy SIEMPRE se elimina
     if (localStorage.getItem('farmers_product_images_hq')) {
-      var sizeMB = (localStorage.getItem('farmers_product_images_hq').length / 1024 / 1024).toFixed(2);
+      var sizeMB = parseFloat((localStorage.getItem('farmers_product_images_hq').length / 1024 / 1024).toFixed(2));
       localStorage.removeItem('farmers_product_images_hq');
+      liberadoMB += sizeMB;
       console.log('[CLEANUP] ✅ farmers_product_images_hq eliminado (' + sizeMB + ' MB liberados)');
     }
-    // farmers_product_images cache - se rehidrata automáticamente desde Firebase
+    // 2) Cache de imágenes - se rehidrata desde Firebase, así que se puede limpiar agresivamente
     if (localStorage.getItem('farmers_product_images')) {
-      var sz = (localStorage.getItem('farmers_product_images').length / 1024 / 1024).toFixed(2);
-      if (parseFloat(sz) > 0.5) {
+      var sz = parseFloat((localStorage.getItem('farmers_product_images').length / 1024 / 1024).toFixed(2));
+      // Si el cache de imágenes es > 0.3 MB, lo limpiamos (las imágenes se cargan on-demand de Firebase)
+      if (sz > 0.3) {
         localStorage.removeItem('farmers_product_images');
+        liberadoMB += sz;
         console.log('[CLEANUP] ✅ farmers_product_images cache eliminado (' + sz + ' MB) — se rehidrata desde Firebase');
       }
+    }
+    // 3) Verificar tamaño total — si todavía está sobre 3.5 MB, limpiar otros caches no críticos
+    var totalActual = JSON.stringify(localStorage).length / 1024 / 1024;
+    if (totalActual > 3.5) {
+      // Limpiar duplicados conocidos
+      if (localStorage.getItem('farmers_hcl_facturas') && localStorage.getItem('farmers_hcl_v7_facturas')) {
+        // El v7 es la fuente oficial, eliminar el duplicado legacy
+        localStorage.removeItem('farmers_hcl_facturas');
+        console.log('[CLEANUP] ✅ farmers_hcl_facturas (duplicado legacy) eliminado');
+      }
+      // Limpiar reservas MS vacías o muy viejas (>30 días)
+      var hoy = Date.now();
+      Object.keys(localStorage).forEach(function(k){
+        if (k.indexOf('ms_reserva_') === 0) {
+          try {
+            var rv = JSON.parse(localStorage.getItem(k) || '{}');
+            // Si está vacía o no tiene items, eliminar
+            if (!rv || !rv.items || rv.items.length === 0) {
+              localStorage.removeItem(k);
+              console.log('[CLEANUP] ✅ ' + k + ' (reserva vacía) eliminada');
+            }
+          } catch(e){}
+        }
+      });
+    }
+    if (liberadoMB > 0) {
+      console.log('[CLEANUP] 🎯 Total liberado: ' + liberadoMB.toFixed(2) + ' MB');
     }
   } catch(eClean) { console.warn('[CLEANUP]', eClean); }
 
@@ -20227,11 +20260,14 @@ function openSearch() {
   inp.onkeyup = debouncedSearch;
 
   // ── Cargar imágenes desde Firebase (solo si no están en memoria) ──
+  // IMPORTANTE: NO guardar las imágenes en localStorage. Viven en window._prodImgs
+  // (memoria de la sesión) y se rehidratan desde Firebase en cada login.
+  // Guardarlas en localStorage saturaba la cuota y rompía el sistema (issue 27/04/2026).
   if (window.fbGetImages && (!window._prodImgs || Object.keys(window._prodImgs).length === 0)) {
     window.fbGetImages().then(function(imgs) {
       if (imgs && Object.keys(imgs).length > 0) {
         window._prodImgs = imgs;
-        try { localStorage.setItem('farmers_product_images', JSON.stringify(imgs)); } catch(e) {}
+        // NO localStorage.setItem aquí — las imágenes viven solo en memoria + Firebase
         doRefSearch(); // refrescar con imágenes
       }
     }).catch(function(e) {
@@ -20956,7 +20992,7 @@ function catDownloadPDF() {
           });
           if (imgs && Object.keys(imgs).length > 0) {
             window._prodImgs = imgs;
-            try { localStorage.setItem('farmers_product_images', JSON.stringify(imgs)); } catch(e) {}
+            // NO guardar en localStorage — saturaba la cuota. Viven solo en memoria + Firebase.
             _prodImgsLocal = imgs;
             if (typeof doRefSearch === 'function') doRefSearch();
           }
@@ -22542,17 +22578,18 @@ window.ptAbrirRescateHuerfanas = async function() {
               '<label style="font-size:.7rem;color:#374151;font-weight:700;text-transform:uppercase;letter-spacing:.5px;">Código de barras</label>' +
               '<input type="text" data-field="b" placeholder="7453..." style="width:100%;padding:8px 10px;border:1.5px solid #d1d5db;border-radius:6px;font-size:.85rem;margin-top:3px;" />' +
             '</div>' +
+            '<div style="background:#f0f9ff;border:1px dashed #0891b2;border-radius:6px;padding:8px 10px;font-size:.7rem;color:#075985;font-weight:600;">💡 Precios opcionales (si la mercancía está en tránsito, déjalos en 0 y los actualizas al recibir el lote)</div>' +
             '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;">' +
               '<div>' +
-                '<label style="font-size:.7rem;color:#374151;font-weight:700;text-transform:uppercase;letter-spacing:.5px;">Precio USD $</label>' +
+                '<label style="font-size:.7rem;color:#6b7280;font-weight:700;text-transform:uppercase;letter-spacing:.5px;">Precio USD $ <span style="color:#9ca3af;font-weight:500;">(opc)</span></label>' +
                 '<input type="number" step="0.01" data-field="u" placeholder="0.00" style="width:100%;padding:8px 10px;border:1.5px solid #d1d5db;border-radius:6px;font-size:.85rem;margin-top:3px;" />' +
               '</div>' +
               '<div>' +
-                '<label style="font-size:.7rem;color:#374151;font-weight:700;text-transform:uppercase;letter-spacing:.5px;">Precio BCV $</label>' +
+                '<label style="font-size:.7rem;color:#6b7280;font-weight:700;text-transform:uppercase;letter-spacing:.5px;">Precio BCV $ <span style="color:#9ca3af;font-weight:500;">(opc)</span></label>' +
                 '<input type="number" step="0.01" data-field="bv" placeholder="0.00" style="width:100%;padding:8px 10px;border:1.5px solid #d1d5db;border-radius:6px;font-size:.85rem;margin-top:3px;" />' +
               '</div>' +
               '<div>' +
-                '<label style="font-size:.7rem;color:#374151;font-weight:700;text-transform:uppercase;letter-spacing:.5px;">Precio TF $</label>' +
+                '<label style="font-size:.7rem;color:#6b7280;font-weight:700;text-transform:uppercase;letter-spacing:.5px;">Precio TF $ <span style="color:#9ca3af;font-weight:500;">(opc)</span></label>' +
                 '<input type="number" step="0.01" data-field="t" placeholder="0.00" style="width:100%;padding:8px 10px;border:1.5px solid #d1d5db;border-radius:6px;font-size:.85rem;margin-top:3px;" />' +
               '</div>' +
             '</div>' +
@@ -22607,19 +22644,24 @@ window.ptGuardarHuerfana = async function(idx, ref) {
     }
   });
 
-  // Validación mínima
-  if (!data.d || data.d.length < 3) {
-    alert('⚠ Falta la descripción (mínimo 3 caracteres)');
-    return;
+  // Validación FLEXIBLE — solo advertencia, tú decides si guardar o no
+  // El usuario tiene control total. Solo se valida la referencia (que existe por construcción).
+  var advertencias = [];
+  if (!data.d || data.d.length < 3) advertencias.push('descripción muy corta o vacía');
+  if (!data.br) advertencias.push('sin marca');
+  if (!data.u) advertencias.push('sin precio USD');
+
+  if (advertencias.length > 0) {
+    var seguir = confirm(
+      'Este producto tiene campos vacíos:\n\n• ' + advertencias.join('\n• ') +
+      '\n\n¿Guardar igual? (puedes completar después)'
+    );
+    if (!seguir) return;
   }
-  if (!data.br) {
-    alert('⚠ Falta seleccionar la marca');
-    return;
-  }
-  if (!data.u) {
-    alert('⚠ Falta el precio USD');
-    return;
-  }
+
+  // Defaults para campos vacíos
+  if (!data.u) data.u = 0;
+  if (!data.d) data.d = ref;  // si no hay descripción, usar la propia ref temporalmente
 
   // Aplicar regla de integridad: REF al final de la descripción
   if (typeof window.aplicarRefAlFinal === 'function') {
@@ -22763,33 +22805,35 @@ window.ptGuardarTodasHuerfanas = async function() {
 
     var d = (card.querySelector('[data-field="d"]') || {}).value || '';
     var br = (card.querySelector('[data-field="br"]') || {}).value || '';
-    var u = parseFloat((card.querySelector('[data-field="u"]') || {}).value) || 0;
+    var c = (card.querySelector('[data-field="c"]') || {}).value || '';
+    var b = (card.querySelector('[data-field="b"]') || {}).value || '';
+    var u = (card.querySelector('[data-field="u"]') || {}).value || '';
 
-    if (d.trim().length >= 3 && br && u > 0) {
+    // FLEXIBLE: guarda toda tarjeta que tenga AL MENOS UN dato significativo
+    // (descripción, marca, código interno, código de barras o precio)
+    var tieneAlgo = (d.trim().length > 0) || br || c.trim() || b.trim() || (parseFloat(u) > 0);
+
+    if (tieneAlgo) {
       validas.push({ ref: ref, card: card });
     } else {
-      var falta = [];
-      if (d.trim().length < 3) falta.push('descripción');
-      if (!br) falta.push('marca');
-      if (u <= 0) falta.push('precio USD');
-      incompletas.push({ ref: ref, falta: falta.join(', ') });
+      // Solo se considera "vacía" si no tiene NADA en absoluto
+      incompletas.push({ ref: ref, falta: 'tarjeta totalmente vacía' });
     }
   });
 
   if (validas.length === 0) {
-    alert('⚠ No hay tarjetas completas para guardar.\n\n' +
-          (incompletas.length > 0 ? 'Tarjetas incompletas:\n' +
-            incompletas.slice(0, 10).map(function(i){ return '• ' + i.ref + ' — falta: ' + i.falta; }).join('\n') : ''));
+    alert('⚠ No hay tarjetas con datos para guardar.\n\nTodas las tarjetas están vacías. Llena al menos un campo (descripción, marca, código interno, código de barras o precio) en alguna tarjeta antes de guardar.');
     return;
   }
 
-  var msgConfirm = '¿Guardar ' + validas.length + ' producto(s) válido(s)?\n\n';
+  var msgConfirm = '¿Guardar ' + validas.length + ' producto(s)?\n\n';
   if (incompletas.length > 0) {
-    msgConfirm += '⚠ ' + incompletas.length + ' tarjeta(s) incompletas se omitirán.\n';
+    msgConfirm += 'ℹ ' + incompletas.length + ' tarjeta(s) totalmente vacías se omitirán.\n';
   }
   if (yaGuardadas.length > 0) {
     msgConfirm += 'ℹ ' + yaGuardadas.length + ' ya guardadas previamente.\n';
   }
+  msgConfirm += '\nLos campos vacíos se guardarán como tales — puedes completarlos después.';
   if (!confirm(msgConfirm)) return;
 
   // Crear modal de progreso
