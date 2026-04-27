@@ -22488,9 +22488,31 @@ window.ptAbrirAuditoriaIntegral = async function() {
       if (!raw) return 0;
       var data = JSON.parse(raw);
       if (Array.isArray(data)) return data.length;
-      if (typeof data === 'object') return Object.keys(data).length;
+      if (data && typeof data === 'object') {
+        // Si es un objeto contenedor con claves típicas de array, contar el array interno
+        if (Array.isArray(data.facturas)) return data.facturas.length;
+        if (Array.isArray(data.items)) return data.items.length;
+        if (Array.isArray(data.pedidos)) return data.pedidos.length;
+        if (Array.isArray(data.list)) return data.list.length;
+        // Si no, contar las claves directas
+        return Object.keys(data).length;
+      }
       return 1;
     } catch(e) { return 0; }
+  }
+
+  // Contar registros en Firebase aplicando misma lógica para estructuras tipo CXC
+  function fbInnerCount(data) {
+    if (data === null || data === undefined) return 0;
+    if (Array.isArray(data)) return data.length;
+    if (typeof data === 'object') {
+      if (Array.isArray(data.facturas)) return data.facturas.length;
+      if (Array.isArray(data.items)) return data.items.length;
+      if (Array.isArray(data.pedidos)) return data.pedidos.length;
+      if (Array.isArray(data.list)) return data.list.length;
+      return Object.keys(data).length;
+    }
+    return 1;
   }
 
   async function fbCount(fnName) {
@@ -22498,15 +22520,9 @@ window.ptAbrirAuditoriaIntegral = async function() {
       if (typeof window[fnName] !== 'function') return -1;
       var data = await window[fnName]();
       if (data && typeof data === 'object' && 'data' in data && 'exists' in data) {
-        var inner = data.data;
-        if (Array.isArray(inner)) return inner.length;
-        if (inner && typeof inner === 'object') return Object.keys(inner).length;
-        return 0;
+        return fbInnerCount(data.data);
       }
-      if (data === null) return 0;
-      if (Array.isArray(data)) return data.length;
-      if (typeof data === 'object') return Object.keys(data).length;
-      return 1;
+      return fbInnerCount(data);
     } catch(e) { return -1; }
   }
 
