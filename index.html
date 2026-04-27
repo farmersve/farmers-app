@@ -5442,20 +5442,27 @@ function lShowApp(username) {
       if (!ind) {
         ind = document.createElement('div');
         ind.id = 'ls-quota-indicator';
-        ind.style.cssText = 'position:fixed;top:10px;right:10px;padding:6px 12px;border-radius:8px;font-size:.7rem;font-weight:900;font-family:Arial,sans-serif;z-index:9998;cursor:pointer;box-shadow:0 4px 14px rgba(0,0,0,.2);';
-        ind.title = 'Click para ver detalles del localStorage';
+        // Esquina inferior izquierda — discreto, no tapa información del header ni del contenido principal
+        ind.style.cssText = 'position:fixed;bottom:14px;left:14px;padding:5px 10px;border-radius:6px;font-size:.65rem;font-weight:700;font-family:Arial,sans-serif;z-index:9998;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.25);opacity:.75;transition:opacity .2s;letter-spacing:.3px;';
+        ind.title = 'Salud del almacenamiento local. Click para detalles.';
         ind.onclick = function(){ window._lsQuotaDetails(); };
+        // Hover: aumentar opacidad
+        ind.onmouseover = function(){ ind.style.opacity = '1'; };
+        ind.onmouseout = function(){ ind.style.opacity = '.75'; };
         document.body.appendChild(ind);
       }
       var color, msg;
-      if (pct < 70) { color = '#16a34a'; msg = '💾 ' + totalMB.toFixed(1) + 'MB'; }
-      else if (pct < 80) { color = '#ca8a04'; msg = '⚠️ ' + totalMB.toFixed(1) + 'MB / 5MB'; }
-      else if (pct < 90) { color = '#ea580c'; msg = '🟠 ' + totalMB.toFixed(2) + 'MB / 5MB'; }
-      else if (pct < 95) { color = '#dc2626'; msg = '🔴 ' + totalMB.toFixed(2) + 'MB / 5MB - LIBERAR YA'; }
+      // Modo discreto cuando todo va bien — solo un puntito + valor mínimo
+      if (pct < 70) { color = '#16a34a'; msg = '● ' + totalMB.toFixed(1) + 'MB'; }
+      else if (pct < 80) { color = '#ca8a04'; msg = '⚠ ' + totalMB.toFixed(1) + 'MB / 5MB'; }
+      else if (pct < 90) { color = '#ea580c'; msg = '⚠ ' + totalMB.toFixed(2) + 'MB / 5MB'; }
+      else if (pct < 95) { color = '#dc2626'; msg = '🔴 ' + totalMB.toFixed(2) + 'MB / 5MB - LIBERAR'; }
       else { color = '#7f1d1d'; msg = '🚨 ' + totalMB.toFixed(2) + 'MB - SATURADO'; }
       ind.style.background = color;
       ind.style.color = '#fff';
       ind.textContent = msg;
+      // Cuando hay problema (>=80%), aumentar opacidad para llamar la atención
+      if (pct >= 80) ind.style.opacity = '1';
       // Si está al 90%+, mostrar alerta una sola vez por sesión
       if (pct >= 90 && !sessionStorage.getItem('ls_quota_alerted')) {
         sessionStorage.setItem('ls_quota_alerted', '1');
@@ -34970,12 +34977,17 @@ window.msGenerarDocPedido = function(numP, sel) {
 // en farmers_ms_pedidos (usando primero ped.data, luego ped.items como fallback).
 // Retorna true si MS.data quedó con datos, false si no se pudo recuperar.
 window.msAsegurarDataPedido = function(numP) {
-  // Si ya tenemos datos en memoria, listo
-  if (MS.data && MS.data.length > 0) return true;
-
   var npBusca = numP || MS.numPedido;
   if (!npBusca) return false;
   if (typeof getMsPedidos !== 'function') return false;
+
+  // Si ya tenemos los datos del pedido SOLICITADO (no de otro), reusar
+  // Antes este check ignoraba el pedido y devolvía datos del pedido previo —
+  // por eso PDFs y etiquetas salían vacíos al cambiar entre pedidos.
+  if (MS.numPedido === npBusca && MS.data && MS.data.length > 0) return true;
+
+  // Limpiar para forzar recarga limpia (NO reutilizar datos de otro pedido)
+  MS.data = [];
 
   var peds = getMsPedidos();
   var ped = peds.find(function(p){ return p.numP === npBusca; });
@@ -35049,9 +35061,11 @@ window.msAsegurarDataPedido = function(numP) {
         estado: estado
       };
     });
+    console.log('[msAsegurarDataPedido] ✓ ' + npBusca + ': reconstruido desde items[] → ' + MS.data.length + ' refs');
     return MS.data.length > 0;
   }
 
+  console.warn('[msAsegurarDataPedido] ✗ ' + npBusca + ': pedido encontrado pero SIN data[] ni items[] válidos');
   return false;
 };
 
