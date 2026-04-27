@@ -3502,7 +3502,7 @@ var _PRODUCTS_FALLBACK = JSON.parse(JSON.stringify(PRODUCTS));
 // ── saveProducts: persiste PRODUCTS a localStorage ──
 // CAPA C de la regla REF al final: ANTES de guardar, aseguramos que todas
 // las descripciones terminen con su ref. Esta es la última red de seguridad.
-window.saveProducts = function() {
+window.saveProducts = async function() {
   try {
     // Capa C: aplicar REF al final a toda descripción que la falte (autocorrección silenciosa)
     // Esta es la red de seguridad final de la regla de integridad "REF al final".
@@ -3526,7 +3526,25 @@ window.saveProducts = function() {
       });
       if (corregidosC > 5) console.log('  · (y ' + (corregidosC - 5) + ' más...)');
     }
+    // 1) localStorage (siempre instantáneo)
     localStorage.setItem(PRODUCTS_KEY, JSON.stringify(PRODUCTS));
+    // 2) Firestore: AWAIT para garantizar que el cambio quede persistido antes de continuar
+    if (typeof window.fbSaveProducts === 'function') {
+      try {
+        await window.fbSaveProducts(PRODUCTS);
+        console.log('[saveProducts] ✓ Firestore actualizado (' + PRODUCTS.length + ' productos)');
+      } catch(eFb) {
+        console.error('[saveProducts] ✗ fbSaveProducts FALLÓ:', eFb);
+        // Marcar como pendiente para reintento
+        window._fbSaveProductsPending = PRODUCTS.slice();
+      }
+    } else {
+      // Firebase aún no listo — encolar
+      window._fbSaveProductsPending = PRODUCTS.slice();
+      console.warn('[saveProducts] ⚠ Firebase no listo, write encolado');
+    }
+    // 3) Trigger snapshot del portal
+    if (window.fbTriggerPortalSnapshot) window.fbTriggerPortalSnapshot('saveProducts');
     return true;
   } catch(e) {
     console.error('[saveProducts] error:', e);
@@ -3627,6 +3645,7 @@ window.getComprometido = function() {
 window.saveComprometido = function(comp) {
   try { localStorage.setItem(COMP_KEY, JSON.stringify(comp)); } catch(e){}
   if(window.fbSaveComprometido) window.fbSaveComprometido(comp);
+  if(window.fbTriggerPortalSnapshot) window.fbTriggerPortalSnapshot('saveComprometido');
 };
 window.getDisponible = function(ref) {
   var inv  = typeof getInventory==='function' ? getInventory() : {};
@@ -3642,6 +3661,8 @@ window.getMsPedidos = function() {
 window.saveMsPedidos = function(pedidos) {
   try { localStorage.setItem(MS_PEDIDOS_KEY, JSON.stringify(pedidos)); } catch(e){}
   if(window.fbSaveMsPedidos) window.fbSaveMsPedidos(pedidos);
+  // Trigger snapshot del portal — los ms_pedidos afectan el comprometido visible
+  if(window.fbTriggerPortalSnapshot) window.fbTriggerPortalSnapshot('saveMsPedidos');
 };
 
 function sortProducts() {
@@ -4439,13 +4460,23 @@ function getInventory() {
   try { const r=localStorage.getItem('farmers_inv'); if(r) return JSON.parse(r); } catch(e){}
   const inv={}; PRODUCTS.forEach(p=>{ inv[p.r]=p.ex; }); saveInventory(inv); return inv;
 }
-function saveInventory(inv){ localStorage.setItem('farmers_inv', JSON.stringify(inv)); if(window.fbSaveInventory) window.fbSaveInventory(inv); }
+function saveInventory(inv){
+  localStorage.setItem('farmers_inv', JSON.stringify(inv));
+  if(window.fbSaveInventory) window.fbSaveInventory(inv);
+  // Trigger snapshot del portal (debounced)
+  if(window.fbTriggerPortalSnapshot) window.fbTriggerPortalSnapshot('saveInventory');
+}
 
 function getSales() {
   try { const r=localStorage.getItem('farmers_sales'); if(r) return JSON.parse(r); } catch(e){}
   return [];
 }
-function saveSales(s){ localStorage.setItem('farmers_sales', JSON.stringify(s)); if(window.fbSaveSales) window.fbSaveSales(s); }
+function saveSales(s){
+  localStorage.setItem('farmers_sales', JSON.stringify(s));
+  if(window.fbSaveSales) window.fbSaveSales(s);
+  // Trigger snapshot del portal: cambios en sales afectan COMPROMETIDO
+  if(window.fbTriggerPortalSnapshot) window.fbTriggerPortalSnapshot('saveSales');
+}
 
 function syncInventoryToProducts(){
   const inv=getInventory();
@@ -5329,9 +5360,57 @@ function lShowApp(username) {
   // Firebase sync — timeout más largo en móvil, siempre con try/catch
   var _isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
   var _delay = _isMobile ? 1200 : 400;
+
+  // Mostrar indicador visual de sincronización
+  var syncToast = null;
+  setTimeout(function(){
+    syncToast = document.createElement('div');
+    syncToast.id = 'login-sync-toast';
+    syncToast.style.cssText = 'position:fixed;top:80px;right:20px;background:linear-gradient(135deg,#1B1F6B,#3730a3);color:#fff;padding:14px 22px;border-radius:12px;box-shadow:0 10px 30px rgba(15,23,42,.35);z-index:99999;font-family:Arial,sans-serif;font-size:.85rem;font-weight:700;display:flex;align-items:center;gap:12px;animation:slideInRight .4s ease;';
+    syncToast.innerHTML =
+      '<div style="width:18px;height:18px;border:3px solid rgba(255,255,255,.3);border-top-color:#fff;border-radius:50%;animation:spin 1s linear infinite;"></div>' +
+      '<div>' +
+        '<div style="font-size:.9rem;">🔄 Sincronizando datos</div>' +
+        '<div style="font-size:.7rem;opacity:.85;font-weight:400;margin-top:2px;">Descargando de la nube...</div>' +
+      '</div>';
+    if (!document.getElementById('login-sync-style')) {
+      var st = document.createElement('style');
+      st.id = 'login-sync-style';
+      st.textContent = '@keyframes spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}@keyframes slideInRight{from{transform:translateX(120%);opacity:0}to{transform:translateX(0);opacity:1}}@keyframes slideOutRight{from{transform:translateX(0);opacity:1}to{transform:translateX(120%);opacity:0}}';
+      document.head.appendChild(st);
+    }
+    document.body.appendChild(syncToast);
+  }, _delay);
+
   setTimeout(function(){
     try {
-      if (typeof loadFromFirebase === 'function') loadFromFirebase();
+      if (typeof loadFromFirebase === 'function') {
+        // loadFromFirebase es async — esperamos a que termine para mostrar el toast de éxito
+        Promise.resolve(loadFromFirebase()).then(function(){
+          var t = document.getElementById('login-sync-toast');
+          if (t) {
+            t.style.background = 'linear-gradient(135deg,#16a34a,#15803d)';
+            t.innerHTML =
+              '<div style="font-size:1.1rem;">✅</div>' +
+              '<div>' +
+                '<div style="font-size:.9rem;">Sincronización completa</div>' +
+                '<div style="font-size:.7rem;opacity:.85;font-weight:400;margin-top:2px;">Todos los datos actualizados</div>' +
+              '</div>';
+            setTimeout(function(){
+              t.style.animation = 'slideOutRight .4s ease forwards';
+              setTimeout(function(){ if (t.parentNode) t.parentNode.removeChild(t); }, 400);
+            }, 2500);
+          }
+        }).catch(function(e){
+          console.warn('Firebase load error:', e);
+          var t = document.getElementById('login-sync-toast');
+          if (t) {
+            t.style.background = 'linear-gradient(135deg,#dc2626,#7f1d1d)';
+            t.innerHTML = '<div>⚠️ Error al sincronizar — recarga la página</div>';
+            setTimeout(function(){ if (t.parentNode) t.parentNode.removeChild(t); }, 4000);
+          }
+        });
+      }
     } catch(e) { console.warn('Firebase load error:', e); }
     setTimeout(function(){
       try {
@@ -6064,6 +6143,134 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
           }
         } catch(e){ console.warn('onSnapshot Tasas:', e); }
       });
+      // ═══════════════════════════════════════════════════════════════════
+      // ONSNAPSHOT MULTI-DISPOSITIVO TIEMPO REAL (25/04/2026)
+      // Estos listeners hacen que cualquier cambio hecho en otra PC se
+      // refleje automáticamente en esta PC en < 1 segundo, sin tener que
+      // recargar ni pulsar ningún botón.
+      // ═══════════════════════════════════════════════════════════════════
+
+      // ── PT_DATA (Ordenada, fichas extendidas, dimensiones) ──
+      onSnapshot(doc(db,'data','pt_data'), function(s) {
+        try {
+          if (!s.exists() || !s.data().v) return;
+          var ptObj = JSON.parse(s.data().v);
+          if (!ptObj || typeof ptObj !== 'object') return;
+          // Solo aplicar si difiere del local (evita loops de ida y vuelta)
+          var ptLocal = {};
+          try { ptLocal = JSON.parse(localStorage.getItem('farmers_pt_data') || '{}'); } catch(e){}
+          var localCount = Object.keys(ptLocal).length;
+          var remoteCount = Object.keys(ptObj).length;
+          // Aplicar el remoto SI es distinto del local (más reciente o diferente)
+          if (JSON.stringify(ptObj) !== JSON.stringify(ptLocal)) {
+            localStorage.setItem('farmers_pt_data', JSON.stringify(ptObj));
+            window.ptData = ptObj;
+            console.log('[onSnapshot pt_data] ↓ sincronizado: ' + remoteCount + ' refs (era ' + localCount + ')');
+            // Refrescar UI de Productos Terminados si está abierta
+            if (typeof ptRender === 'function') ptRender();
+            // Refrescar catálogo si está abierto (afecta Ordenada visible)
+            if (typeof doRefSearch === 'function' && document.querySelector('.cat-grid, #ref-search-modal.show, #ref-search-modal[style*="block"]')) {
+              try { doRefSearch(); } catch(eR){}
+            }
+          }
+        } catch(e){ console.warn('onSnapshot pt_data:', e); }
+      });
+
+      // ── COMPROMETIDO (reservas activas multi-sucursal) ──
+      onSnapshot(doc(db,'data','comprometido'), function(s) {
+        try {
+          if (!s.exists() || !s.data().v) return;
+          var compObj = JSON.parse(s.data().v);
+          if (!compObj || typeof compObj !== 'object') return;
+          var compLocal = {};
+          try { compLocal = JSON.parse(localStorage.getItem('farmers_inv_comprometido') || '{}'); } catch(e){}
+          if (JSON.stringify(compObj) !== JSON.stringify(compLocal)) {
+            localStorage.setItem('farmers_inv_comprometido', JSON.stringify(compObj));
+            var refs = Object.keys(compObj).filter(function(r){
+              var entry = compObj[r];
+              var q = (entry && typeof entry === 'object') ? (parseInt(entry.qty) || 0) : (parseInt(entry) || 0);
+              return q > 0;
+            }).length;
+            console.log('[onSnapshot comprometido] ↓ sincronizado: ' + refs + ' refs reservadas');
+            // Refrescar UI
+            if (typeof ptRender === 'function') ptRender();
+            if (typeof renderTable === 'function') renderTable();
+            if (typeof doRefSearch === 'function' && document.querySelector('.cat-grid, #ref-search-modal.show, #ref-search-modal[style*="block"]')) {
+              try { doRefSearch(); } catch(eR){}
+            }
+          }
+        } catch(e){ console.warn('onSnapshot comprometido:', e); }
+      });
+
+      // ── MS_PEDIDOS (pedidos pendientes multi-sucursal) ──
+      onSnapshot(doc(db,'data','ms_pedidos'), function(s) {
+        try {
+          if (!s.exists() || !s.data().v) return;
+          var msArr = JSON.parse(s.data().v);
+          if (!Array.isArray(msArr)) return;
+          var msLocal = [];
+          try { msLocal = JSON.parse(localStorage.getItem('farmers_ms_pedidos') || '[]'); } catch(e){}
+          if (JSON.stringify(msArr) !== JSON.stringify(msLocal)) {
+            localStorage.setItem('farmers_ms_pedidos', JSON.stringify(msArr));
+            console.log('[onSnapshot ms_pedidos] ↓ sincronizado: ' + msArr.length + ' pedidos');
+            // Refrescar monitor de pedidos si está abierto
+            if (typeof renderMonitorPedidos === 'function') {
+              try { renderMonitorPedidos(); } catch(eR){}
+            }
+            if (typeof homeUpdateBadges === 'function') {
+              try { homeUpdateBadges(); } catch(eR){}
+            }
+          }
+        } catch(e){ console.warn('onSnapshot ms_pedidos:', e); }
+      });
+
+      // ── HCL (Historial de Clientes / facturas legacy) ──
+      onSnapshot(doc(db,'data','hcl_facturas'), function(s) {
+        try {
+          if (!s.exists() || !s.data().v) return;
+          var hclArr = JSON.parse(s.data().v);
+          if (!Array.isArray(hclArr)) return;
+          var hclLocal = [];
+          try { hclLocal = JSON.parse(localStorage.getItem('farmers_hcl_v7_facturas') || '[]'); } catch(e){}
+          if (JSON.stringify(hclArr) !== JSON.stringify(hclLocal)) {
+            localStorage.setItem('farmers_hcl_v7_facturas', JSON.stringify(hclArr));
+            localStorage.setItem('farmers_hcl_facturas', JSON.stringify(hclArr));
+            console.log('[onSnapshot hcl] ↓ sincronizado: ' + hclArr.length + ' facturas');
+            if (typeof hclRenderFacturas === 'function') {
+              try { hclRenderFacturas(); } catch(eR){}
+            }
+          }
+        } catch(e){ console.warn('onSnapshot hcl:', e); }
+      });
+
+      // ── PRODUCTS_EXT (productos importados que no están en catálogo principal) ──
+      onSnapshot(doc(db,'data','products_ext'), function(s) {
+        try {
+          if (!s.exists() || !s.data().v) return;
+          var extArr = JSON.parse(s.data().v);
+          if (!Array.isArray(extArr)) return;
+          var extLocal = [];
+          try { extLocal = JSON.parse(localStorage.getItem('farmers_products_ext') || '[]'); } catch(e){}
+          if (JSON.stringify(extArr) !== JSON.stringify(extLocal)) {
+            // Verificar refs duplicadas con PRODUCTS principal
+            var refsPrincipales = new Set((typeof PRODUCTS !== 'undefined' ? PRODUCTS : []).map(function(p){ return p.r; }));
+            var extLimpio = extArr.filter(function(p){ return !refsPrincipales.has(p.r); });
+            localStorage.setItem('farmers_products_ext', JSON.stringify(extLimpio));
+            // Agregar a PRODUCTS los que no estén
+            var added = 0;
+            if (typeof PRODUCTS !== 'undefined') {
+              extLimpio.forEach(function(p){
+                if (!refsPrincipales.has(p.r)) { PRODUCTS.push(p); added++; }
+              });
+              if (added > 0 && typeof sortProducts === 'function') sortProducts();
+            }
+            console.log('[onSnapshot products_ext] ↓ sincronizado: ' + extLimpio.length + ' refs (' + added + ' agregadas a PRODUCTS)');
+            if (typeof renderTable === 'function') renderTable();
+          }
+        } catch(e){ console.warn('onSnapshot products_ext:', e); }
+      });
+
+      console.log('[multi-device] ✅ 5 nuevos onSnapshot activos: pt_data, comprometido, ms_pedidos, hcl, products_ext');
     } catch(e_snap) {
       console.warn('Error inicializando onSnapshot:', e_snap);
     }
@@ -6347,6 +6554,520 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
     try { await setDoc(doc(db, 'portal_tokens', token), data); return true; }
     catch(e) { console.error('fbSavePortalToken:', e); return false; }
   };
+  // comprometido — publicar a Firestore para que el portal lea el DISPONIBLE real (inv − comprometido)
+  // Acepta objeto opcional (o lo lee de localStorage). Serializa a string para consistencia.
+  window.fbSaveComprometido = async (compObj) => {
+    try {
+      var compString;
+      if (compObj && typeof compObj === 'object') {
+        compString = JSON.stringify(compObj);
+      } else {
+        compString = localStorage.getItem('farmers_inv_comprometido') || '{}';
+      }
+      await setDoc(doc(db, 'data', 'comprometido'), { v: compString, updatedAt: Date.now() });
+      return true;
+    } catch(e) { console.error('[fbSaveComprometido] ✗ error:', e); return false; }
+  };
+  // Leer comprometido desde Firestore (necesario para login en PC nueva)
+  window.fbGetComprometido = async () => {
+    try {
+      var snap = await getDoc(doc(db, 'data', 'comprometido'));
+      if (!snap.exists() || !snap.data().v) return {};
+      return JSON.parse(snap.data().v);
+    } catch(e) { console.error('[fbGetComprometido]', e); return {}; }
+  };
+  // pt_data (Ordenada) — publicar a Firestore para que el portal lo lea cuando el token tenga mostrarOrdenada:true
+  // Acepta objeto opcional (o lo lee de localStorage). Serializa a string para consistencia.
+  window.fbSavePT = async (dataObj) => {
+    try {
+      var ptString;
+      if (dataObj && typeof dataObj === 'object') {
+        ptString = JSON.stringify(dataObj);
+      } else {
+        ptString = localStorage.getItem('farmers_pt_data') || '{}';
+      }
+      var parsed = JSON.parse(ptString);
+      var totalRefs = Object.keys(parsed).length;
+      var conOrd = 0;
+      Object.keys(parsed).forEach(function(r){
+        if (parsed[r] && parseInt(parsed[r].exOrdenada || 0) > 0) conOrd++;
+      });
+      await setDoc(doc(db, 'data', 'pt_data'), { v: ptString, updatedAt: Date.now(), totalRefs: totalRefs, conOrdenada: conOrd });
+      console.log('[fbSavePT] ✓ pt_data publicado: ' + totalRefs + ' refs, ' + conOrd + ' con Ordenada > 0');
+      return true;
+    } catch(e) { console.error('[fbSavePT] ✗ error:', e); return false; }
+  };
+  // ms_pedidos (Multi-Sucursal): pedidos pendientes/parciales para el monitor
+  window.fbSaveMsPedidos = async (pedidosArr) => {
+    try {
+      var arr = Array.isArray(pedidosArr) ? pedidosArr : (function(){
+        try { return JSON.parse(localStorage.getItem('farmers_ms_pedidos') || '[]'); } catch(e) { return []; }
+      })();
+      await setDoc(doc(db, 'data', 'ms_pedidos'), { v: JSON.stringify(arr), updatedAt: Date.now(), count: arr.length });
+      return true;
+    } catch(e) { console.error('[fbSaveMsPedidos] ✗ error:', e); return false; }
+  };
+  window.fbGetMsPedidos = async () => {
+    try {
+      var snap = await getDoc(doc(db, 'data', 'ms_pedidos'));
+      if (!snap.exists() || !snap.data().v) return [];
+      return JSON.parse(snap.data().v);
+    } catch(e) { return []; }
+  };
+  // Notas de Crédito (no estaba con setDoc explícito antes)
+  if (!window.fbSaveNotasCredito) {
+    window.fbSaveNotasCredito = async (data) => {
+      try {
+        await setDoc(doc(db, 'data', 'notas_credito'), { v: JSON.stringify(data || []), updatedAt: Date.now() });
+        return true;
+      } catch(e) { console.error('[fbSaveNotasCredito]', e); return false; }
+    };
+  }
+  // Leer pt_data desde Firestore (para auditoría — ver lo que el portal ve realmente)
+  window.fbGetPT = async () => {
+    try {
+      var snap = await getDoc(doc(db, 'data', 'pt_data'));
+      if (!snap.exists() || !snap.data().v) return { exists: false, data: {}, updatedAt: null };
+      var data = JSON.parse(snap.data().v);
+      return { exists: true, data: data, updatedAt: snap.data().updatedAt || null };
+    } catch(e) { console.error('[fbGetPT] ✗ error:', e); return { exists: false, data: {}, error: e.message }; }
+  };
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // fbSavePortalSnapshot — FUENTE ÚNICA DE VERDAD PARA EL PORTAL
+  // ──────────────────────────────────────────────────────────────────────────
+  // Calcula y publica a Firestore un snapshot completo con TODA la información
+  // que el portal cliente necesita para mostrar inventario perfectamente
+  // sincronizado con lo que ve el admin en el sistema de pedidos.
+  //
+  // Estructura del snapshot publicado en Firestore data/portal_snapshot:
+  //   {
+  //     v: { ref: { real, comprometido, disponible, ordenada } },
+  //     updatedAt: timestamp,
+  //     totalRefs: N
+  //   }
+  //
+  // Lógica de cálculo (idéntica a la que usa el admin en su tabla):
+  //   • real         = inventario actual (PRODUCTS[i].ex o farmers_inv[ref])
+  //   • comprometido = suma de (it.orden) de todos los pedidos pendientes en farmers_sales
+  //   • disponible   = max(0, real − comprometido)
+  //   • ordenada     = ptData[ref].exOrdenada
+  // ══════════════════════════════════════════════════════════════════════════
+  window.fbSavePortalSnapshot = async () => {
+    try {
+      // 1) Productos del catálogo
+      var products = (typeof PRODUCTS !== 'undefined') ? PRODUCTS : [];
+      if (!products || products.length === 0) {
+        console.warn('[fbSavePortalSnapshot] PRODUCTS vacío, abortando');
+        return false;
+      }
+
+      // 2) Inventario actual (real)
+      var inv = {};
+      try {
+        var invStr = localStorage.getItem('farmers_inv');
+        if (invStr) inv = JSON.parse(invStr);
+      } catch(e) {}
+
+      // 3) Comprometido — leer farmers_inv_comprometido (FUENTE OFICIAL DEL ADMIN)
+      // Estructura: { ref: { qty: N, pedidos: [...] } }
+      // Esto es exactamente lo que usa window.getDisponible() del admin
+      var compStorage = {};
+      try {
+        var compStr = localStorage.getItem('farmers_inv_comprometido');
+        if (compStr) compStorage = JSON.parse(compStr);
+      } catch(e) {}
+
+      // Helper idéntico a window.getDisponible del admin (línea ~3635)
+      function _getCompQty(ref) {
+        var entry = compStorage[ref];
+        if (!entry) return 0;
+        if (typeof entry === 'object') return parseInt(entry.qty || 0) || 0;
+        return parseInt(entry) || 0; // Compatibilidad con formato legacy
+      }
+
+      // 4) Ordenada — desde farmers_pt_data
+      var ptData = {};
+      try {
+        var ptStr = localStorage.getItem('farmers_pt_data');
+        if (ptStr) ptData = JSON.parse(ptStr);
+      } catch(e) {}
+
+      // 5) Construir snapshot por referencia (lógica idéntica al admin)
+      var snapshot = {};
+      var stats = { totalRefs: 0, conStock: 0, bajoStock: 0, agotados: 0, conOrdenada: 0 };
+
+      products.forEach(function(p){
+        var ref = p.r;
+        if (!ref) return;
+        var real = (inv[ref] !== undefined) ? (parseInt(inv[ref]) || 0) : (parseInt(p.ex) || 0);
+        var comp = _getCompQty(ref);
+        var disp = Math.max(0, real - comp);
+        var ord  = parseInt((ptData[ref] || {}).exOrdenada || 0) || 0;
+
+        snapshot[ref] = { real: real, comprometido: comp, disponible: disp, ordenada: ord };
+        stats.totalRefs++;
+        if (disp === 0) stats.agotados++;
+        else if (disp <= 10) stats.bajoStock++;
+        else stats.conStock++;
+        if (ord > 0) stats.conOrdenada++;
+      });
+
+      var snapshotString = JSON.stringify(snapshot);
+      await setDoc(doc(db, 'data', 'portal_snapshot'), {
+        v: snapshotString,
+        updatedAt: Date.now(),
+        totalRefs: stats.totalRefs,
+        conStock: stats.conStock,
+        bajoStock: stats.bajoStock,
+        agotados: stats.agotados,
+        conOrdenada: stats.conOrdenada
+      });
+      console.log('[fbSavePortalSnapshot] ✓ Snapshot publicado: ' + stats.totalRefs + ' refs (' + stats.conStock + ' con stock, ' + stats.bajoStock + ' bajo, ' + stats.agotados + ' agotadas, ' + stats.conOrdenada + ' con Ordenada)');
+      return true;
+    } catch(e) {
+      console.error('[fbSavePortalSnapshot] ✗ error:', e);
+      return false;
+    }
+  };
+
+  // Trigger debounced: cada vez que cambia inventario/ventas/ptData, se publica el snapshot
+  // Espera 800ms después del último cambio para evitar spam de writes
+  var _portalSnapshotTimer = null;
+  window.fbTriggerPortalSnapshot = function(reason) {
+    if (_portalSnapshotTimer) clearTimeout(_portalSnapshotTimer);
+    _portalSnapshotTimer = setTimeout(function(){
+      _portalSnapshotTimer = null;
+      console.log('[fbTriggerPortalSnapshot] disparado por: ' + (reason || 'desconocido'));
+      window.fbSavePortalSnapshot();
+    }, 800);
+  };
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // farmersDiag() — COMANDO DE DIAGNÓSTICO COMPLETO PARA EL PORTAL
+  // Pega `farmersDiag()` en la consola del navegador para ver el estado real:
+  //   1. Cuánto inventario tiene tu admin localmente
+  //   2. Cuánto inventario tiene Firestore (lo que el portal ve)
+  //   3. Si están sincronizados o no
+  //   4. Forzar una resincronización al instante
+  // ══════════════════════════════════════════════════════════════════════════
+  window.farmersDiag = async function() {
+    console.log('═══════════════════════════════════════════════════');
+    console.log('🔍 DIAGNÓSTICO COMPLETO FARMERS PORTAL');
+    console.log('═══════════════════════════════════════════════════');
+
+    // 1) Local — sistema admin (usa exactamente las MISMAS fuentes que la tabla del admin)
+    var prods = (typeof PRODUCTS !== 'undefined') ? PRODUCTS : [];
+    var inv = {};
+    var compStorage = {};
+    var ptData = {};
+    try { inv = JSON.parse(localStorage.getItem('farmers_inv') || '{}'); } catch(e){}
+    try { compStorage = JSON.parse(localStorage.getItem('farmers_inv_comprometido') || '{}'); } catch(e){}
+    try { ptData = JSON.parse(localStorage.getItem('farmers_pt_data') || '{}'); } catch(e){}
+
+    // Helper idéntico a window.getDisponible
+    function _compQty(ref) {
+      var entry = compStorage[ref];
+      if (!entry) return 0;
+      if (typeof entry === 'object') return parseInt(entry.qty || 0) || 0;
+      return parseInt(entry) || 0;
+    }
+
+    var conStock = 0, bajoStock = 0, agotado = 0, conOrdenada = 0;
+    var udsTotalDisp = 0, udsTotalOrd = 0, udsTotalComp = 0;
+    var refsConComp = 0;
+    prods.forEach(function(p){
+      var real = (inv[p.r] !== undefined) ? (parseInt(inv[p.r]) || 0) : (parseInt(p.ex) || 0);
+      var comp = _compQty(p.r);
+      var disp = Math.max(0, real - comp);
+      var ord  = parseInt((ptData[p.r] || {}).exOrdenada || 0) || 0;
+      udsTotalDisp += disp;
+      udsTotalOrd += ord;
+      udsTotalComp += comp;
+      if (comp > 0) refsConComp++;
+      if (disp === 0) agotado++;
+      else if (disp <= 10) bajoStock++;
+      else conStock++;
+      if (ord > 0) conOrdenada++;
+    });
+
+    console.log('📊 LOCAL (tu admin):');
+    console.log('   Productos en catálogo: %d', prods.length);
+    console.log('   Inventario refs: %d', Object.keys(inv).length);
+    console.log('   Refs con comprometido > 0: %d (%d uds totales)', refsConComp, udsTotalComp);
+    console.log('   Refs en pt_data: %d', Object.keys(ptData).length);
+    console.log('   ━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.log('   ✅ Con stock (>10): %d', conStock);
+    console.log('   ⚠ Bajo stock (1-10): %d', bajoStock);
+    console.log('   ❌ Agotados: %d', agotado);
+    console.log('   📦 Con Ordenada > 0: %d', conOrdenada);
+    console.log('   ━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.log('   Total uds disponibles: %d', udsTotalDisp);
+    console.log('   Total uds Ordenada: %d', udsTotalOrd);
+
+    // Inspección directa de EXC003 si existe
+    if (compStorage['EXC003']) {
+      console.log('');
+      console.log('🔬 EXC003 en comprometido local:', compStorage['EXC003']);
+    }
+
+    // 2) Firestore — lo que el portal ve
+    console.log('');
+    console.log('📡 FIRESTORE (lo que el portal cliente ve):');
+    try {
+      var snap = await getDoc(doc(db, 'data', 'portal_snapshot'));
+      if (snap.exists() && snap.data().v) {
+        var d = snap.data();
+        var minutos = d.updatedAt ? Math.round((Date.now() - d.updatedAt) / 60000) : null;
+        console.log('   ✓ Snapshot existe');
+        console.log('   Última actualización: %s', minutos !== null ? ('hace ' + minutos + ' min') : 'desconocido');
+        console.log('   Total refs: %d', d.totalRefs || 0);
+        console.log('   Con stock: %d', d.conStock || 0);
+        console.log('   Bajo stock: %d', d.bajoStock || 0);
+        console.log('   Agotados: %d', d.agotados || 0);
+        console.log('   Con Ordenada: %d', d.conOrdenada || 0);
+
+        // Comparación
+        console.log('');
+        console.log('🔬 COMPARACIÓN:');
+        var match = (
+          (d.totalRefs || 0) === prods.length &&
+          (d.conOrdenada || 0) === conOrdenada
+        );
+        if (match) {
+          console.log('   ✅ ADMIN Y PORTAL SINCRONIZADOS PERFECTAMENTE');
+        } else {
+          console.log('   ⚠ DESFASE DETECTADO — el portal no tiene los últimos datos');
+          console.log('   → Ejecutando resincronización automática...');
+          await window.fbSavePortalSnapshot();
+          console.log('   ✓ Snapshot republicado. Recarga el portal para ver los cambios.');
+        }
+      } else {
+        console.log('   ❌ NO HAY SNAPSHOT — el portal está vacío');
+        console.log('   → Publicando snapshot ahora...');
+        await window.fbSavePortalSnapshot();
+        console.log('   ✓ Snapshot publicado. Ahora recarga el portal.');
+      }
+    } catch(e) {
+      console.error('   ✗ Error consultando Firestore:', e);
+    }
+
+    console.log('');
+    console.log('═══════════════════════════════════════════════════');
+    console.log('💡 Para republicar manualmente:  await fbSavePortalSnapshot()');
+    console.log('💡 Para forzar sync completo:    await farmersFix()');
+    console.log('💡 Para auditoría multi-PC:     await farmersCheck()');
+    console.log('═══════════════════════════════════════════════════');
+    return 'Diagnóstico completado';
+  };
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // farmersCheck() — Comparación exhaustiva LOCAL vs FIRESTORE
+  // Te dice EXACTAMENTE qué hay en cada fuente y si están sincronizadas.
+  // Útil para verificar que una PC nueva ve los mismos datos que la original.
+  // ══════════════════════════════════════════════════════════════════════════
+  window.farmersCheck = async function() {
+    console.log('═══════════════════════════════════════════════════════════════');
+    console.log('🔍 AUDITORÍA MULTI-DISPOSITIVO — LOCAL vs FIRESTORE');
+    console.log('═══════════════════════════════════════════════════════════════\n');
+
+    // Helpers
+    function localCount(key) {
+      try {
+        var raw = localStorage.getItem(key);
+        if (!raw) return { count: 0, exists: false };
+        var data = JSON.parse(raw);
+        if (Array.isArray(data)) return { count: data.length, exists: true };
+        if (typeof data === 'object') return { count: Object.keys(data).length, exists: true };
+        return { count: 1, exists: true };
+      } catch(e) { return { count: 0, exists: false, error: e.message }; }
+    }
+
+    async function fbCount(fnName) {
+      try {
+        if (typeof window[fnName] !== 'function') return { count: 0, exists: false, error: 'función no existe' };
+        var data = await window[fnName]();
+        // fbGetPT puede devolver {data, exists}
+        if (data && typeof data === 'object' && 'data' in data && 'exists' in data) {
+          var inner = data.data;
+          if (Array.isArray(inner)) return { count: inner.length, exists: data.exists };
+          if (inner && typeof inner === 'object') return { count: Object.keys(inner).length, exists: data.exists };
+          return { count: 0, exists: data.exists };
+        }
+        if (data === null) return { count: 0, exists: false };
+        if (Array.isArray(data)) return { count: data.length, exists: true };
+        if (typeof data === 'object') return { count: Object.keys(data).length, exists: true };
+        return { count: 1, exists: true };
+      } catch(e) { return { count: 0, exists: false, error: e.message }; }
+    }
+
+    // Fuentes a verificar
+    var fuentes = [
+      { nombre: 'PRODUCTS (catálogo)',          local: 'farmers_products',           fb: 'fbGetProducts' },
+      { nombre: 'PRODUCTS_EXT (importados)',    local: 'farmers_products_ext',       fb: 'fbGetProductsExt' },
+      { nombre: 'INVENTARIO',                   local: 'farmers_inv',                fb: 'fbGetInventory' },
+      { nombre: 'COMPROMETIDO ⭐',              local: 'farmers_inv_comprometido',   fb: 'fbGetComprometido' },
+      { nombre: 'PT_DATA (Ordenada/fichas) ⭐', local: 'farmers_pt_data',            fb: 'fbGetPT' },
+      { nombre: 'MS_PEDIDOS ⭐',                local: 'farmers_ms_pedidos',         fb: 'fbGetMsPedidos' },
+      { nombre: 'SALES (ventas)',               local: 'farmers_sales',              fb: 'fbGetSales' },
+      { nombre: 'CLIENTES',                     local: 'farmers_clients_v2',         fb: 'fbGetClients' },
+      { nombre: 'PROVEEDORES ⭐',               local: 'farmers_proveedores',        fb: 'fbGetProveedores' },
+      { nombre: 'ÓRDENES DE COMPRA ⭐',         local: 'farmers_ordenes_compra',     fb: 'fbGetOrdenesCompra' },
+      { nombre: 'CXC',                          local: 'farmers_cxc',                fb: 'fbGetCXC' },
+      { nombre: 'BANCOS ⭐',                    local: 'farmers_bancos',             fb: 'fbGetBancos' },
+      { nombre: 'GRUPOS clientes',              local: 'farmers_cl_groups',          fb: 'fbGetGroups' },
+      { nombre: 'TASAS BCV',                    local: 'farmers_tasa_bcv_history',   fb: 'fbGetTasas' },
+      { nombre: 'NOTAS DE CRÉDITO',             local: 'farmers_nc',                 fb: 'fbGetNC' },
+      { nombre: 'HCL (historial)',              local: 'farmers_hcl_v7_facturas',    fb: 'fbGetHCL' },
+    ];
+
+    var results = [];
+    for (var i = 0; i < fuentes.length; i++) {
+      var f = fuentes[i];
+      var local = localCount(f.local);
+      var fb = await fbCount(f.fb);
+      results.push({ fuente: f.nombre, local: local, fb: fb });
+    }
+
+    // Imprimir tabla
+    console.log('FUENTE'.padEnd(40) + 'LOCAL'.padStart(12) + 'FIRESTORE'.padStart(14) + '   ESTADO');
+    console.log('─'.repeat(75));
+
+    var problemas = 0;
+    var perdidas = 0;
+    results.forEach(function(r){
+      var localStr = r.local.exists ? r.local.count.toString() : '—';
+      var fbStr = r.fb.exists ? r.fb.count.toString() : (r.fb.error ? 'ERR' : '—');
+      var estado = '';
+
+      if (!r.local.exists && !r.fb.exists) {
+        estado = '⚪ vacío';
+      } else if (r.local.exists && !r.fb.exists) {
+        estado = '⚠️  EN LOCAL pero NO en Firestore — hay que subir';
+        problemas++;
+      } else if (!r.local.exists && r.fb.exists) {
+        estado = '📥 EN FIRESTORE pero NO en local — descargar';
+        perdidas++;
+      } else if (r.local.count === r.fb.count) {
+        estado = '✅ sincronizado';
+      } else if (r.local.count > r.fb.count) {
+        estado = '⚠️  local tiene MÁS (subir falta)';
+        problemas++;
+      } else {
+        estado = '📥 Firestore tiene MÁS (recargar)';
+        perdidas++;
+      }
+      console.log(
+        r.fuente.padEnd(40) +
+        localStr.padStart(12) +
+        fbStr.padStart(14) +
+        '   ' + estado
+      );
+    });
+
+    console.log('─'.repeat(75));
+    console.log('');
+    console.log('LEYENDA:  ⭐ = fuentes críticas para multi-dispositivo');
+    console.log('');
+
+    if (problemas > 0) {
+      console.log('⚠️  ' + problemas + ' fuente(s) con datos LOCAL pero no en Firestore');
+      console.log('   → Ejecuta: await farmersFix()  (sube todo)');
+    }
+    if (perdidas > 0) {
+      console.log('📥 ' + perdidas + ' fuente(s) con datos en Firestore pero no en local');
+      console.log('   → Recarga el admin (Ctrl+F5)  o ejecuta: await loadFromFirebase()');
+    }
+    if (problemas === 0 && perdidas === 0) {
+      console.log('✅ TODAS las fuentes perfectamente sincronizadas LOCAL ↔ FIRESTORE');
+      console.log('   Esta PC ve EXACTAMENTE los mismos datos que cualquier otra.');
+    }
+    console.log('═══════════════════════════════════════════════════════════════');
+    return { problemas: problemas, perdidas: perdidas, results: results };
+  };
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // farmersFix() — Forzar sincronización inmediata de TODO a Firestore
+  // Útil cuando datos viejos en localStorage no llegaron antes a Firestore
+  // ══════════════════════════════════════════════════════════════════════════
+  window.farmersFix = async function() {
+    console.log('🔧 SINCRONIZACIÓN FORZADA');
+    console.log('═══════════════════════════════════════════════════');
+
+    try {
+      // 0) PRODUCTS (catálogo principal — incluye medidas, empaques, descripciones, precios)
+      // CRÍTICO: si esto falla, los cambios de medida/empaque NO llegan al portal
+      if (typeof PRODUCTS !== 'undefined' && PRODUCTS.length > 0 && window.fbSaveProducts) {
+        await window.fbSaveProducts(PRODUCTS);
+        console.log('✓ Catálogo subido: ' + PRODUCTS.length + ' productos (medidas, empaques, precios)');
+
+        // 0.5) Limpiar products_ext de refs duplicadas con products principal
+        // Si una ref está en ambos, la versión vieja en products_ext puede contaminar al recargar
+        try {
+          var ext = JSON.parse(localStorage.getItem('farmers_products_ext') || '[]');
+          if (ext.length > 0) {
+            var refsPrincipales = new Set(PRODUCTS.map(function(p){ return p.r; }));
+            var extLimpio = ext.filter(function(p){ return !refsPrincipales.has(p.r); });
+            var eliminadas = ext.length - extLimpio.length;
+            if (eliminadas > 0) {
+              localStorage.setItem('farmers_products_ext', JSON.stringify(extLimpio));
+              if (window.fbSaveProductsExt) await window.fbSaveProductsExt(extLimpio);
+              console.log('✓ products_ext limpiado: ' + eliminadas + ' refs duplicadas eliminadas');
+            }
+          }
+        } catch(eExt) { console.warn('limpieza products_ext:', eExt); }
+      }
+
+      // 1) Inventario
+      var invStr = localStorage.getItem('farmers_inv');
+      if (invStr && window.fbSaveInventory) {
+        await window.fbSaveInventory(JSON.parse(invStr));
+        console.log('✓ Inventario subido a Firestore');
+      }
+
+      // 2) Comprometido (CRÍTICO)
+      var compStr = localStorage.getItem('farmers_inv_comprometido');
+      if (compStr && window.fbSaveComprometido) {
+        var compObj = JSON.parse(compStr);
+        await window.fbSaveComprometido(compObj);
+        var refsConComp = 0, totalComp = 0;
+        Object.keys(compObj).forEach(function(r){
+          var q = (compObj[r] && typeof compObj[r] === 'object') ? (parseInt(compObj[r].qty) || 0) : (parseInt(compObj[r]) || 0);
+          if (q > 0) { refsConComp++; totalComp += q; }
+        });
+        console.log('✓ Comprometido subido: ' + refsConComp + ' refs (' + totalComp + ' uds totales)');
+      } else if (!compStr) {
+        console.log('⚠ farmers_inv_comprometido vacío en localStorage — no hay reservas activas');
+      }
+
+      // 3) Sales
+      var salesStr = localStorage.getItem('farmers_sales');
+      if (salesStr && window.fbSaveSales) {
+        await window.fbSaveSales(JSON.parse(salesStr));
+        console.log('✓ Sales subidas a Firestore');
+      }
+
+      // 4) PT data
+      var ptStr = localStorage.getItem('farmers_pt_data');
+      if (ptStr && window.fbSavePT) {
+        await window.fbSavePT(JSON.parse(ptStr));
+        console.log('✓ pt_data (Ordenada) subido a Firestore');
+      }
+
+      // 5) Snapshot final
+      if (window.fbSavePortalSnapshot) {
+        await window.fbSavePortalSnapshot();
+        console.log('✓ Portal snapshot publicado');
+      }
+
+      console.log('═══════════════════════════════════════════════════');
+      console.log('✅ TODO SINCRONIZADO. Recarga el portal del cliente para ver los cambios.');
+      return true;
+    } catch(e) {
+      console.error('✗ Error:', e);
+      return false;
+    }
+  };
   window.fbGetPortalTokens = async () => {
     try {
       const snap = await getDocs(collection(db, 'portal_tokens'));
@@ -6391,7 +7112,9 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
 /* loadFromFirebase */
 async function loadFromFirebase() {
   try {
-    // ── Cargar PRODUCTS principal desde Firebase (tiene prioridad sobre localStorage) ──
+    // ── Cargar PRODUCTS principal desde Firebase (TIENE PRIORIDAD ABSOLUTA) ──
+    // El catálogo en data/products es la fuente de verdad. products_ext solo agrega
+    // refs que NO están en products (productos importados que aún no están en el catálogo principal).
     if (window.fbGetProducts) {
       try {
         var fbProds = await window.fbGetProducts();
@@ -6404,13 +7127,17 @@ async function loadFromFirebase() {
         }
       } catch(e) { console.warn('[PRODUCTS] error al cargar desde Firebase:', e); }
     }
-    // ── Cargar productos extendidos (importados) ─────────────────
+    // ── Cargar productos extendidos (importados que NO están en catálogo principal) ──
+    // REGLA CRÍTICA: products_ext NUNCA sobrescribe lo que ya está en data/products.
+    // Solo agrega refs nuevas. Si una ref está en ambas fuentes, gana data/products
+    // (porque es lo que el usuario editó más recientemente vía ptGuardarFicha/saveProducts).
     if (window.fbGetProductsExt) {
       var ext = await window.fbGetProductsExt();
       if (ext && ext.length) {
         // Fusionar: agregar solo los que no existen aún en PRODUCTS
         var existingRefs = new Set(PRODUCTS.map(function(p){ return p.r; }));
         var added = 0;
+        var saltadosPorExistir = 0;
         var corregidosInt = 0;
         ext.forEach(function(p) {
           if (!existingRefs.has(p.r)) {
@@ -6421,11 +7148,26 @@ async function loadFromFirebase() {
             }
             PRODUCTS.push(p);
             added++;
+          } else {
+            saltadosPorExistir++;
           }
         });
         if (corregidosInt > 0) console.log('[loadFromFirebase · Integridad] ' + corregidosInt + ' producto(s) entrantes autocorregidos con REF al final');
+        if (saltadosPorExistir > 0) console.log('[loadFromFirebase] ' + saltadosPorExistir + ' refs de products_ext omitidas (ya están en data/products con valor más reciente)');
         if (added > 0 && typeof sortProducts === 'function') sortProducts();
-        localStorage.setItem('farmers_products_ext', JSON.stringify(ext));
+        // Persistir products_ext en localStorage SOLO con las refs que no están en data/products
+        // para evitar acumulación de basura
+        var extLimpio = ext.filter(function(p){ return !existingRefs.has(p.r); });
+        if (extLimpio.length !== ext.length) {
+          localStorage.setItem('farmers_products_ext', JSON.stringify(extLimpio));
+          // También subir a Firestore la versión limpia (asíncrono, sin bloquear)
+          if (window.fbSaveProductsExt) {
+            window.fbSaveProductsExt(extLimpio).catch(function(e){ console.warn('limpieza ext:', e); });
+          }
+          console.log('[loadFromFirebase] products_ext limpiado: ' + ext.length + ' → ' + extLimpio.length + ' refs (eliminadas las duplicadas con data/products)');
+        } else {
+          localStorage.setItem('farmers_products_ext', JSON.stringify(ext));
+        }
       } else {
         // Intentar desde localStorage como fallback
         try {
@@ -6564,6 +7306,101 @@ async function loadFromFirebase() {
         }
       } catch(eNC) { console.warn('loadFromFirebase NC:', eNC); }
     }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // CARGA CRÍTICA MULTI-DISPOSITIVO (25/04/2026)
+    // Cuando inicias sesión en una PC nueva, estos datos DEBEN bajarse
+    // de Firestore. Sin esto, faltan Ordenada, Comprometida, Pedidos MS,
+    // Proveedores, Órdenes de Compra y Bancos.
+    // ═══════════════════════════════════════════════════════════════════
+
+    // ── Cargar PT_DATA (Ordenada, costos, dimensiones, fichas extendidas) ──
+    if (window.fbGetPT) {
+      try {
+        var ptResult = await window.fbGetPT();
+        // fbGetPT puede devolver {exists, data} o el objeto directo
+        var ptObj = (ptResult && ptResult.data) ? ptResult.data : ptResult;
+        if (ptObj && typeof ptObj === 'object' && Object.keys(ptObj).length > 0) {
+          localStorage.setItem('farmers_pt_data', JSON.stringify(ptObj));
+          window.ptData = ptObj;
+          var ptCount = Object.keys(ptObj).length;
+          var ptOrdCount = 0;
+          Object.keys(ptObj).forEach(function(r){
+            if (parseInt((ptObj[r]||{}).exOrdenada || 0) > 0) ptOrdCount++;
+          });
+          console.log('[loadFromFirebase] ✓ PT_DATA cargado: ' + ptCount + ' refs (' + ptOrdCount + ' con Ordenada > 0)');
+        }
+      } catch(ePT) { console.warn('loadFromFirebase PT_DATA:', ePT); }
+    }
+
+    // ── Cargar COMPROMETIDO (reservas activas multi-sucursal) ──
+    if (window.fbGetComprometido) {
+      try {
+        var compFB = await window.fbGetComprometido();
+        if (compFB && typeof compFB === 'object' && Object.keys(compFB).length > 0) {
+          localStorage.setItem('farmers_inv_comprometido', JSON.stringify(compFB));
+          var compRefs = 0, compTotal = 0;
+          Object.keys(compFB).forEach(function(r){
+            var entry = compFB[r];
+            var q = (entry && typeof entry === 'object') ? (parseInt(entry.qty) || 0) : (parseInt(entry) || 0);
+            if (q > 0) { compRefs++; compTotal += q; }
+          });
+          console.log('[loadFromFirebase] ✓ COMPROMETIDO cargado: ' + compRefs + ' refs (' + compTotal + ' uds reservadas)');
+        }
+      } catch(eComp) { console.warn('loadFromFirebase COMPROMETIDO:', eComp); }
+    }
+
+    // ── Cargar MS_PEDIDOS (pedidos pendientes multi-sucursal) ──
+    if (window.fbGetMsPedidos) {
+      try {
+        var msPedidosFB = await window.fbGetMsPedidos();
+        if (Array.isArray(msPedidosFB) && msPedidosFB.length > 0) {
+          localStorage.setItem('farmers_ms_pedidos', JSON.stringify(msPedidosFB));
+          console.log('[loadFromFirebase] ✓ MS_PEDIDOS cargados: ' + msPedidosFB.length + ' pedidos');
+        }
+      } catch(eMS) { console.warn('loadFromFirebase MS_PEDIDOS:', eMS); }
+    }
+
+    // ── Cargar PROVEEDORES ──
+    if (window.fbGetProveedores) {
+      try {
+        var provFB = await window.fbGetProveedores();
+        if (Array.isArray(provFB) && provFB.length > 0) {
+          localStorage.setItem('farmers_proveedores', JSON.stringify(provFB));
+          console.log('[loadFromFirebase] ✓ PROVEEDORES cargados: ' + provFB.length);
+        }
+      } catch(eProv) { console.warn('loadFromFirebase PROVEEDORES:', eProv); }
+    }
+
+    // ── Cargar ÓRDENES DE COMPRA ──
+    if (window.fbGetOrdenesCompra) {
+      try {
+        var ocFB = await window.fbGetOrdenesCompra();
+        if (Array.isArray(ocFB) && ocFB.length > 0) {
+          localStorage.setItem('farmers_ordenes_compra', JSON.stringify(ocFB));
+          console.log('[loadFromFirebase] ✓ ÓRDENES DE COMPRA cargadas: ' + ocFB.length);
+        }
+      } catch(eOC) { console.warn('loadFromFirebase OC:', eOC); }
+    }
+
+    // ── Cargar BANCOS ──
+    if (window.fbGetBancos) {
+      try {
+        var bancosFB = await window.fbGetBancos();
+        if (bancosFB && (Array.isArray(bancosFB) ? bancosFB.length > 0 : Object.keys(bancosFB).length > 0)) {
+          localStorage.setItem('farmers_bancos', JSON.stringify(bancosFB));
+          console.log('[loadFromFirebase] ✓ BANCOS cargados');
+        }
+      } catch(eBan) { console.warn('loadFromFirebase BANCOS:', eBan); }
+    }
+
+    // ── Refrescar UI después de cargar todo ──
+    if (typeof ptRender === 'function') ptRender();
+    if (typeof renderTable === 'function') renderTable();
+
+    console.log('═══════════════════════════════════════════════════');
+    console.log('[loadFromFirebase] ✅ Sincronización multi-dispositivo completa');
+    console.log('═══════════════════════════════════════════════════');
   } catch(e) { console.warn('loadFromFirebase:', e); }
 
   // Auto-subir logo Farmers a Firestore para que el portal pueda descargarlo
@@ -6578,6 +7415,91 @@ async function loadFromFirebase() {
       }
     }
   } catch(ep) { console.warn('Upload logo portal:', ep); }
+
+  // ── AUTO-RESYNC al cargar — asegura que el portal siempre vea lo último ──
+  // Sincroniza las 3 fuentes oficiales del admin a Firestore:
+  //   1. farmers_inv               → data/inventory   (inventario REAL)
+  //   2. farmers_inv_comprometido  → data/comprometido (comprometido OFICIAL)
+  //   3. farmers_pt_data           → data/pt_data     (Ordenada)
+  // Y luego publica el snapshot completo para el portal.
+  try {
+    if (!sessionStorage.getItem('farmers_autoresync_done')) {
+      sessionStorage.setItem('farmers_autoresync_done', '1');
+      setTimeout(async function(){
+        try {
+          // 0) Resync CATÁLOGO PRODUCTS (medidas, empaques, descripciones, precios)
+          // CRÍTICO: el portal lee data/products. Si admin actualiza p.m (medida) o p.e (empaque)
+          // hay que asegurar que llegue a Firestore.
+          if (typeof window.fbSaveProducts === 'function' && typeof PRODUCTS !== 'undefined' && PRODUCTS.length > 0) {
+            try {
+              await window.fbSaveProducts(PRODUCTS);
+              console.log('[AUTO-RESYNC] ✓ catálogo resincronizado: ' + PRODUCTS.length + ' productos');
+            } catch(eFP) { console.warn('[AUTO-RESYNC] fbSaveProducts:', eFP); }
+          }
+
+          // 1) Resync INVENTARIO REAL (farmers_inv)
+          if (typeof window.fbSaveInventory === 'function') {
+            var invStr = localStorage.getItem('farmers_inv');
+            if (invStr) {
+              await window.fbSaveInventory(JSON.parse(invStr));
+              var invObj = JSON.parse(invStr);
+              console.log('[AUTO-RESYNC] ✓ inventario resincronizado: ' + Object.keys(invObj).length + ' refs');
+            }
+          }
+
+          // 2) Resync COMPROMETIDO OFICIAL (farmers_inv_comprometido)
+          // CRÍTICO: esta es la fuente única que usa el admin para calcular DISPONIBLE
+          if (typeof window.fbSaveComprometido === 'function') {
+            var compStr = localStorage.getItem('farmers_inv_comprometido');
+            if (compStr) {
+              var compObj = JSON.parse(compStr);
+              await window.fbSaveComprometido(compObj);
+              var refsConComp = 0, totalComp = 0;
+              Object.keys(compObj).forEach(function(r){
+                var q = (compObj[r] && typeof compObj[r] === 'object') ? (parseInt(compObj[r].qty) || 0) : (parseInt(compObj[r]) || 0);
+                if (q > 0) { refsConComp++; totalComp += q; }
+              });
+              console.log('[AUTO-RESYNC] ✓ comprometido resincronizado: ' + refsConComp + ' refs (' + totalComp + ' uds totales)');
+            } else {
+              console.log('[AUTO-RESYNC] ⚠ farmers_inv_comprometido vacío — no hay reservas en el admin');
+            }
+          }
+
+          // 3) Resync pt_data (Ordenada)
+          if (typeof window.fbSavePT === 'function') {
+            var ptStr = localStorage.getItem('farmers_pt_data');
+            if (ptStr) {
+              var ptObj = JSON.parse(ptStr);
+              await window.fbSavePT(ptObj);
+              var conOrd = 0;
+              Object.keys(ptObj).forEach(function(r){ if (parseInt((ptObj[r]||{}).exOrdenada || 0) > 0) conOrd++; });
+              console.log('[AUTO-RESYNC] ✓ pt_data resincronizado: ' + conOrd + ' refs con Ordenada');
+            }
+          }
+
+          // 4) Resync sales (para historial — no se usa para comprometido)
+          if (typeof window.fbSaveSales === 'function') {
+            var salesStr = localStorage.getItem('farmers_sales');
+            if (salesStr) {
+              await window.fbSaveSales(JSON.parse(salesStr));
+              console.log('[AUTO-RESYNC] ✓ sales resincronizado a Firestore');
+            }
+          }
+
+          // 5) ⭐ SNAPSHOT COMPLETO PARA PORTAL (fuente única de verdad)
+          // Calculado con la lógica IDÉNTICA al admin:
+          //   real = farmers_inv[ref] o p.ex
+          //   comp = farmers_inv_comprometido[ref].qty
+          //   disp = max(0, real - comp)
+          //   ord  = farmers_pt_data[ref].exOrdenada
+          if (typeof window.fbSavePortalSnapshot === 'function') {
+            await window.fbSavePortalSnapshot();
+            console.log('[AUTO-RESYNC] ✓ Portal snapshot publicado — admin y portal sincronizados');
+          }
+        } catch(eAR) { console.warn('[AUTO-RESYNC]', eAR); }
+      }, 1500);
+    }
+  } catch(eAR2) {}
 
   // Auto-corregir clientes MS después de cargar — asegura sincronización permanente
   try {
@@ -9720,7 +10642,7 @@ window.ocWizardConfirmar = function() {
         ptData[it.refFarmers].exOrdenada = prev + (parseInt(it.cantidad)||0);
         sumado[it.refFarmers] = parseInt(it.cantidad)||0;
       });
-      localStorage.setItem('farmers_pt_data', JSON.stringify(ptData));
+      ptSaveData(ptData);
       _ocDraft.sumadaAOrdenada = true;
       _ocDraft.ordenadaSumada = sumado;
       _ocDraft.modoOrdenada = 'sumar';  // Consistencia con eliminar
@@ -10749,7 +11671,7 @@ window.ocImpConfirmar = function() {
           sumado[it.refFarmers] = nuevaCant - prev; // Diferencia neta
         }
       });
-      localStorage.setItem('farmers_pt_data', JSON.stringify(ptData));
+      ptSaveData(ptData);
       oc.sumadaAOrdenada = true;
       oc.ordenadaSumada = sumado;
       if (modoOrdenada === 'reemplazar') oc.ordenadaReemplazoAnterior = reemplazoAnterior;
@@ -11772,7 +12694,7 @@ window.ocSyncAplicar = function() {
       }
     });
 
-    localStorage.setItem('farmers_pt_data', JSON.stringify(ptData));
+    ptSaveData(ptData);
     if (typeof window.ptData !== 'undefined') window.ptData = ptData;
     if (typeof saveProducts === 'function') saveProducts();
     if (typeof window.fbSaveProducts === 'function') window.fbSaveProducts(PRODUCTS);
@@ -12750,7 +13672,7 @@ window.ocImpMedGuardar = function() {
       actualizadas++;
     });
 
-    localStorage.setItem('farmers_pt_data', JSON.stringify(ptData));
+    ptSaveData(ptData);
     if (typeof window.ptData !== 'undefined') window.ptData = ptData;
 
     document.getElementById('oc-impmed-rev-ov').remove();
@@ -14883,7 +15805,7 @@ window._ocRecepGuardar = function(ocId) {
       }
     });
 
-    localStorage.setItem('farmers_pt_data', JSON.stringify(ptData));
+    ptSaveData(ptData);
     if (typeof window.ptData !== 'undefined') window.ptData = ptData;
 
     // Persistir PRODUCTS si hay función saveProducts o similar
@@ -14985,7 +15907,7 @@ window.ocRecepEliminar = function(ocId, recId) {
       ptData[ri.refFarmers].exOrdenada = (parseInt(ptData[ri.refFarmers].exOrdenada) || 0) + ri.cantidadRecibida;
     });
 
-    localStorage.setItem('farmers_pt_data', JSON.stringify(ptData));
+    ptSaveData(ptData);
     if (typeof window.ptData !== 'undefined') window.ptData = ptData;
     if (typeof saveProducts === 'function') saveProducts();
     if (typeof window.fbSaveProducts === 'function') window.fbSaveProducts(PRODUCTS);
@@ -15053,7 +15975,7 @@ window.ocEliminar = function(id) {
           ptDataR[ri.refFarmers].exOrdenada = (parseInt(ptDataR[ri.refFarmers].exOrdenada) || 0) + ri.cantidadRecibida;
         });
       });
-      localStorage.setItem('farmers_pt_data', JSON.stringify(ptDataR));
+      ptSaveData(ptDataR);
       if (typeof window.ptData !== 'undefined') window.ptData = ptDataR;
       if (typeof saveProducts === 'function') saveProducts();
       if (typeof window.fbSaveProducts === 'function') window.fbSaveProducts(PRODUCTS);
@@ -15080,7 +16002,7 @@ window.ocEliminar = function(id) {
           }
         });
       }
-      localStorage.setItem('farmers_pt_data', JSON.stringify(ptData));
+      ptSaveData(ptData);
       if (typeof window.ptData !== 'undefined') window.ptData = ptData;
     } catch(e) { console.error('Error revirtiendo ordenada:', e); }
   }
@@ -21011,12 +21933,14 @@ function doRefSearch() {
           '</select>' +
           '<button onclick="ptNuevoProducto()" style="background:#1B1F6B;color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:700;font-size:.8rem;white-space:nowrap;">+ Nuevo Producto</button>' +
           '<button onclick="ptResetOrdenada()" style="background:linear-gradient(135deg,#92400e,#b45309);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:700;font-size:.8rem;white-space:nowrap;">📦 Actualizar Ordenada</button>' +
+          '<button onclick="ptPublicarOrdenadaAlPortal()" style="background:linear-gradient(135deg,#1B1F6B,#4f46e5);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:700;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;" title="Diagnostica qué Ordenada ve tu admin vs el portal del cliente">🔍 Auditar Ordenada</button>' +
           '<button onclick="ptImportarPedido()" style="background:linear-gradient(135deg,#059669,#065f46);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:700;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;">📦 Importar Pedido Proveedor</button>' +
           '<button onclick="ptImportarMedidas()" style="background:linear-gradient(135deg,#1d4ed8,#1e40af);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:700;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;" title="Importar largo, ancho, alto y peso desde Excel">📐 Importar Medidas</button>' +
           '<button onclick="ptImportarDatosMaestro()" style="background:linear-gradient(135deg,#7c3aed,#6d28d9);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:700;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;" title="Importar y actualizar todos los campos desde Excel">📥 Importar Datos</button>' +
           '<button onclick="ptImportarConIA()" style="background:linear-gradient(135deg,#dc2626,#b91c1c);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:700;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;" title="Usar IA para interpretar catálogo del proveedor (PDF o Excel)">🤖 IA Catálogo</button>' +
           '<button onclick="ptAplicarRefAlFinalMasivo()" style="background:linear-gradient(135deg,#78350f,#a16207);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:700;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;" title="Aplica REF interna al final de TODAS las descripciones del catálogo (necesario para Valery)">✏️ REF al final</button>' +
           '<button onclick="ptAbrirDiagnosticoInventario()" style="background:linear-gradient(135deg,#7e22ce,#581c87);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:700;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;" title="Ver pedidos reservados, diagnosticar inventario y liberar comprometido huérfano">🔧 Diagnóstico Inventario</button>' +
+          '<button id="pt-btn-sync-portal" onclick="ptSincronizarPortal()" style="background:linear-gradient(135deg,#dc2626,#7f1d1d);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:900;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;box-shadow:0 4px 14px rgba(220,38,38,.4);" title="Fuerza la sincronización inmediata de inventario, comprometido y ordenada al portal del cliente">🔄 Sincronizar Portal</button>' +
         '</div>' +
         '<div id="pt-stats" style="padding:8px 20px;background:#fff;border-bottom:1px solid #eef0f8;display:flex;gap:16px;font-size:.72rem;color:#5a6080;flex-wrap:wrap;"></div>' +
         '<div style="overflow-y:auto;max-height:calc(100vh - 260px);">' +
@@ -21186,23 +22110,192 @@ function ptSaveData(data) {
   localStorage.setItem(PT_STORAGE_KEY, JSON.stringify(data));
   window.ptData = data; // mantener RAM sincronizada
   if (window.fbSavePT) window.fbSavePT(data);
+  // Trigger snapshot del portal: cambios en pt_data afectan ORDENADA
+  if (window.fbTriggerPortalSnapshot) window.fbTriggerPortalSnapshot('ptSaveData');
 }
 
-// Obtener existencias comprometidas por producto desde farmers_sales (pedidos)
-function ptGetComprometidas() {
-  var sales = typeof getSales === 'function' ? getSales() : [];
-  var comprometidas = {}; // ref → [{pedido, cliente, qty}]
-  sales.forEach(function(s) {
-    if (s.tipo !== 'pedido') return; // Solo pedidos, no ventas
-    (s.items || []).forEach(function(it) {
-      if (!comprometidas[it.r]) comprometidas[it.r] = [];
-      comprometidas[it.r].push({
-        pedido:  s.numpedido || s.id,
-        cliente: s.cliente   || '—',
-        qty:     parseInt(it.orden) || 0,
-        fecha:   s.fecha     || ''
+// ═══════════════════════════════════════════════════════════════════════════
+// SINCRONIZACIÓN MANUAL DEL PORTAL — botón "🔄 Sincronizar Portal"
+// Fuerza el envío inmediato de TODOS los datos relevantes a Firestore para
+// que el portal cliente tenga la información idéntica al sistema de pedidos.
+// ═══════════════════════════════════════════════════════════════════════════
+window.ptSincronizarPortal = async function() {
+  var btn = document.getElementById('pt-btn-sync-portal');
+  var btnOrig = btn ? btn.innerHTML : null;
+  if (btn) {
+    btn.disabled = true;
+    btn.style.opacity = '0.7';
+    btn.innerHTML = '⏳ Sincronizando...';
+  }
+
+  // Modal de progreso
+  var existingModal = document.getElementById('sync-portal-modal');
+  if (existingModal) existingModal.remove();
+
+  var modal = document.createElement('div');
+  modal.id = 'sync-portal-modal';
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.75);backdrop-filter:blur(6px);z-index:99999;display:flex;align-items:center;justify-content:center;padding:20px;';
+  modal.innerHTML =
+    '<div style="background:#fff;border-radius:14px;max-width:560px;width:100%;box-shadow:0 30px 70px rgba(15,23,42,.45);overflow:hidden;">' +
+      '<div style="background:linear-gradient(135deg,#dc2626,#7f1d1d);color:#fff;padding:18px 22px;">' +
+        '<div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;font-size:1.15rem;letter-spacing:1.5px;text-transform:uppercase;">🔄 Sincronizando Portal</div>' +
+        '<div style="font-size:.72rem;opacity:.85;margin-top:3px;">Forzando subida de catálogo, inventario, comprometido y ordenada a Firestore</div>' +
+      '</div>' +
+      '<div id="sync-modal-body" style="padding:20px 22px;font-size:.82rem;color:#1B1F6B;">' +
+        '<div id="sync-step-0">⏳ Subiendo catálogo (productos)...</div>' +
+        '<div id="sync-step-1" style="margin-top:8px;color:#94a3b8;">⌛ Esperando...</div>' +
+        '<div id="sync-step-2" style="margin-top:8px;color:#94a3b8;">⌛ Esperando...</div>' +
+        '<div id="sync-step-3" style="margin-top:8px;color:#94a3b8;">⌛ Esperando...</div>' +
+        '<div id="sync-step-4" style="margin-top:8px;color:#94a3b8;">⌛ Esperando...</div>' +
+        '<div id="sync-step-5" style="margin-top:8px;color:#94a3b8;">⌛ Esperando...</div>' +
+      '</div>' +
+    '</div>';
+  document.body.appendChild(modal);
+
+  function setStep(n, html) {
+    var el = document.getElementById('sync-step-' + n);
+    if (el) { el.innerHTML = html; el.style.color = '#1B1F6B'; }
+  }
+
+  var resultados = { productos: 0, inventario: 0, comprometido: { refs: 0, uds: 0 }, ordenada: 0, sales: 0 };
+
+  try {
+    // 0) PRODUCTS (catálogo completo: medidas, empaques, descripciones, precios)
+    if (typeof PRODUCTS !== 'undefined' && PRODUCTS.length > 0 && window.fbSaveProducts) {
+      await window.fbSaveProducts(PRODUCTS);
+      resultados.productos = PRODUCTS.length;
+      setStep(0, '✅ Catálogo subido: <strong>' + resultados.productos + '</strong> productos (con medidas, empaques, precios actualizados)');
+    } else {
+      setStep(0, '⚠ Catálogo sin datos');
+    }
+
+    // 1) Inventario
+    setStep(1, '⏳ Subiendo inventario real...');
+    var invStr = localStorage.getItem('farmers_inv');
+    if (invStr && window.fbSaveInventory) {
+      var invObj = JSON.parse(invStr);
+      await window.fbSaveInventory(invObj);
+      resultados.inventario = Object.keys(invObj).length;
+      setStep(1, '✅ Inventario subido: <strong>' + resultados.inventario + '</strong> refs');
+    } else {
+      setStep(1, '⚠ Inventario sin datos en localStorage');
+    }
+
+    // 2) Comprometido (LO MÁS IMPORTANTE)
+    setStep(2, '⏳ Subiendo comprometido (lo más importante)...');
+    var compStr = localStorage.getItem('farmers_inv_comprometido');
+    if (compStr && window.fbSaveComprometido) {
+      var compObj = JSON.parse(compStr);
+      await window.fbSaveComprometido(compObj);
+      var refsConComp = 0, totalUds = 0;
+      Object.keys(compObj).forEach(function(r){
+        var entry = compObj[r];
+        var q = (entry && typeof entry === 'object') ? (parseInt(entry.qty) || 0) : (parseInt(entry) || 0);
+        if (q > 0) { refsConComp++; totalUds += q; }
       });
-    });
+      resultados.comprometido = { refs: refsConComp, uds: totalUds };
+      setStep(2, '✅ Comprometido subido: <strong>' + refsConComp + '</strong> refs · <strong>' + totalUds + '</strong> uds totales');
+    } else {
+      setStep(2, '⚠ Sin reservas activas en localStorage');
+    }
+
+    // 3) Ordenada (pt_data)
+    setStep(3, '⏳ Subiendo Ordenada (pt_data)...');
+    var ptStr = localStorage.getItem('farmers_pt_data');
+    if (ptStr && window.fbSavePT) {
+      var ptObj = JSON.parse(ptStr);
+      await window.fbSavePT(ptObj);
+      var conOrd = 0;
+      Object.keys(ptObj).forEach(function(r){ if (parseInt((ptObj[r]||{}).exOrdenada || 0) > 0) conOrd++; });
+      resultados.ordenada = conOrd;
+      setStep(3, '✅ Ordenada subida: <strong>' + conOrd + '</strong> refs con ordenada > 0');
+    }
+
+    // 4) Sales (historial)
+    setStep(4, '⏳ Subiendo historial de ventas...');
+    var salesStr = localStorage.getItem('farmers_sales');
+    if (salesStr && window.fbSaveSales) {
+      var salesArr = JSON.parse(salesStr);
+      await window.fbSaveSales(salesArr);
+      resultados.sales = salesArr.length;
+      setStep(4, '✅ Sales subidas: <strong>' + resultados.sales + '</strong> registros');
+    }
+
+    // 5) Snapshot del portal (FUENTE ÚNICA DE VERDAD)
+    setStep(5, '⏳ Publicando snapshot del portal...');
+    if (window.fbSavePortalSnapshot) {
+      await window.fbSavePortalSnapshot();
+      setStep(5, '✅ <strong>Snapshot publicado al portal</strong> — admin y portal sincronizados');
+    }
+
+    // Resumen
+    var body = document.getElementById('sync-modal-body');
+    if (body) {
+      body.innerHTML +=
+        '<div style="margin-top:18px;padding:14px 16px;background:linear-gradient(135deg,#dcfce7,#bbf7d0);border:1.5px solid #16a34a;border-radius:10px;color:#14532d;">' +
+          '<div style="font-weight:900;font-size:.92rem;margin-bottom:6px;">✅ Sincronización completa</div>' +
+          '<div style="font-size:.78rem;line-height:1.5;">El portal del cliente ahora reflejará exactamente lo mismo que el sistema de pedidos:<br>' +
+          '<strong>' + resultados.productos + '</strong> productos del catálogo · <strong>' + resultados.inventario + '</strong> refs de inventario · <strong>' + resultados.comprometido.refs + '</strong> refs comprometidas (<strong>' + resultados.comprometido.uds + '</strong> uds) · <strong>' + resultados.ordenada + '</strong> refs con Ordenada' +
+          '</div>' +
+          '<div style="margin-top:10px;font-size:.7rem;color:#166534;">💡 Recarga el portal del cliente en incógnito para ver los cambios.</div>' +
+        '</div>' +
+        '<div style="display:flex;gap:8px;margin-top:14px;">' +
+          '<button onclick="document.getElementById(\'sync-portal-modal\').remove()" style="flex:1;padding:11px;background:#1B1F6B;color:#fff;border:none;border-radius:8px;font-weight:900;font-size:.8rem;cursor:pointer;text-transform:uppercase;letter-spacing:.6px;">Cerrar</button>' +
+        '</div>';
+    }
+
+  } catch(e) {
+    console.error('[ptSincronizarPortal] error:', e);
+    var body = document.getElementById('sync-modal-body');
+    if (body) {
+      body.innerHTML +=
+        '<div style="margin-top:14px;padding:12px;background:#fee2e2;border:1.5px solid #dc2626;border-radius:8px;color:#7f1d1d;font-size:.78rem;">' +
+          '✗ Error durante sincronización: ' + (e.message || e) + '<br>' +
+          '<small>Verifica tu conexión a Firebase y vuelve a intentarlo.</small>' +
+        '</div>' +
+        '<button onclick="document.getElementById(\'sync-portal-modal\').remove()" style="margin-top:10px;width:100%;padding:11px;background:#1B1F6B;color:#fff;border:none;border-radius:8px;font-weight:900;cursor:pointer;">Cerrar</button>';
+    }
+  }
+
+  if (btn) {
+    btn.disabled = false;
+    btn.style.opacity = '1';
+    btn.innerHTML = btnOrig || '🔄 Sincronizar Portal';
+  }
+};
+
+// Obtener existencias comprometidas por producto
+// FUENTE OFICIAL: farmers_inv_comprometido (lo que actualizan msComprometerInventario, etc.)
+// Estructura del storage: { ref: { qty: N, pedidos: [{numP, cliente, fecha, qty}] } }
+// Esta función devuelve la estructura compatible con la tabla:
+// { ref: [{pedido, cliente, qty, fecha}] }
+function ptGetComprometidas() {
+  var compStorage = (typeof getComprometido === 'function') ? getComprometido() : {};
+  var comprometidas = {};
+  Object.keys(compStorage).forEach(function(ref) {
+    var entry = compStorage[ref];
+    if (!entry) return;
+    // Estructura oficial: { qty, pedidos: [{numP, cliente, fecha, qty}] }
+    var qtyTotal = (typeof entry === 'object') ? (parseInt(entry.qty) || 0) : (parseInt(entry) || 0);
+    if (qtyTotal <= 0) return;
+    // Si tiene desglose de pedidos, usarlo; si no, generar entrada genérica
+    if (entry.pedidos && entry.pedidos.length > 0) {
+      comprometidas[ref] = entry.pedidos.map(function(p){
+        return {
+          pedido:  p.numP || p.pedido || '—',
+          cliente: p.cliente || '—',
+          qty:     parseInt(p.qty) || 0,
+          fecha:   p.fecha || ''
+        };
+      });
+    } else {
+      comprometidas[ref] = [{
+        pedido:  '—',
+        cliente: '—',
+        qty:     qtyTotal,
+        fecha:   ''
+      }];
+    }
   });
   return comprometidas;
 }
@@ -22335,7 +23428,7 @@ function ptMaestroConfirmar() {
   // Guardar inventario si hubo cambios de stock
   if (rows.some(function(r){ return r.actual !== undefined; })) {
     if (typeof saveInventory === 'function') saveInventory(invActual);
-    else localStorage.setItem('farmers_inventory', JSON.stringify(invActual));
+    else { localStorage.setItem('farmers_inv', JSON.stringify(invActual)); if (window.fbSaveInventory) window.fbSaveInventory(invActual); if (window.fbTriggerPortalSnapshot) window.fbTriggerPortalSnapshot('saveInventory-fallback'); }
   }
 
   // Cerrar modal y refrescar tabla
@@ -23153,6 +24246,334 @@ function ptResetOrdenada() {
 }
 window.ptResetOrdenada = ptResetOrdenada;
 
+// ══════════════════════════════════════════════════════════════
+// ptPublicarOrdenadaAlPortal
+// Publica el localStorage.farmers_pt_data a Firestore para que el
+// portal cliente (farmers-portal) pueda leer las cantidades Ordenada
+// y mostrarlas a los clientes cuyo token tiene mostrarOrdenada=true.
+// Muestra un modal de diagnóstico antes de publicar.
+// ══════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════
+// ptPublicarOrdenadaAlPortal — Auditoría completa de Ordenada
+//
+// Compara 3 fuentes:
+//   1) localStorage.farmers_pt_data  — lo que hay en el admin LOCAL
+//   2) Firestore data/pt_data        — lo que el PORTAL está leyendo
+//   3) PRODUCTS                       — el catálogo oficial (para validar que refs existen)
+//
+// Resultado: muestra desglose por marca, discrepancias y alertas.
+// ══════════════════════════════════════════════════════════════════════
+async function ptPublicarOrdenadaAlPortal() {
+  // 1) Leer localStorage
+  var ptLocal = {};
+  try { ptLocal = JSON.parse(localStorage.getItem('farmers_pt_data') || '{}'); } catch(e){}
+
+  // 2) Leer Firestore (async)
+  var firestoreStatus = { loading: true, exists: false, data: {}, error: null, updatedAt: null };
+
+  // Abrir modal primero con estado de carga
+  var el = document.createElement('div');
+  el.id = 'pt-pub-modal';
+  el.style.cssText = 'position:fixed;inset:0;background:rgba(10,15,40,.8);z-index:99999;display:flex;align-items:center;justify-content:center;padding:16px;';
+  el.innerHTML =
+    '<div style="background:white;border-radius:16px;width:min(720px,94vw);max-height:92vh;overflow-y:auto;box-shadow:0 24px 64px rgba(0,0,0,.4);">' +
+      '<div style="background:linear-gradient(135deg,#1B1F6B,#9B6FD4,#F47B3E);padding:18px 24px;display:flex;justify-content:space-between;align-items:center;">' +
+        '<div>' +
+          '<div style="font-size:1.1rem;font-weight:900;color:white;letter-spacing:.5px;text-transform:uppercase;">🔍 Auditoría de Ordenada</div>' +
+          '<div style="font-size:.72rem;color:rgba(255,255,255,.85);margin-top:2px;">Comparando sistema local vs Firestore vs catálogo</div>' +
+        '</div>' +
+        '<button onclick="document.getElementById(\'pt-pub-modal\').remove()" style="background:rgba(255,255,255,.2);border:none;color:white;border-radius:8px;padding:5px 12px;cursor:pointer;font-weight:700;font-size:1rem;">✕</button>' +
+      '</div>' +
+      '<div id="pt-pub-body" style="padding:22px 24px;">' +
+        '<div style="text-align:center;padding:32px 0;">' +
+          '<div style="font-size:2rem;margin-bottom:8px;">⏳</div>' +
+          '<div style="font-weight:800;color:#1B1F6B;">Consultando Firestore...</div>' +
+          '<div style="font-size:.72rem;color:#64748b;margin-top:4px;">Leyendo lo que tu portal ve actualmente</div>' +
+        '</div>' +
+      '</div>' +
+    '</div>';
+  document.body.appendChild(el);
+
+  // Consultar Firestore
+  try {
+    if (typeof window.fbGetPT === 'function') {
+      firestoreStatus = await window.fbGetPT();
+      firestoreStatus.loading = false;
+    } else {
+      firestoreStatus = { loading: false, exists: false, data: {}, error: 'fbGetPT no disponible — recarga' };
+    }
+  } catch(e) {
+    firestoreStatus = { loading: false, exists: false, data: {}, error: e.message };
+  }
+
+  // ─────────────────────────────────────────────────
+  // 3) Calcular estadísticas para LOCAL
+  var localStats = _ptCalcularStats(ptLocal);
+  var remoteStats = _ptCalcularStats(firestoreStatus.data || {});
+
+  // ─────────────────────────────────────────────────
+  // 4) Detectar discrepancias
+  var refsSoloLocal = [];     // en localStorage pero NO en Firestore
+  var refsSoloRemote = [];    // en Firestore pero NO en localStorage
+  var refsDiferentes = [];    // cantidades diferentes
+
+  Object.keys(ptLocal).forEach(function(ref){
+    var exL = parseInt(ptLocal[ref] && ptLocal[ref].exOrdenada || 0) || 0;
+    if (exL <= 0) return;
+    var exR = parseInt(firestoreStatus.data[ref] && firestoreStatus.data[ref].exOrdenada || 0) || 0;
+    if (exR === 0) refsSoloLocal.push({ ref: ref, qty: exL });
+    else if (exR !== exL) refsDiferentes.push({ ref: ref, local: exL, remote: exR });
+  });
+  Object.keys(firestoreStatus.data || {}).forEach(function(ref){
+    var exR = parseInt(firestoreStatus.data[ref] && firestoreStatus.data[ref].exOrdenada || 0) || 0;
+    if (exR <= 0) return;
+    var exL = parseInt(ptLocal[ref] && ptLocal[ref].exOrdenada || 0) || 0;
+    if (exL === 0) refsSoloRemote.push({ ref: ref, qty: exR });
+  });
+
+  // 5) Render del reporte final
+  _ptRenderAuditoriaOrdenada({
+    local: localStats,
+    remote: remoteStats,
+    firestoreExists: firestoreStatus.exists,
+    firestoreError: firestoreStatus.error,
+    firestoreUpdatedAt: firestoreStatus.updatedAt,
+    soloLocal: refsSoloLocal,
+    soloRemote: refsSoloRemote,
+    diferentes: refsDiferentes,
+    ptLocal: ptLocal
+  });
+}
+window.ptPublicarOrdenadaAlPortal = ptPublicarOrdenadaAlPortal;
+
+// Calcular estadísticas de un pt_data (total refs, con Ordenada > 0, desglose por marca)
+// + Compara contra PRODUCTS para detectar refs del catálogo SIN registro pt_data
+function _ptCalcularStats(ptData) {
+  var stats = {
+    total: Object.keys(ptData).length,
+    conOrdenada: 0,
+    totalUds: 0,
+    porMarca: {},    // por marca: { conOrd, uds, totalCatalogo (refs en PRODUCTS), sinRegistro (refs sin pt_data) }
+    refSinMarca: 0,
+    ejemplos: []
+  };
+
+  // Primero, indexar PRODUCTS por marca para saber cuántos hay en total
+  if (typeof PRODUCTS !== 'undefined') {
+    PRODUCTS.forEach(function(p){
+      var marca = p.br ? String(p.br).toUpperCase() : '_SIN_MARCA_';
+      if (!stats.porMarca[marca]) stats.porMarca[marca] = { conOrd: 0, uds: 0, totalCatalogo: 0, sinRegistro: 0 };
+      stats.porMarca[marca].totalCatalogo++;
+      // Si no hay registro en pt_data, contar
+      if (!ptData[p.r]) stats.porMarca[marca].sinRegistro++;
+    });
+  }
+
+  Object.keys(ptData).forEach(function(ref){
+    var ex = parseInt(ptData[ref] && ptData[ref].exOrdenada || 0) || 0;
+    if (ex <= 0) return;
+    stats.conOrdenada++;
+    stats.totalUds += ex;
+    if (stats.ejemplos.length < 10) stats.ejemplos.push({ ref: ref, qty: ex });
+    var prod = (typeof PRODUCTS !== 'undefined') ? PRODUCTS.find(function(p){ return p.r === ref; }) : null;
+    var marca = prod && prod.br ? String(prod.br).toUpperCase() : '_SIN_MARCA_';
+    if (marca === '_SIN_MARCA_') stats.refSinMarca++;
+    if (!stats.porMarca[marca]) stats.porMarca[marca] = { conOrd: 0, uds: 0, totalCatalogo: 0, sinRegistro: 0 };
+    stats.porMarca[marca].conOrd++;
+    stats.porMarca[marca].uds += ex;
+  });
+  return stats;
+}
+
+function _ptRenderAuditoriaOrdenada(rpt) {
+  var body = document.getElementById('pt-pub-body');
+  if (!body) return;
+
+  var marcaColors = {
+    EXCALIBUR: '#1a2050', GENIAL: '#0d9488', MATRIX: '#b45309',
+    LUMEN: '#b91c1c', MAXKILLER: '#7c3aed', VARIOS: '#475569'
+  };
+
+  // Marcas que están en LOCAL pero NO en Firestore — éste es el caso típico del problema de Omar
+  // Listar TODAS las marcas del catálogo (aunque no tengan Ordenada cargada) para diagnosticar
+  var marcasLocal = Object.keys(rpt.local.porMarca).filter(function(m){ return m !== '_SIN_MARCA_'; }).sort();
+  var marcasRemote = new Set(Object.keys(rpt.remote.porMarca || {}));
+  var marcasFaltanEnFirestore = marcasLocal.filter(function(m){ return !marcasRemote.has(m) && (rpt.local.porMarca[m].conOrd || 0) > 0; });
+
+  // ─── Render ───
+  var html = '';
+
+  // ═══ Resumen comparativo en 3 columnas ═══
+  html +=
+    '<div style="font-size:.72rem;font-weight:900;color:#1B1F6B;text-transform:uppercase;letter-spacing:1.5px;margin-bottom:10px;">📊 Resumen comparativo</div>' +
+    '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px;">' +
+
+      // LOCAL
+      '<div style="background:linear-gradient(135deg,#eff6ff,#dbeafe);border:1.5px solid #60a5fa;border-radius:10px;padding:12px;">' +
+        '<div style="font-size:.6rem;font-weight:900;color:#1e40af;text-transform:uppercase;letter-spacing:1.2px;margin-bottom:6px;">💻 En tu admin (local)</div>' +
+        '<div style="font-size:.85rem;color:#1e3a8a;"><strong>' + rpt.local.conOrdenada + '</strong> refs con Ordenada</div>' +
+        '<div style="font-size:.72rem;color:#1e3a8a;margin-top:2px;"><strong>' + rpt.local.totalUds.toLocaleString() + '</strong> uds totales</div>' +
+        '<div style="font-size:.65rem;color:#64748b;margin-top:4px;">de ' + rpt.local.total + ' refs totales en pt_data</div>' +
+      '</div>' +
+
+      // REMOTE (Firestore)
+      '<div style="background:linear-gradient(135deg,' + (rpt.firestoreExists ? '#f0fdf4,#dcfce7' : '#fef2f2,#fee2e2') + ');border:1.5px solid ' + (rpt.firestoreExists ? '#4ade80' : '#fca5a5') + ';border-radius:10px;padding:12px;">' +
+        '<div style="font-size:.6rem;font-weight:900;color:' + (rpt.firestoreExists ? '#14532d' : '#991b1b') + ';text-transform:uppercase;letter-spacing:1.2px;margin-bottom:6px;">☁ En Firestore (portal)</div>' +
+        (rpt.firestoreExists
+          ? '<div style="font-size:.85rem;color:#166534;"><strong>' + rpt.remote.conOrdenada + '</strong> refs con Ordenada</div>' +
+            '<div style="font-size:.72rem;color:#166534;margin-top:2px;"><strong>' + rpt.remote.totalUds.toLocaleString() + '</strong> uds totales</div>' +
+            '<div style="font-size:.65rem;color:#64748b;margin-top:4px;">' + (rpt.firestoreUpdatedAt ? 'Actualizado: ' + new Date(rpt.firestoreUpdatedAt).toLocaleString('es-VE') : 'Sin fecha') + '</div>'
+          : '<div style="font-size:.85rem;color:#991b1b;"><strong>Sin datos</strong></div>' +
+            '<div style="font-size:.72rem;color:#991b1b;margin-top:2px;">' + (rpt.firestoreError ? rpt.firestoreError : 'El portal no tiene nada que leer') + '</div>'
+        ) +
+      '</div>' +
+    '</div>';
+
+  // ═══ Desglose por marca — comparativo local vs remoto ═══
+  if (marcasLocal.length > 0) {
+    html +=
+      '<div style="font-size:.72rem;font-weight:900;color:#1B1F6B;text-transform:uppercase;letter-spacing:1.5px;margin-bottom:8px;">📦 Desglose por marca</div>' +
+      '<div style="background:#f8f9ff;border:1.5px solid #e0e4f0;border-radius:10px;padding:10px 12px;margin-bottom:14px;max-height:240px;overflow-y:auto;">' +
+        '<div style="display:grid;grid-template-columns:1.2fr 1fr 1fr;gap:6px;padding:0 4px 6px;border-bottom:1px solid #e0e4f0;font-size:.58rem;font-weight:900;color:#64748b;text-transform:uppercase;letter-spacing:1px;">' +
+          '<div>MARCA</div><div style="text-align:center;">💻 LOCAL</div><div style="text-align:center;">☁ FIRESTORE</div>' +
+        '</div>';
+
+    marcasLocal.forEach(function(m){
+      var c = marcaColors[m] || '#475569';
+      var localStat = rpt.local.porMarca[m] || { conOrd: 0, uds: 0, totalCatalogo: 0, sinRegistro: 0 };
+      var remoteStat = (rpt.remote.porMarca || {})[m] || { conOrd: 0, uds: 0 };
+      var sincronizado = (localStat.conOrd === remoteStat.conOrd && localStat.uds === remoteStat.uds);
+      var tieneCero = localStat.conOrd === 0;
+      var pctCobertura = localStat.totalCatalogo > 0 ? Math.round((localStat.conOrd / localStat.totalCatalogo) * 100) : 0;
+
+      html +=
+        '<div style="display:grid;grid-template-columns:1.2fr 1fr 1fr;gap:6px;padding:7px 4px;align-items:center;border-bottom:1px solid #eef1f8;' + (tieneCero ? 'background:#fffbeb;' : '') + '">' +
+          '<div style="display:flex;align-items:center;gap:6px;">' +
+            '<span style="width:4px;height:22px;background:' + c + ';border-radius:2px;flex-shrink:0;"></span>' +
+            '<div style="flex:1;">' +
+              '<div style="font-weight:800;color:#1B1F6B;font-size:.72rem;letter-spacing:.3px;">' + m + '</div>' +
+              '<div style="font-size:.58rem;color:#94a3b8;margin-top:1px;">' + localStat.totalCatalogo + ' en catálogo · ' + pctCobertura + '% con ord.</div>' +
+            '</div>' +
+          '</div>' +
+          '<div style="text-align:center;font-size:.68rem;">' +
+            (localStat.conOrd > 0
+              ? '<strong style="color:#1e40af;">' + localStat.conOrd + '</strong> <span style="color:#64748b;">refs · ' + localStat.uds + ' uds</span>'
+              : '<span style="color:#d97706;font-weight:700;">⚠ SIN ORDENADA</span>'
+            ) +
+          '</div>' +
+          '<div style="text-align:center;font-size:.68rem;' + (sincronizado ? '' : 'background:#fef2f2;border-radius:5px;padding:2px 4px;') + '">' +
+            (remoteStat.conOrd > 0
+              ? '<strong style="color:' + (sincronizado ? '#166534' : '#991b1b') + ';">' + remoteStat.conOrd + '</strong> <span style="color:#64748b;">refs · ' + remoteStat.uds + ' uds</span>' + (sincronizado ? ' ✓' : '')
+              : (localStat.conOrd === 0 ? '<span style="color:#94a3b8;">—</span>' : '<strong style="color:#dc2626;">0</strong> <span style="color:#991b1b;">⚠</span>')
+            ) +
+          '</div>' +
+        '</div>';
+    });
+    html += '</div>';
+  }
+
+  // ═══ Diagnóstico / alertas ═══
+  var tieneProblemas = (rpt.soloLocal.length > 0 || rpt.soloRemote.length > 0 || rpt.diferentes.length > 0 || marcasFaltanEnFirestore.length > 0);
+  if (tieneProblemas) {
+    html += '<div style="font-size:.72rem;font-weight:900;color:#dc2626;text-transform:uppercase;letter-spacing:1.5px;margin-bottom:8px;">⚠ Discrepancias detectadas</div>';
+    html += '<div style="background:#fef2f2;border:1.5px solid #fca5a5;border-radius:10px;padding:12px;margin-bottom:14px;">';
+
+    if (rpt.soloLocal.length > 0) {
+      html += '<div style="font-size:.72rem;color:#991b1b;margin-bottom:4px;"><strong>→ ' + rpt.soloLocal.length + '</strong> refs con Ordenada en tu admin <strong>NO están publicadas</strong> en Firestore (por eso el cliente no las ve)</div>';
+    }
+    if (rpt.diferentes.length > 0) {
+      html += '<div style="font-size:.72rem;color:#991b1b;margin-bottom:4px;"><strong>→ ' + rpt.diferentes.length + '</strong> refs con cantidades diferentes entre admin y portal</div>';
+    }
+    if (rpt.soloRemote.length > 0) {
+      html += '<div style="font-size:.72rem;color:#991b1b;margin-bottom:4px;"><strong>→ ' + rpt.soloRemote.length + '</strong> refs en Firestore que ya no tienes localmente (se quedaron huérfanas)</div>';
+    }
+
+    html += '<div style="font-size:.68rem;color:#7f1d1d;margin-top:8px;padding:6px 10px;background:rgba(220,38,38,.1);border-radius:6px;"><strong>Solución:</strong> presiona "📤 Publicar Ahora" abajo para sincronizar tu admin local con Firestore. El portal verá inmediatamente los cambios.</div>';
+    html += '</div>';
+  } else if (rpt.firestoreExists && rpt.local.conOrdenada > 0) {
+    html +=
+      '<div style="background:#f0fdf4;border:1.5px solid #4ade80;border-radius:10px;padding:12px;margin-bottom:14px;">' +
+        '<div style="font-size:.85rem;font-weight:800;color:#166534;">✓ Todo sincronizado</div>' +
+        '<div style="font-size:.72rem;color:#166534;margin-top:2px;">Tu admin local y Firestore coinciden. El portal muestra exactamente lo que tienes cargado.</div>' +
+      '</div>';
+  }
+
+  // ═══ Advertencias adicionales ═══
+  if (rpt.local.refSinMarca > 0) {
+    html += '<div style="background:#fef3c7;border:1.5px solid #fbbf24;border-radius:8px;padding:10px;margin-bottom:12px;font-size:.68rem;color:#78350f;"><strong>⚠ Atención:</strong> ' + rpt.local.refSinMarca + ' refs con Ordenada NO existen en tu catálogo PRODUCTS. Estas no se verán en el portal aunque las publiques (el portal filtra solo productos del catálogo oficial).</div>';
+  }
+
+  if (rpt.local.conOrdenada === 0) {
+    html += '<div style="background:#fee2e2;border:1.5px solid #fca5a5;border-radius:10px;padding:12px;margin-bottom:12px;">' +
+      '<div style="font-weight:800;color:#991b1b;">⚠ No tienes Ordenada cargada</div>' +
+      '<div style="font-size:.72rem;color:#7f1d1d;margin-top:4px;">Para que las cantidades "en camino" aparezcan en el portal del cliente, debes:<br>' +
+      '<strong>1.</strong> Ir al módulo Catálogo / Ordenada<br>' +
+      '<strong>2.</strong> Presionar "📦 Actualizar Ordenada" y cargar el Excel del pedido del proveedor (una carga por marca)<br>' +
+      '<strong>3.</strong> Volver aquí y presionar "📤 Publicar Ahora"</div>' +
+      '</div>';
+  }
+
+  // ═══ Ejemplos de refs con Ordenada (colapsado) ═══
+  if (rpt.local.ejemplos.length > 0) {
+    html += '<details style="background:#f8f9ff;border:1px solid #e0e4f0;border-radius:8px;padding:8px 12px;margin-bottom:14px;"><summary style="cursor:pointer;font-size:.68rem;font-weight:800;color:#1B1F6B;text-transform:uppercase;letter-spacing:1px;">Ver ejemplos de Ordenada (primeras 10 refs)</summary>';
+    html += '<div style="margin-top:8px;max-height:120px;overflow-y:auto;">';
+    rpt.local.ejemplos.forEach(function(e){
+      html += '<div style="font-size:.68rem;color:#475569;font-family:monospace;padding:2px 0;"><strong>' + e.ref + '</strong> → ' + e.qty + ' uds</div>';
+    });
+    html += '</div></details>';
+  }
+
+  // ═══ Status y botones ═══
+  html +=
+    '<div id="pt-pub-status" style="font-size:.75rem;min-height:18px;text-align:center;margin-top:12px;"></div>' +
+    (tieneProblemas
+      ? '<div style="background:#fef3c7;border:1.5px solid #fbbf24;border-radius:10px;padding:12px;margin-top:12px;">' +
+          '<div style="font-size:.78rem;font-weight:900;color:#92400e;text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;">⚠ Acción recomendada</div>' +
+          '<div style="font-size:.72rem;color:#78350f;line-height:1.5;margin-bottom:10px;">Tu admin tiene datos que el portal no está viendo. Presiona el botón abajo para resincronizar todo de una vez.</div>' +
+          '<button id="pt-pub-confirm" style="width:100%;padding:13px;background:linear-gradient(135deg,#d97706,#f59e0b);color:#fff;border:none;border-radius:8px;font-weight:900;font-size:.85rem;cursor:pointer;text-transform:uppercase;letter-spacing:1px;box-shadow:0 4px 14px rgba(217,119,6,.4);">🔄 RESINCRONIZAR AHORA</button>' +
+        '</div>'
+      : '<div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:10px 12px;margin-top:12px;font-size:.68rem;color:#1e40af;line-height:1.5;">' +
+          '<strong>💡 Sincronización automática activa:</strong> cada vez que editas Ordenada en la tabla, importas un Excel o sincronizas una OC, los cambios se publican <strong>automáticamente</strong> al portal.' +
+        '</div>'
+    ) +
+    '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px;border-top:1px solid #e2e8f0;padding-top:14px;">' +
+      '<button onclick="document.getElementById(\'pt-pub-modal\').remove()" style="padding:10px 18px;background:#1B1F6B;color:#fff;border:none;border-radius:8px;font-weight:900;font-size:.78rem;cursor:pointer;text-transform:uppercase;letter-spacing:.5px;">Cerrar</button>' +
+      (tieneProblemas ? '' : '<button id="pt-pub-confirm" ' + (rpt.local.conOrdenada === 0 ? 'disabled' : '') + ' style="padding:10px 18px;background:#f1f5f9;color:#475569;border:1.5px solid #e2e8f0;border-radius:8px;font-weight:700;font-size:.72rem;cursor:' + (rpt.local.conOrdenada > 0 ? 'pointer' : 'not-allowed') + ';text-transform:uppercase;letter-spacing:.5px;">🔄 Forzar resync</button>') +
+    '</div>';
+
+  body.innerHTML = html;
+
+  // Listener del botón confirmar
+  var btnConfirm = document.getElementById('pt-pub-confirm');
+  if (btnConfirm && rpt.local.conOrdenada > 0) {
+    btnConfirm.addEventListener('click', async function(){
+      var status = document.getElementById('pt-pub-status');
+      btnConfirm.disabled = true;
+      btnConfirm.textContent = '⏳ Publicando...';
+      if (status) { status.textContent = ''; status.style.color = ''; }
+      try {
+        if (typeof window.fbSavePT !== 'function') throw new Error('fbSavePT no disponible — recarga la página');
+        var ok = await window.fbSavePT(rpt.ptLocal);
+        if (!ok) throw new Error('La publicación devolvió false');
+        if (status) {
+          status.innerHTML = '✓ Publicado — ' + rpt.local.conOrdenada + ' refs con Ordenada disponibles en el portal';
+          status.style.color = '#16a34a';
+          status.style.fontWeight = '800';
+        }
+        btnConfirm.textContent = '✓ PUBLICADO';
+        btnConfirm.style.background = '#16a34a';
+        if (typeof showToast === 'function') showToast('📤 Ordenada publicada al portal (' + rpt.local.conOrdenada + ' refs)', 'success');
+        setTimeout(function(){ var m = document.getElementById('pt-pub-modal'); if (m) m.remove(); }, 1800);
+      } catch(e) {
+        console.error('[ptPublicarOrdenadaAlPortal]', e);
+        if (status) { status.textContent = '✗ Error: ' + e.message; status.style.color = '#dc2626'; status.style.fontWeight = '800'; }
+        btnConfirm.disabled = false;
+        btnConfirm.textContent = '📤 Reintentar';
+      }
+    });
+  }
+}
+
 function ptResetOrdenadaProcess(file) {
   if (!file) return;
   var status = document.getElementById('pt-reset-status');
@@ -23219,7 +24640,7 @@ function ptResetOrdenadaProcess(file) {
       }
 
       // Guardar
-      localStorage.setItem('farmers_pt_data', JSON.stringify(ptData));
+      ptSaveData(ptData);
       window.ptData = ptData; // sincronizar RAM para filtro ORD
       if (window.fbSavePT) {
         try { window.fbSavePT(ptData); } catch(e3) {}
@@ -23486,6 +24907,10 @@ function ptImpConfirmar() {
 
   // Ordenar PRODUCTS alfanuméricamente después de agregar nuevos
   if (typeof sortProducts === 'function') sortProducts();
+
+  // Persistir PRODUCTS principal a Firestore (CRÍTICO para que el portal vea los cambios)
+  if (typeof saveProducts === 'function') saveProducts();
+  if (typeof window.fbSaveProducts === 'function') window.fbSaveProducts(PRODUCTS);
 
   // Persistir productos nuevos en Firebase + localStorage para sobrevivir recargas
   if (newProductsCreated.length > 0) {
@@ -23885,7 +25310,7 @@ function ptCerrarFicha() {
 }
 window.ptCerrarFicha = ptCerrarFicha;
 
-function ptGuardarFicha(refOriginal) {
+async function ptGuardarFicha(refOriginal) {
   var ref = ((document.getElementById('ptf-ref')||{}).value||'').trim().toUpperCase();
   if (!ref) { if(typeof showToast==='function') showToast('La referencia es obligatoria','warning'); return; }
   var nombre = ((document.getElementById('ptf-nombre')||{}).value||'').trim();
@@ -23965,8 +25390,35 @@ function ptGuardarFicha(refOriginal) {
     PRODUCTS.push(upd);
   }
 
+  // Persistir cambios en PRODUCTS (incluye campos m=medida, e=empaque, descripción, etc.)
+  // CRÍTICO: garantiza que el portal cliente vea los cambios al instante
+  // Y que al recargar admin no se pierda el cambio
+  console.log('[ptGuardarFicha] Guardando ref ' + ref + ' con campos:', upd);
+  if (typeof saveProducts === 'function') {
+    await saveProducts();  // ⚠ AWAIT para esperar confirmación de Firestore
+  }
+
+  // ── LIMPIEZA CRÍTICA: si la ref existe en products_ext, eliminarla ──
+  // products_ext contiene productos importados con valores VIEJOS.
+  // Si editamos una ref que también está en products_ext, al recargar
+  // products_ext no sobrescribe (porque ya existe) PERO si por algún motivo
+  // products falla y products_ext es la fuente, restauraría el valor viejo.
+  // Para garantizar consistencia: removemos la ref de products_ext.
+  try {
+    var ext = JSON.parse(localStorage.getItem('farmers_products_ext') || '[]');
+    var idxExt = ext.findIndex(function(p){ return p.r === ref; });
+    if (idxExt >= 0) {
+      ext.splice(idxExt, 1);
+      localStorage.setItem('farmers_products_ext', JSON.stringify(ext));
+      if (window.fbSaveProductsExt) {
+        try { await window.fbSaveProductsExt(ext); } catch(e){}
+      }
+      console.log('[ptGuardarFicha] ref ' + ref + ' removida de products_ext (estaba con valores viejos)');
+    }
+  } catch(eExt) { console.warn('[ptGuardarFicha] limpieza products_ext:', eExt); }
+
   ptCerrarFicha();
-  if(typeof showToast==='function') showToast('✅ Ficha guardada: ' + ref, 'success');
+  if(typeof showToast==='function') showToast('✅ Ficha guardada y sincronizada: ' + ref, 'success');
   ptRender();
 }
 window.ptGuardarFicha = ptGuardarFicha;
@@ -25720,6 +27172,9 @@ window.confirmImportPrices=function(){
   });
   if(typeof saveInventory==='function')saveInventory(inv);
   if(typeof syncInventoryToProducts==='function')syncInventoryToProducts();
+  // Persistir PRODUCTS (precios, descripciones y nuevos productos) — CRÍTICO para sincronizar portal
+  if(typeof saveProducts==='function')saveProducts();
+  if(typeof window.fbSaveProducts==='function')window.fbSaveProducts(PRODUCTS);
   if(typeof renderTable==='function')renderTable();
   document.getElementById('ip-action-msg').textContent='✅ '+applied+' cambios aplicados.';
   btn.textContent='✅ Aplicado';
@@ -30451,7 +31906,7 @@ window.msConfirmarSeleccionadas = function(numP, sel, hayPendientes, ovEmision){
           pt.et=Math.max(0,(parseInt(pt.et)||0)-td);
         }
       });
-      localStorage.setItem('farmers_pt_data',JSON.stringify(ptArr));
+      ptSaveData(ptArr);
       if(window.ptData) window.ptData=ptArr;
     }
   }catch(e){}
@@ -47645,7 +49100,7 @@ function pcAbrirFormToken(existente, clDB) {
     clienteNombre: '',
     rifEsperado: '',
     activo: true,
-    configVista: { moneda: 'USD', mostrarStock: 'disponibilidad', marcasVisibles: [], ocultarAgotados: false },
+    configVista: { moneda: 'USD', mostrarStock: 'disponibilidad', marcasVisibles: [], ocultarAgotados: false, mostrarOrdenada: false, ordenadaModo: 'exacto' },
     pedidosRealizados: 0,
     creado: Date.now(),
   };
@@ -47666,50 +49121,108 @@ function pcAbrirFormToken(existente, clDB) {
 
   var marcasChecks = marcas.map(function(m){
     var checked = (data.configVista.marcasVisibles || []).includes(m) ? 'checked' : '';
-    return '<label style="display:inline-flex;align-items:center;gap:5px;margin:3px 6px 3px 0;padding:4px 8px;background:#f1f5f9;border-radius:6px;font-size:.72rem;cursor:pointer;"><input type="checkbox" class="pc-marca-chk" value="' + m + '" ' + checked + '> ' + m + '</label>';
+    var isChecked = (data.configVista.marcasVisibles || []).includes(m);
+    return '<label style="display:inline-flex;align-items:center;gap:6px;padding:7px 13px;background:' + (isChecked ? '#1B1F6B' : '#fff') + ';color:' + (isChecked ? '#fff' : '#475569') + ';border:1.5px solid ' + (isChecked ? '#1B1F6B' : '#e2e8f0') + ';border-radius:999px;font-size:.72rem;font-weight:800;cursor:pointer;text-transform:uppercase;letter-spacing:.5px;transition:all .15s;"><input type="checkbox" class="pc-marca-chk" value="' + m + '" ' + checked + ' style="accent-color:#F47B3E;cursor:pointer;"> ' + m + '</label>';
   }).join('');
 
   ov.innerHTML =
-    '<div style="background:#fff;border-radius:14px;width:100%;max-width:560px;max-height:90vh;overflow-y:auto;padding:24px;">' +
-      '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">' +
-        '<h3 style="margin:0;color:#1B1F6B;font-size:1.1rem;">' + (isEdit ? 'Editar link' : 'Nuevo link de cliente') + '</h3>' +
-        '<button id="pc-form-close" style="background:none;border:none;font-size:1.6rem;color:#64748b;cursor:pointer;">×</button>' +
+    '<div style="background:#fff;border-radius:16px;width:100%;max-width:680px;max-height:92vh;overflow-y:auto;box-shadow:0 20px 60px rgba(27,31,107,.25);">' +
+
+      // ═══ HEADER con gradiente ═══
+      '<div style="background:linear-gradient(135deg,#1B1F6B 0%,#9B6FD4 80%,#F47B3E 140%);color:#fff;padding:18px 24px;display:flex;justify-content:space-between;align-items:center;border-radius:16px 16px 0 0;">' +
+        '<div>' +
+          '<h3 style="margin:0;font-size:1.1rem;font-weight:900;letter-spacing:1.5px;text-transform:uppercase;font-family:\'Barlow Condensed\',sans-serif;">' + (isEdit ? '✏ EDITAR LINK DE CLIENTE' : '+ NUEVO LINK DE CLIENTE') + '</h3>' +
+          '<div style="font-size:.72rem;opacity:.85;margin-top:2px;">Configura el acceso y la vista del catálogo para este cliente</div>' +
+        '</div>' +
+        '<button id="pc-form-close" style="background:rgba(255,255,255,.2);border:none;width:34px;height:34px;border-radius:8px;color:#fff;font-size:1.4rem;cursor:pointer;display:flex;align-items:center;justify-content:center;">×</button>' +
       '</div>' +
 
-      '<label style="display:block;font-size:.72rem;font-weight:700;color:#475569;margin-bottom:4px;">Cliente (vincular con CRM)</label>' +
-      '<select id="pc-cliente" style="width:100%;padding:9px 11px;border:1px solid #e2e8f0;border-radius:8px;font-size:.82rem;margin-bottom:12px;">' + clienteOpts + '</select>' +
+      '<div style="padding:22px 24px;">' +
 
-      '<label style="display:block;font-size:.72rem;font-weight:700;color:#475569;margin-bottom:4px;">Nombre visible *</label>' +
-      '<input type="text" id="pc-nombre" value="' + (data.clienteNombre || '').replace(/"/g, '&quot;') + '" placeholder="Ej: INVERSIONES ORIENTE" style="width:100%;padding:9px 11px;border:1px solid #e2e8f0;border-radius:8px;font-size:.82rem;margin-bottom:12px;">' +
+      // ═══ SECCIÓN 1: Datos del cliente ═══
+      '<div style="font-size:.7rem;font-weight:900;color:#F47B3E;text-transform:uppercase;letter-spacing:2px;margin-bottom:10px;">👤 DATOS DEL CLIENTE</div>' +
 
-      '<label style="display:block;font-size:.72rem;font-weight:700;color:#475569;margin-bottom:4px;">RIF esperado (opcional)</label>' +
-      '<input type="text" id="pc-rif" value="' + (data.rifEsperado || '').replace(/"/g, '&quot;') + '" placeholder="Ej: J-40064057-1" style="width:100%;padding:9px 11px;border:1px solid #e2e8f0;border-radius:8px;font-size:.82rem;margin-bottom:16px;">' +
+      '<label style="display:block;font-size:.7rem;font-weight:800;color:#1B1F6B;margin-bottom:5px;text-transform:uppercase;letter-spacing:.8px;">Cliente (vincular con CRM)</label>' +
+      '<select id="pc-cliente" style="width:100%;padding:11px 13px;border:1.5px solid #e2e8f0;border-radius:10px;font-size:.85rem;margin-bottom:14px;background:#fff;font-weight:600;">' + clienteOpts + '</select>' +
 
-      '<div style="border-top:1px solid #e2e8f0;padding-top:14px;margin-bottom:4px;font-size:.78rem;font-weight:800;color:#1B1F6B;">Configuración de vista del catálogo</div>' +
-
-      '<label style="display:block;font-size:.72rem;font-weight:700;color:#475569;margin:12px 0 4px;">Moneda mostrada</label>' +
-      '<select id="pc-moneda" style="width:100%;padding:9px 11px;border:1px solid #e2e8f0;border-radius:8px;font-size:.82rem;margin-bottom:12px;">' +
-        '<option value="USD"' + (data.configVista.moneda === 'USD' ? ' selected' : '') + '>USD ($)</option>' +
-        '<option value="BCV"' + (data.configVista.moneda === 'BCV' ? ' selected' : '') + '>BCV (Bs)</option>' +
-        '<option value="TF"' + (data.configVista.moneda === 'TF' ? ' selected' : '') + '>TF (Bs)</option>' +
-      '</select>' +
-
-      '<label style="display:block;font-size:.72rem;font-weight:700;color:#475569;margin-bottom:4px;">Cómo mostrar stock</label>' +
-      '<select id="pc-stock" style="width:100%;padding:9px 11px;border:1px solid #e2e8f0;border-radius:8px;font-size:.82rem;margin-bottom:12px;">' +
-        '<option value="oculto"' + (data.configVista.mostrarStock === 'oculto' ? ' selected' : '') + '>No mostrar</option>' +
-        '<option value="disponibilidad"' + (data.configVista.mostrarStock === 'disponibilidad' ? ' selected' : '') + '>Solo Disponible / Pocas uds / Agotado</option>' +
-        '<option value="exacto"' + (data.configVista.mostrarStock === 'exacto' ? ' selected' : '') + '>Cantidad exacta disponible</option>' +
-      '</select>' +
-
-      '<label style="display:flex;align-items:center;gap:8px;font-size:.78rem;color:#475569;margin-bottom:10px;cursor:pointer;"><input type="checkbox" id="pc-ocultar-agotados"' + (data.configVista.ocultarAgotados ? ' checked' : '') + '> Ocultar productos agotados del catálogo</label>' +
-
-      '<label style="display:block;font-size:.72rem;font-weight:700;color:#475569;margin-bottom:4px;">Marcas visibles (vacío = todas)</label>' +
-      '<div id="pc-marcas-chk" style="margin-bottom:16px;background:#f8fafc;padding:10px;border-radius:8px;max-height:140px;overflow-y:auto;">' + (marcasChecks || '<span style="color:#64748b;font-size:.72rem;">No hay marcas en el catálogo</span>') + '</div>' +
-
-      '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px;">' +
-        '<button id="pc-form-cancel" style="padding:10px 18px;background:#f1f5f9;color:#334155;border:1px solid #e2e8f0;border-radius:8px;font-weight:700;font-size:.78rem;cursor:pointer;">Cancelar</button>' +
-        '<button id="pc-form-save" style="padding:10px 22px;background:#1B1F6B;color:#fff;border:none;border-radius:8px;font-weight:800;font-size:.78rem;cursor:pointer;">' + (isEdit ? 'Guardar cambios' : 'Crear link') + '</button>' +
+      '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">' +
+        '<div>' +
+          '<label style="display:block;font-size:.7rem;font-weight:800;color:#1B1F6B;margin-bottom:5px;text-transform:uppercase;letter-spacing:.8px;">Nombre visible *</label>' +
+          '<input type="text" id="pc-nombre" value="' + (data.clienteNombre || '').replace(/"/g, '&quot;') + '" placeholder="Ej: INVERSIONES ORIENTE" style="width:100%;padding:11px 13px;border:1.5px solid #e2e8f0;border-radius:10px;font-size:.85rem;font-weight:600;">' +
+        '</div>' +
+        '<div>' +
+          '<label style="display:block;font-size:.7rem;font-weight:800;color:#1B1F6B;margin-bottom:5px;text-transform:uppercase;letter-spacing:.8px;">RIF esperado (opcional)</label>' +
+          '<input type="text" id="pc-rif" value="' + (data.rifEsperado || '').replace(/"/g, '&quot;') + '" placeholder="Ej: J-40064057-1" style="width:100%;padding:11px 13px;border:1.5px solid #e2e8f0;border-radius:10px;font-size:.85rem;font-weight:600;">' +
+        '</div>' +
       '</div>' +
+
+      // ═══ SECCIÓN 2: Configuración de vista del catálogo ═══
+      '<div style="margin-top:22px;padding-top:18px;border-top:2px dashed #e2e8f0;">' +
+        '<div style="font-size:.7rem;font-weight:900;color:#F47B3E;text-transform:uppercase;letter-spacing:2px;margin-bottom:12px;">🎨 CONFIGURACIÓN DE VISTA DEL CATÁLOGO</div>' +
+
+        // ── Moneda mostrada ── como pills
+        '<label style="display:block;font-size:.7rem;font-weight:800;color:#1B1F6B;margin-bottom:8px;text-transform:uppercase;letter-spacing:.8px;">💰 Moneda principal mostrada</label>' +
+        '<div class="pc-pill-group" id="pc-moneda-pills" style="display:flex;gap:6px;margin-bottom:16px;">' +
+          '<button type="button" class="pc-pill' + (data.configVista.moneda === 'USD' ? ' active usd' : '') + '" data-val="USD" style="flex:1;padding:10px;border:1.5px solid #e2e8f0;border-radius:10px;background:#fff;font-weight:800;font-size:.78rem;cursor:pointer;text-transform:uppercase;letter-spacing:.5px;transition:all .15s;' + (data.configVista.moneda === 'USD' ? 'background:linear-gradient(135deg,#10b981,#059669);color:#fff;border-color:#059669;box-shadow:0 4px 12px rgba(16,185,129,.3);' : '') + '">USD ($)</button>' +
+          '<button type="button" class="pc-pill' + (data.configVista.moneda === 'BCV' ? ' active bcv' : '') + '" data-val="BCV" style="flex:1;padding:10px;border:1.5px solid #e2e8f0;border-radius:10px;background:#fff;font-weight:800;font-size:.78rem;cursor:pointer;text-transform:uppercase;letter-spacing:.5px;transition:all .15s;' + (data.configVista.moneda === 'BCV' ? 'background:linear-gradient(135deg,#3b82f6,#2563eb);color:#fff;border-color:#2563eb;box-shadow:0 4px 12px rgba(59,130,246,.3);' : '') + '">BCV (Bs)</button>' +
+          '<button type="button" class="pc-pill' + (data.configVista.moneda === 'TF' ? ' active tf' : '') + '" data-val="TF" style="flex:1;padding:10px;border:1.5px solid #e2e8f0;border-radius:10px;background:#fff;font-weight:800;font-size:.78rem;cursor:pointer;text-transform:uppercase;letter-spacing:.5px;transition:all .15s;' + (data.configVista.moneda === 'TF' ? 'background:linear-gradient(135deg,#f59e0b,#d97706);color:#fff;border-color:#d97706;box-shadow:0 4px 12px rgba(245,158,11,.3);' : '') + '">TF (Bs)</button>' +
+        '</div>' +
+        '<input type="hidden" id="pc-moneda" value="' + data.configVista.moneda + '">' +
+
+        // ── Cómo mostrar stock ── como pills
+        '<label style="display:block;font-size:.7rem;font-weight:800;color:#1B1F6B;margin-bottom:8px;text-transform:uppercase;letter-spacing:.8px;">📊 Cómo mostrar stock al cliente</label>' +
+        '<div class="pc-pill-group" id="pc-stock-pills" style="display:flex;gap:6px;margin-bottom:14px;flex-wrap:wrap;">' +
+          '<button type="button" class="pc-pill' + (data.configVista.mostrarStock === 'oculto' ? ' active' : '') + '" data-val="oculto" style="flex:1;min-width:140px;padding:10px;border:1.5px solid #e2e8f0;border-radius:10px;background:#fff;font-weight:800;font-size:.72rem;cursor:pointer;text-transform:uppercase;letter-spacing:.5px;transition:all .15s;' + (data.configVista.mostrarStock === 'oculto' ? 'background:#475569;color:#fff;border-color:#475569;' : '') + '">🚫 NO MOSTRAR</button>' +
+          '<button type="button" class="pc-pill' + (data.configVista.mostrarStock === 'disponibilidad' ? ' active' : '') + '" data-val="disponibilidad" style="flex:1;min-width:140px;padding:10px;border:1.5px solid #e2e8f0;border-radius:10px;background:#fff;font-weight:800;font-size:.72rem;cursor:pointer;text-transform:uppercase;letter-spacing:.5px;transition:all .15s;' + (data.configVista.mostrarStock === 'disponibilidad' ? 'background:linear-gradient(135deg,#1B1F6B,#9B6FD4);color:#fff;border-color:#1B1F6B;box-shadow:0 4px 12px rgba(27,31,107,.3);' : '') + '">✓ DISPONIBILIDAD</button>' +
+          '<button type="button" class="pc-pill' + (data.configVista.mostrarStock === 'exacto' ? ' active' : '') + '" data-val="exacto" style="flex:1;min-width:140px;padding:10px;border:1.5px solid #e2e8f0;border-radius:10px;background:#fff;font-weight:800;font-size:.72rem;cursor:pointer;text-transform:uppercase;letter-spacing:.5px;transition:all .15s;' + (data.configVista.mostrarStock === 'exacto' ? 'background:linear-gradient(135deg,#16a34a,#15803d);color:#fff;border-color:#15803d;box-shadow:0 4px 12px rgba(22,163,74,.3);' : '') + '">🔢 CANTIDAD EXACTA</button>' +
+        '</div>' +
+        '<input type="hidden" id="pc-stock" value="' + data.configVista.mostrarStock + '">' +
+
+        // Hint de qué significa cada opción
+        '<div style="background:#f0f4ff;border-left:3px solid #9B6FD4;padding:8px 12px;border-radius:6px;font-size:.68rem;color:#475569;line-height:1.5;margin-bottom:16px;">' +
+          '<strong style="color:#1B1F6B;">💡 TIP:</strong> "DISPONIBILIDAD" muestra badges ✓ EN STOCK / ⚠ BAJO / ✗ AGOTADO. "CANTIDAD EXACTA" muestra el número real de unidades disponibles.' +
+        '</div>' +
+
+        // ── Toggles visuales (switch style) ──
+        '<div style="background:#f8fafc;border:1.5px solid #e2e8f0;border-radius:10px;padding:12px 14px;margin-bottom:14px;">' +
+          '<label style="display:flex;align-items:center;gap:10px;font-size:.8rem;color:#1e293b;cursor:pointer;font-weight:600;">' +
+            '<input type="checkbox" id="pc-ocultar-agotados"' + (data.configVista.ocultarAgotados ? ' checked' : '') + ' style="width:18px;height:18px;accent-color:#F47B3E;cursor:pointer;">' +
+            '<span>🚫 <strong style="color:#1B1F6B;text-transform:uppercase;">Ocultar agotados</strong> — No mostrar productos con stock 0 al cliente</span>' +
+          '</label>' +
+        '</div>' +
+
+        // ── Bloque de Ordenada con subopciones ──
+        '<div style="background:#fffbeb;border:1.5px solid #fde68a;border-radius:10px;padding:12px 14px;margin-bottom:16px;">' +
+          '<label style="display:flex;align-items:center;gap:10px;font-size:.8rem;color:#1e293b;cursor:pointer;font-weight:600;">' +
+            '<input type="checkbox" id="pc-mostrar-ordenada"' + (data.configVista.mostrarOrdenada ? ' checked' : '') + ' style="width:18px;height:18px;accent-color:#f59e0b;cursor:pointer;">' +
+            '<span>📦 <strong style="color:#92400e;text-transform:uppercase;">Mostrar cantidad ordenada</strong> — Mercancía en camino visible al cliente</span>' +
+          '</label>' +
+
+          // Subopciones — solo se muestran si el checkbox está activado
+          '<div id="pc-ord-submodo" style="margin-top:10px;padding-top:10px;border-top:1px dashed #fde68a;' + (data.configVista.mostrarOrdenada ? '' : 'display:none;') + '">' +
+            '<div style="font-size:.62rem;font-weight:900;color:#92400e;text-transform:uppercase;letter-spacing:1.2px;margin-bottom:6px;">¿Cómo mostrar al cliente?</div>' +
+            '<div class="pc-ordmodo-pills" style="display:flex;gap:6px;">' +
+              '<button type="button" class="pc-ordmodo-pill' + ((data.configVista.ordenadaModo || 'exacto') === 'exacto' ? ' active' : '') + '" data-val="exacto" style="flex:1;padding:9px;border:1.5px solid ' + ((data.configVista.ordenadaModo || 'exacto') === 'exacto' ? '#d97706' : '#fde68a') + ';border-radius:8px;background:' + ((data.configVista.ordenadaModo || 'exacto') === 'exacto' ? 'linear-gradient(135deg,#d97706,#f59e0b);color:#fff' : '#fff;color:#78350f') + ';font-weight:800;font-size:.68rem;cursor:pointer;text-transform:uppercase;letter-spacing:.5px;transition:all .15s;box-shadow:' + ((data.configVista.ordenadaModo || 'exacto') === 'exacto' ? '0 3px 10px rgba(217,119,6,.3)' : 'none') + ';">🔢 MOSTRAR CANTIDAD<br><span style="font-weight:600;font-size:.58rem;opacity:.85;">(Ej: "📦 288 ORDENADA")</span></button>' +
+              '<button type="button" class="pc-ordmodo-pill' + (data.configVista.ordenadaModo === 'simple' ? ' active' : '') + '" data-val="simple" style="flex:1;padding:9px;border:1.5px solid ' + (data.configVista.ordenadaModo === 'simple' ? '#d97706' : '#fde68a') + ';border-radius:8px;background:' + (data.configVista.ordenadaModo === 'simple' ? 'linear-gradient(135deg,#d97706,#f59e0b);color:#fff' : '#fff;color:#78350f') + ';font-weight:800;font-size:.68rem;cursor:pointer;text-transform:uppercase;letter-spacing:.5px;transition:all .15s;box-shadow:' + (data.configVista.ordenadaModo === 'simple' ? '0 3px 10px rgba(217,119,6,.3)' : 'none') + ';">🏷 SOLO LA PALABRA<br><span style="font-weight:600;font-size:.58rem;opacity:.85;">(Ej: "📦 ORDENADA")</span></button>' +
+            '</div>' +
+            '<input type="hidden" id="pc-ord-modo" value="' + (data.configVista.ordenadaModo || 'exacto') + '">' +
+          '</div>' +
+        '</div>' +
+
+        // ── Marcas visibles ──
+        '<label style="display:block;font-size:.7rem;font-weight:800;color:#1B1F6B;margin-bottom:8px;text-transform:uppercase;letter-spacing:.8px;">🏷 Marcas visibles <span style="color:#94a3b8;font-weight:600;">(vacío = todas)</span></label>' +
+        '<div id="pc-marcas-chk" style="background:#f8fafc;padding:12px;border-radius:10px;border:1.5px solid #e2e8f0;display:flex;flex-wrap:wrap;gap:6px;">' +
+          (marcasChecks || '<span style="color:#94a3b8;font-size:.72rem;">No hay marcas en el catálogo</span>') +
+        '</div>' +
+      '</div>' +
+      '</div>' +
+
+      // ═══ FOOTER con botones ═══
+      '<div style="background:#f8fafc;border-top:1.5px solid #e2e8f0;padding:14px 24px;display:flex;justify-content:flex-end;gap:10px;border-radius:0 0 16px 16px;">' +
+        '<button id="pc-form-cancel" style="padding:11px 22px;background:#fff;color:#475569;border:1.5px solid #e2e8f0;border-radius:10px;font-weight:800;font-size:.8rem;cursor:pointer;text-transform:uppercase;letter-spacing:.5px;">CANCELAR</button>' +
+        '<button id="pc-form-save" style="padding:11px 28px;background:linear-gradient(135deg,#1B1F6B,#9B6FD4);color:#fff;border:none;border-radius:10px;font-weight:900;font-size:.8rem;cursor:pointer;text-transform:uppercase;letter-spacing:1px;box-shadow:0 4px 14px rgba(27,31,107,.35);">' + (isEdit ? '💾 GUARDAR CAMBIOS' : '✓ CREAR LINK') + '</button>' +
+      '</div>' +
+
     '</div>';
   document.body.appendChild(ov);
 
@@ -47719,6 +49232,85 @@ function pcAbrirFormToken(existente, clDB) {
       document.getElementById('pc-nombre').value = decodeURIComponent(sel.value);
       if (sel.dataset.rif) document.getElementById('pc-rif').value = sel.dataset.rif;
     }
+  });
+
+  // ── Listeners de pills de MONEDA ──
+  document.querySelectorAll('#pc-moneda-pills .pc-pill').forEach(function(btn){
+    btn.addEventListener('click', function(){
+      var val = btn.getAttribute('data-val');
+      document.getElementById('pc-moneda').value = val;
+      // Reset todos
+      document.querySelectorAll('#pc-moneda-pills .pc-pill').forEach(function(b){
+        b.classList.remove('active');
+        b.style.cssText = 'flex:1;padding:10px;border:1.5px solid #e2e8f0;border-radius:10px;background:#fff;color:#1e293b;font-weight:800;font-size:.78rem;cursor:pointer;text-transform:uppercase;letter-spacing:.5px;transition:all .15s;';
+      });
+      // Activar el clickeado
+      btn.classList.add('active');
+      var grads = {
+        USD: 'linear-gradient(135deg,#10b981,#059669);border-color:#059669;box-shadow:0 4px 12px rgba(16,185,129,.3);',
+        BCV: 'linear-gradient(135deg,#3b82f6,#2563eb);border-color:#2563eb;box-shadow:0 4px 12px rgba(59,130,246,.3);',
+        TF:  'linear-gradient(135deg,#f59e0b,#d97706);border-color:#d97706;box-shadow:0 4px 12px rgba(245,158,11,.3);'
+      };
+      btn.style.cssText = 'flex:1;padding:10px;border:1.5px solid;border-radius:10px;background:' + grads[val] + ';color:#fff;font-weight:800;font-size:.78rem;cursor:pointer;text-transform:uppercase;letter-spacing:.5px;transition:all .15s;';
+    });
+  });
+
+  // ── Listeners de pills de STOCK ──
+  document.querySelectorAll('#pc-stock-pills .pc-pill').forEach(function(btn){
+    btn.addEventListener('click', function(){
+      var val = btn.getAttribute('data-val');
+      document.getElementById('pc-stock').value = val;
+      document.querySelectorAll('#pc-stock-pills .pc-pill').forEach(function(b){
+        b.classList.remove('active');
+        b.style.cssText = 'flex:1;min-width:140px;padding:10px;border:1.5px solid #e2e8f0;border-radius:10px;background:#fff;color:#1e293b;font-weight:800;font-size:.72rem;cursor:pointer;text-transform:uppercase;letter-spacing:.5px;transition:all .15s;';
+      });
+      btn.classList.add('active');
+      var stockStyles = {
+        oculto:         'background:#475569;border-color:#475569;',
+        disponibilidad: 'background:linear-gradient(135deg,#1B1F6B,#9B6FD4);border-color:#1B1F6B;box-shadow:0 4px 12px rgba(27,31,107,.3);',
+        exacto:         'background:linear-gradient(135deg,#16a34a,#15803d);border-color:#15803d;box-shadow:0 4px 12px rgba(22,163,74,.3);'
+      };
+      btn.style.cssText = 'flex:1;min-width:140px;padding:10px;border:1.5px solid;border-radius:10px;' + stockStyles[val] + 'color:#fff;font-weight:800;font-size:.72rem;cursor:pointer;text-transform:uppercase;letter-spacing:.5px;transition:all .15s;';
+    });
+  });
+
+  // ── Actualizar estilo de chips de MARCA al togglear ──
+  document.querySelectorAll('.pc-marca-chk').forEach(function(chk){
+    chk.addEventListener('change', function(){
+      var lbl = chk.parentElement;
+      if (chk.checked) {
+        lbl.style.background = '#1B1F6B';
+        lbl.style.color = '#fff';
+        lbl.style.borderColor = '#1B1F6B';
+      } else {
+        lbl.style.background = '#fff';
+        lbl.style.color = '#475569';
+        lbl.style.borderColor = '#e2e8f0';
+      }
+    });
+  });
+
+  // ── Checkbox "Mostrar Ordenada" ↔ subopciones ──
+  var chkOrd = document.getElementById('pc-mostrar-ordenada');
+  if (chkOrd) {
+    chkOrd.addEventListener('change', function(){
+      var sub = document.getElementById('pc-ord-submodo');
+      if (sub) sub.style.display = chkOrd.checked ? '' : 'none';
+    });
+  }
+
+  // ── Pills de modo Ordenada (exacto / simple) ──
+  document.querySelectorAll('.pc-ordmodo-pill').forEach(function(btn){
+    btn.addEventListener('click', function(){
+      var val = btn.getAttribute('data-val');
+      document.getElementById('pc-ord-modo').value = val;
+      document.querySelectorAll('.pc-ordmodo-pill').forEach(function(b){
+        b.classList.remove('active');
+        b.style.cssText = 'flex:1;padding:9px;border:1.5px solid #fde68a;border-radius:8px;background:#fff;color:#78350f;font-weight:800;font-size:.68rem;cursor:pointer;text-transform:uppercase;letter-spacing:.5px;transition:all .15s;box-shadow:none;';
+      });
+      btn.classList.add('active');
+      btn.style.cssText = 'flex:1;padding:9px;border:1.5px solid #d97706;border-radius:8px;background:linear-gradient(135deg,#d97706,#f59e0b);color:#fff;font-weight:800;font-size:.68rem;cursor:pointer;text-transform:uppercase;letter-spacing:.5px;transition:all .15s;box-shadow:0 3px 10px rgba(217,119,6,.3);';
+    });
   });
 
   document.getElementById('pc-form-close').addEventListener('click', function(){ ov.remove(); });
@@ -47738,6 +49330,8 @@ function pcAbrirFormToken(existente, clDB) {
       moneda: document.getElementById('pc-moneda').value,
       mostrarStock: document.getElementById('pc-stock').value,
       ocultarAgotados: document.getElementById('pc-ocultar-agotados').checked,
+      mostrarOrdenada: document.getElementById('pc-mostrar-ordenada').checked,
+      ordenadaModo: (document.getElementById('pc-ord-modo') ? document.getElementById('pc-ord-modo').value : 'exacto'),
       marcasVisibles: marcasSeleccionadas,
     };
 
@@ -47749,6 +49343,27 @@ function pcAbrirFormToken(existente, clDB) {
       if (typeof window.fbSavePortalToken === 'function') {
         await window.fbSavePortalToken(data.token, data);
       }
+      // Si el token activa "Mostrar Ordenada", sincronizar pt_data a Firestore
+      var syncOrdenadaMsg = '';
+      if (data.configVista.mostrarOrdenada && typeof window.fbSavePT === 'function') {
+        try {
+          var ptRaw = localStorage.getItem('farmers_pt_data') || '{}';
+          var ptObj = JSON.parse(ptRaw);
+          var conOrd = 0;
+          Object.keys(ptObj).forEach(function(r){
+            if (ptObj[r] && parseInt(ptObj[r].exOrdenada || 0) > 0) conOrd++;
+          });
+          await window.fbSavePT();
+          if (conOrd === 0) {
+            syncOrdenadaMsg = ' · ⚠ No hay productos con Ordenada > 0 cargados; el cliente no verá cantidades en camino';
+          } else {
+            syncOrdenadaMsg = ' · 📦 ' + conOrd + ' refs con Ordenada publicadas';
+          }
+        } catch(e) {
+          console.warn('fbSavePT falló:', e);
+          syncOrdenadaMsg = ' · ⚠ Error al publicar Ordenada';
+        }
+      }
       // Actualizar caché
       if (isEdit) {
         var idx = window.portalTokens.findIndex(function(x){ return x.token === data.token; });
@@ -47758,7 +49373,7 @@ function pcAbrirFormToken(existente, clDB) {
       }
       ov.remove();
       pcRenderTokensList();
-      showToast(isEdit ? 'Link actualizado' : 'Link creado — copia el enlace y mándaselo al cliente', 'success');
+      showToast((isEdit ? 'Link actualizado' : 'Link creado') + syncOrdenadaMsg, 'success');
     } catch(e) {
       console.error(e);
       alert('Error al guardar: ' + e.message);
@@ -48180,32 +49795,32 @@ function pcDescargarPedidoPDF(id) {
     '<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8">' +
     '<title>' + filename + '</title>' +
     '<style>' +
-      '@page { size: A4 portrait; margin: 5mm 6mm; }' +
+      '@page { size: A4 landscape; margin: 5mm 6mm; }' +
       '* { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; color-adjust: exact !important; }' +
       'body { font-family: -apple-system, "Segoe UI", Roboto, Arial, sans-serif; margin: 0; color: #1e293b; font-size: 10px; }' +
-      '.header { background: linear-gradient(135deg, #1B1F6B, #9B6FD4); color: #fff; padding: 14px 18px; display: flex; align-items: center; gap: 14px; border-radius: 6px 6px 0 0; }' +
-      '.header .logo { height: 52px; background: #fff; border-radius: 6px; padding: 6px 10px; }' +
+      '.header { background: linear-gradient(135deg, #1B1F6B, #9B6FD4); color: #fff; padding: 12px 18px; display: flex; align-items: center; gap: 14px; border-radius: 6px 6px 0 0; }' +
+      '.header .logo { height: 48px; background: #fff; border-radius: 6px; padding: 5px 9px; }' +
       '.header .title { flex: 1; }' +
-      '.header h1 { margin: 0; font-size: 16px; letter-spacing: 1px; font-weight: 900; }' +
-      '.header .num { font-size: 11px; opacity: .95; font-family: "Courier New", monospace; font-weight: 700; margin-top: 2px; }' +
-      '.header .date { font-size: 10px; opacity: .85; margin-top: 2px; }' +
-      '.client-info { background: #f8faff; padding: 10px 18px; border-left: 3px solid #F47B3E; }' +
-      '.client-info table { width: 100%; font-size: 10px; }' +
+      '.header h1 { margin: 0; font-size: 15px; letter-spacing: 1px; font-weight: 900; }' +
+      '.header .num { font-size: 10px; opacity: .95; font-family: "Courier New", monospace; font-weight: 700; margin-top: 2px; }' +
+      '.header .date { font-size: 9px; opacity: .85; margin-top: 2px; }' +
+      '.client-info { background: #f8faff; padding: 8px 18px; border-left: 3px solid #F47B3E; }' +
+      '.client-info table { width: 100%; font-size: 9px; }' +
       '.client-info td { padding: 2px 0; }' +
-      '.client-info td.lbl { font-weight: 800; color: #475569; width: 90px; text-transform: uppercase; font-size: 9px; letter-spacing: .5px; }' +
+      '.client-info td.lbl { font-weight: 800; color: #475569; width: 90px; text-transform: uppercase; font-size: 8px; letter-spacing: .5px; }' +
       '.client-info td.val { color: #1e293b; font-weight: 600; }' +
-      'table.items { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 9px; }' +
-      'table.items th { background: #1B1F6B; color: #fff; padding: 6px 7px; text-align: left; font-size: 9px; font-weight: 800; letter-spacing: .3px; }' +
-      'table.items td { padding: 5px 7px; border-bottom: 1px solid #e2e8f0; }' +
+      'table.items { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 8.5px; }' +
+      'table.items th { background: #1B1F6B; color: #fff; padding: 5px 5px; text-align: left; font-size: 8px; font-weight: 800; letter-spacing: .3px; }' +
+      'table.items td { padding: 4px 5px; border-bottom: 1px solid #e2e8f0; }' +
       'table.items tr:nth-child(even) { background: #f8fafc; }' +
-      'table.items .ref { font-family: "Courier New", monospace; font-weight: 700; color: #1B1F6B; }' +
+      'table.items .ref { font-family: "Courier New", monospace; font-weight: 700; color: #1B1F6B; font-size: 8px; }' +
       'table.items .num, table.items .qty { text-align: center; font-weight: 700; }' +
       'table.items .price { text-align: right; }' +
       'table.items .sub { text-align: right; font-weight: 800; color: #059669; }' +
-      '.totals { margin-top: 8px; background: #1B1F6B; color: #fff; padding: 10px 18px; display: flex; justify-content: space-between; align-items: center; border-radius: 0 0 6px 6px; }' +
+      '.totals { margin-top: 6px; background: #1B1F6B; color: #fff; padding: 9px 18px; display: flex; justify-content: space-between; align-items: center; border-radius: 0 0 6px 6px; }' +
       '.totals .lbl { font-size: 11px; font-weight: 800; letter-spacing: 1px; }' +
       '.totals .val { font-size: 15px; font-weight: 900; }' +
-      '.footer-note { margin-top: 12px; padding: 8px 18px; background: #fef3c7; border-left: 3px solid #d97706; font-size: 9px; color: #78350f; border-radius: 4px; }' +
+      '.footer-note { margin-top: 10px; padding: 7px 18px; background: #fef3c7; border-left: 3px solid #d97706; font-size: 9px; color: #78350f; border-radius: 4px; }' +
       '.noprint { text-align: center; padding: 20px; }' +
       '.print-btn { background: #1B1F6B; color: #fff; border: none; border-radius: 8px; padding: 11px 32px; font-size: 13px; font-weight: 700; cursor: pointer; box-shadow: 0 4px 14px rgba(27,31,107,.3); }' +
       '@media print { .noprint { display: none !important; } }' +
@@ -48228,20 +49843,28 @@ function pcDescargarPedidoPDF(id) {
     '</table></div>' +
     '<table class="items">' +
       '<thead><tr>' +
-        '<th style="width:11%;">REF</th>' +
+        '<th style="width:9%;">REF</th>' +
+        '<th style="width:11%;">CÓD. BARRAS</th>' +
+        '<th style="width:9%;">CÓDIGO</th>' +
         '<th>DESCRIPCIÓN</th>' +
-        '<th style="width:10%;">MARCA</th>' +
-        '<th style="width:7%;text-align:center;">CANT</th>' +
-        '<th style="width:11%;text-align:right;">P.U.</th>' +
-        '<th style="width:12%;text-align:right;">SUBTOTAL</th>' +
+        '<th style="width:8%;">MARCA</th>' +
+        '<th style="width:8%;">EMPAQUE</th>' +
+        '<th style="width:5%;text-align:center;">MED</th>' +
+        '<th style="width:6%;text-align:center;">CANT</th>' +
+        '<th style="width:10%;text-align:right;">P.U.</th>' +
+        '<th style="width:11%;text-align:right;">SUBTOTAL</th>' +
       '</tr></thead>' +
       '<tbody>' +
         (p.items || []).map(function(it){
           var sub = (parseFloat(it.qty)||0) * (parseFloat(it.precioMostrado)||0);
           return '<tr>' +
             '<td class="ref">' + esc(it.ref || '—') + '</td>' +
+            '<td class="ref">' + esc(it.codigoBarra || '—') + '</td>' +
+            '<td class="ref">' + esc(it.codigoInterno || '—') + '</td>' +
             '<td>' + esc(it.desc || '—') + '</td>' +
             '<td>' + esc(it.marca || '—') + '</td>' +
+            '<td>' + esc(it.empaque || '—') + '</td>' +
+            '<td class="qty">' + esc(it.medida || '—') + '</td>' +
             '<td class="qty">' + (it.qty || 0) + '</td>' +
             '<td class="price">' + simb + (parseFloat(it.precioMostrado)||0).toFixed(2) + '</td>' +
             '<td class="sub">' + simb + sub.toFixed(2) + '</td>' +
@@ -48290,16 +49913,19 @@ function pcDescargarPedidoExcel(id) {
     (p.cliente.correo ? ['Correo', p.cliente.correo] : ['', '']),
     [],
     ['DETALLE DE PRODUCTOS'],
-    ['REFERENCIA', 'DESCRIPCIÓN', 'CÓDIGO BARRA', 'MARCA', 'CANTIDAD', 'PRECIO ' + (p.moneda || 'USD'), 'SUBTOTAL ' + (p.moneda || 'USD')]
+    ['REFERENCIA', 'CÓDIGO BARRA', 'CÓDIGO INTERNO', 'DESCRIPCIÓN', 'MARCA', 'EMPAQUE', 'MEDIDA', 'CANTIDAD', 'PRECIO ' + (p.moneda || 'USD') + ' (REF $)', 'SUBTOTAL ' + (p.moneda || 'USD') + ' (REF $)']
   ];
 
   (p.items || []).forEach(function(it){
     var sub = (parseFloat(it.qty)||0) * (parseFloat(it.precioMostrado)||0);
     data.push([
       it.ref || '',
-      it.desc || '',
       it.codigoBarra || '',
+      it.codigoInterno || '',
+      it.desc || '',
       it.marca || '',
+      it.empaque || '',
+      it.medida || '',
       parseFloat(it.qty) || 0,
       parseFloat(it.precioMostrado) || 0,
       sub
@@ -48307,7 +49933,7 @@ function pcDescargarPedidoExcel(id) {
   });
 
   data.push([]);
-  data.push(['', '', '', '', 'TOTAL:', '', p.total || 0]);
+  data.push(['', '', '', '', '', '', '', '', 'TOTAL:', p.total || 0]);
 
   if (p.estado === 'rechazado') {
     data.push([]);
@@ -48320,8 +49946,8 @@ function pcDescargarPedidoExcel(id) {
   }
 
   var ws = XLSX.utils.aoa_to_sheet(data);
-  // Anchos de columna
-  ws['!cols'] = [ {wch:15}, {wch:42}, {wch:16}, {wch:12}, {wch:10}, {wch:13}, {wch:14} ];
+  // Anchos de columna: REF, CB, CódInt, DESC, MARCA, EMP, MED, CANT, PRECIO, SUB
+  ws['!cols'] = [ {wch:12}, {wch:16}, {wch:14}, {wch:42}, {wch:12}, {wch:12}, {wch:8}, {wch:10}, {wch:16}, {wch:16} ];
 
   var wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Pedido');
@@ -48331,14 +49957,62 @@ function pcDescargarPedidoExcel(id) {
 }
 
 function pcRenderConfig(body) {
+  // Calcular diagnóstico de Ordenada en localStorage
+  var ptDiag = { total: 0, conOrdenada: 0, refs: [] };
+  try {
+    var ptRaw = localStorage.getItem('farmers_pt_data') || '{}';
+    var ptData = JSON.parse(ptRaw);
+    ptDiag.total = Object.keys(ptData).length;
+    Object.keys(ptData).forEach(function(ref){
+      var ex = parseInt(ptData[ref] && ptData[ref].exOrdenada || 0) || 0;
+      if (ex > 0) {
+        ptDiag.conOrdenada++;
+        if (ptDiag.refs.length < 8) ptDiag.refs.push(ref + ' (' + ex + ')');
+      }
+    });
+  } catch(e) {}
+
   body.innerHTML =
-    '<div style="background:#fff;border-radius:10px;padding:18px;max-width:600px;">' +
+    '<div style="background:#fff;border-radius:10px;padding:18px;max-width:720px;">' +
       '<div style="font-size:.9rem;font-weight:800;color:#1B1F6B;margin-bottom:14px;">Configuración del Portal</div>' +
+
       '<label style="display:block;font-size:.72rem;font-weight:700;color:#475569;margin-bottom:4px;">URL base del portal</label>' +
       '<input type="text" id="pc-url" value="' + getPortalBaseUrl() + '" style="width:100%;padding:9px 11px;border:1px solid #e2e8f0;border-radius:8px;font-size:.82rem;margin-bottom:4px;">' +
-      '<div style="font-size:.68rem;color:#64748b;margin-bottom:16px;">El link de cada cliente tendrá la forma: <strong>[URL]?token=XXXXX</strong></div>' +
+      '<div style="font-size:.68rem;color:#64748b;margin-bottom:12px;">El link de cada cliente tendrá la forma: <strong>[URL]?token=XXXXX</strong></div>' +
       '<button id="pc-save-url" style="padding:10px 18px;background:#1B1F6B;color:#fff;border:none;border-radius:8px;font-weight:800;font-size:.78rem;cursor:pointer;">Guardar URL</button>' +
-      '<div style="margin-top:24px;padding:14px;background:#eff6ff;border-radius:8px;font-size:.72rem;color:#1e40af;line-height:1.6;">' +
+
+      // ═══ SECCIÓN SINCRONIZACIÓN ORDENADA ═══
+      '<div style="margin-top:24px;padding:16px;background:linear-gradient(135deg,#fef3c7,#fde68a);border-radius:10px;border:1.5px solid #f59e0b;">' +
+        '<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;">' +
+          '<span style="font-size:1.4rem;">📦</span>' +
+          '<div>' +
+            '<div style="font-size:.85rem;font-weight:800;color:#92400e;text-transform:uppercase;letter-spacing:1px;">Sincronización de Ordenada</div>' +
+            '<div style="font-size:.7rem;color:#78350f;margin-top:2px;">Publica las cantidades "en camino" para que clientes con "Mostrar Ordenada" activado las vean</div>' +
+          '</div>' +
+        '</div>' +
+
+        '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px;">' +
+          '<div style="background:rgba(255,255,255,.6);padding:10px 12px;border-radius:8px;">' +
+            '<div style="font-size:.6rem;font-weight:800;color:#78350f;text-transform:uppercase;letter-spacing:.8px;margin-bottom:2px;">TOTAL REFS</div>' +
+            '<div style="font-size:1.3rem;font-weight:900;color:#92400e;font-family:\'Barlow Condensed\',sans-serif;">' + ptDiag.total + '</div>' +
+          '</div>' +
+          '<div style="background:rgba(255,255,255,.6);padding:10px 12px;border-radius:8px;">' +
+            '<div style="font-size:.6rem;font-weight:800;color:#78350f;text-transform:uppercase;letter-spacing:.8px;margin-bottom:2px;">CON ORDENADA > 0</div>' +
+            '<div style="font-size:1.3rem;font-weight:900;color:#92400e;font-family:\'Barlow Condensed\',sans-serif;">' + ptDiag.conOrdenada + '</div>' +
+          '</div>' +
+        '</div>' +
+
+        (ptDiag.conOrdenada > 0
+          ? '<div style="background:rgba(255,255,255,.6);padding:8px 11px;border-radius:7px;font-size:.68rem;color:#78350f;margin-bottom:10px;"><strong>Ejemplos:</strong> ' + ptDiag.refs.join(', ') + (ptDiag.conOrdenada > 8 ? ', ...' : '') + '</div>'
+          : '<div style="background:#fee2e2;color:#991b1b;padding:8px 11px;border-radius:7px;font-size:.7rem;margin-bottom:10px;"><strong>⚠ Sin datos:</strong> No hay productos con cantidad ordenada > 0 en tu sistema. Ve al módulo Catálogo / Ordenada y carga las cantidades primero.</div>') +
+
+        '<div style="display:flex;gap:8px;align-items:center;">' +
+          '<button id="pc-sync-pt" ' + (ptDiag.conOrdenada === 0 ? 'disabled' : '') + ' style="padding:10px 18px;background:' + (ptDiag.conOrdenada > 0 ? '#d97706' : '#94a3b8') + ';color:#fff;border:none;border-radius:8px;font-weight:800;font-size:.78rem;cursor:' + (ptDiag.conOrdenada > 0 ? 'pointer' : 'not-allowed') + ';text-transform:uppercase;letter-spacing:.5px;">📤 Publicar Ordenada a Firestore</button>' +
+          '<span id="pc-sync-status" style="font-size:.7rem;color:#78350f;font-weight:700;"></span>' +
+        '</div>' +
+      '</div>' +
+
+      '<div style="margin-top:18px;padding:14px;background:#eff6ff;border-radius:8px;font-size:.72rem;color:#1e40af;line-height:1.6;">' +
         '<strong>📋 Para poner en marcha el portal:</strong><br>' +
         '1. Crea un repo nuevo llamado <code>farmers-portal</code> en GitHub<br>' +
         '2. Sube el archivo <code>portal.html</code> al repo (renómbralo a <code>index.html</code>)<br>' +
@@ -48355,6 +50029,37 @@ function pcRenderConfig(body) {
     localStorage.setItem('farmers_portal_url', url);
     showToast('URL guardada', 'success');
   });
+
+  // Botón manual de sincronización de pt_data
+  var btnSync = document.getElementById('pc-sync-pt');
+  if (btnSync) {
+    btnSync.addEventListener('click', async function(){
+      var status = document.getElementById('pc-sync-status');
+      btnSync.disabled = true;
+      var txtOld = btnSync.textContent;
+      btnSync.textContent = '⏳ Publicando...';
+      if (status) status.textContent = '';
+      try {
+        if (typeof window.fbSavePT !== 'function') {
+          throw new Error('fbSavePT no disponible');
+        }
+        var ok = await window.fbSavePT();
+        if (ok) {
+          if (status) { status.textContent = '✓ Publicado exitosamente'; status.style.color = '#16a34a'; }
+          showToast('Ordenada publicada a Firestore', 'success');
+        } else {
+          throw new Error('No se pudo publicar');
+        }
+      } catch(e) {
+        console.error('[pc-sync-pt]', e);
+        if (status) { status.textContent = '✗ Error: ' + e.message; status.style.color = '#dc2626'; }
+        alert('Error al publicar: ' + e.message);
+      } finally {
+        btnSync.disabled = false;
+        btnSync.textContent = txtOld;
+      }
+    });
+  }
 }
 
 </script>
