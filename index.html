@@ -22467,16 +22467,27 @@ window.ptAbrirRescateHuerfanas = async function() {
       return '';
     }
 
-    // Cabecera + galería
+    // Cabecera + barra de acciones masivas + galería
     var html =
-      '<div style="background:linear-gradient(135deg,#fef3c7,#fde68a);padding:14px 18px;border-radius:10px;border:1.5px solid #f59e0b;margin-bottom:20px;">' +
+      '<div style="background:linear-gradient(135deg,#fef3c7,#fde68a);padding:14px 18px;border-radius:10px;border:1.5px solid #f59e0b;margin-bottom:14px;">' +
         '<div style="font-weight:900;color:#78350f;font-size:.95rem;">📋 Resumen</div>' +
         '<div style="margin-top:6px;font-size:.85rem;color:#451a03;">' +
           '<strong>' + refsImg.length + '</strong> imágenes en Firebase · ' +
           '<strong>' + prodRefs.size + '</strong> productos en catálogo · ' +
           '<strong style="color:#dc2626;">' + huerfanas.length + '</strong> imágenes HUÉRFANAS encontradas' +
         '</div>' +
-        '<div style="margin-top:10px;font-size:.78rem;color:#78350f;">Para cada imagen huérfana, mira la imagen y completa los campos. Al pulsar "Guardar producto", se reconstruye la ficha y se persiste en Firebase.</div>' +
+        '<div style="margin-top:10px;font-size:.78rem;color:#78350f;">Completa los campos de cada tarjeta y luego pulsa "💾 Guardar TODOS" para procesarlos en bloque.</div>' +
+      '</div>' +
+      // ── Barra de acciones masivas ────────────────────────────────────
+      '<div id="rescate-toolbar" style="position:sticky;top:0;background:#fff;border:2px solid #16a34a;border-radius:10px;padding:12px 16px;margin-bottom:18px;display:flex;flex-wrap:wrap;gap:10px;align-items:center;z-index:10;box-shadow:0 6px 20px rgba(22,163,74,.15);">' +
+        '<div style="font-weight:900;color:#14532d;font-size:.85rem;flex:1;min-width:180px;">🚀 Acciones masivas</div>' +
+        '<button onclick="window.ptDescargarPlantillaHuerfanas()" style="padding:9px 14px;background:#1e40af;color:#fff;border:none;border-radius:8px;font-weight:800;font-size:.78rem;cursor:pointer;text-transform:uppercase;letter-spacing:.4px;">📥 Plantilla Excel</button>' +
+        '<button onclick="document.getElementById(\'rescate-excel-input\').click()" style="padding:9px 14px;background:#15803d;color:#fff;border:none;border-radius:8px;font-weight:800;font-size:.78rem;cursor:pointer;text-transform:uppercase;letter-spacing:.4px;">📂 Importar Excel</button>' +
+        '<input type="file" id="rescate-excel-input" accept=".xlsx,.xls,.csv" style="display:none;" onchange="window.ptImportarExcelHuerfanas(this.files[0])" />' +
+        '<button onclick="window.ptAplicarMarcaTodos()" style="padding:9px 14px;background:#7c3aed;color:#fff;border:none;border-radius:8px;font-weight:800;font-size:.78rem;cursor:pointer;text-transform:uppercase;letter-spacing:.4px;">🏷️ Aplicar marca a todos</button>' +
+        '<button onclick="window.ptAplicarPreciosTodos()" style="padding:9px 14px;background:#0891b2;color:#fff;border:none;border-radius:8px;font-weight:800;font-size:.78rem;cursor:pointer;text-transform:uppercase;letter-spacing:.4px;">💲 Aplicar precios a todos</button>' +
+        '<button onclick="window.ptAplicarEmpaqueMedidaTodos()" style="padding:9px 14px;background:#0d9488;color:#fff;border:none;border-radius:8px;font-weight:800;font-size:.78rem;cursor:pointer;text-transform:uppercase;letter-spacing:.4px;">📦 Aplicar empaque/medida</button>' +
+        '<button id="btn-guardar-todos" onclick="window.ptGuardarTodasHuerfanas()" style="padding:11px 20px;background:linear-gradient(135deg,#16a34a,#15803d);color:#fff;border:none;border-radius:8px;font-weight:900;font-size:.85rem;cursor:pointer;text-transform:uppercase;letter-spacing:.6px;box-shadow:0 4px 14px rgba(22,163,74,.4);">💾 Guardar TODOS los completos</button>' +
       '</div>' +
       '<div id="rescate-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(380px,1fr));gap:16px;">';
 
@@ -22523,9 +22534,13 @@ window.ptAbrirRescateHuerfanas = async function() {
                 '</select>' +
               '</div>' +
               '<div>' +
-                '<label style="font-size:.7rem;color:#374151;font-weight:700;text-transform:uppercase;letter-spacing:.5px;">Código de barras</label>' +
-                '<input type="text" data-field="b" placeholder="7453..." style="width:100%;padding:8px 10px;border:1.5px solid #d1d5db;border-radius:6px;font-size:.85rem;margin-top:3px;" />' +
+                '<label style="font-size:.7rem;color:#374151;font-weight:700;text-transform:uppercase;letter-spacing:.5px;">Código interno</label>' +
+                '<input type="text" data-field="c" placeholder="Ej: A019-DB087, A151-H13" style="width:100%;padding:8px 10px;border:1.5px solid #d1d5db;border-radius:6px;font-size:.85rem;margin-top:3px;text-transform:uppercase;" />' +
               '</div>' +
+            '</div>' +
+            '<div>' +
+              '<label style="font-size:.7rem;color:#374151;font-weight:700;text-transform:uppercase;letter-spacing:.5px;">Código de barras</label>' +
+              '<input type="text" data-field="b" placeholder="7453..." style="width:100%;padding:8px 10px;border:1.5px solid #d1d5db;border-radius:6px;font-size:.85rem;margin-top:3px;" />' +
             '</div>' +
             '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;">' +
               '<div>' +
@@ -22658,6 +22673,481 @@ window.ptGuardarHuerfana = async function(idx, ref) {
     alert('Error guardando ' + ref + ':\n' + (eGuard.message || eGuard));
     console.error('[ptGuardarHuerfana]', eGuard);
   }
+};
+
+// ═══════════════════════════════════════════════════════════════════
+// ACCIONES MASIVAS PARA RESCATE DE HUÉRFANAS
+// ═══════════════════════════════════════════════════════════════════
+
+// 1) Aplicar la misma marca a TODAS las tarjetas
+window.ptAplicarMarcaTodos = function() {
+  var marca = prompt('Aplicar esta marca a TODAS las tarjetas:\n\n' +
+    'EXCALIBUR / GENIAL / MATRIX / LUMEN / MAXKILLER / VARIOS\n\n' +
+    'Escribe la marca (en mayúsculas):');
+  if (!marca) return;
+  marca = marca.trim().toUpperCase();
+  var marcasValidas = ['EXCALIBUR','GENIAL','MATRIX','LUMEN','MAXKILLER','VARIOS'];
+  if (marcasValidas.indexOf(marca) === -1) {
+    alert('Marca no válida. Usa una de: ' + marcasValidas.join(', '));
+    return;
+  }
+  var selects = document.querySelectorAll('#rescate-grid select[data-field="br"]');
+  var changed = 0;
+  selects.forEach(function(s){ s.value = marca; changed++; });
+  if (typeof showToast === 'function') showToast('✅ Marca ' + marca + ' aplicada a ' + changed + ' tarjetas', 'success');
+};
+
+// 2) Aplicar precios uniformes (USD/BCV/TF) a TODAS las tarjetas
+window.ptAplicarPreciosTodos = function() {
+  var usd = prompt('Precio USD $ para TODAS las tarjetas (deja vacío si no aplica):');
+  if (usd === null) return;  // canceló
+  var bcv = prompt('Precio BCV $ para TODAS (vacío = mismo USD):');
+  if (bcv === null) return;
+  var tf = prompt('Precio TF $ para TODAS (vacío = mismo USD):');
+  if (tf === null) return;
+
+  var usdN = parseFloat(usd) || 0;
+  var bcvN = parseFloat(bcv) || usdN;
+  var tfN = parseFloat(tf) || usdN;
+
+  if (usdN <= 0 && bcvN <= 0 && tfN <= 0) {
+    alert('Debes especificar al menos un precio.');
+    return;
+  }
+
+  var cards = document.querySelectorAll('#rescate-grid [data-ref]');
+  var changed = 0;
+  cards.forEach(function(card){
+    if (usdN > 0) { var iU = card.querySelector('[data-field="u"]'); if (iU) iU.value = usdN; }
+    if (bcvN > 0) { var iB = card.querySelector('[data-field="bv"]'); if (iB) iB.value = bcvN; }
+    if (tfN > 0) { var iT = card.querySelector('[data-field="t"]'); if (iT) iT.value = tfN; }
+    changed++;
+  });
+  if (typeof showToast === 'function') showToast('✅ Precios aplicados a ' + changed + ' tarjetas', 'success');
+};
+
+// 3) Aplicar empaque + medida a TODAS las tarjetas
+window.ptAplicarEmpaqueMedidaTodos = function() {
+  var empaque = prompt('Empaque para TODAS (UNIDAD/SET/BOX/PIEZA/etc):');
+  if (empaque === null) return;
+  var medida = prompt('Medida (uds/bulto) para TODAS:');
+  if (medida === null) return;
+
+  empaque = (empaque || '').trim().toUpperCase();
+  var medidaN = parseInt(medida) || 0;
+
+  var cards = document.querySelectorAll('#rescate-grid [data-ref]');
+  var changed = 0;
+  cards.forEach(function(card){
+    if (empaque) { var iE = card.querySelector('[data-field="e"]'); if (iE) iE.value = empaque; }
+    if (medidaN > 0) { var iM = card.querySelector('[data-field="m"]'); if (iM) iM.value = medidaN; }
+    changed++;
+  });
+  if (typeof showToast === 'function') showToast('✅ Empaque/medida aplicado a ' + changed + ' tarjetas', 'success');
+};
+
+// 4) GUARDAR TODOS los productos completos en bloque
+window.ptGuardarTodasHuerfanas = async function() {
+  var cards = document.querySelectorAll('#rescate-grid [data-ref]');
+  if (!cards.length) { alert('No hay tarjetas para guardar.'); return; }
+
+  // Identificar tarjetas válidas (con descripción + marca + USD mínimo)
+  var validas = [];
+  var incompletas = [];
+  var yaGuardadas = [];
+
+  cards.forEach(function(card){
+    var ref = card.getAttribute('data-ref');
+    var btn = card.querySelector('button');
+    if (btn && btn.disabled) { yaGuardadas.push(ref); return; }
+
+    var d = (card.querySelector('[data-field="d"]') || {}).value || '';
+    var br = (card.querySelector('[data-field="br"]') || {}).value || '';
+    var u = parseFloat((card.querySelector('[data-field="u"]') || {}).value) || 0;
+
+    if (d.trim().length >= 3 && br && u > 0) {
+      validas.push({ ref: ref, card: card });
+    } else {
+      var falta = [];
+      if (d.trim().length < 3) falta.push('descripción');
+      if (!br) falta.push('marca');
+      if (u <= 0) falta.push('precio USD');
+      incompletas.push({ ref: ref, falta: falta.join(', ') });
+    }
+  });
+
+  if (validas.length === 0) {
+    alert('⚠ No hay tarjetas completas para guardar.\n\n' +
+          (incompletas.length > 0 ? 'Tarjetas incompletas:\n' +
+            incompletas.slice(0, 10).map(function(i){ return '• ' + i.ref + ' — falta: ' + i.falta; }).join('\n') : ''));
+    return;
+  }
+
+  var msgConfirm = '¿Guardar ' + validas.length + ' producto(s) válido(s)?\n\n';
+  if (incompletas.length > 0) {
+    msgConfirm += '⚠ ' + incompletas.length + ' tarjeta(s) incompletas se omitirán.\n';
+  }
+  if (yaGuardadas.length > 0) {
+    msgConfirm += 'ℹ ' + yaGuardadas.length + ' ya guardadas previamente.\n';
+  }
+  if (!confirm(msgConfirm)) return;
+
+  // Crear modal de progreso
+  var prog = document.createElement('div');
+  prog.id = 'rescate-progress';
+  prog.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:99999;display:flex;align-items:center;justify-content:center;';
+  prog.innerHTML =
+    '<div style="background:#fff;border-radius:14px;padding:30px;max-width:480px;width:90%;text-align:center;">' +
+      '<div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;font-size:1.3rem;color:#14532d;margin-bottom:16px;text-transform:uppercase;letter-spacing:1.5px;">💾 Guardando productos</div>' +
+      '<div id="prog-text" style="color:#374151;font-size:.9rem;margin-bottom:14px;">Procesando 0 / ' + validas.length + '...</div>' +
+      '<div style="background:#e5e7eb;height:14px;border-radius:7px;overflow:hidden;">' +
+        '<div id="prog-bar" style="background:linear-gradient(90deg,#16a34a,#15803d);height:100%;width:0%;transition:width .3s;"></div>' +
+      '</div>' +
+      '<div id="prog-detalle" style="margin-top:14px;font-size:.75rem;color:#6b7280;max-height:120px;overflow-y:auto;text-align:left;"></div>' +
+    '</div>';
+  document.body.appendChild(prog);
+
+  function updateProg(idx, total, msg) {
+    var pct = Math.round((idx/total) * 100);
+    var pb = document.getElementById('prog-bar'); if (pb) pb.style.width = pct + '%';
+    var pt = document.getElementById('prog-text'); if (pt) pt.textContent = 'Procesando ' + idx + ' / ' + total + ' (' + pct + '%)';
+    if (msg) {
+      var pd = document.getElementById('prog-detalle');
+      if (pd) { pd.innerHTML = msg + '<br>' + pd.innerHTML; pd.scrollTop = 0; }
+    }
+  }
+
+  // Procesar en bloque (silenciar saveProducts/fbSaveProducts hasta el final para no martillar Firebase)
+  var exitos = 0, errores = 0;
+  var nuevos = [];
+
+  for (var i = 0; i < validas.length; i++) {
+    var v = validas[i];
+    var card = v.card;
+    var ref = v.ref;
+
+    try {
+      // Recoger valores
+      var inputs = card.querySelectorAll('[data-field]');
+      var data = { r: ref };
+      inputs.forEach(function(el){
+        var f = el.getAttribute('data-field');
+        var val = el.value.trim();
+        if (f === 'u' || f === 'bv' || f === 't') data[f] = parseFloat(val) || 0;
+        else if (f === 'm' || f === 'ex') data[f] = parseInt(val) || 0;
+        else data[f] = val.toUpperCase ? val.toUpperCase() : val;
+      });
+
+      // Aplicar REF al final
+      if (typeof window.aplicarRefAlFinal === 'function') {
+        data.d = window.aplicarRefAlFinal(data.d, ref);
+      }
+      // Fallbacks de precios
+      if (!data.bv) data.bv = data.u;
+      if (!data.t) data.t = data.u;
+
+      // Insertar/actualizar en PRODUCTS
+      var idxExistente = (typeof PRODUCTS !== 'undefined') ? PRODUCTS.findIndex(function(p){ return p.r === ref; }) : -1;
+      if (idxExistente >= 0) {
+        Object.assign(PRODUCTS[idxExistente], data);
+      } else {
+        PRODUCTS.push(data);
+        nuevos.push(ref);
+      }
+
+      // Actualizar inventario si tiene existencia
+      if (data.ex && data.ex > 0) {
+        var inv = (typeof getInventory === 'function') ? getInventory() : {};
+        inv[ref] = data.ex;
+        // Solo actualizar localStorage temporalmente (saveInventory se llamará al final)
+        try { localStorage.setItem('farmers_inv', JSON.stringify(inv)); } catch(e){}
+      }
+
+      // Marcar tarjeta como guardada visualmente
+      card.style.background = '#dcfce7';
+      card.style.border = '2px solid #16a34a';
+      var btn = card.querySelector('button');
+      if (btn) {
+        btn.innerHTML = '✅ Guardado';
+        btn.style.background = '#16a34a';
+        btn.disabled = true;
+      }
+      exitos++;
+      updateProg(i+1, validas.length, '✅ ' + ref + ' — ' + data.d.substring(0, 40));
+    } catch(eP) {
+      errores++;
+      console.error('[ptGuardarTodas] error en ' + ref + ':', eP);
+      updateProg(i+1, validas.length, '❌ ' + ref + ' — ' + (eP.message || eP));
+    }
+
+    // Pequeña pausa para que la UI se actualice
+    if (i % 5 === 0) {
+      await new Promise(function(r){ setTimeout(r, 50); });
+    }
+  }
+
+  // Ordenar PRODUCTS y persistir UNA sola vez al final
+  if (nuevos.length > 0 && typeof sortProducts === 'function') sortProducts();
+
+  updateProg(validas.length, validas.length, '⏳ Persistiendo en localStorage y Firebase...');
+
+  try {
+    if (typeof saveProducts === 'function') await saveProducts();
+    // Inventario: forzar guardado oficial
+    var invFinal = JSON.parse(localStorage.getItem('farmers_inv') || '{}');
+    if (typeof saveInventory === 'function') saveInventory(invFinal);
+    if (typeof renderTable === 'function') renderTable();
+    if (typeof ptRender === 'function') ptRender();
+  } catch(eFinal) {
+    console.error('[ptGuardarTodas] persist final:', eFinal);
+  }
+
+  // Resultado final
+  var resumen = '✅ Guardado masivo completado\n\n' +
+    '✅ Exitos: ' + exitos + '\n' +
+    (errores > 0 ? '❌ Errores: ' + errores + '\n' : '') +
+    '🆕 Productos nuevos: ' + nuevos.length + '\n' +
+    (incompletas.length > 0 ? '⚠ Omitidos por incompletos: ' + incompletas.length + '\n' : '') +
+    '\nLos productos están ahora en el catálogo y sincronizados con Firebase.';
+
+  setTimeout(function(){
+    var p = document.getElementById('rescate-progress'); if (p) p.remove();
+    alert(resumen);
+  }, 800);
+};
+
+// ═══════════════════════════════════════════════════════════════════
+// 5) DESCARGAR PLANTILLA EXCEL pre-rellenada con las refs huérfanas
+//    + lookup automático en OC en tránsito (si la ref está en alguna OC,
+//    se rellenan descripción, código interno, costo, medida automáticamente)
+// ═══════════════════════════════════════════════════════════════════
+window.ptDescargarPlantillaHuerfanas = function() {
+  if (typeof XLSX === 'undefined') {
+    alert('La librería Excel (SheetJS) aún no se ha cargado. Espera 2 segundos y reintenta.');
+    return;
+  }
+
+  // Recolectar refs huérfanas de las tarjetas en pantalla
+  var cards = document.querySelectorAll('#rescate-grid [data-ref]');
+  if (!cards.length) { alert('No hay tarjetas para generar plantilla.'); return; }
+
+  var refs = [];
+  cards.forEach(function(c){ refs.push(c.getAttribute('data-ref')); });
+
+  // Buscar cada ref en TODAS las órdenes de compra (no solo la primera)
+  var ocs = [];
+  try { ocs = JSON.parse(localStorage.getItem('farmers_ordenes_compra') || '[]'); } catch(e){}
+
+  function buscarEnOC(ref) {
+    for (var i = 0; i < ocs.length; i++) {
+      var oc = ocs[i];
+      var items = oc.items || [];
+      for (var j = 0; j < items.length; j++) {
+        var it = items[j];
+        if ((it.refFarmers || it.ref || '').toUpperCase() === ref.toUpperCase()) {
+          return {
+            descripcion: it.descripcion || it.desc || '',
+            codigoInterno: it.refProveedor || it.codigoProveedor || '',
+            costo: parseFloat(it.precioFOB || it.costo || 0) || 0,
+            unidadesPorBulto: parseInt(it.unidadesPorBulto || it.medida || 0) || 0,
+            volumenFt3: parseFloat(it.volumenFt3 || 0) || 0,
+            ocNumero: oc.numero || ''
+          };
+        }
+      }
+    }
+    return null;
+  }
+
+  // Construir filas con datos pre-rellenados desde OC si existen
+  var rows = [];
+  var prerellenadas = 0;
+  refs.forEach(function(ref){
+    var ocData = buscarEnOC(ref);
+    var marca = '';
+    if (ref.indexOf('EXC') === 0) marca = 'EXCALIBUR';
+    else if (ref.indexOf('GEN') === 0 || ref.indexOf('GNL') === 0) marca = 'GENIAL';
+    else if (ref.indexOf('MAT') === 0) marca = 'MATRIX';
+    else if (ref.indexOf('LUM') === 0) marca = 'LUMEN';
+    else if (ref.indexOf('MAXK') === 0) marca = 'MAXKILLER';
+    else if (ref.indexOf('VAR') === 0) marca = 'VARIOS';
+
+    var row = {
+      'REFERENCIA': ref,
+      'DESCRIPCION': ocData ? ocData.descripcion : '',
+      'MARCA': marca,
+      'CODIGO_INTERNO': ocData ? ocData.codigoInterno : '',
+      'CODIGO_BARRAS': '',
+      'PRECIO_USD': '',
+      'PRECIO_BCV': '',
+      'PRECIO_TF': '',
+      'EMPAQUE': 'UNIDAD',
+      'MEDIDA_UDS_BULTO': ocData ? ocData.unidadesPorBulto : '',
+      'EXISTENCIA': 0,
+      'COSTO_USD_FOB': ocData ? ocData.costo : '',
+      'VOLUMEN_FT3': ocData ? ocData.volumenFt3 : '',
+      'PROVENIENCIA': ocData ? ('OC ' + ocData.ocNumero) : 'manual'
+    };
+    if (ocData) prerellenadas++;
+    rows.push(row);
+  });
+
+  // Crear hoja
+  var ws = XLSX.utils.json_to_sheet(rows);
+  // Anchos de columna sugeridos
+  ws['!cols'] = [
+    { wch: 12 }, { wch: 50 }, { wch: 14 }, { wch: 18 }, { wch: 18 },
+    { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 16 },
+    { wch: 12 }, { wch: 14 }, { wch: 14 }, { wch: 14 }
+  ];
+  var wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Huerfanas');
+
+  // Hoja 2: instrucciones
+  var instrucciones = [
+    ['INSTRUCCIONES PARA RECONSTRUIR LAS HUÉRFANAS', ''],
+    ['', ''],
+    ['1.', 'Cada fila es una referencia huérfana cuya imagen ya está en Firebase'],
+    ['2.', 'Completa los campos en blanco mirando la imagen del producto'],
+    ['3.', 'Los campos pre-rellenados desde OC están marcados en columna PROVENIENCIA'],
+    ['4.', 'Campos OBLIGATORIOS: REFERENCIA, DESCRIPCION, MARCA, PRECIO_USD'],
+    ['5.', 'Si dejas BCV o TF vacíos, se usará el USD automáticamente'],
+    ['6.', 'Guarda el archivo como .xlsx (mismo nombre)'],
+    ['7.', 'Vuelve al admin y pulsa "📂 Importar Excel" en el módulo Rescate Huérfanas'],
+    ['', ''],
+    ['MARCAS VÁLIDAS:', 'EXCALIBUR, GENIAL, MATRIX, LUMEN, MAXKILLER, VARIOS'],
+    ['', ''],
+    ['NOTA:', 'Total huérfanas: ' + refs.length + ' | Pre-rellenadas desde OC: ' + prerellenadas]
+  ];
+  var ws2 = XLSX.utils.aoa_to_sheet(instrucciones);
+  ws2['!cols'] = [{ wch: 18 }, { wch: 70 }];
+  XLSX.utils.book_append_sheet(wb, ws2, 'Instrucciones');
+
+  // Descargar
+  var fecha = new Date().toISOString().slice(0, 10);
+  XLSX.writeFile(wb, 'huerfanas_plantilla_' + fecha + '.xlsx');
+
+  if (typeof showToast === 'function') {
+    showToast('📥 Plantilla descargada · ' + prerellenadas + ' refs pre-rellenadas desde OC', 'success');
+  } else {
+    alert('📥 Plantilla descargada\n\n' +
+          '✓ Total filas: ' + refs.length + '\n' +
+          '✓ Pre-rellenadas desde OC en tránsito: ' + prerellenadas + '\n' +
+          '✓ Vacías a completar manualmente: ' + (refs.length - prerellenadas) + '\n\n' +
+          'Completa el archivo y reimporta con el botón "📂 Importar Excel".');
+  }
+};
+
+// ═══════════════════════════════════════════════════════════════════
+// 6) IMPORTAR EXCEL completo: lee la plantilla rellenada y aplica los
+//    valores a las tarjetas correspondientes (matching por REFERENCIA)
+// ═══════════════════════════════════════════════════════════════════
+window.ptImportarExcelHuerfanas = function(file) {
+  if (!file) return;
+  if (typeof XLSX === 'undefined') {
+    alert('La librería Excel aún no está disponible. Recarga la página.');
+    return;
+  }
+
+  var reader = new FileReader();
+  reader.onload = function(e) {
+    try {
+      var data = new Uint8Array(e.target.result);
+      var wb = XLSX.read(data, { type: 'array' });
+      var sheet = wb.Sheets[wb.SheetNames[0]];
+      var rows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+
+      if (!rows.length) { alert('El archivo está vacío.'); return; }
+
+      // Función de normalización para tolerar variaciones de cabeceras
+      function norm(s){ return String(s||'').toUpperCase().replace(/[\s_·:]/g,''); }
+      var fieldMap = {
+        'REFERENCIA': 'r', 'REF': 'r', 'CODIGO': 'r',
+        'DESCRIPCION': 'd', 'DESCRIPCIÓN': 'd', 'DESC': 'd',
+        'MARCA': 'br', 'BRAND': 'br',
+        'CODIGOINTERNO': 'c', 'CÓDIGOINTERNO': 'c', 'CODINTERNO': 'c', 'REFPROVEEDOR': 'c', 'CODIGOPROVEEDOR': 'c',
+        'CODIGOBARRAS': 'b', 'CÓDIGOBARRAS': 'b', 'CODBARRAS': 'b', 'BARCODE': 'b', 'EAN': 'b',
+        'PRECIOUSD': 'u', 'USD': 'u', 'PRECIO': 'u',
+        'PRECIOBCV': 'bv', 'BCV': 'bv',
+        'PRECIOTF': 't', 'TF': 't', 'TARIFA': 't',
+        'EMPAQUE': 'e', 'PACK': 'e',
+        'MEDIDAUDSBULTO': 'm', 'MEDIDA': 'm', 'UDSBULTO': 'm',
+        'EXISTENCIA': 'ex', 'STOCK': 'ex'
+      };
+
+      // Mapear cada fila a un objeto con campos canónicos
+      var processed = [];
+      rows.forEach(function(row, idx){
+        var p = {};
+        Object.keys(row).forEach(function(k){
+          var canonical = fieldMap[norm(k)];
+          if (canonical) p[canonical] = row[k];
+        });
+        if (p.r) {
+          p.r = String(p.r).toUpperCase().trim();
+          processed.push(p);
+        }
+      });
+
+      if (!processed.length) {
+        alert('No se encontró ninguna fila con REFERENCIA válida.\n\nAsegúrate que la primera columna del Excel se llame "REFERENCIA" o "REF".');
+        return;
+      }
+
+      // Aplicar los valores a las tarjetas en pantalla
+      var cards = document.querySelectorAll('#rescate-grid [data-ref]');
+      var aplicadas = 0, noEncontradas = 0;
+      var refsTarjetas = {};
+      cards.forEach(function(c){ refsTarjetas[c.getAttribute('data-ref')] = c; });
+
+      processed.forEach(function(p){
+        var card = refsTarjetas[p.r];
+        if (!card) { noEncontradas++; return; }
+
+        ['d','br','c','b','u','bv','t','e','m','ex'].forEach(function(field){
+          if (p[field] !== undefined && p[field] !== '') {
+            var input = card.querySelector('[data-field="' + field + '"]');
+            if (input) {
+              if (field === 'br') {
+                // Marca: validar que esté en la lista del select
+                var marcaUp = String(p[field]).toUpperCase().trim();
+                var marcas = ['EXCALIBUR','GENIAL','MATRIX','LUMEN','MAXKILLER','VARIOS'];
+                if (marcas.indexOf(marcaUp) >= 0) input.value = marcaUp;
+              } else if (field === 'u' || field === 'bv' || field === 't') {
+                input.value = parseFloat(p[field]) || '';
+              } else if (field === 'm' || field === 'ex') {
+                input.value = parseInt(p[field]) || '';
+              } else {
+                input.value = String(p[field]).toUpperCase ? String(p[field]).toUpperCase().trim() : String(p[field]).trim();
+              }
+            }
+          }
+        });
+        aplicadas++;
+      });
+
+      // Resumen
+      var msg = '✅ Excel procesado\n\n';
+      msg += '✓ Filas leídas: ' + processed.length + '\n';
+      msg += '✓ Tarjetas actualizadas: ' + aplicadas + '\n';
+      if (noEncontradas > 0) msg += '⚠ Referencias no encontradas: ' + noEncontradas + '\n';
+      msg += '\nRevisa las tarjetas y pulsa "💾 Guardar TODOS los completos" para persistir.';
+      alert(msg);
+
+      if (typeof showToast === 'function') {
+        showToast('✅ ' + aplicadas + ' tarjetas actualizadas desde Excel', 'success');
+      }
+
+      // Reset input
+      var inp = document.getElementById('rescate-excel-input');
+      if (inp) inp.value = '';
+
+    } catch(eExcel) {
+      console.error('[ptImportarExcelHuerfanas]', eExcel);
+      alert('Error al leer el Excel:\n' + (eExcel.message || eExcel));
+    }
+  };
+  reader.readAsArrayBuffer(file);
 };
 
 // Obtener existencias comprometidas por producto
