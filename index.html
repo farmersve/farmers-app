@@ -33916,31 +33916,71 @@ window.msAbrirMonitor = function() {
   });
   box.appendChild(kRow);
 
-  // ── TABS ───────────────────────────────────────────────────────
+  // ── TABS (filtros por estado) ─────────────────────────────────
+  // Calcular conteos para badges de cada pestaña
+  var _cntReservado = pedidos.filter(function(p){
+    var e = (p.estado||'').toUpperCase();
+    return e === 'RESERVADO';
+  }).length;
+  // PARCIAL: tiene unas sucursales DESPACHADAS y otras no
+  var _cntParcial = pedidos.filter(function(p){
+    return (p.estado||'').toUpperCase() === 'PARCIAL';
+  }).length;
+  // Pedidos que tienen al menos 1 sucursal embalada y siguen pendientes
+  var _cntEmbalado = pedidos.filter(function(p){
+    var e = (p.estado||'').toUpperCase();
+    if (e === 'DESPACHADO' || e === 'CANCELADO') return false;
+    var sucs = p.sucursales || [];
+    return sucs.some(function(s){
+      return ((p.sucursalesEstado||{})[s]||'').toUpperCase() === 'EMBALADO';
+    });
+  }).length;
+  var _cntDespachado = pedidos.filter(function(p){
+    return (p.estado||'').toUpperCase() === 'DESPACHADO';
+  }).length;
+  var _cntTodos = pedidos.length;
+
   var tabBar = document.createElement('div');
-  tabBar.style.cssText='display:flex;background:rgba(0,0,0,.25);border-bottom:1px solid '+BORDER+';padding:0 16px;';
+  tabBar.style.cssText='display:flex;background:rgba(0,0,0,.25);border-bottom:1px solid '+BORDER+';padding:0 16px;flex-wrap:wrap;';
   var tabContent = document.createElement('div');
   tabContent.style.cssText='min-height:360px;overflow-y:auto;max-height:calc(100vh - 380px);';
 
-  var _tab='pedidos';
-  function mkTab(id,lbl,active){
-    var t=document.createElement('button');
-    t.dataset.tabid=id;
-    t.style.cssText='padding:13px 20px;border:none;background:none;font-family:inherit;font-size:.68rem;font-weight:900;cursor:pointer;text-transform:uppercase;letter-spacing:.8px;transition:all .15s;border-bottom:2.5px solid '+(active?AMBER:'transparent')+';color:'+(active?AMBER:GRAY)+';';
-    t.textContent=lbl;
-    t.onclick=function(){
-      _tab=id;
+  var _tab='todos';
+  // tabColor: color del subrayado activo según el filtro
+  function mkTab(id, lbl, count, color, active){
+    var t = document.createElement('button');
+    t.dataset.tabid = id;
+    t.style.cssText = 'padding:13px 18px;border:none;background:none;font-family:inherit;font-size:.66rem;font-weight:900;cursor:pointer;text-transform:uppercase;letter-spacing:.8px;transition:all .15s;border-bottom:2.5px solid '+(active?color:'transparent')+';color:'+(active?color:GRAY)+';display:flex;align-items:center;gap:7px;white-space:nowrap;';
+    var countBadge = '';
+    if (count !== undefined && count !== null) {
+      countBadge = '<span style="background:'+(active?color+'22':'rgba(255,255,255,.06)')+';color:'+(active?color:DIM)+';border-radius:11px;padding:1px 8px;font-size:.62rem;font-weight:900;min-width:20px;text-align:center;">'+count+'</span>';
+    }
+    t.innerHTML = lbl + countBadge;
+    t.onclick = function(){
+      _tab = id;
       tabBar.querySelectorAll('button').forEach(function(b){
-        var on=b.dataset.tabid===id;
-        b.style.color=on?AMBER:GRAY;
-        b.style.borderBottom='2.5px solid '+(on?AMBER:'transparent');
+        var on = b.dataset.tabid === id;
+        var bColor = b.dataset.color || AMBER;
+        b.style.color = on ? bColor : GRAY;
+        b.style.borderBottom = '2.5px solid '+(on?bColor:'transparent');
+        // Recolorear badge interno
+        var sp = b.querySelector('span');
+        if (sp) {
+          sp.style.background = on ? bColor+'22' : 'rgba(255,255,255,.06)';
+          sp.style.color = on ? bColor : DIM;
+        }
       });
       renderTab(id);
     };
+    t.dataset.color = color;
     return t;
   }
-  tabBar.appendChild(mkTab('pedidos','📋 PEDIDOS',true));
-  tabBar.appendChild(mkTab('comprometido','🔒 INVENTARIO COMPROMETIDO',false));
+  tabBar.appendChild(mkTab('todos',       '📋 TODOS',       _cntTodos,      AMBER,                 true));
+  tabBar.appendChild(mkTab('reservado',   '🔵 RESERVADOS',  _cntReservado,  BLUE,                  false));
+  tabBar.appendChild(mkTab('embalado',    '🟡 EMBALADOS',   _cntEmbalado,   '#f59e0b',             false));
+  tabBar.appendChild(mkTab('parcial',     '⚡ PARCIALES',   _cntParcial,    '#a855f7',             false));
+  tabBar.appendChild(mkTab('despachado',  '🟢 DESPACHADOS', _cntDespachado, GREEN,                 false));
+  tabBar.appendChild(mkTab('comprometido','🔒 INV. COMPROMETIDO', null,    TEAL,                  false));
   box.appendChild(tabBar);
   box.appendChild(tabContent);
 
@@ -33975,38 +34015,105 @@ window.msAbrirMonitor = function() {
   // ── RENDER TABS ────────────────────────────────────────────────
   function renderTab(id){
     tabContent.innerHTML='';
-    if(id==='pedidos') renderPedidos();
-    else renderComprometido();
+    if(id === 'comprometido') {
+      renderComprometido();
+    } else {
+      // 'todos' | 'reservado' | 'embalado' | 'parcial' | 'despachado'
+      renderPedidosFiltrado(id);
+    }
   }
 
   // ─────────────────────────────────────────────────────────────────
-  // TAB: PEDIDOS
+  // TAB: PEDIDOS (filtrado según pestaña activa)
   // ─────────────────────────────────────────────────────────────────
-  function renderPedidos(){
+  function renderPedidosFiltrado(filtro){
     if(!pedidos.length){
       tabContent.innerHTML='<div style="text-align:center;padding:80px 20px;color:'+GRAY+';font-size:.85rem;text-transform:uppercase;letter-spacing:.5px;">SIN PEDIDOS REGISTRADOS</div>';
+      return;
+    }
+
+    // Aplicar filtro
+    var pedFiltrados = pedidos.slice();
+    if (filtro === 'reservado') {
+      pedFiltrados = pedidos.filter(function(p){
+        return (p.estado||'').toUpperCase() === 'RESERVADO';
+      });
+    } else if (filtro === 'embalado') {
+      pedFiltrados = pedidos.filter(function(p){
+        var e = (p.estado||'').toUpperCase();
+        if (e === 'DESPACHADO' || e === 'CANCELADO') return false;
+        var sucs = p.sucursales || [];
+        return sucs.some(function(s){
+          return ((p.sucursalesEstado||{})[s]||'').toUpperCase() === 'EMBALADO';
+        });
+      });
+    } else if (filtro === 'parcial') {
+      pedFiltrados = pedidos.filter(function(p){
+        return (p.estado||'').toUpperCase() === 'PARCIAL';
+      });
+    } else if (filtro === 'despachado') {
+      pedFiltrados = pedidos.filter(function(p){
+        return (p.estado||'').toUpperCase() === 'DESPACHADO';
+      });
+    }
+    // 'todos' → sin filtro adicional
+
+    if(!pedFiltrados.length){
+      var msgVacio = {
+        'reservado':   '🔵 No hay pedidos en estado RESERVADO',
+        'embalado':    '🟡 No hay pedidos con sucursales EMBALADAS',
+        'parcial':     '⚡ No hay pedidos PARCIALES',
+        'despachado':  '🟢 No hay pedidos DESPACHADOS',
+        'todos':       'SIN PEDIDOS REGISTRADOS'
+      }[filtro] || 'SIN RESULTADOS';
+      tabContent.innerHTML='<div style="text-align:center;padding:80px 20px;color:'+GRAY+';font-size:.85rem;text-transform:uppercase;letter-spacing:.5px;">'+msgVacio+'</div>';
       return;
     }
 
     var wrap=document.createElement('div');
     wrap.style.cssText='padding:20px 24px;display:flex;flex-direction:column;gap:14px;';
 
-    // Pendientes
-    if(pedRes.length){
-      var lbl=document.createElement('div');
-      lbl.style.cssText='font-size:.6rem;font-weight:900;color:'+AMBER+';text-transform:uppercase;letter-spacing:1.2px;display:flex;align-items:center;gap:8px;margin-bottom:2px;';
-      lbl.innerHTML='<span style="width:7px;height:7px;border-radius:50%;background:'+AMBER+';display:inline-block;box-shadow:0 0 8px '+AMBER+'88;"></span>PENDIENTES DE DESPACHO ('+pedRes.length+')';
-      wrap.appendChild(lbl);
-      pedRes.forEach(function(p){ wrap.appendChild(mkPedidoCard(p,true)); });
-    }
+    if (filtro === 'todos') {
+      // Vista TODOS: mantener separación visual entre activos y despachados
+      var pedActivos    = pedFiltrados.filter(function(p){ var e=(p.estado||'').toUpperCase(); return e==='RESERVADO'||e==='PARCIAL'; });
+      var pedDespAct    = pedFiltrados.filter(function(p){ return (p.estado||'').toUpperCase() === 'DESPACHADO'; });
 
-    // Despachados
-    if(pedDesp.length){
-      var lbl2=document.createElement('div');
-      lbl2.style.cssText='font-size:.6rem;font-weight:900;color:'+GREEN+';text-transform:uppercase;letter-spacing:1.2px;display:flex;align-items:center;gap:8px;margin-top:8px;margin-bottom:2px;';
-      lbl2.innerHTML='<span style="width:7px;height:7px;border-radius:50%;background:'+GREEN+';display:inline-block;"></span>DESPACHADOS ('+pedDesp.length+')';
-      wrap.appendChild(lbl2);
-      pedDesp.forEach(function(p){ wrap.appendChild(mkPedidoCard(p,false)); });
+      if (pedActivos.length){
+        var lbl=document.createElement('div');
+        lbl.style.cssText='font-size:.6rem;font-weight:900;color:'+AMBER+';text-transform:uppercase;letter-spacing:1.2px;display:flex;align-items:center;gap:8px;margin-bottom:2px;';
+        lbl.innerHTML='<span style="width:7px;height:7px;border-radius:50%;background:'+AMBER+';display:inline-block;box-shadow:0 0 8px '+AMBER+'88;"></span>PENDIENTES DE DESPACHO ('+pedActivos.length+')';
+        wrap.appendChild(lbl);
+        pedActivos.forEach(function(p){ wrap.appendChild(mkPedidoCard(p,true)); });
+      }
+      if (pedDespAct.length){
+        var lbl2=document.createElement('div');
+        lbl2.style.cssText='font-size:.6rem;font-weight:900;color:'+GREEN+';text-transform:uppercase;letter-spacing:1.2px;display:flex;align-items:center;gap:8px;margin-top:8px;margin-bottom:2px;';
+        lbl2.innerHTML='<span style="width:7px;height:7px;border-radius:50%;background:'+GREEN+';display:inline-block;"></span>DESPACHADOS ('+pedDespAct.length+')';
+        wrap.appendChild(lbl2);
+        pedDespAct.forEach(function(p){ wrap.appendChild(mkPedidoCard(p,false)); });
+      }
+    } else {
+      // Vistas filtradas: una sola lista, sin separación
+      var headerColor = {
+        'reservado':  BLUE,
+        'embalado':   '#f59e0b',
+        'parcial':    '#a855f7',
+        'despachado': GREEN
+      }[filtro] || AMBER;
+      var headerLbl = {
+        'reservado':  '🔵 RESERVADOS',
+        'embalado':   '🟡 CON SUCURSALES EMBALADAS',
+        'parcial':    '⚡ PARCIALES (parte despachada)',
+        'despachado': '🟢 DESPACHADOS'
+      }[filtro] || filtro.toUpperCase();
+      var lbl=document.createElement('div');
+      lbl.style.cssText='font-size:.6rem;font-weight:900;color:'+headerColor+';text-transform:uppercase;letter-spacing:1.2px;display:flex;align-items:center;gap:8px;margin-bottom:2px;';
+      lbl.innerHTML='<span style="width:7px;height:7px;border-radius:50%;background:'+headerColor+';display:inline-block;box-shadow:0 0 8px '+headerColor+'88;"></span>'+headerLbl+' ('+pedFiltrados.length+')';
+      wrap.appendChild(lbl);
+      pedFiltrados.forEach(function(p){
+        var esActivo = (p.estado||'').toUpperCase() !== 'DESPACHADO';
+        wrap.appendChild(mkPedidoCard(p, esActivo));
+      });
     }
 
     tabContent.appendChild(wrap);
@@ -34020,8 +34127,27 @@ window.msAbrirMonitor = function() {
     var totalRefs=(ped.items||[]).length;
     var totalVal=_calcTotal(ped);
     var mon=ped.moneda||'TF';
-    var estadoCol={RESERVADO:AMBER,PARCIAL:AMBER,DESPACHADO:GREEN,CANCELADO:GRAY}[ped.estado]||GRAY;
-    var estadoBg={RESERVADO:AMBERBG,PARCIAL:AMBERBG,DESPACHADO:GREENBG,CANCELADO:'rgba(100,116,139,.12)'}[ped.estado]||'rgba(100,116,139,.12)';
+    // Estado normalizado en mayúsculas
+    var _estU = (ped.estado||'').toUpperCase();
+    // Mapa visual de estados ampliado: RESERVADO=azul, PARCIAL=morado, DESPACHADO=verde, CANCELADO=gris
+    var estadoCol = {
+      RESERVADO:  BLUE,
+      PARCIAL:    '#a855f7',
+      DESPACHADO: GREEN,
+      CANCELADO:  GRAY
+    }[_estU] || AMBER;
+    var estadoBg = {
+      RESERVADO:  BLUEBG,
+      PARCIAL:    'rgba(168,85,247,.12)',
+      DESPACHADO: GREENBG,
+      CANCELADO:  'rgba(100,116,139,.12)'
+    }[_estU] || AMBERBG;
+    var estadoIco = {
+      RESERVADO:  '🔵',
+      PARCIAL:    '⚡',
+      DESPACHADO: '🟢',
+      CANCELADO:  '✕'
+    }[_estU] || '⏳';
 
     // Calcular despachos por estado
     var sucs = ped.sucursales||[];
@@ -34039,7 +34165,9 @@ window.msAbrirMonitor = function() {
     }catch(e){ etiqData=ped.etiqData||{}; }
 
     var card=document.createElement('div');
-    card.style.cssText='background:#111638;border-radius:12px;overflow:hidden;border:1.5px solid '+(activo?AMBER+'66':BORDER)+';box-shadow:0 2px 12px rgba(0,0,0,.4);';
+    // Borde según estado: RESERVADO=azul, PARCIAL=morado, EMBALADO mixto=amber, DESPACHADO=verde
+    var _bordeCard = activo ? estadoCol+'66' : BORDER;
+    card.style.cssText='background:#111638;border-radius:12px;overflow:hidden;border:1.5px solid '+_bordeCard+';box-shadow:0 2px 12px rgba(0,0,0,.4);';
 
     // ── Header card ──────────────────────────────────────────────
     var ch=document.createElement('div');
@@ -34047,7 +34175,7 @@ window.msAbrirMonitor = function() {
     ch.innerHTML=
       '<div style="display:flex;align-items:center;gap:12px;">' +
         '<div style="font-family:\'Barlow Condensed\',sans-serif;font-size:1.5rem;font-weight:900;color:'+WHITE+';letter-spacing:1px;text-shadow:0 1px 4px rgba(0,0,0,.3);">'+ped.numP+'</div>' +
-        '<div style="background:'+estadoBg+';color:'+estadoCol+';font-size:.58rem;font-weight:900;padding:4px 12px;border-radius:20px;text-transform:uppercase;letter-spacing:.8px;border:1px solid '+estadoCol+'33;">'+ped.estado+'</div>' +
+        '<div style="background:'+estadoBg+';color:'+estadoCol+';font-size:.62rem;font-weight:900;padding:5px 12px;border-radius:20px;text-transform:uppercase;letter-spacing:.8px;border:1.5px solid '+estadoCol+'66;display:flex;align-items:center;gap:5px;">'+estadoIco+' '+ped.estado+'</div>' +
         '<div style="font-size:.6rem;color:'+DIM+';background:rgba(255,255,255,.04);padding:3px 9px;border-radius:5px;">{MON}</div>'.replace('{MON}',{USD:'USD $',BCV:'BCV $',TF:'TF $'}[mon]||mon) +
         +(sucs.length ? '<div style="display:flex;gap:4px;align-items:center;margin-left:4px;">'
           +(numPendientes>0 ? '<span style="font-size:.55rem;font-weight:800;background:'+AMBERBG+';color:'+AMBER+';border-radius:4px;padding:2px 7px;border:1px solid '+AMBER+'44;">⏳ '+numPendientes+' pend.</span>' : '')
@@ -34359,7 +34487,7 @@ window.msAbrirMonitor = function() {
     tabContent.appendChild(wrap);
   }
 
-  renderTab('pedidos');
+  renderTab('todos');
   ov.appendChild(box);
   document.body.appendChild(ov);
   ov.addEventListener('click',function(e){if(e.target===ov)ov.remove();});
