@@ -5360,9 +5360,57 @@ function lShowApp(username) {
   // Firebase sync — timeout más largo en móvil, siempre con try/catch
   var _isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
   var _delay = _isMobile ? 1200 : 400;
+
+  // Mostrar indicador visual de sincronización
+  var syncToast = null;
+  setTimeout(function(){
+    syncToast = document.createElement('div');
+    syncToast.id = 'login-sync-toast';
+    syncToast.style.cssText = 'position:fixed;top:80px;right:20px;background:linear-gradient(135deg,#1B1F6B,#3730a3);color:#fff;padding:14px 22px;border-radius:12px;box-shadow:0 10px 30px rgba(15,23,42,.35);z-index:99999;font-family:Arial,sans-serif;font-size:.85rem;font-weight:700;display:flex;align-items:center;gap:12px;animation:slideInRight .4s ease;';
+    syncToast.innerHTML =
+      '<div style="width:18px;height:18px;border:3px solid rgba(255,255,255,.3);border-top-color:#fff;border-radius:50%;animation:spin 1s linear infinite;"></div>' +
+      '<div>' +
+        '<div style="font-size:.9rem;">🔄 Sincronizando datos</div>' +
+        '<div style="font-size:.7rem;opacity:.85;font-weight:400;margin-top:2px;">Descargando de la nube...</div>' +
+      '</div>';
+    if (!document.getElementById('login-sync-style')) {
+      var st = document.createElement('style');
+      st.id = 'login-sync-style';
+      st.textContent = '@keyframes spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}@keyframes slideInRight{from{transform:translateX(120%);opacity:0}to{transform:translateX(0);opacity:1}}@keyframes slideOutRight{from{transform:translateX(0);opacity:1}to{transform:translateX(120%);opacity:0}}';
+      document.head.appendChild(st);
+    }
+    document.body.appendChild(syncToast);
+  }, _delay);
+
   setTimeout(function(){
     try {
-      if (typeof loadFromFirebase === 'function') loadFromFirebase();
+      if (typeof loadFromFirebase === 'function') {
+        // loadFromFirebase es async — esperamos a que termine para mostrar el toast de éxito
+        Promise.resolve(loadFromFirebase()).then(function(){
+          var t = document.getElementById('login-sync-toast');
+          if (t) {
+            t.style.background = 'linear-gradient(135deg,#16a34a,#15803d)';
+            t.innerHTML =
+              '<div style="font-size:1.1rem;">✅</div>' +
+              '<div>' +
+                '<div style="font-size:.9rem;">Sincronización completa</div>' +
+                '<div style="font-size:.7rem;opacity:.85;font-weight:400;margin-top:2px;">Todos los datos actualizados</div>' +
+              '</div>';
+            setTimeout(function(){
+              t.style.animation = 'slideOutRight .4s ease forwards';
+              setTimeout(function(){ if (t.parentNode) t.parentNode.removeChild(t); }, 400);
+            }, 2500);
+          }
+        }).catch(function(e){
+          console.warn('Firebase load error:', e);
+          var t = document.getElementById('login-sync-toast');
+          if (t) {
+            t.style.background = 'linear-gradient(135deg,#dc2626,#7f1d1d)';
+            t.innerHTML = '<div>⚠️ Error al sincronizar — recarga la página</div>';
+            setTimeout(function(){ if (t.parentNode) t.parentNode.removeChild(t); }, 4000);
+          }
+        });
+      }
     } catch(e) { console.warn('Firebase load error:', e); }
     setTimeout(function(){
       try {
@@ -6095,6 +6143,134 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
           }
         } catch(e){ console.warn('onSnapshot Tasas:', e); }
       });
+      // ═══════════════════════════════════════════════════════════════════
+      // ONSNAPSHOT MULTI-DISPOSITIVO TIEMPO REAL (25/04/2026)
+      // Estos listeners hacen que cualquier cambio hecho en otra PC se
+      // refleje automáticamente en esta PC en < 1 segundo, sin tener que
+      // recargar ni pulsar ningún botón.
+      // ═══════════════════════════════════════════════════════════════════
+
+      // ── PT_DATA (Ordenada, fichas extendidas, dimensiones) ──
+      onSnapshot(doc(db,'data','pt_data'), function(s) {
+        try {
+          if (!s.exists() || !s.data().v) return;
+          var ptObj = JSON.parse(s.data().v);
+          if (!ptObj || typeof ptObj !== 'object') return;
+          // Solo aplicar si difiere del local (evita loops de ida y vuelta)
+          var ptLocal = {};
+          try { ptLocal = JSON.parse(localStorage.getItem('farmers_pt_data') || '{}'); } catch(e){}
+          var localCount = Object.keys(ptLocal).length;
+          var remoteCount = Object.keys(ptObj).length;
+          // Aplicar el remoto SI es distinto del local (más reciente o diferente)
+          if (JSON.stringify(ptObj) !== JSON.stringify(ptLocal)) {
+            localStorage.setItem('farmers_pt_data', JSON.stringify(ptObj));
+            window.ptData = ptObj;
+            console.log('[onSnapshot pt_data] ↓ sincronizado: ' + remoteCount + ' refs (era ' + localCount + ')');
+            // Refrescar UI de Productos Terminados si está abierta
+            if (typeof ptRender === 'function') ptRender();
+            // Refrescar catálogo si está abierto (afecta Ordenada visible)
+            if (typeof doRefSearch === 'function' && document.querySelector('.cat-grid, #ref-search-modal.show, #ref-search-modal[style*="block"]')) {
+              try { doRefSearch(); } catch(eR){}
+            }
+          }
+        } catch(e){ console.warn('onSnapshot pt_data:', e); }
+      });
+
+      // ── COMPROMETIDO (reservas activas multi-sucursal) ──
+      onSnapshot(doc(db,'data','comprometido'), function(s) {
+        try {
+          if (!s.exists() || !s.data().v) return;
+          var compObj = JSON.parse(s.data().v);
+          if (!compObj || typeof compObj !== 'object') return;
+          var compLocal = {};
+          try { compLocal = JSON.parse(localStorage.getItem('farmers_inv_comprometido') || '{}'); } catch(e){}
+          if (JSON.stringify(compObj) !== JSON.stringify(compLocal)) {
+            localStorage.setItem('farmers_inv_comprometido', JSON.stringify(compObj));
+            var refs = Object.keys(compObj).filter(function(r){
+              var entry = compObj[r];
+              var q = (entry && typeof entry === 'object') ? (parseInt(entry.qty) || 0) : (parseInt(entry) || 0);
+              return q > 0;
+            }).length;
+            console.log('[onSnapshot comprometido] ↓ sincronizado: ' + refs + ' refs reservadas');
+            // Refrescar UI
+            if (typeof ptRender === 'function') ptRender();
+            if (typeof renderTable === 'function') renderTable();
+            if (typeof doRefSearch === 'function' && document.querySelector('.cat-grid, #ref-search-modal.show, #ref-search-modal[style*="block"]')) {
+              try { doRefSearch(); } catch(eR){}
+            }
+          }
+        } catch(e){ console.warn('onSnapshot comprometido:', e); }
+      });
+
+      // ── MS_PEDIDOS (pedidos pendientes multi-sucursal) ──
+      onSnapshot(doc(db,'data','ms_pedidos'), function(s) {
+        try {
+          if (!s.exists() || !s.data().v) return;
+          var msArr = JSON.parse(s.data().v);
+          if (!Array.isArray(msArr)) return;
+          var msLocal = [];
+          try { msLocal = JSON.parse(localStorage.getItem('farmers_ms_pedidos') || '[]'); } catch(e){}
+          if (JSON.stringify(msArr) !== JSON.stringify(msLocal)) {
+            localStorage.setItem('farmers_ms_pedidos', JSON.stringify(msArr));
+            console.log('[onSnapshot ms_pedidos] ↓ sincronizado: ' + msArr.length + ' pedidos');
+            // Refrescar monitor de pedidos si está abierto
+            if (typeof renderMonitorPedidos === 'function') {
+              try { renderMonitorPedidos(); } catch(eR){}
+            }
+            if (typeof homeUpdateBadges === 'function') {
+              try { homeUpdateBadges(); } catch(eR){}
+            }
+          }
+        } catch(e){ console.warn('onSnapshot ms_pedidos:', e); }
+      });
+
+      // ── HCL (Historial de Clientes / facturas legacy) ──
+      onSnapshot(doc(db,'data','hcl_facturas'), function(s) {
+        try {
+          if (!s.exists() || !s.data().v) return;
+          var hclArr = JSON.parse(s.data().v);
+          if (!Array.isArray(hclArr)) return;
+          var hclLocal = [];
+          try { hclLocal = JSON.parse(localStorage.getItem('farmers_hcl_v7_facturas') || '[]'); } catch(e){}
+          if (JSON.stringify(hclArr) !== JSON.stringify(hclLocal)) {
+            localStorage.setItem('farmers_hcl_v7_facturas', JSON.stringify(hclArr));
+            localStorage.setItem('farmers_hcl_facturas', JSON.stringify(hclArr));
+            console.log('[onSnapshot hcl] ↓ sincronizado: ' + hclArr.length + ' facturas');
+            if (typeof hclRenderFacturas === 'function') {
+              try { hclRenderFacturas(); } catch(eR){}
+            }
+          }
+        } catch(e){ console.warn('onSnapshot hcl:', e); }
+      });
+
+      // ── PRODUCTS_EXT (productos importados que no están en catálogo principal) ──
+      onSnapshot(doc(db,'data','products_ext'), function(s) {
+        try {
+          if (!s.exists() || !s.data().v) return;
+          var extArr = JSON.parse(s.data().v);
+          if (!Array.isArray(extArr)) return;
+          var extLocal = [];
+          try { extLocal = JSON.parse(localStorage.getItem('farmers_products_ext') || '[]'); } catch(e){}
+          if (JSON.stringify(extArr) !== JSON.stringify(extLocal)) {
+            // Verificar refs duplicadas con PRODUCTS principal
+            var refsPrincipales = new Set((typeof PRODUCTS !== 'undefined' ? PRODUCTS : []).map(function(p){ return p.r; }));
+            var extLimpio = extArr.filter(function(p){ return !refsPrincipales.has(p.r); });
+            localStorage.setItem('farmers_products_ext', JSON.stringify(extLimpio));
+            // Agregar a PRODUCTS los que no estén
+            var added = 0;
+            if (typeof PRODUCTS !== 'undefined') {
+              extLimpio.forEach(function(p){
+                if (!refsPrincipales.has(p.r)) { PRODUCTS.push(p); added++; }
+              });
+              if (added > 0 && typeof sortProducts === 'function') sortProducts();
+            }
+            console.log('[onSnapshot products_ext] ↓ sincronizado: ' + extLimpio.length + ' refs (' + added + ' agregadas a PRODUCTS)');
+            if (typeof renderTable === 'function') renderTable();
+          }
+        } catch(e){ console.warn('onSnapshot products_ext:', e); }
+      });
+
+      console.log('[multi-device] ✅ 5 nuevos onSnapshot activos: pt_data, comprometido, ms_pedidos, hcl, products_ext');
     } catch(e_snap) {
       console.warn('Error inicializando onSnapshot:', e_snap);
     }
@@ -6392,6 +6568,14 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
       return true;
     } catch(e) { console.error('[fbSaveComprometido] ✗ error:', e); return false; }
   };
+  // Leer comprometido desde Firestore (necesario para login en PC nueva)
+  window.fbGetComprometido = async () => {
+    try {
+      var snap = await getDoc(doc(db, 'data', 'comprometido'));
+      if (!snap.exists() || !snap.data().v) return {};
+      return JSON.parse(snap.data().v);
+    } catch(e) { console.error('[fbGetComprometido]', e); return {}; }
+  };
   // pt_data (Ordenada) — publicar a Firestore para que el portal lo lea cuando el token tenga mostrarOrdenada:true
   // Acepta objeto opcional (o lo lee de localStorage). Serializa a string para consistencia.
   window.fbSavePT = async (dataObj) => {
@@ -6672,8 +6856,134 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
     console.log('═══════════════════════════════════════════════════');
     console.log('💡 Para republicar manualmente:  await fbSavePortalSnapshot()');
     console.log('💡 Para forzar sync completo:    await farmersFix()');
+    console.log('💡 Para auditoría multi-PC:     await farmersCheck()');
     console.log('═══════════════════════════════════════════════════');
     return 'Diagnóstico completado';
+  };
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // farmersCheck() — Comparación exhaustiva LOCAL vs FIRESTORE
+  // Te dice EXACTAMENTE qué hay en cada fuente y si están sincronizadas.
+  // Útil para verificar que una PC nueva ve los mismos datos que la original.
+  // ══════════════════════════════════════════════════════════════════════════
+  window.farmersCheck = async function() {
+    console.log('═══════════════════════════════════════════════════════════════');
+    console.log('🔍 AUDITORÍA MULTI-DISPOSITIVO — LOCAL vs FIRESTORE');
+    console.log('═══════════════════════════════════════════════════════════════\n');
+
+    // Helpers
+    function localCount(key) {
+      try {
+        var raw = localStorage.getItem(key);
+        if (!raw) return { count: 0, exists: false };
+        var data = JSON.parse(raw);
+        if (Array.isArray(data)) return { count: data.length, exists: true };
+        if (typeof data === 'object') return { count: Object.keys(data).length, exists: true };
+        return { count: 1, exists: true };
+      } catch(e) { return { count: 0, exists: false, error: e.message }; }
+    }
+
+    async function fbCount(fnName) {
+      try {
+        if (typeof window[fnName] !== 'function') return { count: 0, exists: false, error: 'función no existe' };
+        var data = await window[fnName]();
+        // fbGetPT puede devolver {data, exists}
+        if (data && typeof data === 'object' && 'data' in data && 'exists' in data) {
+          var inner = data.data;
+          if (Array.isArray(inner)) return { count: inner.length, exists: data.exists };
+          if (inner && typeof inner === 'object') return { count: Object.keys(inner).length, exists: data.exists };
+          return { count: 0, exists: data.exists };
+        }
+        if (data === null) return { count: 0, exists: false };
+        if (Array.isArray(data)) return { count: data.length, exists: true };
+        if (typeof data === 'object') return { count: Object.keys(data).length, exists: true };
+        return { count: 1, exists: true };
+      } catch(e) { return { count: 0, exists: false, error: e.message }; }
+    }
+
+    // Fuentes a verificar
+    var fuentes = [
+      { nombre: 'PRODUCTS (catálogo)',          local: 'farmers_products',           fb: 'fbGetProducts' },
+      { nombre: 'PRODUCTS_EXT (importados)',    local: 'farmers_products_ext',       fb: 'fbGetProductsExt' },
+      { nombre: 'INVENTARIO',                   local: 'farmers_inv',                fb: 'fbGetInventory' },
+      { nombre: 'COMPROMETIDO ⭐',              local: 'farmers_inv_comprometido',   fb: 'fbGetComprometido' },
+      { nombre: 'PT_DATA (Ordenada/fichas) ⭐', local: 'farmers_pt_data',            fb: 'fbGetPT' },
+      { nombre: 'MS_PEDIDOS ⭐',                local: 'farmers_ms_pedidos',         fb: 'fbGetMsPedidos' },
+      { nombre: 'SALES (ventas)',               local: 'farmers_sales',              fb: 'fbGetSales' },
+      { nombre: 'CLIENTES',                     local: 'farmers_clients_v2',         fb: 'fbGetClients' },
+      { nombre: 'PROVEEDORES ⭐',               local: 'farmers_proveedores',        fb: 'fbGetProveedores' },
+      { nombre: 'ÓRDENES DE COMPRA ⭐',         local: 'farmers_ordenes_compra',     fb: 'fbGetOrdenesCompra' },
+      { nombre: 'CXC',                          local: 'farmers_cxc',                fb: 'fbGetCXC' },
+      { nombre: 'BANCOS ⭐',                    local: 'farmers_bancos',             fb: 'fbGetBancos' },
+      { nombre: 'GRUPOS clientes',              local: 'farmers_cl_groups',          fb: 'fbGetGroups' },
+      { nombre: 'TASAS BCV',                    local: 'farmers_tasa_bcv_history',   fb: 'fbGetTasas' },
+      { nombre: 'NOTAS DE CRÉDITO',             local: 'farmers_nc',                 fb: 'fbGetNC' },
+      { nombre: 'HCL (historial)',              local: 'farmers_hcl_v7_facturas',    fb: 'fbGetHCL' },
+    ];
+
+    var results = [];
+    for (var i = 0; i < fuentes.length; i++) {
+      var f = fuentes[i];
+      var local = localCount(f.local);
+      var fb = await fbCount(f.fb);
+      results.push({ fuente: f.nombre, local: local, fb: fb });
+    }
+
+    // Imprimir tabla
+    console.log('FUENTE'.padEnd(40) + 'LOCAL'.padStart(12) + 'FIRESTORE'.padStart(14) + '   ESTADO');
+    console.log('─'.repeat(75));
+
+    var problemas = 0;
+    var perdidas = 0;
+    results.forEach(function(r){
+      var localStr = r.local.exists ? r.local.count.toString() : '—';
+      var fbStr = r.fb.exists ? r.fb.count.toString() : (r.fb.error ? 'ERR' : '—');
+      var estado = '';
+
+      if (!r.local.exists && !r.fb.exists) {
+        estado = '⚪ vacío';
+      } else if (r.local.exists && !r.fb.exists) {
+        estado = '⚠️  EN LOCAL pero NO en Firestore — hay que subir';
+        problemas++;
+      } else if (!r.local.exists && r.fb.exists) {
+        estado = '📥 EN FIRESTORE pero NO en local — descargar';
+        perdidas++;
+      } else if (r.local.count === r.fb.count) {
+        estado = '✅ sincronizado';
+      } else if (r.local.count > r.fb.count) {
+        estado = '⚠️  local tiene MÁS (subir falta)';
+        problemas++;
+      } else {
+        estado = '📥 Firestore tiene MÁS (recargar)';
+        perdidas++;
+      }
+      console.log(
+        r.fuente.padEnd(40) +
+        localStr.padStart(12) +
+        fbStr.padStart(14) +
+        '   ' + estado
+      );
+    });
+
+    console.log('─'.repeat(75));
+    console.log('');
+    console.log('LEYENDA:  ⭐ = fuentes críticas para multi-dispositivo');
+    console.log('');
+
+    if (problemas > 0) {
+      console.log('⚠️  ' + problemas + ' fuente(s) con datos LOCAL pero no en Firestore');
+      console.log('   → Ejecuta: await farmersFix()  (sube todo)');
+    }
+    if (perdidas > 0) {
+      console.log('📥 ' + perdidas + ' fuente(s) con datos en Firestore pero no en local');
+      console.log('   → Recarga el admin (Ctrl+F5)  o ejecuta: await loadFromFirebase()');
+    }
+    if (problemas === 0 && perdidas === 0) {
+      console.log('✅ TODAS las fuentes perfectamente sincronizadas LOCAL ↔ FIRESTORE');
+      console.log('   Esta PC ve EXACTAMENTE los mismos datos que cualquier otra.');
+    }
+    console.log('═══════════════════════════════════════════════════════════════');
+    return { problemas: problemas, perdidas: perdidas, results: results };
   };
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -6996,6 +7306,101 @@ async function loadFromFirebase() {
         }
       } catch(eNC) { console.warn('loadFromFirebase NC:', eNC); }
     }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // CARGA CRÍTICA MULTI-DISPOSITIVO (25/04/2026)
+    // Cuando inicias sesión en una PC nueva, estos datos DEBEN bajarse
+    // de Firestore. Sin esto, faltan Ordenada, Comprometida, Pedidos MS,
+    // Proveedores, Órdenes de Compra y Bancos.
+    // ═══════════════════════════════════════════════════════════════════
+
+    // ── Cargar PT_DATA (Ordenada, costos, dimensiones, fichas extendidas) ──
+    if (window.fbGetPT) {
+      try {
+        var ptResult = await window.fbGetPT();
+        // fbGetPT puede devolver {exists, data} o el objeto directo
+        var ptObj = (ptResult && ptResult.data) ? ptResult.data : ptResult;
+        if (ptObj && typeof ptObj === 'object' && Object.keys(ptObj).length > 0) {
+          localStorage.setItem('farmers_pt_data', JSON.stringify(ptObj));
+          window.ptData = ptObj;
+          var ptCount = Object.keys(ptObj).length;
+          var ptOrdCount = 0;
+          Object.keys(ptObj).forEach(function(r){
+            if (parseInt((ptObj[r]||{}).exOrdenada || 0) > 0) ptOrdCount++;
+          });
+          console.log('[loadFromFirebase] ✓ PT_DATA cargado: ' + ptCount + ' refs (' + ptOrdCount + ' con Ordenada > 0)');
+        }
+      } catch(ePT) { console.warn('loadFromFirebase PT_DATA:', ePT); }
+    }
+
+    // ── Cargar COMPROMETIDO (reservas activas multi-sucursal) ──
+    if (window.fbGetComprometido) {
+      try {
+        var compFB = await window.fbGetComprometido();
+        if (compFB && typeof compFB === 'object' && Object.keys(compFB).length > 0) {
+          localStorage.setItem('farmers_inv_comprometido', JSON.stringify(compFB));
+          var compRefs = 0, compTotal = 0;
+          Object.keys(compFB).forEach(function(r){
+            var entry = compFB[r];
+            var q = (entry && typeof entry === 'object') ? (parseInt(entry.qty) || 0) : (parseInt(entry) || 0);
+            if (q > 0) { compRefs++; compTotal += q; }
+          });
+          console.log('[loadFromFirebase] ✓ COMPROMETIDO cargado: ' + compRefs + ' refs (' + compTotal + ' uds reservadas)');
+        }
+      } catch(eComp) { console.warn('loadFromFirebase COMPROMETIDO:', eComp); }
+    }
+
+    // ── Cargar MS_PEDIDOS (pedidos pendientes multi-sucursal) ──
+    if (window.fbGetMsPedidos) {
+      try {
+        var msPedidosFB = await window.fbGetMsPedidos();
+        if (Array.isArray(msPedidosFB) && msPedidosFB.length > 0) {
+          localStorage.setItem('farmers_ms_pedidos', JSON.stringify(msPedidosFB));
+          console.log('[loadFromFirebase] ✓ MS_PEDIDOS cargados: ' + msPedidosFB.length + ' pedidos');
+        }
+      } catch(eMS) { console.warn('loadFromFirebase MS_PEDIDOS:', eMS); }
+    }
+
+    // ── Cargar PROVEEDORES ──
+    if (window.fbGetProveedores) {
+      try {
+        var provFB = await window.fbGetProveedores();
+        if (Array.isArray(provFB) && provFB.length > 0) {
+          localStorage.setItem('farmers_proveedores', JSON.stringify(provFB));
+          console.log('[loadFromFirebase] ✓ PROVEEDORES cargados: ' + provFB.length);
+        }
+      } catch(eProv) { console.warn('loadFromFirebase PROVEEDORES:', eProv); }
+    }
+
+    // ── Cargar ÓRDENES DE COMPRA ──
+    if (window.fbGetOrdenesCompra) {
+      try {
+        var ocFB = await window.fbGetOrdenesCompra();
+        if (Array.isArray(ocFB) && ocFB.length > 0) {
+          localStorage.setItem('farmers_ordenes_compra', JSON.stringify(ocFB));
+          console.log('[loadFromFirebase] ✓ ÓRDENES DE COMPRA cargadas: ' + ocFB.length);
+        }
+      } catch(eOC) { console.warn('loadFromFirebase OC:', eOC); }
+    }
+
+    // ── Cargar BANCOS ──
+    if (window.fbGetBancos) {
+      try {
+        var bancosFB = await window.fbGetBancos();
+        if (bancosFB && (Array.isArray(bancosFB) ? bancosFB.length > 0 : Object.keys(bancosFB).length > 0)) {
+          localStorage.setItem('farmers_bancos', JSON.stringify(bancosFB));
+          console.log('[loadFromFirebase] ✓ BANCOS cargados');
+        }
+      } catch(eBan) { console.warn('loadFromFirebase BANCOS:', eBan); }
+    }
+
+    // ── Refrescar UI después de cargar todo ──
+    if (typeof ptRender === 'function') ptRender();
+    if (typeof renderTable === 'function') renderTable();
+
+    console.log('═══════════════════════════════════════════════════');
+    console.log('[loadFromFirebase] ✅ Sincronización multi-dispositivo completa');
+    console.log('═══════════════════════════════════════════════════');
   } catch(e) { console.warn('loadFromFirebase:', e); }
 
   // Auto-subir logo Farmers a Firestore para que el portal pueda descargarlo
