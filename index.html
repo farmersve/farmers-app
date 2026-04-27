@@ -34740,66 +34740,140 @@ window.msAbrirEditorPedido = function(ped) {
 // Se genera al RESERVAR — antes del despacho y la facturación
 // Es un compromiso de entrega, no una venta
 window.msGenerarDocPedido = function(numP, sel) {
-  // ── Cargar datos del pedido usando la función centralizada ──
-  // Esto garantiza que MS.data tenga el formato correcto y que dist/pedidos
-  // estén poblados (incluso para pedidos despachados con dist[] vacío).
+  // ════════════════════════════════════════════════════════════════
+  // AUTOCONTENIDA: lee del localStorage directamente.
+  // NO depende de MS.data ni MS.numPedido globales (que pueden estar
+  // contaminados con datos de otro pedido abierto previamente).
+  // Usa variables LOCALES dentro de la función para evitar mutación cruzada.
+  // ════════════════════════════════════════════════════════════════
   var _pedN = numP || MS.numPedido;
-  if (_pedN) {
-    // Forzar limpieza para que cargue el pedido SOLICITADO (no el anterior)
-    if (MS.numPedido !== _pedN) {
-      MS.data = [];
-    }
-    if (typeof msAsegurarDataPedido === 'function') {
-      var ok = msAsegurarDataPedido(_pedN);
-      if (!ok) {
-        if (typeof showToast === 'function') showToast('⚠ No se pudo cargar el pedido ' + _pedN, 'warn');
-        return;
-      }
-    }
-    // Si sel está vacío, usar TODAS las sucursales del pedido
-    if (!sel || !sel.length) {
-      var _peds = typeof getMsPedidos === 'function' ? getMsPedidos() : [];
-      var _ped = _peds.find(function(p){ return p.numP === _pedN; });
-      if (_ped) sel = _ped.sucursales || [];
-    }
-    // Log diagnóstico
-    var _totalUds = 0;
-    (MS.data || []).forEach(function(p){
-      (sel || []).forEach(function(s){ _totalUds += (p.dist && p.dist[s]) || 0; });
-    });
-    console.log('[msGenerarDocPedido] ✓ ' + _pedN + ': data=' + (MS.data||[]).length + ' refs, sucursales=' + (sel||[]).length + ', total uds despacho=' + _totalUds);
+  if (!_pedN) {
+    if (typeof showToast === 'function') showToast('⚠ No hay pedido para generar el documento', 'warn');
+    return;
   }
 
-  var clDB   = typeof getClientsDB==='function' ? getClientsDB() : [];
-  var moneda = MS.moneda || 'TF';
-  // Sincronizar MS.moneda para que msGetPrecio use la moneda correcta del pedido
+  // Leer pedido directamente del localStorage (NO usar MS.data global)
+  var _peds = typeof getMsPedidos === 'function' ? getMsPedidos() : [];
+  var _ped = _peds.find(function(p){ return p.numP === _pedN; });
+  if (!_ped) {
+    if (typeof showToast === 'function') showToast('⚠ No se encontró el pedido ' + _pedN, 'warn');
+    return;
+  }
+
+  // Si sel está vacío, usar TODAS las sucursales del pedido
+  if (!sel || !sel.length) sel = _ped.sucursales || [];
+
+  // Construir DOCDATA local (versión normalizada del pedido para este render)
+  var _esDespachado = (_ped.estado || '').toUpperCase() === 'DESPACHADO';
+  var DOCDATA = [];
+
+  // Prioridad 1: usar ped.data si existe (estructura nueva)
+  if (_ped.data && Array.isArray(_ped.data) && _ped.data.length) {
+    DOCDATA = _ped.data.map(function(p){
+      var pedidos = {};
+      var dist = {};
+      // Copia profunda para no contaminar el original
+      Object.keys(p.pedidos || {}).forEach(function(k){ pedidos[k] = p.pedidos[k] || 0; });
+      Object.keys(p.dist || {}).forEach(function(k){ dist[k] = p.dist[k] || 0; });
+      // Si dist está vacío y el pedido está despachado, asumir dist = pedidos
+      if (Object.keys(dist).length === 0 && _esDespachado && Object.keys(pedidos).length > 0) {
+        dist = Object.assign({}, pedidos);
+      }
+      return {
+        ref: p.ref,
+        desc: p.desc || p.ref,
+        pedidos: pedidos,
+        dist: dist,
+        estado: p.estado || 'completo',
+        precioOverride: p.precioOverride
+      };
+    });
+  }
+  // Prioridad 2: reconstruir desde ped.items (estructura legacy)
+  else if (_ped.items && Array.isArray(_ped.items) && _ped.items.length) {
+    DOCDATA = _ped.items.map(function(item){
+      var pedidos = {}, dist = {};
+      Object.keys(item.sucursales || {}).forEach(function(s){
+        pedidos[s] = parseInt((item.sucursales[s] || {}).pide) || 0;
+        dist[s]    = parseInt((item.sucursales[s] || {}).desp) || 0;
+      });
+      // Si dist vacío y despachado, usar pedidos como dist
+      var _distTotal = Object.values(dist).reduce(function(a,b){return a+(b||0);}, 0);
+      if (_distTotal === 0 && _esDespachado) {
+        dist = Object.assign({}, pedidos);
+      }
+      return {
+        ref: item.ref,
+        desc: item.desc || item.ref,
+        pedidos: pedidos,
+        dist: dist,
+        estado: 'completo',
+        precioOverride: item.precioOverride
+      };
+    });
+  }
+
+  if (!DOCDATA.length) {
+    console.warn('[msGenerarDocPedido] Pedido sin items:', _pedN);
+    if (typeof showToast === 'function') showToast('⚠ Pedido sin items: ' + _pedN, 'warn');
+    return;
+  }
+
+  // Log diagnóstico
+  var _totalUdsLog = 0;
+  DOCDATA.forEach(function(p){
+    sel.forEach(function(s){ _totalUdsLog += (p.dist && p.dist[s]) || 0; });
+  });
+  console.log('[msGenerarDocPedido] ✓ ' + _pedN + ': DOCDATA=' + DOCDATA.length + ' refs, sucursales=' + sel.length + ', total uds=' + _totalUdsLog + ', estado=' + (_ped.estado||'?'));
+
+  // Cargar metadata del pedido en variables LOCALES (no globales)
+  var _clientesPorSucursalLocal = _ped.clientesPorSucursal || {};
+  var _monedaLocal = _ped.moneda || 'USD';
+  var _fechaLocal = _ped.fecha || '';
+
+  // Para que msGetPrecio funcione, necesitamos setear MS.moneda temporalmente
   var _monedaOrig = MS.moneda;
-  MS.moneda = moneda;
-  var monedaLabel = {USD:'USD $', BCV:'BCV $', TF:'TF $'}[moneda] || moneda;
-  var monedaSimbolo = {USD:'USD $', BCV:'BCV $', TF:'TF $'}[moneda] || moneda;
-  var fecha  = MS.fechaEmision || new Date().toLocaleDateString('es-VE',{day:'2-digit',month:'2-digit',year:'numeric'});
-  var hoy    = new Date().toLocaleDateString('es-VE',{day:'2-digit',month:'long',year:'numeric'}).toUpperCase();
-  var numPed = numP || MS.numPedido || 'MS-?';
+  MS.moneda = _monedaLocal;
+
+  // ── Variables de display ──
+  var clDB = typeof getClientsDB==='function' ? getClientsDB() : [];
+  var monedaLabel = {USD:'USD $', BCV:'BCV $', TF:'TF $'}[_monedaLocal] || _monedaLocal;
+  var fecha = _fechaLocal || new Date().toLocaleDateString('es-VE',{day:'2-digit',month:'2-digit',year:'numeric'});
+  var hoy = new Date().toLocaleDateString('es-VE',{day:'2-digit',month:'long',year:'numeric'}).toUpperCase();
+  var numPed = _pedN;
 
   var NAVY = '#0f1547', NAVY2 = '#1B1F6B', BLUE = '#2d35a0';
   var AMBER = '#92400e', AMBERBG = '#fffbeb';
 
-  // Construir detalle por sucursal
+  // Construir detalle por sucursal usando DOCDATA local
   var seccionesSucs = sel.map(function(suc) {
-    var clId = (MS.clientesPorSucursal||{})[suc]||'';
-    var cl   = clDB.find(function(x){return x.id===clId;});
+    var clId = _clientesPorSucursalLocal[suc] || '';
+    var cl = clDB.find(function(x){ return x.id === clId; });
     var nombreCl = cl ? cl.nombre : suc;
-    var rifCl    = cl ? (cl.rif||'') : '';
-    var dirCl    = cl ? (cl.direccion||'') : '';
+    var rifCl = cl ? (cl.rif||'') : '';
+    var dirCl = cl ? (cl.direccion||'') : '';
 
     var items = [];
-    MS.data.forEach(function(p){
-      var pide = p.pedidos[suc]||0; if(!pide) return;
-      var desp = Math.min(p.dist[suc]||0, pide);
-      var precio = msGetPrecio(p.ref)||0;
-      items.push({ref:p.ref, desc:p.desc, pide:pide, desp:desp, precio:precio, total:precio*desp, estado:p.estado});
+    DOCDATA.forEach(function(p){
+      var pide = (p.pedidos && p.pedidos[suc]) || 0;
+      if (!pide) return;
+      var desp = Math.min((p.dist && p.dist[suc]) || 0, pide);
+      // Si el pedido está despachado y desp es 0 pero pide > 0, asumir que se despachó todo
+      if (desp === 0 && _esDespachado && pide > 0) desp = pide;
+      var precio = (p.precioOverride !== undefined && p.precioOverride !== null)
+                   ? p.precioOverride
+                   : (typeof msGetPrecio === 'function' ? (msGetPrecio(p.ref)||0) : 0);
+      items.push({
+        ref: p.ref,
+        desc: p.desc,
+        pide: pide,
+        desp: desp,
+        precio: precio,
+        total: precio*desp,
+        estado: p.estado
+      });
     });
-    if(!items.length) return '';
+    if (!items.length) return '';
 
     var totalSuc = items.reduce(function(s,i){return s+i.total;},0);
     var totalUds = items.reduce(function(s,i){return s+i.desp;},0);
@@ -34857,16 +34931,23 @@ window.msGenerarDocPedido = function(numP, sel) {
     '</div>';
   }).join('');
 
-  // Total general
+  // Total general — usa DOCDATA local (NO MS.data global)
   var grandTotal = 0, grandUds = 0;
   sel.forEach(function(suc){
-    MS.data.forEach(function(p){
-      var pide=p.pedidos[suc]||0; if(!pide)return;
-      var desp=Math.min(p.dist[suc]||0,pide);
-      grandTotal+=msGetPrecio(p.ref)*desp;
-      grandUds+=desp;
+    DOCDATA.forEach(function(p){
+      var pide = (p.pedidos && p.pedidos[suc]) || 0;
+      if (!pide) return;
+      var desp = Math.min((p.dist && p.dist[suc]) || 0, pide);
+      // Si despachado pero desp es 0, asumir desp = pide
+      if (desp === 0 && _esDespachado && pide > 0) desp = pide;
+      var precio = (p.precioOverride !== undefined && p.precioOverride !== null)
+                   ? p.precioOverride
+                   : (typeof msGetPrecio === 'function' ? (msGetPrecio(p.ref)||0) : 0);
+      grandTotal += precio * desp;
+      grandUds += desp;
     });
   });
+  console.log('[msGenerarDocPedido] Totales finales para ' + _pedN + ': grandUds=' + grandUds + ', grandTotal=' + grandTotal.toFixed(2));
 
   var html = '<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8">'
   +'<title>Pedido '+numPed+'</title>'
