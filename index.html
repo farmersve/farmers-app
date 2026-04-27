@@ -34740,30 +34740,34 @@ window.msAbrirEditorPedido = function(ped) {
 // Se genera al RESERVAR — antes del despacho y la facturación
 // Es un compromiso de entrega, no una venta
 window.msGenerarDocPedido = function(numP, sel) {
-  // ── Cargar datos del pedido desde farmers_ms_pedidos si MS.data está vacío ──
+  // ── Cargar datos del pedido usando la función centralizada ──
+  // Esto garantiza que MS.data tenga el formato correcto y que dist/pedidos
+  // estén poblados (incluso para pedidos despachados con dist[] vacío).
   var _pedN = numP || MS.numPedido;
-  if((!MS.data || !MS.data.length) && _pedN) {
-    var _peds = typeof getMsPedidos==='function' ? getMsPedidos() : [];
-    var _ped  = _peds.find(function(p){ return p.numP===_pedN; });
-    if(_ped) {
-      if(!sel || !sel.length) sel = _ped.sucursales||[];
-      if(!MS.clientesPorSucursal || !Object.keys(MS.clientesPorSucursal).length)
-        MS.clientesPorSucursal = _ped.clientesPorSucursal||{};
-      if(!MS.moneda) MS.moneda = _ped.moneda||'USD';
-      if(!MS.fechaEmision) MS.fechaEmision = _ped.fecha;
-      MS.sucursales = _ped.sucursales||[];
-      // Reconstruir MS.data desde items del pedido
-      MS.data = (_ped.items||[]).map(function(item){
-        var row = {ref:item.ref, desc:item.desc||item.ref, pedidos:{}, dist:{}, estado:'completo'};
-        (sel||[]).forEach(function(s){
-          var sd = (item.sucursales||{})[s]||{pide:0,desp:0};
-          row.pedidos[s] = parseInt(sd.pide)||0;
-          row.dist[s]    = parseInt(sd.desp)||0;
-        });
-        if(item.precioOverride) row.precioOverride = item.precioOverride;
-        return row;
-      });
+  if (_pedN) {
+    // Forzar limpieza para que cargue el pedido SOLICITADO (no el anterior)
+    if (MS.numPedido !== _pedN) {
+      MS.data = [];
     }
+    if (typeof msAsegurarDataPedido === 'function') {
+      var ok = msAsegurarDataPedido(_pedN);
+      if (!ok) {
+        if (typeof showToast === 'function') showToast('⚠ No se pudo cargar el pedido ' + _pedN, 'warn');
+        return;
+      }
+    }
+    // Si sel está vacío, usar TODAS las sucursales del pedido
+    if (!sel || !sel.length) {
+      var _peds = typeof getMsPedidos === 'function' ? getMsPedidos() : [];
+      var _ped = _peds.find(function(p){ return p.numP === _pedN; });
+      if (_ped) sel = _ped.sucursales || [];
+    }
+    // Log diagnóstico
+    var _totalUds = 0;
+    (MS.data || []).forEach(function(p){
+      (sel || []).forEach(function(s){ _totalUds += (p.dist && p.dist[s]) || 0; });
+    });
+    console.log('[msGenerarDocPedido] ✓ ' + _pedN + ': data=' + (MS.data||[]).length + ' refs, sucursales=' + (sel||[]).length + ', total uds despacho=' + _totalUds);
   }
 
   var clDB   = typeof getClientsDB==='function' ? getClientsDB() : [];
