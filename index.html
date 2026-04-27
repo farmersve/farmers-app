@@ -3526,17 +3526,52 @@ window.saveProducts = async function() {
       });
       if (corregidosC > 5) console.log('  · (y ' + (corregidosC - 5) + ' más...)');
     }
-    // 1) localStorage (siempre instantáneo)
-    localStorage.setItem(PRODUCTS_KEY, JSON.stringify(PRODUCTS));
+    // 1) localStorage CON VERIFICACIÓN POST-SAVE
+    var serialized = JSON.stringify(PRODUCTS);
+    var lsOk = false;
+    try {
+      localStorage.setItem(PRODUCTS_KEY, serialized);
+      // Verificar que se guardó leyéndolo de vuelta
+      var verify = localStorage.getItem(PRODUCTS_KEY);
+      if (verify && verify.length === serialized.length) {
+        lsOk = true;
+      } else {
+        throw new Error('Verificación post-save falló: tamaños no coinciden');
+      }
+    } catch(eLs) {
+      // ⚠ FALLA CRÍTICA — alertar al usuario
+      console.error('[saveProducts] ✗✗✗ localStorage FALLÓ:', eLs);
+      var alertMsg = '🚨 ERROR CRÍTICO AL GUARDAR\n\n' +
+                     'No se pudo guardar PRODUCTS en localStorage.\n' +
+                     'Causa probable: cuota excedida.\n\n' +
+                     'Acción recomendada:\n' +
+                     '1. Click en el indicador de cuota (esquina superior derecha)\n' +
+                     '2. Ver qué claves ocupan más espacio\n' +
+                     '3. Limpiar las que sean basura legacy\n\n' +
+                     'Tus cambios NO se guardaron. Por favor:\n' +
+                     '- NO recargues la página\n' +
+                     '- Libera espacio primero\n' +
+                     '- Vuelve a guardar';
+      alert(alertMsg);
+      // Refrescar el indicador para que se vea rojo
+      if (typeof window._lsQuotaCheck === 'function') window._lsQuotaCheck();
+      // Aún así intentar subir a Firebase (puede que sirva)
+    }
     // 2) Firestore: AWAIT para garantizar que el cambio quede persistido antes de continuar
     if (typeof window.fbSaveProducts === 'function') {
       try {
         await window.fbSaveProducts(PRODUCTS);
-        console.log('[saveProducts] ✓ Firestore actualizado (' + PRODUCTS.length + ' productos)');
+        console.log('[saveProducts] ✓ Firestore actualizado (' + PRODUCTS.length + ' productos)' + (lsOk ? '' : ' [⚠ pero localStorage falló]'));
       } catch(eFb) {
         console.error('[saveProducts] ✗ fbSaveProducts FALLÓ:', eFb);
-        // Marcar como pendiente para reintento
         window._fbSaveProductsPending = PRODUCTS.slice();
+        if (!lsOk) {
+          // Falla doble — alerta crítica
+          alert('🚨 DOBLE FALLA: ni localStorage ni Firebase pudieron guardar.\n\n' +
+                'Tus cambios NO están persistidos en ningún lado.\n' +
+                'NO recargues la página.\n\n' +
+                'Verifica tu conexión a internet y libera espacio en localStorage.');
+        }
       }
     } else {
       // Firebase aún no listo — encolar
@@ -3545,7 +3580,9 @@ window.saveProducts = async function() {
     }
     // 3) Trigger snapshot del portal
     if (window.fbTriggerPortalSnapshot) window.fbTriggerPortalSnapshot('saveProducts');
-    return true;
+    // 4) Refresh del indicador de cuota
+    if (typeof window._lsQuotaCheck === 'function') window._lsQuotaCheck();
+    return lsOk;
   } catch(e) {
     console.error('[saveProducts] error:', e);
     return false;
@@ -5333,6 +5370,93 @@ function lLogin() {
 }
 
 function lShowApp(username) {
+  // ════════════════════════════════════════════════════════════════════════
+  // PROTECCIÓN 1: Auto-eliminación de basura legacy ANTES de cualquier escritura
+  // farmers_product_images_hq es código obsoleto que ocupaba 3.28 MB. Si vuelve
+  // a aparecer (de un import, otra instancia, etc.), lo eliminamos en cada login.
+  // ════════════════════════════════════════════════════════════════════════
+  try {
+    if (localStorage.getItem('farmers_product_images_hq')) {
+      var sizeMB = (localStorage.getItem('farmers_product_images_hq').length / 1024 / 1024).toFixed(2);
+      localStorage.removeItem('farmers_product_images_hq');
+      console.log('[CLEANUP] ✅ farmers_product_images_hq eliminado (' + sizeMB + ' MB liberados)');
+    }
+    // farmers_product_images cache - se rehidrata automáticamente desde Firebase
+    if (localStorage.getItem('farmers_product_images')) {
+      var sz = (localStorage.getItem('farmers_product_images').length / 1024 / 1024).toFixed(2);
+      if (parseFloat(sz) > 0.5) {
+        localStorage.removeItem('farmers_product_images');
+        console.log('[CLEANUP] ✅ farmers_product_images cache eliminado (' + sz + ' MB) — se rehidrata desde Firebase');
+      }
+    }
+  } catch(eClean) { console.warn('[CLEANUP]', eClean); }
+
+  // ════════════════════════════════════════════════════════════════════════
+  // PROTECCIÓN 2: Monitor de cuota localStorage en el header
+  // Avisa cuando localStorage llega al 70% / 80% / 90%
+  // Bloquea con alerta visible al 95%
+  // ════════════════════════════════════════════════════════════════════════
+  window._lsQuotaCheck = function() {
+    try {
+      var totalBytes = 0;
+      for (var k in localStorage) {
+        if (localStorage.hasOwnProperty(k)) totalBytes += localStorage[k].length;
+      }
+      var totalMB = totalBytes / 1024 / 1024;
+      var pct = (totalMB / 5) * 100;  // límite típico 5 MB
+      // Pintar indicador
+      var ind = document.getElementById('ls-quota-indicator');
+      if (!ind) {
+        ind = document.createElement('div');
+        ind.id = 'ls-quota-indicator';
+        ind.style.cssText = 'position:fixed;top:10px;right:10px;padding:6px 12px;border-radius:8px;font-size:.7rem;font-weight:900;font-family:Arial,sans-serif;z-index:9998;cursor:pointer;box-shadow:0 4px 14px rgba(0,0,0,.2);';
+        ind.title = 'Click para ver detalles del localStorage';
+        ind.onclick = function(){ window._lsQuotaDetails(); };
+        document.body.appendChild(ind);
+      }
+      var color, msg;
+      if (pct < 70) { color = '#16a34a'; msg = '💾 ' + totalMB.toFixed(1) + 'MB'; }
+      else if (pct < 80) { color = '#ca8a04'; msg = '⚠️ ' + totalMB.toFixed(1) + 'MB / 5MB'; }
+      else if (pct < 90) { color = '#ea580c'; msg = '🟠 ' + totalMB.toFixed(2) + 'MB / 5MB'; }
+      else if (pct < 95) { color = '#dc2626'; msg = '🔴 ' + totalMB.toFixed(2) + 'MB / 5MB - LIBERAR YA'; }
+      else { color = '#7f1d1d'; msg = '🚨 ' + totalMB.toFixed(2) + 'MB - SATURADO'; }
+      ind.style.background = color;
+      ind.style.color = '#fff';
+      ind.textContent = msg;
+      // Si está al 90%+, mostrar alerta una sola vez por sesión
+      if (pct >= 90 && !sessionStorage.getItem('ls_quota_alerted')) {
+        sessionStorage.setItem('ls_quota_alerted', '1');
+        alert('⚠️ ALERTA: localStorage al ' + pct.toFixed(0) + '% (' + totalMB.toFixed(2) + ' MB de 5 MB)\n\n' +
+              'Las nuevas escrituras pueden empezar a fallar.\n\n' +
+              'Click en el indicador del header para ver detalles y liberar espacio.');
+      }
+      return { totalMB: totalMB, pct: pct };
+    } catch(e) { console.warn('_lsQuotaCheck:', e); }
+  };
+
+  // Detalle del localStorage (popup al click del indicador)
+  window._lsQuotaDetails = function() {
+    var detalle = [];
+    for (var k in localStorage) {
+      if (localStorage.hasOwnProperty(k)) {
+        detalle.push({ key: k, kb: (localStorage[k].length/1024).toFixed(1) });
+      }
+    }
+    detalle.sort(function(a,b){ return parseFloat(b.kb) - parseFloat(a.kb); });
+    var msg = '📦 DETALLE LOCALSTORAGE\n\n';
+    detalle.slice(0, 15).forEach(function(d){
+      msg += d.key + ': ' + d.kb + ' KB\n';
+    });
+    var total = detalle.reduce(function(s,d){ return s + parseFloat(d.kb); }, 0);
+    msg += '\nTOTAL: ' + (total/1024).toFixed(2) + ' MB de 5 MB';
+    alert(msg);
+    console.table(detalle);
+  };
+
+  // Llamar inmediatamente y cada 30 segundos
+  setTimeout(function(){ window._lsQuotaCheck(); }, 1000);
+  setInterval(function(){ window._lsQuotaCheck(); }, 30000);
+
   document.getElementById('ls').classList.add('gone');
   document.getElementById('app-header').style.display = '';
   // Mostrar home screen primero
@@ -21941,6 +22065,7 @@ function doRefSearch() {
           '<button onclick="ptAplicarRefAlFinalMasivo()" style="background:linear-gradient(135deg,#78350f,#a16207);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:700;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;" title="Aplica REF interna al final de TODAS las descripciones del catálogo (necesario para Valery)">✏️ REF al final</button>' +
           '<button onclick="ptAbrirDiagnosticoInventario()" style="background:linear-gradient(135deg,#7e22ce,#581c87);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:700;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;" title="Ver pedidos reservados, diagnosticar inventario y liberar comprometido huérfano">🔧 Diagnóstico Inventario</button>' +
           '<button id="pt-btn-sync-portal" onclick="ptSincronizarPortal()" style="background:linear-gradient(135deg,#dc2626,#7f1d1d);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:900;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;box-shadow:0 4px 14px rgba(220,38,38,.4);" title="Fuerza la sincronización inmediata de inventario, comprometido y ordenada al portal del cliente">🔄 Sincronizar Portal</button>' +
+          '<button id="pt-btn-rescatar-huerfanas" onclick="ptAbrirRescateHuerfanas()" style="background:linear-gradient(135deg,#16a34a,#15803d);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:900;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;box-shadow:0 4px 14px rgba(22,163,74,.4);" title="Reconstruir productos cuyas imágenes están en Firebase pero la ficha se perdió">🖼️ Rescatar Huérfanas</button>' +
         '</div>' +
         '<div id="pt-stats" style="padding:8px 20px;background:#fff;border-bottom:1px solid #eef0f8;display:flex;gap:16px;font-size:.72rem;color:#5a6080;flex-wrap:wrap;"></div>' +
         '<div style="overflow-y:auto;max-height:calc(100vh - 260px);">' +
@@ -22261,6 +22386,277 @@ window.ptSincronizarPortal = async function() {
     btn.disabled = false;
     btn.style.opacity = '1';
     btn.innerHTML = btnOrig || '🔄 Sincronizar Portal';
+  }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+// MÓDULO RESCATE DE HUÉRFANAS (27/04/2026)
+// Detecta imágenes en Firebase cuya ref no está en PRODUCTS y permite
+// reconstruir esas fichas (descripción, precio, marca, etc.) viendo la imagen.
+// ═══════════════════════════════════════════════════════════════════════════
+window.ptAbrirRescateHuerfanas = async function() {
+  // Crear overlay
+  var existingOv = document.getElementById('rescate-huerfanas-overlay');
+  if (existingOv) existingOv.remove();
+
+  var ov = document.createElement('div');
+  ov.id = 'rescate-huerfanas-overlay';
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.85);backdrop-filter:blur(8px);z-index:99998;display:flex;align-items:flex-start;justify-content:center;padding:20px;overflow-y:auto;';
+
+  ov.innerHTML =
+    '<div style="background:#fff;border-radius:14px;max-width:1400px;width:100%;margin:auto;box-shadow:0 30px 80px rgba(15,23,42,.5);overflow:hidden;">' +
+      '<div style="background:linear-gradient(135deg,#16a34a,#14532d);color:#fff;padding:20px 26px;display:flex;justify-content:space-between;align-items:center;">' +
+        '<div>' +
+          '<div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;font-size:1.4rem;letter-spacing:1.5px;text-transform:uppercase;">🖼️ Rescate de Imágenes Huérfanas</div>' +
+          '<div style="font-size:.78rem;opacity:.92;margin-top:3px;">Reconstruye productos cuyas imágenes están en Firebase pero la ficha se perdió</div>' +
+        '</div>' +
+        '<button onclick="document.getElementById(\'rescate-huerfanas-overlay\').remove()" style="background:rgba(255,255,255,.2);border:none;color:#fff;width:36px;height:36px;border-radius:50%;cursor:pointer;font-size:1.2rem;font-weight:900;">×</button>' +
+      '</div>' +
+      '<div id="rescate-body" style="padding:24px;max-height:calc(100vh - 140px);overflow-y:auto;">' +
+        '<div style="text-align:center;padding:40px;color:#1B1F6B;">' +
+          '<div style="display:inline-block;width:50px;height:50px;border:5px solid #e5e7eb;border-top-color:#16a34a;border-radius:50%;animation:spin 1s linear infinite;"></div>' +
+          '<div style="margin-top:18px;font-weight:700;font-size:.95rem;">Cargando imágenes desde Firebase...</div>' +
+          '<div style="margin-top:6px;font-size:.78rem;color:#6b7280;">Esto puede tardar 30-60 segundos</div>' +
+        '</div>' +
+      '</div>' +
+    '</div>';
+  document.body.appendChild(ov);
+
+  // Asegurar animación spin
+  if (!document.getElementById('rescate-spin-style')) {
+    var st = document.createElement('style');
+    st.id = 'rescate-spin-style';
+    st.textContent = '@keyframes spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}';
+    document.head.appendChild(st);
+  }
+
+  // Cargar imágenes desde Firebase
+  try {
+    if (!window.fbGetImages) {
+      throw new Error('Firebase no está listo. Recarga la página y reintenta.');
+    }
+    var imgs = await window.fbGetImages();
+    if (!imgs) throw new Error('No se pudieron cargar las imágenes de Firebase');
+
+    var prodRefs = new Set((typeof PRODUCTS !== 'undefined' ? PRODUCTS : []).map(p => p.r));
+    var refsImg = Object.keys(imgs);
+    var huerfanas = refsImg.filter(r => !prodRefs.has(r));
+
+    // Cachear globalmente para que el catálogo las use
+    window._prodImgs = imgs;
+
+    if (huerfanas.length === 0) {
+      document.getElementById('rescate-body').innerHTML =
+        '<div style="text-align:center;padding:60px 20px;">' +
+          '<div style="font-size:3rem;margin-bottom:14px;">✅</div>' +
+          '<div style="font-size:1.2rem;font-weight:900;color:#16a34a;margin-bottom:8px;">No hay imágenes huérfanas</div>' +
+          '<div style="color:#6b7280;font-size:.88rem;">Todas las imágenes en Firebase tienen su producto correspondiente.</div>' +
+          '<div style="margin-top:16px;color:#1B1F6B;font-size:.82rem;">Total productos: <strong>' + prodRefs.size + '</strong> · Total imágenes: <strong>' + refsImg.length + '</strong></div>' +
+        '</div>';
+      return;
+    }
+
+    // Marcas conocidas para autocompletar (basado en prefijo de ref)
+    function adivinarMarca(ref) {
+      if (ref.indexOf('EXC') === 0) return 'EXCALIBUR';
+      if (ref.indexOf('GEN') === 0 || ref.indexOf('GNL') === 0) return 'GENIAL';
+      if (ref.indexOf('MAT') === 0) return 'MATRIX';
+      if (ref.indexOf('LUM') === 0) return 'LUMEN';
+      if (ref.indexOf('MAXK') === 0) return 'MAXKILLER';
+      if (ref.indexOf('VAR') === 0) return 'VARIOS';
+      return '';
+    }
+
+    // Cabecera + galería
+    var html =
+      '<div style="background:linear-gradient(135deg,#fef3c7,#fde68a);padding:14px 18px;border-radius:10px;border:1.5px solid #f59e0b;margin-bottom:20px;">' +
+        '<div style="font-weight:900;color:#78350f;font-size:.95rem;">📋 Resumen</div>' +
+        '<div style="margin-top:6px;font-size:.85rem;color:#451a03;">' +
+          '<strong>' + refsImg.length + '</strong> imágenes en Firebase · ' +
+          '<strong>' + prodRefs.size + '</strong> productos en catálogo · ' +
+          '<strong style="color:#dc2626;">' + huerfanas.length + '</strong> imágenes HUÉRFANAS encontradas' +
+        '</div>' +
+        '<div style="margin-top:10px;font-size:.78rem;color:#78350f;">Para cada imagen huérfana, mira la imagen y completa los campos. Al pulsar "Guardar producto", se reconstruye la ficha y se persiste en Firebase.</div>' +
+      '</div>' +
+      '<div id="rescate-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(380px,1fr));gap:16px;">';
+
+    huerfanas.forEach(function(ref, idx) {
+      var imgData = imgs[ref];
+      var imgSrc = '';
+      // imgData puede ser string base64 o objeto {data: ...}
+      if (typeof imgData === 'string') {
+        imgSrc = imgData.indexOf('data:') === 0 ? imgData : ('data:image/jpeg;base64,' + imgData);
+      } else if (imgData && imgData.data) {
+        imgSrc = imgData.data.indexOf('data:') === 0 ? imgData.data : ('data:image/jpeg;base64,' + imgData.data);
+      } else if (imgData && imgData.url) {
+        imgSrc = imgData.url;
+      }
+
+      var marca = adivinarMarca(ref);
+      html +=
+        '<div data-ref="' + ref + '" id="rescate-card-' + idx + '" style="background:#fff;border:1.5px solid #e5e7eb;border-radius:12px;overflow:hidden;box-shadow:0 4px 12px rgba(15,23,42,.08);">' +
+          '<div style="background:#f8fafc;padding:14px;border-bottom:1.5px solid #e5e7eb;display:flex;gap:12px;align-items:center;">' +
+            '<div style="width:90px;height:90px;background:#fff;border:1.5px solid #d1d5db;border-radius:8px;overflow:hidden;display:flex;align-items:center;justify-content:center;flex-shrink:0;">' +
+              (imgSrc ? '<img src="' + imgSrc + '" style="max-width:100%;max-height:100%;object-fit:contain;" alt="' + ref + '" />' : '<span style="color:#9ca3af;font-size:.7rem;">(sin imagen)</span>') +
+            '</div>' +
+            '<div style="flex:1;">' +
+              '<div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;font-size:1.4rem;color:#1B1F6B;letter-spacing:1px;">' + ref + '</div>' +
+              '<div style="font-size:.7rem;color:#6b7280;text-transform:uppercase;letter-spacing:.5px;font-weight:700;">Imagen huérfana #' + (idx+1) + ' de ' + huerfanas.length + '</div>' +
+            '</div>' +
+          '</div>' +
+          '<div style="padding:14px;display:flex;flex-direction:column;gap:10px;">' +
+            '<div>' +
+              '<label style="font-size:.7rem;color:#374151;font-weight:700;text-transform:uppercase;letter-spacing:.5px;">Descripción</label>' +
+              '<input type="text" data-field="d" placeholder="Ej: ENCENDEDOR ELÉCTRICO RECARGABLE" style="width:100%;padding:8px 10px;border:1.5px solid #d1d5db;border-radius:6px;font-size:.85rem;margin-top:3px;" />' +
+            '</div>' +
+            '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">' +
+              '<div>' +
+                '<label style="font-size:.7rem;color:#374151;font-weight:700;text-transform:uppercase;letter-spacing:.5px;">Marca</label>' +
+                '<select data-field="br" style="width:100%;padding:8px 10px;border:1.5px solid #d1d5db;border-radius:6px;font-size:.85rem;margin-top:3px;background:#fff;">' +
+                  '<option value="">— elegir —</option>' +
+                  '<option value="EXCALIBUR"' + (marca==='EXCALIBUR'?' selected':'') + '>EXCALIBUR</option>' +
+                  '<option value="GENIAL"' + (marca==='GENIAL'?' selected':'') + '>GENIAL</option>' +
+                  '<option value="MATRIX"' + (marca==='MATRIX'?' selected':'') + '>MATRIX</option>' +
+                  '<option value="LUMEN"' + (marca==='LUMEN'?' selected':'') + '>LUMEN</option>' +
+                  '<option value="MAXKILLER"' + (marca==='MAXKILLER'?' selected':'') + '>MAXKILLER</option>' +
+                  '<option value="VARIOS"' + (marca==='VARIOS'?' selected':'') + '>VARIOS</option>' +
+                '</select>' +
+              '</div>' +
+              '<div>' +
+                '<label style="font-size:.7rem;color:#374151;font-weight:700;text-transform:uppercase;letter-spacing:.5px;">Código de barras</label>' +
+                '<input type="text" data-field="b" placeholder="7453..." style="width:100%;padding:8px 10px;border:1.5px solid #d1d5db;border-radius:6px;font-size:.85rem;margin-top:3px;" />' +
+              '</div>' +
+            '</div>' +
+            '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;">' +
+              '<div>' +
+                '<label style="font-size:.7rem;color:#374151;font-weight:700;text-transform:uppercase;letter-spacing:.5px;">Precio USD $</label>' +
+                '<input type="number" step="0.01" data-field="u" placeholder="0.00" style="width:100%;padding:8px 10px;border:1.5px solid #d1d5db;border-radius:6px;font-size:.85rem;margin-top:3px;" />' +
+              '</div>' +
+              '<div>' +
+                '<label style="font-size:.7rem;color:#374151;font-weight:700;text-transform:uppercase;letter-spacing:.5px;">Precio BCV $</label>' +
+                '<input type="number" step="0.01" data-field="bv" placeholder="0.00" style="width:100%;padding:8px 10px;border:1.5px solid #d1d5db;border-radius:6px;font-size:.85rem;margin-top:3px;" />' +
+              '</div>' +
+              '<div>' +
+                '<label style="font-size:.7rem;color:#374151;font-weight:700;text-transform:uppercase;letter-spacing:.5px;">Precio TF $</label>' +
+                '<input type="number" step="0.01" data-field="t" placeholder="0.00" style="width:100%;padding:8px 10px;border:1.5px solid #d1d5db;border-radius:6px;font-size:.85rem;margin-top:3px;" />' +
+              '</div>' +
+            '</div>' +
+            '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;">' +
+              '<div>' +
+                '<label style="font-size:.7rem;color:#374151;font-weight:700;text-transform:uppercase;letter-spacing:.5px;">Empaque</label>' +
+                '<input type="text" data-field="e" placeholder="UNIDAD/SET/BOX" style="width:100%;padding:8px 10px;border:1.5px solid #d1d5db;border-radius:6px;font-size:.85rem;margin-top:3px;text-transform:uppercase;" />' +
+              '</div>' +
+              '<div>' +
+                '<label style="font-size:.7rem;color:#374151;font-weight:700;text-transform:uppercase;letter-spacing:.5px;">Medida (uds/bulto)</label>' +
+                '<input type="number" data-field="m" placeholder="48" style="width:100%;padding:8px 10px;border:1.5px solid #d1d5db;border-radius:6px;font-size:.85rem;margin-top:3px;" />' +
+              '</div>' +
+              '<div>' +
+                '<label style="font-size:.7rem;color:#374151;font-weight:700;text-transform:uppercase;letter-spacing:.5px;">Existencia</label>' +
+                '<input type="number" data-field="ex" placeholder="0" value="0" style="width:100%;padding:8px 10px;border:1.5px solid #d1d5db;border-radius:6px;font-size:.85rem;margin-top:3px;" />' +
+              '</div>' +
+            '</div>' +
+            '<button onclick="window.ptGuardarHuerfana(' + idx + ',\'' + ref + '\')" style="margin-top:6px;padding:11px;background:linear-gradient(135deg,#16a34a,#15803d);color:#fff;border:none;border-radius:8px;font-weight:900;font-size:.85rem;cursor:pointer;letter-spacing:.5px;text-transform:uppercase;">💾 Guardar producto</button>' +
+          '</div>' +
+        '</div>';
+    });
+
+    html += '</div>';
+    document.getElementById('rescate-body').innerHTML = html;
+  } catch(eRescate) {
+    document.getElementById('rescate-body').innerHTML =
+      '<div style="text-align:center;padding:40px;color:#dc2626;">' +
+        '<div style="font-size:3rem;margin-bottom:14px;">❌</div>' +
+        '<div style="font-weight:900;font-size:1.05rem;">Error al cargar imágenes</div>' +
+        '<div style="margin-top:10px;font-size:.85rem;color:#6b7280;">' + (eRescate.message || eRescate) + '</div>' +
+      '</div>';
+  }
+};
+
+// Guardar una huérfana específica al pulsar el botón de su tarjeta
+window.ptGuardarHuerfana = async function(idx, ref) {
+  var card = document.getElementById('rescate-card-' + idx);
+  if (!card) { alert('Error: tarjeta no encontrada'); return; }
+
+  // Recoger valores
+  var inputs = card.querySelectorAll('[data-field]');
+  var data = { r: ref };
+  inputs.forEach(function(el){
+    var f = el.getAttribute('data-field');
+    var v = el.value.trim();
+    if (f === 'u' || f === 'bv' || f === 't') {
+      data[f] = parseFloat(v) || 0;
+    } else if (f === 'm' || f === 'ex') {
+      data[f] = parseInt(v) || 0;
+    } else {
+      data[f] = v.toUpperCase ? v.toUpperCase() : v;
+    }
+  });
+
+  // Validación mínima
+  if (!data.d || data.d.length < 3) {
+    alert('⚠ Falta la descripción (mínimo 3 caracteres)');
+    return;
+  }
+  if (!data.br) {
+    alert('⚠ Falta seleccionar la marca');
+    return;
+  }
+  if (!data.u) {
+    alert('⚠ Falta el precio USD');
+    return;
+  }
+
+  // Aplicar regla de integridad: REF al final de la descripción
+  if (typeof window.aplicarRefAlFinal === 'function') {
+    data.d = window.aplicarRefAlFinal(data.d, ref);
+  }
+
+  // Si no se pusieron BCV/TF, usar USD como fallback
+  if (!data.bv) data.bv = data.u;
+  if (!data.t) data.t = data.u;
+
+  try {
+    // Verificar que no exista ya
+    var idxExistente = (typeof PRODUCTS !== 'undefined') ? PRODUCTS.findIndex(p => p.r === ref) : -1;
+    if (idxExistente >= 0) {
+      Object.assign(PRODUCTS[idxExistente], data);
+    } else {
+      PRODUCTS.push(data);
+      if (typeof sortProducts === 'function') sortProducts();
+    }
+
+    // Persistir
+    if (typeof saveProducts === 'function') {
+      var ok = await saveProducts();
+      if (!ok) {
+        alert('⚠ El guardado en localStorage falló. Verifica el indicador de cuota.');
+        return;
+      }
+    }
+
+    // Actualizar inventario si se especificó existencia
+    if (data.ex && data.ex > 0) {
+      var inv = (typeof getInventory === 'function') ? getInventory() : {};
+      inv[ref] = data.ex;
+      if (typeof saveInventory === 'function') saveInventory(inv);
+    }
+
+    // UI: marcar la tarjeta como guardada
+    card.style.background = '#dcfce7';
+    card.style.border = '2px solid #16a34a';
+    card.querySelector('button').innerHTML = '✅ Guardado';
+    card.querySelector('button').style.background = '#16a34a';
+    card.querySelector('button').disabled = true;
+
+    if (typeof showToast === 'function') {
+      showToast('✅ Producto reconstruido: ' + ref, 'success');
+    }
+    if (typeof renderTable === 'function') renderTable();
+    if (typeof ptRender === 'function') ptRender();
+
+  } catch(eGuard) {
+    alert('Error guardando ' + ref + ':\n' + (eGuard.message || eGuard));
+    console.error('[ptGuardarHuerfana]', eGuard);
   }
 };
 
