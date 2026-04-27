@@ -22102,6 +22102,7 @@ function doRefSearch() {
           '<button onclick="ptAbrirDiagnosticoInventario()" style="background:linear-gradient(135deg,#7e22ce,#581c87);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:700;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;" title="Ver pedidos reservados, diagnosticar inventario y liberar comprometido huérfano">🔧 Diagnóstico Inventario</button>' +
           '<button id="pt-btn-sync-portal" onclick="ptSincronizarPortal()" style="background:linear-gradient(135deg,#dc2626,#7f1d1d);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:900;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;box-shadow:0 4px 14px rgba(220,38,38,.4);" title="Fuerza la sincronización inmediata de inventario, comprometido y ordenada al portal del cliente">🔄 Sincronizar Portal</button>' +
           '<button id="pt-btn-rescatar-huerfanas" onclick="ptAbrirRescateHuerfanas()" style="background:linear-gradient(135deg,#16a34a,#15803d);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:900;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;box-shadow:0 4px 14px rgba(22,163,74,.4);" title="Reconstruir productos cuyas imágenes están en Firebase pero la ficha se perdió">🖼️ Rescatar Huérfanas</button>' +
+          '<button id="pt-btn-auditoria" onclick="ptAbrirAuditoriaIntegral()" style="background:linear-gradient(135deg,#7c3aed,#5b21b6);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:900;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;box-shadow:0 4px 14px rgba(124,58,237,.4);" title="Auditoría visual completa del sistema (local vs Firebase, integridad, salud)">🔍 Auditoría Integral</button>' +
         '</div>' +
         '<div id="pt-stats" style="padding:8px 20px;background:#fff;border-bottom:1px solid #eef0f8;display:flex;gap:16px;font-size:.72rem;color:#5a6080;flex-wrap:wrap;"></div>' +
         '<div style="overflow-y:auto;max-height:calc(100vh - 260px);">' +
@@ -22430,6 +22431,353 @@ window.ptSincronizarPortal = async function() {
 // Detecta imágenes en Firebase cuya ref no está en PRODUCTS y permite
 // reconstruir esas fichas (descripción, precio, marca, etc.) viendo la imagen.
 // ═══════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════════════
+// MÓDULO AUDITORÍA INTEGRAL (27/04/2026)
+// Verifica todo el sistema en un panel visual: local vs Firebase, integridad
+// de datos, salud del localStorage, productos sin imagen, fichas incompletas, etc.
+// ═══════════════════════════════════════════════════════════════════════════
+window.ptAbrirAuditoriaIntegral = async function() {
+  var existingOv = document.getElementById('auditoria-overlay');
+  if (existingOv) existingOv.remove();
+
+  var ov = document.createElement('div');
+  ov.id = 'auditoria-overlay';
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.85);backdrop-filter:blur(8px);z-index:99998;display:flex;align-items:flex-start;justify-content:center;padding:20px;overflow-y:auto;';
+
+  ov.innerHTML =
+    '<div style="background:#fff;border-radius:14px;max-width:1300px;width:100%;margin:auto;box-shadow:0 30px 80px rgba(15,23,42,.5);overflow:hidden;">' +
+      '<div style="background:linear-gradient(135deg,#7c3aed,#5b21b6);color:#fff;padding:20px 26px;display:flex;justify-content:space-between;align-items:center;">' +
+        '<div>' +
+          '<div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;font-size:1.4rem;letter-spacing:1.5px;text-transform:uppercase;">🔍 Auditoría Integral del Sistema</div>' +
+          '<div style="font-size:.78rem;opacity:.92;margin-top:3px;">Verificación completa de integridad: local vs Firebase, salud, fichas, imágenes</div>' +
+        '</div>' +
+        '<button onclick="document.getElementById(\'auditoria-overlay\').remove()" style="background:rgba(255,255,255,.2);border:none;color:#fff;width:36px;height:36px;border-radius:50%;cursor:pointer;font-size:1.2rem;font-weight:900;">×</button>' +
+      '</div>' +
+      '<div id="auditoria-body" style="padding:24px;max-height:calc(100vh - 140px);overflow-y:auto;">' +
+        '<div style="text-align:center;padding:40px;color:#1B1F6B;">' +
+          '<div style="display:inline-block;width:50px;height:50px;border:5px solid #e5e7eb;border-top-color:#7c3aed;border-radius:50%;animation:spin 1s linear infinite;"></div>' +
+          '<div style="margin-top:18px;font-weight:700;font-size:.95rem;">Ejecutando auditoría integral...</div>' +
+          '<div style="margin-top:6px;font-size:.78rem;color:#6b7280;">Comparando local vs Firebase, verificando integridad...</div>' +
+        '</div>' +
+      '</div>' +
+    '</div>';
+  document.body.appendChild(ov);
+
+  if (!document.getElementById('rescate-spin-style')) {
+    var st = document.createElement('style');
+    st.id = 'rescate-spin-style';
+    st.textContent = '@keyframes spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}';
+    document.head.appendChild(st);
+  }
+
+  // ── Ejecutar todas las verificaciones ──
+  var resultados = {
+    fuentes: [],
+    salud: {},
+    integridad: {},
+    huerfanas: [],
+    sinImagen: [],
+    sinPrecio: [],
+    sinMarca: [],
+    sinDescripcion: []
+  };
+
+  function localCount(key) {
+    try {
+      var raw = localStorage.getItem(key);
+      if (!raw) return 0;
+      var data = JSON.parse(raw);
+      if (Array.isArray(data)) return data.length;
+      if (typeof data === 'object') return Object.keys(data).length;
+      return 1;
+    } catch(e) { return 0; }
+  }
+
+  async function fbCount(fnName) {
+    try {
+      if (typeof window[fnName] !== 'function') return -1;
+      var data = await window[fnName]();
+      if (data && typeof data === 'object' && 'data' in data && 'exists' in data) {
+        var inner = data.data;
+        if (Array.isArray(inner)) return inner.length;
+        if (inner && typeof inner === 'object') return Object.keys(inner).length;
+        return 0;
+      }
+      if (data === null) return 0;
+      if (Array.isArray(data)) return data.length;
+      if (typeof data === 'object') return Object.keys(data).length;
+      return 1;
+    } catch(e) { return -1; }
+  }
+
+  // === 1) Sincronización Local vs Firebase ===
+  var fuentes = [
+    { nombre: 'PRODUCTS (catálogo)',          local: 'farmers_products',           fb: 'fbGetProducts',        critico: true },
+    { nombre: 'INVENTARIO',                   local: 'farmers_inv',                fb: 'fbGetInventory',       critico: true },
+    { nombre: 'COMPROMETIDO (reservas)',      local: 'farmers_inv_comprometido',   fb: 'fbGetComprometido',    critico: true },
+    { nombre: 'PT_DATA (fichas técnicas)',    local: 'farmers_pt_data',            fb: 'fbGetPT',              critico: true },
+    { nombre: 'MS_PEDIDOS (pedidos)',         local: 'farmers_ms_pedidos',         fb: 'fbGetMsPedidos',       critico: false },
+    { nombre: 'CLIENTES',                     local: 'farmers_clients_v2',         fb: 'fbGetClients',         critico: true },
+    { nombre: 'PROVEEDORES',                  local: 'farmers_proveedores',        fb: 'fbGetProveedores',     critico: false },
+    { nombre: 'ÓRDENES DE COMPRA',            local: 'farmers_ordenes_compra',     fb: 'fbGetOrdenesCompra',   critico: false },
+    { nombre: 'CXC',                          local: 'farmers_cxc',                fb: 'fbGetCXC',             critico: true },
+    { nombre: 'BANCOS',                       local: 'farmers_bancos',             fb: 'fbGetBancos',          critico: false },
+    { nombre: 'HCL (historial)',              local: 'farmers_hcl_v7_facturas',    fb: 'fbGetHCL',             critico: false },
+    { nombre: 'SALES (ventas)',               local: 'farmers_sales',              fb: 'fbGetSales',           critico: true },
+    { nombre: 'NOTAS DE CRÉDITO',             local: 'farmers_nc',                 fb: 'fbGetNC',              critico: false },
+    { nombre: 'GRUPOS clientes',              local: 'farmers_cl_groups',          fb: 'fbGetGroups',          critico: false },
+    { nombre: 'TASAS BCV',                    local: 'farmers_tasa_bcv_history',   fb: 'fbGetTasas',           critico: false }
+  ];
+
+  for (var i = 0; i < fuentes.length; i++) {
+    var f = fuentes[i];
+    var lc = localCount(f.local);
+    var fc = await fbCount(f.fb);
+    var estado = '';
+    if (lc === 0 && fc === 0) estado = 'vacío';
+    else if (fc === -1) estado = 'fb-no-disponible';
+    else if (lc === fc) estado = 'sincronizado';
+    else if (lc > fc) estado = 'local-mayor';
+    else estado = 'firebase-mayor';
+    resultados.fuentes.push({ nombre: f.nombre, local: lc, fb: fc, estado: estado, critico: f.critico });
+  }
+
+  // === 2) Salud localStorage ===
+  var totalLs = JSON.stringify(localStorage).length;
+  var totalLsMB = (totalLs / 1024 / 1024).toFixed(2);
+  var pctLs = ((totalLs / 1024 / 1024 / 5) * 100).toFixed(0);
+  var clavesPesadas = [];
+  for (var k in localStorage) {
+    if (localStorage.hasOwnProperty(k)) {
+      var sz = localStorage[k].length / 1024;
+      if (sz > 50) clavesPesadas.push({ key: k, kb: sz.toFixed(1) });
+    }
+  }
+  clavesPesadas.sort(function(a,b){ return parseFloat(b.kb) - parseFloat(a.kb); });
+  resultados.salud.totalMB = totalLsMB;
+  resultados.salud.pct = pctLs;
+  resultados.salud.clavesPesadas = clavesPesadas.slice(0, 5);
+
+  // === 3) Imágenes vs Productos ===
+  try {
+    if (window.fbGetImages) {
+      var imgs = await window.fbGetImages();
+      var imgRefs = imgs ? Object.keys(imgs) : [];
+      var prodRefs = (typeof PRODUCTS !== 'undefined') ? new Set(PRODUCTS.map(function(p){ return p.r; })) : new Set();
+      resultados.huerfanas = imgRefs.filter(function(r){ return !prodRefs.has(r); });
+      resultados.totalImgs = imgRefs.length;
+      resultados.totalProds = prodRefs.size;
+      var imgRefsSet = new Set(imgRefs);
+      resultados.sinImagen = (typeof PRODUCTS !== 'undefined') ? PRODUCTS.filter(function(p){ return !imgRefsSet.has(p.r); }).map(function(p){ return p.r; }) : [];
+    }
+  } catch(eImg) { console.warn('Auditoría imágenes:', eImg); }
+
+  // === 4) Integridad de productos ===
+  if (typeof PRODUCTS !== 'undefined') {
+    PRODUCTS.forEach(function(p){
+      if (!p) return;
+      if (!p.d || p.d.length < 3) resultados.sinDescripcion.push(p.r);
+      if (!p.br) resultados.sinMarca.push(p.r);
+      if (!p.u || parseFloat(p.u) <= 0) resultados.sinPrecio.push(p.r);
+    });
+  }
+
+  // === 5) Pintar resultados ===
+  var problemas = 0;
+  var advertencias = 0;
+  resultados.fuentes.forEach(function(r){
+    if (r.estado === 'firebase-mayor' || r.estado === 'local-mayor') {
+      if (r.critico) problemas++;
+      else advertencias++;
+    }
+    if (r.estado === 'fb-no-disponible' && r.critico) problemas++;
+  });
+  if (parseFloat(resultados.salud.pct) > 80) {
+    if (parseFloat(resultados.salud.pct) > 90) problemas++;
+    else advertencias++;
+  }
+  if (resultados.sinPrecio.length > 0) advertencias++;
+
+  function badge(text, color) {
+    return '<span style="display:inline-block;padding:3px 10px;border-radius:12px;font-size:.7rem;font-weight:800;background:' + color + ';color:#fff;letter-spacing:.3px;">' + text + '</span>';
+  }
+
+  // Estado general
+  var estadoGeneral, colorGeneral, msgGeneral;
+  if (problemas === 0 && advertencias === 0) {
+    estadoGeneral = '✅ TODO PERFECTO';
+    colorGeneral = '#16a34a';
+    msgGeneral = 'Todas las verificaciones pasaron. El sistema está sincronizado y saludable.';
+  } else if (problemas === 0) {
+    estadoGeneral = '⚠️ ADVERTENCIAS';
+    colorGeneral = '#ca8a04';
+    msgGeneral = advertencias + ' advertencia(s) detectada(s). El sistema funciona pero hay cosas que revisar.';
+  } else {
+    estadoGeneral = '🚨 ATENCIÓN REQUERIDA';
+    colorGeneral = '#dc2626';
+    msgGeneral = problemas + ' problema(s) crítico(s) y ' + advertencias + ' advertencia(s).';
+  }
+
+  var html =
+    // Estado general
+    '<div style="background:linear-gradient(135deg,' + colorGeneral + ',' + colorGeneral + 'cc);color:#fff;padding:20px 24px;border-radius:12px;margin-bottom:20px;">' +
+      '<div style="font-size:1.5rem;font-weight:900;letter-spacing:1px;">' + estadoGeneral + '</div>' +
+      '<div style="margin-top:6px;font-size:.9rem;opacity:.92;">' + msgGeneral + '</div>' +
+    '</div>' +
+
+    // === SECCIÓN 1: Sincronización ===
+    '<div style="margin-bottom:24px;">' +
+      '<h3 style="font-family:\'Barlow Condensed\',sans-serif;font-size:1.15rem;font-weight:900;color:#1B1F6B;letter-spacing:1px;text-transform:uppercase;border-bottom:2px solid #e5e7eb;padding-bottom:8px;margin-bottom:12px;">📡 Sincronización Local vs Firebase</h3>' +
+      '<table style="width:100%;border-collapse:collapse;font-size:.82rem;">' +
+        '<thead><tr style="background:#f3f4f6;">' +
+          '<th style="text-align:left;padding:8px 10px;border-bottom:1.5px solid #e5e7eb;font-weight:700;color:#374151;">FUENTE</th>' +
+          '<th style="text-align:right;padding:8px 10px;border-bottom:1.5px solid #e5e7eb;font-weight:700;color:#374151;">LOCAL</th>' +
+          '<th style="text-align:right;padding:8px 10px;border-bottom:1.5px solid #e5e7eb;font-weight:700;color:#374151;">FIREBASE</th>' +
+          '<th style="text-align:left;padding:8px 10px;border-bottom:1.5px solid #e5e7eb;font-weight:700;color:#374151;">ESTADO</th>' +
+        '</tr></thead><tbody>';
+
+  resultados.fuentes.forEach(function(r){
+    var estadoBadge = '';
+    var rowBg = '';
+    if (r.estado === 'sincronizado') estadoBadge = badge('✅ Sincronizado', '#16a34a');
+    else if (r.estado === 'vacío') estadoBadge = badge('— vacío', '#9ca3af');
+    else if (r.estado === 'fb-no-disponible') { estadoBadge = badge('⚠ FB no disponible', '#ca8a04'); rowBg = 'background:#fef3c7;'; }
+    else if (r.estado === 'firebase-mayor') { estadoBadge = badge('📥 Firebase tiene más', '#0891b2'); rowBg = 'background:#dbeafe;'; }
+    else if (r.estado === 'local-mayor') { estadoBadge = badge('📤 Local tiene más', '#ea580c'); rowBg = 'background:#fed7aa;'; }
+    var fbVal = r.fb === -1 ? '—' : r.fb;
+    html +=
+      '<tr style="' + rowBg + '">' +
+        '<td style="padding:7px 10px;border-bottom:1px solid #e5e7eb;font-weight:600;">' + r.nombre + (r.critico ? ' <span style="color:#dc2626;">●</span>' : '') + '</td>' +
+        '<td style="padding:7px 10px;border-bottom:1px solid #e5e7eb;text-align:right;font-family:monospace;font-weight:700;">' + r.local + '</td>' +
+        '<td style="padding:7px 10px;border-bottom:1px solid #e5e7eb;text-align:right;font-family:monospace;font-weight:700;">' + fbVal + '</td>' +
+        '<td style="padding:7px 10px;border-bottom:1px solid #e5e7eb;">' + estadoBadge + '</td>' +
+      '</tr>';
+  });
+
+  html += '</tbody></table>' +
+      '<div style="margin-top:8px;font-size:.7rem;color:#6b7280;">● = fuente crítica · 📤 Si hay datos solo en local, ejecuta <code>await farmersFix()</code> para subirlos · 📥 Si Firebase tiene más, recarga la página</div>' +
+    '</div>';
+
+  // === SECCIÓN 2: Salud localStorage ===
+  var saludColor = parseFloat(resultados.salud.pct) < 70 ? '#16a34a' : parseFloat(resultados.salud.pct) < 90 ? '#ca8a04' : '#dc2626';
+  html +=
+    '<div style="margin-bottom:24px;">' +
+      '<h3 style="font-family:\'Barlow Condensed\',sans-serif;font-size:1.15rem;font-weight:900;color:#1B1F6B;letter-spacing:1px;text-transform:uppercase;border-bottom:2px solid #e5e7eb;padding-bottom:8px;margin-bottom:12px;">💾 Salud del localStorage</h3>' +
+      '<div style="display:grid;grid-template-columns:1fr 2fr;gap:16px;align-items:center;">' +
+        '<div style="background:#f3f4f6;padding:18px;border-radius:10px;text-align:center;">' +
+          '<div style="font-size:2.2rem;font-weight:900;color:' + saludColor + ';">' + resultados.salud.totalMB + ' MB</div>' +
+          '<div style="font-size:.75rem;color:#6b7280;font-weight:700;text-transform:uppercase;letter-spacing:.5px;margin-top:3px;">de 5 MB · ' + resultados.salud.pct + '%</div>' +
+          '<div style="margin-top:10px;background:#e5e7eb;height:10px;border-radius:5px;overflow:hidden;">' +
+            '<div style="background:' + saludColor + ';height:100%;width:' + Math.min(parseFloat(resultados.salud.pct), 100) + '%;"></div>' +
+          '</div>' +
+        '</div>' +
+        '<div>' +
+          '<div style="font-size:.85rem;font-weight:700;color:#374151;margin-bottom:6px;">Top 5 claves más pesadas:</div>' +
+          (resultados.salud.clavesPesadas.length === 0 ?
+            '<div style="font-size:.78rem;color:#16a34a;">✅ Ninguna clave excede 50 KB. localStorage en condiciones óptimas.</div>' :
+            resultados.salud.clavesPesadas.map(function(c){
+              return '<div style="font-size:.78rem;color:#374151;display:flex;justify-content:space-between;padding:3px 0;"><code style="background:#f3f4f6;padding:1px 6px;border-radius:3px;">' + c.key + '</code><span style="font-weight:700;">' + c.kb + ' KB</span></div>';
+            }).join('')
+          ) +
+        '</div>' +
+      '</div>' +
+    '</div>';
+
+  // === SECCIÓN 3: Imágenes ===
+  html +=
+    '<div style="margin-bottom:24px;">' +
+      '<h3 style="font-family:\'Barlow Condensed\',sans-serif;font-size:1.15rem;font-weight:900;color:#1B1F6B;letter-spacing:1px;text-transform:uppercase;border-bottom:2px solid #e5e7eb;padding-bottom:8px;margin-bottom:12px;">🖼️ Imágenes</h3>' +
+      '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;">' +
+        '<div style="background:#dbeafe;padding:14px;border-radius:8px;text-align:center;">' +
+          '<div style="font-size:1.6rem;font-weight:900;color:#1e40af;">' + (resultados.totalImgs || 0) + '</div>' +
+          '<div style="font-size:.72rem;color:#1e40af;font-weight:700;text-transform:uppercase;">Imágenes en Firebase</div>' +
+        '</div>' +
+        '<div style="background:#dcfce7;padding:14px;border-radius:8px;text-align:center;">' +
+          '<div style="font-size:1.6rem;font-weight:900;color:#15803d;">' + (resultados.totalProds || 0) + '</div>' +
+          '<div style="font-size:.72rem;color:#15803d;font-weight:700;text-transform:uppercase;">Productos en catálogo</div>' +
+        '</div>' +
+        '<div style="background:' + (resultados.huerfanas.length > 0 ? '#fed7aa' : '#dcfce7') + ';padding:14px;border-radius:8px;text-align:center;">' +
+          '<div style="font-size:1.6rem;font-weight:900;color:' + (resultados.huerfanas.length > 0 ? '#c2410c' : '#15803d') + ';">' + resultados.huerfanas.length + '</div>' +
+          '<div style="font-size:.72rem;color:' + (resultados.huerfanas.length > 0 ? '#c2410c' : '#15803d') + ';font-weight:700;text-transform:uppercase;">Huérfanas</div>' +
+        '</div>' +
+      '</div>' +
+      (resultados.huerfanas.length > 0
+        ? '<div style="margin-top:10px;padding:10px 14px;background:#fef3c7;border:1.5px solid #f59e0b;border-radius:8px;font-size:.78rem;color:#78350f;"><strong>⚠ Hay ' + resultados.huerfanas.length + ' imagen(es) sin producto:</strong> ' + resultados.huerfanas.slice(0,15).join(', ') + (resultados.huerfanas.length > 15 ? '...' : '') + '<br><em>Solución: usa el botón "🖼️ Rescatar Huérfanas" para reconstruirlas.</em></div>'
+        : '<div style="margin-top:10px;padding:10px 14px;background:#dcfce7;border:1.5px solid #16a34a;border-radius:8px;font-size:.78rem;color:#14532d;"><strong>✅ Sin imágenes huérfanas.</strong> Todas las imágenes en Firebase tienen su producto correspondiente.</div>'
+      ) +
+      (resultados.sinImagen.length > 0
+        ? '<div style="margin-top:8px;padding:10px 14px;background:#fee2e2;border:1.5px solid #dc2626;border-radius:8px;font-size:.78rem;color:#7f1d1d;"><strong>📷 ' + resultados.sinImagen.length + ' producto(s) SIN imagen:</strong> ' + resultados.sinImagen.slice(0,15).join(', ') + (resultados.sinImagen.length > 15 ? '...' : '') + '</div>'
+        : ''
+      ) +
+    '</div>';
+
+  // === SECCIÓN 4: Integridad fichas ===
+  html +=
+    '<div style="margin-bottom:24px;">' +
+      '<h3 style="font-family:\'Barlow Condensed\',sans-serif;font-size:1.15rem;font-weight:900;color:#1B1F6B;letter-spacing:1px;text-transform:uppercase;border-bottom:2px solid #e5e7eb;padding-bottom:8px;margin-bottom:12px;">📋 Integridad de Fichas</h3>' +
+      '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;">' +
+        '<div style="background:' + (resultados.sinDescripcion.length > 0 ? '#fee2e2' : '#dcfce7') + ';padding:14px;border-radius:8px;text-align:center;">' +
+          '<div style="font-size:1.6rem;font-weight:900;color:' + (resultados.sinDescripcion.length > 0 ? '#7f1d1d' : '#15803d') + ';">' + resultados.sinDescripcion.length + '</div>' +
+          '<div style="font-size:.72rem;font-weight:700;text-transform:uppercase;color:' + (resultados.sinDescripcion.length > 0 ? '#7f1d1d' : '#15803d') + ';">Sin descripción</div>' +
+        '</div>' +
+        '<div style="background:' + (resultados.sinMarca.length > 0 ? '#fed7aa' : '#dcfce7') + ';padding:14px;border-radius:8px;text-align:center;">' +
+          '<div style="font-size:1.6rem;font-weight:900;color:' + (resultados.sinMarca.length > 0 ? '#c2410c' : '#15803d') + ';">' + resultados.sinMarca.length + '</div>' +
+          '<div style="font-size:.72rem;font-weight:700;text-transform:uppercase;color:' + (resultados.sinMarca.length > 0 ? '#c2410c' : '#15803d') + ';">Sin marca</div>' +
+        '</div>' +
+        '<div style="background:' + (resultados.sinPrecio.length > 0 ? '#fef3c7' : '#dcfce7') + ';padding:14px;border-radius:8px;text-align:center;">' +
+          '<div style="font-size:1.6rem;font-weight:900;color:' + (resultados.sinPrecio.length > 0 ? '#78350f' : '#15803d') + ';">' + resultados.sinPrecio.length + '</div>' +
+          '<div style="font-size:.72rem;font-weight:700;text-transform:uppercase;color:' + (resultados.sinPrecio.length > 0 ? '#78350f' : '#15803d') + ';">Sin precio</div>' +
+        '</div>' +
+      '</div>' +
+      (resultados.sinPrecio.length > 0
+        ? '<div style="margin-top:10px;padding:10px 14px;background:#fef3c7;border:1.5px solid #f59e0b;border-radius:8px;font-size:.78rem;color:#78350f;"><strong>💰 ' + resultados.sinPrecio.length + ' producto(s) sin precio USD</strong> (probablemente mercancía en tránsito):<br>' + resultados.sinPrecio.slice(0,30).join(', ') + (resultados.sinPrecio.length > 30 ? '...' : '') + '</div>'
+        : ''
+      ) +
+    '</div>';
+
+  // === SECCIÓN 5: Acciones disponibles ===
+  html +=
+    '<div style="background:#f8fafc;padding:18px;border-radius:10px;border:1.5px solid #e5e7eb;">' +
+      '<div style="font-weight:900;color:#1B1F6B;font-size:.95rem;margin-bottom:10px;">🛠️ Acciones disponibles desde consola (F12)</div>' +
+      '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:.78rem;">' +
+        '<div><code style="background:#1f2937;color:#10b981;padding:3px 7px;border-radius:4px;">await farmersFix()</code><br><span style="color:#6b7280;">Sube TODO el localStorage a Firebase</span></div>' +
+        '<div><code style="background:#1f2937;color:#10b981;padding:3px 7px;border-radius:4px;">await loadFromFirebase()</code><br><span style="color:#6b7280;">Descarga TODO Firebase al localStorage</span></div>' +
+        '<div><code style="background:#1f2937;color:#10b981;padding:3px 7px;border-radius:4px;">await farmersDiag()</code><br><span style="color:#6b7280;">Diagnóstico técnico detallado</span></div>' +
+        '<div><code style="background:#1f2937;color:#10b981;padding:3px 7px;border-radius:4px;">_lsQuotaDetails()</code><br><span style="color:#6b7280;">Ver desglose de localStorage</span></div>' +
+      '</div>' +
+    '</div>' +
+
+    // Botones del pie
+    '<div style="display:flex;gap:10px;justify-content:flex-end;margin-top:20px;">' +
+      '<button onclick="window.ptDescargarReporteAuditoria()" style="padding:11px 20px;background:#0891b2;color:#fff;border:none;border-radius:8px;font-weight:800;font-size:.82rem;cursor:pointer;text-transform:uppercase;letter-spacing:.5px;">📥 Descargar reporte JSON</button>' +
+      '<button onclick="window.ptAbrirAuditoriaIntegral()" style="padding:11px 20px;background:#7c3aed;color:#fff;border:none;border-radius:8px;font-weight:800;font-size:.82rem;cursor:pointer;text-transform:uppercase;letter-spacing:.5px;">🔄 Volver a auditar</button>' +
+      '<button onclick="document.getElementById(\'auditoria-overlay\').remove()" style="padding:11px 20px;background:#1B1F6B;color:#fff;border:none;border-radius:8px;font-weight:800;font-size:.82rem;cursor:pointer;text-transform:uppercase;letter-spacing:.5px;">✓ Cerrar</button>' +
+    '</div>';
+
+  document.getElementById('auditoria-body').innerHTML = html;
+
+  // Guardar resultados globalmente para descarga
+  window._ultimaAuditoria = resultados;
+};
+
+// Descargar resultados de la última auditoría como JSON
+window.ptDescargarReporteAuditoria = function() {
+  if (!window._ultimaAuditoria) {
+    alert('Primero ejecuta una auditoría.');
+    return;
+  }
+  var blob = new Blob([JSON.stringify(window._ultimaAuditoria, null, 2)], { type: 'application/json' });
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement('a');
+  a.href = url;
+  a.download = 'auditoria_' + new Date().toISOString().replace(/[:.]/g,'-') + '.json';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  if (typeof showToast === 'function') showToast('📥 Reporte de auditoría descargado', 'success');
+};
+
 window.ptAbrirRescateHuerfanas = async function() {
   // Crear overlay
   var existingOv = document.getElementById('rescate-huerfanas-overlay');
@@ -22935,24 +23283,89 @@ window.ptGuardarTodasHuerfanas = async function() {
 
   updateProg(validas.length, validas.length, '⏳ Persistiendo en localStorage y Firebase...');
 
+  // ── PERSISTENCIA ROBUSTA con auto-liberación de cuota si falla ──
+  var saveExitoso = false;
   try {
-    if (typeof saveProducts === 'function') await saveProducts();
+    // 1) Pre-limpieza preventiva: liberar caches de imágenes que podrían estar inflando localStorage
+    var liberadoMB = 0;
+    if (localStorage.getItem('farmers_product_images_hq')) {
+      liberadoMB += localStorage.getItem('farmers_product_images_hq').length / 1024 / 1024;
+      localStorage.removeItem('farmers_product_images_hq');
+    }
+    if (localStorage.getItem('farmers_product_images')) {
+      var cacheImgSize = localStorage.getItem('farmers_product_images').length / 1024 / 1024;
+      if (cacheImgSize > 0.3) {
+        liberadoMB += cacheImgSize;
+        localStorage.removeItem('farmers_product_images');
+      }
+    }
+    if (liberadoMB > 0) console.log('[ptGuardarTodas] Pre-liberación: ' + liberadoMB.toFixed(2) + ' MB');
+
+    // 2) Intentar guardado normal
+    if (typeof saveProducts === 'function') {
+      saveExitoso = await saveProducts();
+    }
+
+    // 3) Si falló, limpieza agresiva + reintento
+    if (!saveExitoso) {
+      console.warn('[ptGuardarTodas] saveProducts falló — limpieza agresiva y reintento');
+      // Limpiar caches no críticos
+      try {
+        if (localStorage.getItem('farmers_hcl_facturas') && localStorage.getItem('farmers_hcl_v7_facturas')) {
+          localStorage.removeItem('farmers_hcl_facturas');
+        }
+        // Limpiar reservas vacías
+        Object.keys(localStorage).forEach(function(k){
+          if (k.indexOf('ms_reserva_') === 0) {
+            try {
+              var rv = JSON.parse(localStorage.getItem(k) || '{}');
+              if (!rv || !rv.items || rv.items.length === 0) {
+                localStorage.removeItem(k);
+              }
+            } catch(e){}
+          }
+        });
+      } catch(eClean){}
+      // Reintentar
+      if (typeof saveProducts === 'function') {
+        saveExitoso = await saveProducts();
+      }
+    }
+
+    // 4) Si AÚN falló, intentar UN ÚLTIMO escape: subir SOLO a Firebase, ignorando localStorage
+    if (!saveExitoso && typeof window.fbSaveProducts === 'function') {
+      console.warn('[ptGuardarTodas] Reintento falló — subiendo solo a Firebase (skip localStorage)');
+      try {
+        await window.fbSaveProducts(PRODUCTS);
+        saveExitoso = true; // Considerar exitoso si llegó a Firebase
+        console.log('[ptGuardarTodas] ✓ Persistido en Firebase (localStorage bypass)');
+      } catch(eFb) {
+        console.error('[ptGuardarTodas] Firebase también falló:', eFb);
+      }
+    }
+
     // Inventario: forzar guardado oficial
     var invFinal = JSON.parse(localStorage.getItem('farmers_inv') || '{}');
-    if (typeof saveInventory === 'function') saveInventory(invFinal);
+    if (typeof saveInventory === 'function') {
+      try { saveInventory(invFinal); } catch(eInv){ console.warn('saveInventory:', eInv); }
+    }
     if (typeof renderTable === 'function') renderTable();
     if (typeof ptRender === 'function') ptRender();
+    if (typeof window._lsQuotaCheck === 'function') window._lsQuotaCheck();
   } catch(eFinal) {
     console.error('[ptGuardarTodas] persist final:', eFinal);
   }
 
   // Resultado final
-  var resumen = '✅ Guardado masivo completado\n\n' +
-    '✅ Exitos: ' + exitos + '\n' +
+  var resumen = (saveExitoso ? '✅ Guardado masivo completado' : '⚠ Guardado parcial — revisa la consola') + '\n\n' +
+    '✅ Productos procesados: ' + exitos + '\n' +
     (errores > 0 ? '❌ Errores: ' + errores + '\n' : '') +
     '🆕 Productos nuevos: ' + nuevos.length + '\n' +
     (incompletas.length > 0 ? '⚠ Omitidos por incompletos: ' + incompletas.length + '\n' : '') +
-    '\nLos productos están ahora en el catálogo y sincronizados con Firebase.';
+    '\n' +
+    (saveExitoso
+      ? 'Los productos están ahora en el catálogo y sincronizados con Firebase.'
+      : 'Algunos productos pueden no haberse guardado correctamente. Verifica el indicador de cuota y revisa la consola para más detalles.');
 
   setTimeout(function(){
     var p = document.getElementById('rescate-progress'); if (p) p.remove();
@@ -28544,10 +28957,9 @@ window.confirmUploadImages=async function(){
   if(window.fbSaveImages){
     try{
       await window.fbSaveImages(imgMap);
-      // Actualizar memoria
+      // Actualizar memoria (NO guardar en localStorage - satura cuota)
       window._prodImgs=imgMap;
-      // Guardar en localStorage como caché
-      try{localStorage.setItem('farmers_product_images',JSON.stringify(imgMap));}catch(e){}
+      // Las imágenes viven solo en memoria + Firebase. No localStorage.
       msgEl.textContent='✅ '+cnt+' imágenes guardadas en Firebase ('+kb+'KB).';
       btn.textContent='✅ Guardado ('+cnt+') — Selecciona nuevo lote';
       btn.disabled=false;
@@ -28557,19 +28969,12 @@ window.confirmUploadImages=async function(){
       btn.disabled=false; btn.textContent='💾 Reintentar';
     }
   } else {
-    // Fallback: solo localStorage
-    try{
-      localStorage.removeItem('farmers_product_images');
-      localStorage.setItem('farmers_product_images',JSON.stringify(imgMap));
-      window._prodImgs=imgMap;
-      msgEl.textContent='✅ '+cnt+' imágenes guardadas localmente ('+kb+'KB).';
-      btn.textContent='✅ Guardado ('+cnt+') — Selecciona nuevo lote';
-      btn.disabled=false;
-      if(typeof doRefSearch==='function') setTimeout(doRefSearch, 200);
-    }catch(e2){
-      msgEl.textContent='❌ Error: demasiadas imágenes. Firebase no disponible.';
-      btn.disabled=false; btn.textContent='💾 Reintentar';
-    }
+    // Fallback: solo memoria si Firebase no disponible
+    window._prodImgs=imgMap;
+    msgEl.textContent='⚠ '+cnt+' imágenes en memoria temporal (Firebase no disponible).';
+    btn.textContent='⚠ Pendiente subir ('+cnt+')';
+    btn.disabled=false;
+    if(typeof doRefSearch==='function') setTimeout(doRefSearch, 200);
   }
 };
 </script>
