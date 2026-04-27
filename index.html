@@ -35002,31 +35002,43 @@ window.msAsegurarDataPedido = function(numP) {
   MS.fechaEmision         = ped.fecha || '';
   if (ped.datosFiscales)  MS.datosFiscales = ped.datosFiscales;
 
-  // Prioridad 1: ped.data (pedidos nuevos)
+  // Prioridad 1: ped.data (pedidos nuevos o despachados)
   if (ped.data && Array.isArray(ped.data) && ped.data.length) {
     var _inv1 = (typeof getInventory==='function') ? getInventory() : {};
+    var _esDespachado = (ped.estado || '').toUpperCase() === 'DESPACHADO';
     // Asegurar que cada entry tenga los campos requeridos por msExportarPDF/msExportarExcel
     MS.data = ped.data.map(function(p){
+      // FIX: defensa contra estructuras incompletas (pedidos despachados antiguos
+      // pueden tener 'pedidos' pero no 'dist', o tener 'dist' vacío).
+      var pedidos = p.pedidos || {};
+      var dist = p.dist || {};
+      // Si no hay dist y el pedido está despachado, asumir dist = pedidos
+      // (lo que se pidió, se despachó al 100%)
+      if (Object.keys(dist).length === 0 && _esDespachado && Object.keys(pedidos).length > 0) {
+        dist = Object.assign({}, pedidos); // copia profunda
+      }
+
       var totalPedido = p.totalPedido;
       var estado = p.estado;
       var stock = p.stock;
-      if (totalPedido === undefined || estado === undefined || stock === undefined) {
-        var tp = 0, td = 0;
-        Object.keys(p.pedidos || {}).forEach(function(s){
-          tp += (p.pedidos[s])||0;
-          td += (p.dist[s])||0;
-        });
-        if (totalPedido === undefined) totalPedido = tp;
-        if (estado === undefined) {
-          if (tp > 0 && td >= tp) estado = 'completo';
-          else if (tp > 0 && td > 0) estado = 'parcial';
-          else if (tp > 0) estado = 'sinstock';
-          else estado = 'sinpedido';
-        }
-        if (stock === undefined) stock = parseInt(_inv1[p.ref]) || 0;
+      // Recalcular siempre porque los valores guardados pueden estar inconsistentes
+      var tp = 0, td = 0;
+      Object.keys(pedidos).forEach(function(s){
+        tp += (pedidos[s]) || 0;
+        td += (dist[s]) || 0;
+      });
+      // Si totalPedido no fue guardado, usar el calculado
+      if (totalPedido === undefined || totalPedido === null) totalPedido = tp;
+      if (estado === undefined) {
+        if (tp > 0 && td >= tp) estado = 'completo';
+        else if (tp > 0 && td > 0) estado = 'parcial';
+        else if (tp > 0) estado = 'sinstock';
+        else estado = 'sinpedido';
       }
-      return Object.assign({}, p, {totalPedido: totalPedido, estado: estado, stock: stock});
+      if (stock === undefined) stock = parseInt(_inv1[p.ref]) || 0;
+      return Object.assign({}, p, {pedidos: pedidos, dist: dist, totalPedido: totalPedido, estado: estado, stock: stock});
     });
+    console.log('[msAsegurarDataPedido] ✓ ' + npBusca + ': cargado desde data[] → ' + MS.data.length + ' refs (estado: ' + (ped.estado||'?') + ')');
     return true;
   }
 
@@ -36467,9 +36479,25 @@ window.msGenerarEtiquetasPDF = function(sucsFiltradas) {
     
     // ESTRATEGIA 1: Calcular desde MS.data (más preciso)
     if(typeof MS !== 'undefined' && MS.data && MS.data.length > 0) {
+      // Detectar si el pedido completo está despachado
+      var _esDespachadoEtiq = false;
+      try {
+        var _peds = (typeof getMsPedidos === 'function') ? getMsPedidos() : [];
+        var _ped = _peds.find(function(x){ return x.numP === MS.numPedido; });
+        _esDespachadoEtiq = _ped && (_ped.estado || '').toUpperCase() === 'DESPACHADO';
+      } catch(e){}
+
       MS.data.forEach(function(p){
-        var pide=p.pedidos?p.pedidos[suc]||0:0; 
-        var d=p.dist?Math.min(p.dist[suc]||0,pide):pide;
+        var pide = p.pedidos ? (p.pedidos[suc] || 0) : 0;
+        var d;
+        if (p.dist && Object.keys(p.dist).length > 0) {
+          d = Math.min(p.dist[suc] || 0, pide);
+        } else if (_esDespachadoEtiq) {
+          // Pedido despachado sin dist[]: lo pedido se despachó al 100%
+          d = pide;
+        } else {
+          d = pide;
+        }
         if(d > 0) {
           totalRef++;
           totalUnd += d;
@@ -36479,7 +36507,6 @@ window.msGenerarEtiquetasPDF = function(sucsFiltradas) {
             var med = prodData.medidas;
             var volPorBulto = parseFloat(med.volDirecto) || 0;
             var undPorBulto = getEmpaqueReal(p.ref); // CORREGIDO: usar empaque real, no precios
-            console.log('🏷️ ETIQUETA VOLUMEN:', p.ref, 'volPorBulto:', volPorBulto, 'undPorBulto:', undPorBulto, 'cantidad:', d);
             if(volPorBulto > 0 && undPorBulto > 0) {
               var volPorUnidad = volPorBulto / undPorBulto;
               totalVol += volPorUnidad * d;
