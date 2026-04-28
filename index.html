@@ -17,7 +17,7 @@
 <meta http-equiv="Expires" content="0">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.04.28.02">
+<meta name="farmers-version" content="2026.04.28.03">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -3880,9 +3880,13 @@ function setupStep3() {
       btn.style.cursor = 'pointer';
       btn.disabled = false;
       btn.onclick = function(){
-        // Obtener sucursales del pedido guardado
-        var reservaRaw = localStorage.getItem('ms_reserva_' + numP);
+        // SINCRONIZACIÓN MULTI-DISPOSITIVO:
+        // farmers_ms_pedidos (sincronizado vía Firebase) es la fuente de verdad.
+        // ms_reserva_<numP> es solo un cache local del mismo dato. Si está disponible
+        // en este dispositivo lo usamos, pero siempre damos prioridad a farmers_ms_pedidos.
         var sucursales = MS.sucursales && MS.sucursales.length ? MS.sucursales : [];
+        // Cache local (puede no existir en este dispositivo)
+        var reservaRaw = localStorage.getItem('ms_reserva_' + numP);
         if(reservaRaw) {
           try {
             var reserva = JSON.parse(reservaRaw);
@@ -3890,13 +3894,27 @@ function setupStep3() {
             if(reserva.clientesPorSucursal) MS.clientesPorSucursal = reserva.clientesPorSucursal;
           } catch(e){}
         }
-        // También intentar desde farmers_ms_pedidos
+        // Fuente sincronizada: farmers_ms_pedidos (siempre actualizado vía Firebase)
         var peds = typeof getMsPedidos==='function' ? getMsPedidos() : [];
         var ped = peds.find(function(p){ return p.numP===numP; });
         if(ped) {
           if(ped.sucursales && ped.sucursales.length) sucursales = ped.sucursales;
           if(ped.clientesPorSucursal) MS.clientesPorSucursal = ped.clientesPorSucursal;
           if(ped.moneda) MS.moneda = ped.moneda;
+          // Reconstruir ms_reserva_ local si falta (para acceso rápido desde este dispositivo)
+          if (!reservaRaw && ped.data) {
+            try {
+              var reservaRebuild = {
+                numPedido: ped.numP,
+                fecha: ped.fecha || new Date().toISOString(),
+                sucursales: ped.sucursales || [],
+                clientesPorSucursal: ped.clientesPorSucursal || {},
+                moneda: ped.moneda || 'USD',
+                data: ped.data
+              };
+              localStorage.setItem('ms_reserva_' + numP, JSON.stringify(reservaRebuild));
+            } catch(eR){}
+          }
         }
         msAbrirOverlayReservado(numP, sucursales, false);
       };
@@ -6245,6 +6263,25 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
         try { const d = await getDoc(doc(db,'data','hcl_facturas')); return d.exists() ? JSON.parse(d.data().v) : null; } catch(e) { return null; }
       };
 
+      // ── Inventarios reportados por cliente (HCL) ─────────────────────
+      // Datos de inventario que cada cliente reporta tener actualmente.
+      // Usados por el módulo de reposición para calcular qué necesita cada cliente.
+      // Se sincroniza entre dispositivos para que tablets, móviles y PC vean
+      // la misma información del cliente actualizada en tiempo real.
+      window.fbSaveHclInvClientes = async (data) => {
+        try {
+          await setDoc(doc(db,'data','hcl_inv_clientes'), { v: JSON.stringify(data || {}), updatedAt: Date.now() });
+          return true;
+        } catch(e) { console.warn('fbSaveHclInvClientes:',e); return false; }
+      };
+      window.fbGetHclInvClientes = async () => {
+        try {
+          const d = await getDoc(doc(db,'data','hcl_inv_clientes'));
+          if (!d.exists() || !d.data().v) return null;
+          return JSON.parse(d.data().v);
+        } catch(e) { console.warn('fbGetHclInvClientes:',e); return null; }
+      };
+
       // ── Productos extendidos (referencias nuevas importadas) ────────
       window.fbSaveProductsExt = async (arr) => {
         try { await setDoc(doc(db,'data','products_ext'), {v: JSON.stringify(arr)}); } catch(e) { console.warn('fbSaveProductsExt:',e); }
@@ -7574,6 +7611,17 @@ async function loadFromFirebase() {
         localStorage.setItem('farmers_hcl_facturas', JSON.stringify(hclData));
       }
     }
+    // ── Cargar inventarios reportados por cliente (HCL) ──────────────────
+    // Sincroniza datos del módulo de reposición entre dispositivos.
+    if (window.fbGetHclInvClientes) {
+      try {
+        var hclInvFB = await window.fbGetHclInvClientes();
+        if (hclInvFB && typeof hclInvFB === 'object' && Object.keys(hclInvFB).length > 0) {
+          localStorage.setItem('farmers_hcl_inv_clientes', JSON.stringify(hclInvFB));
+          console.log('[loadFromFirebase] ✓ HCL_INV_CLIENTES cargados: ' + Object.keys(hclInvFB).length + ' clientes');
+        }
+      } catch(eHIC) { console.warn('loadFromFirebase HCL_INV_CLIENTES:', eHIC); }
+    }
     // Imágenes: NO cargar al login (evita crash por memoria en iOS)
     // Se cargan bajo demanda al abrir el catálogo (openRefSearch)
     // Cargar clientes desde Firebase
@@ -7889,6 +7937,10 @@ async function loadFromFirebase() {
       if(_cxcChg) {
         if(_cxcObj.facturas) _cxcObj.facturas = _cxcArr; else _cxcObj = _cxcArr;
         localStorage.setItem('farmers_cxc', JSON.stringify(_cxcObj));
+        // SINCRONIZACIÓN MULTI-DISPOSITIVO: subir cambios automáticos a Firebase
+        if (typeof window.fbSaveCXC === 'function') {
+          window.fbSaveCXC(_cxcObj).catch(function(e){ console.warn('fbSaveCXC auto-fix:', e); });
+        }
       }
     }
     // Corregir Ventas en memoria
@@ -46704,6 +46756,10 @@ function hclGetInvClientes() {
 }
 function hclSaveInvClientes(data) {
   try { localStorage.setItem(HCL_INV_CLIENTE_KEY, JSON.stringify(data)); } catch(e) {}
+  // SINCRONIZACIÓN MULTI-DISPOSITIVO: subir a Firebase para que otros dispositivos vean los datos
+  if (typeof window.fbSaveHclInvClientes === 'function') {
+    window.fbSaveHclInvClientes(data).catch(function(e){ console.warn('fbSaveHclInvClientes:', e); });
+  }
 }
 
 // ── Abrir modal de reposición de cliente ──────────────────────────────────
@@ -50537,6 +50593,10 @@ window.msCorregirClientes = async function() {
       if(cxcData.facturas) cxcData.facturas = cxcArr;
       else cxcData = cxcArr;
       localStorage.setItem('farmers_cxc', JSON.stringify(cxcData));
+      // SINCRONIZACIÓN MULTI-DISPOSITIVO: subir a Firebase los cambios de migración
+      if (typeof window.fbSaveCXC === 'function') {
+        window.fbSaveCXC(cxcData).catch(function(e){ console.warn('fbSaveCXC migración:', e); });
+      }
     }
   } catch(e) { console.warn('CXC local:', e); }
 
