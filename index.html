@@ -9,9 +9,15 @@
   <link rel="dns-prefetch" href="https://www.gstatic.com">
   <link rel="dns-prefetch" href="https://firestore.googleapis.com">
 <meta charset="UTF-8">
-<meta http-equiv="Cache-Control" content="public, max-age=300">
-<meta http-equiv="Pragma" content="cache">
-<meta http-equiv="Expires" content="300">
+<!-- Cache off: el HTML siempre se revalida con servidor para garantizar versión más reciente.
+     El navegador puede usar caché solo después de validar que no ha cambiado.
+     Esto evita que tablets/dispositivos secundarios carguen versiones viejas del código. -->
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
+<!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
+     para que el sistema detecte automáticamente que hay una versión más nueva. -->
+<meta name="farmers-version" content="2026.04.28.02">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -5493,9 +5499,144 @@ function lShowApp(username) {
     console.table(detalle);
   };
 
+  // ════════════════════════════════════════════════════════════════════════
+  // SISTEMA DE VERSIONADO PARA SINCRONIZACIÓN MULTI-DISPOSITIVO
+  //
+  // Problema que resuelve: cuando se actualiza el código en GitHub Pages,
+  // los navegadores con caché viejo siguen ejecutando código viejo, que
+  // no entiende los datos nuevos que sube otro dispositivo (ej. PC con código
+  // nuevo). Resultado: tablets, móviles y otros equipos ven los datos como
+  // "no actualizados" o vacíos.
+  //
+  // Solución: cada vez que el código se actualiza, comparamos la versión
+  // que está corriendo en memoria con la versión que el servidor devuelve
+  // al consultar el HTML. Si no coinciden, mostramos al usuario un banner
+  // para forzar actualización (con limpieza automática de caché).
+  //
+  // El número de versión se actualiza en el meta tag al inicio del HTML
+  // ("farmers-version") cada vez que se hace un deploy.
+  // ════════════════════════════════════════════════════════════════════════
+  window.FARMERS_APP_VERSION = (function(){
+    try {
+      var meta = document.querySelector('meta[name="farmers-version"]');
+      return meta ? meta.getAttribute('content') : 'desconocida';
+    } catch(e) { return 'desconocida'; }
+  })();
+
+  // Indicador visible de versión (esquina inferior izquierda, junto al de cuota)
+  window._versionIndicator = function() {
+    try {
+      var ind = document.getElementById('app-version-indicator');
+      if (!ind) {
+        ind = document.createElement('div');
+        ind.id = 'app-version-indicator';
+        ind.style.cssText = 'position:fixed;bottom:14px;left:120px;padding:5px 10px;border-radius:6px;font-size:.6rem;font-weight:700;font-family:Arial,sans-serif;z-index:9998;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.25);opacity:.6;transition:opacity .2s;letter-spacing:.3px;background:#1e293b;color:#94a3b8;border:1px solid rgba(148,163,184,.2);';
+        ind.title = 'Versión del sistema. Click para forzar actualización.';
+        ind.onclick = function(){ window._forzarActualizacion(); };
+        ind.onmouseover = function(){ ind.style.opacity = '1'; };
+        ind.onmouseout = function(){ ind.style.opacity = '.6'; };
+        document.body.appendChild(ind);
+      }
+      ind.textContent = 'v' + window.FARMERS_APP_VERSION;
+    } catch(e) { console.warn('versionIndicator:', e); }
+  };
+
+  // Detección automática de versión obsoleta
+  // Compara la versión local con la versión actual en GitHub Pages
+  window._checkForUpdates = async function(silent) {
+    try {
+      // Hacer fetch del HTML con bypass de caché para leer la versión más reciente
+      var resp = await fetch(window.location.href + '?_v=' + Date.now(), {
+        method: 'GET',
+        cache: 'no-cache',
+        headers: { 'Cache-Control': 'no-cache, no-store, must-revalidate' }
+      });
+      var html = await resp.text();
+      // Extraer versión del HTML remoto
+      var match = html.match(/<meta\s+name="farmers-version"\s+content="([^"]+)"/i);
+      if (!match) return;
+      var versionRemota = match[1];
+      var versionLocal = window.FARMERS_APP_VERSION;
+      if (versionRemota !== versionLocal && versionLocal !== 'desconocida') {
+        console.warn('[Actualización] Versión local: ' + versionLocal + ' | Versión disponible: ' + versionRemota);
+        // Solo mostrar banner una vez
+        if (!sessionStorage.getItem('farmers_update_alert_shown')) {
+          sessionStorage.setItem('farmers_update_alert_shown', '1');
+          window._mostrarBannerActualizacion(versionLocal, versionRemota);
+        }
+      }
+    } catch(e) {
+      if (!silent) console.warn('[checkForUpdates] error:', e);
+    }
+  };
+
+  // Banner amarillo visible que avisa al usuario de versión nueva disponible
+  window._mostrarBannerActualizacion = function(verLocal, verRemota) {
+    try {
+      var existing = document.getElementById('farmers-update-banner');
+      if (existing) existing.remove();
+      var banner = document.createElement('div');
+      banner.id = 'farmers-update-banner';
+      banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;background:linear-gradient(135deg,#f59e0b 0%,#d97706 100%);color:white;padding:12px 20px;font-family:Arial,sans-serif;font-weight:700;font-size:.85rem;box-shadow:0 4px 12px rgba(0,0,0,.3);display:flex;align-items:center;justify-content:space-between;gap:12px;';
+      banner.innerHTML =
+        '<div style="display:flex;align-items:center;gap:10px;">' +
+          '<span style="font-size:1.3rem;">⚠️</span>' +
+          '<div>' +
+            '<div style="font-size:.95rem;font-weight:900;">Hay una versión más reciente del sistema disponible</div>' +
+            '<div style="font-size:.7rem;font-weight:500;opacity:.9;margin-top:2px;">Tu versión: v' + verLocal + ' · Disponible: v' + verRemota + ' · Actualiza para ver los últimos cambios.</div>' +
+          '</div>' +
+        '</div>' +
+        '<div style="display:flex;gap:8px;flex-shrink:0;">' +
+          '<button id="banner-update-now" style="background:white;color:#d97706;border:none;border-radius:6px;padding:8px 16px;cursor:pointer;font-weight:900;font-size:.8rem;font-family:inherit;">↻ ACTUALIZAR AHORA</button>' +
+          '<button id="banner-update-dismiss" style="background:rgba(255,255,255,.15);color:white;border:1px solid rgba(255,255,255,.3);border-radius:6px;padding:8px 12px;cursor:pointer;font-weight:700;font-size:.8rem;font-family:inherit;">Después</button>' +
+        '</div>';
+      document.body.appendChild(banner);
+      document.getElementById('banner-update-now').onclick = function(){ window._forzarActualizacion(); };
+      document.getElementById('banner-update-dismiss').onclick = function(){ banner.remove(); };
+    } catch(e) { console.warn('Banner update:', e); }
+  };
+
+  // Forzar limpieza de caché y recarga total para tomar la última versión
+  window._forzarActualizacion = function() {
+    try {
+      // Confirmar al usuario antes de recargar (puede tener trabajo sin guardar)
+      var confirma = confirm(
+        '¿Forzar actualización del sistema?\n\n' +
+        'Esto va a:\n' +
+        '   • Limpiar el caché del navegador en este dispositivo\n' +
+        '   • Recargar la página con la versión más reciente\n\n' +
+        'Tus datos en Firebase NO se afectan. Solo se actualiza el código del sistema.\n\n' +
+        'Asegúrate de haber guardado cualquier trabajo pendiente.'
+      );
+      if (!confirma) return;
+      // Limpiar caches de service worker si existen
+      if ('caches' in window) {
+        caches.keys().then(function(names){
+          names.forEach(function(n){ caches.delete(n); });
+        });
+      }
+      // Limpiar sessionStorage relacionado a UI (no localStorage de datos)
+      try { sessionStorage.removeItem('farmers_update_alert_shown'); } catch(e){}
+      // Recargar con cache-bust en la URL
+      var url = window.location.href.split('?')[0] + '?_refresh=' + Date.now();
+      window.location.replace(url);
+    } catch(e) { console.error('_forzarActualizacion:', e); window.location.reload(true); }
+  };
+
+
   // Llamar inmediatamente y cada 30 segundos
   setTimeout(function(){ window._lsQuotaCheck(); }, 1000);
   setInterval(function(){ window._lsQuotaCheck(); }, 30000);
+
+  // Indicador de versión + chequeo automático de actualizaciones
+  setTimeout(function(){
+    if (typeof window._versionIndicator === 'function') window._versionIndicator();
+    if (typeof window._checkForUpdates === 'function') window._checkForUpdates(true);
+  }, 1500);
+  // Re-chequear cada 5 minutos para detectar nuevas versiones publicadas durante la sesión
+  setInterval(function(){
+    if (typeof window._checkForUpdates === 'function') window._checkForUpdates(true);
+  }, 300000);
 
   document.getElementById('ls').classList.add('gone');
   document.getElementById('app-header').style.display = '';
@@ -6377,6 +6518,34 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
           if (JSON.stringify(msArr) !== JSON.stringify(msLocal)) {
             localStorage.setItem('farmers_ms_pedidos', JSON.stringify(msArr));
             console.log('[onSnapshot ms_pedidos] ↓ sincronizado: ' + msArr.length + ' pedidos');
+
+            // SINCRONIZACIÓN MULTI-DISPOSITIVO DE ETIQUETAS:
+            // Cada pedido puede tener etiqData (datos de etiquetas: nombre sucursal, OC, RIF, cajas)
+            // Esos datos se guardan en localStorage como 'ms_etiq_<numPedido>' para acceso rápido
+            // Cuando recibimos pedidos actualizados desde Firebase (otro dispositivo guardó cambios),
+            // copiamos el etiqData del pedido al localStorage local para que las etiquetas se vean
+            // correctamente en este dispositivo también.
+            try {
+              msArr.forEach(function(p){
+                if (p && p.numP && p.etiqData && Object.keys(p.etiqData).length > 0) {
+                  var lsKey = 'ms_etiq_' + p.numP;
+                  var lsLocal = {};
+                  try { lsLocal = JSON.parse(localStorage.getItem(lsKey) || '{}'); } catch(e){}
+                  // Fusión inteligente: empezar con datos remotos, sobrescribir con datos locales válidos
+                  var fusion = Object.assign({}, p.etiqData);
+                  Object.keys(lsLocal).forEach(function(suc){
+                    if (lsLocal[suc] && Object.keys(lsLocal[suc]).length > 0) {
+                      fusion[suc] = lsLocal[suc];
+                    }
+                  });
+                  // Solo guardar si cambió respecto al actual
+                  if (JSON.stringify(fusion) !== JSON.stringify(lsLocal)) {
+                    localStorage.setItem(lsKey, JSON.stringify(fusion));
+                  }
+                }
+              });
+            } catch(eEtiqSync){ console.warn('[ms_etiq sync]:', eEtiqSync); }
+
             // Refrescar monitor de pedidos si está abierto
             if (typeof renderMonitorPedidos === 'function') {
               try { renderMonitorPedidos(); } catch(eR){}
@@ -7521,6 +7690,33 @@ async function loadFromFirebase() {
         if (Array.isArray(msPedidosFB) && msPedidosFB.length > 0) {
           localStorage.setItem('farmers_ms_pedidos', JSON.stringify(msPedidosFB));
           console.log('[loadFromFirebase] ✓ MS_PEDIDOS cargados: ' + msPedidosFB.length + ' pedidos');
+
+          // SINCRONIZACIÓN MULTI-DISPOSITIVO DE ETIQUETAS:
+          // Al cargar los pedidos desde Firebase, copiar el etiqData de cada pedido
+          // al localStorage como 'ms_etiq_<numPedido>' para que las etiquetas se vean
+          // correctamente en este dispositivo (tablet, móvil, otra PC).
+          // Garantía: lo que guardes desde la PC se ve en la tablet automáticamente.
+          var _etiqMigrated = 0;
+          msPedidosFB.forEach(function(p){
+            if (p && p.numP && p.etiqData && Object.keys(p.etiqData).length > 0) {
+              var lsKey = 'ms_etiq_' + p.numP;
+              var lsLocal = {};
+              try { lsLocal = JSON.parse(localStorage.getItem(lsKey) || '{}'); } catch(e){}
+              // Fusión: empezar con datos remotos, sobrescribir con datos locales válidos
+              var fusion = Object.assign({}, p.etiqData);
+              Object.keys(lsLocal).forEach(function(suc){
+                if (lsLocal[suc] && Object.keys(lsLocal[suc]).length > 0) {
+                  fusion[suc] = lsLocal[suc];
+                }
+              });
+              if (JSON.stringify(fusion) !== JSON.stringify(lsLocal)) {
+                try { localStorage.setItem(lsKey, JSON.stringify(fusion)); _etiqMigrated++; } catch(eEM){}
+              }
+            }
+          });
+          if (_etiqMigrated > 0) {
+            console.log('[loadFromFirebase] ✓ Etiquetas sincronizadas: ' + _etiqMigrated + ' pedidos con datos de etiquetas migrados a localStorage');
+          }
         }
       } catch(eMS) { console.warn('loadFromFirebase MS_PEDIDOS:', eMS); }
     }
@@ -35019,7 +35215,19 @@ window.msGenerarDocPedido = function(numP, sel) {
       '</tr>';
     }).join('');
 
-    var _etiqDoc={}; try{_etiqDoc=JSON.parse(localStorage.getItem('ms_etiq_'+numPed)||'{}');}catch(e){}
+    // Cargar etiqData con prioridad multi-dispositivo:
+    // 1. Empezar con etiqData del pedido (sincronizado desde Firebase)
+    // 2. Sobrescribir con localStorage SOLO donde tenga datos válidos
+    var _etiqDoc = {};
+    try {
+      // Capa A: Firebase (vía pedido sincronizado)
+      if (_ped && _ped.etiqData) Object.assign(_etiqDoc, _ped.etiqData);
+      // Capa B: localStorage local (más reciente)
+      var _localDoc = JSON.parse(localStorage.getItem('ms_etiq_'+numPed)||'{}');
+      Object.keys(_localDoc).forEach(function(s){
+        if (_localDoc[s] && Object.keys(_localDoc[s]).length > 0) _etiqDoc[s] = _localDoc[s];
+      });
+    } catch(e){}
     var _esd=_etiqDoc[suc]||{};
     var _nomSucDoc=_esd.nom||nombreCl;
     var _ocSucDoc=_esd.oc||'';
@@ -35869,8 +36077,17 @@ window.msExportarPedidoExcel = function(ped) {
   var clDB = typeof getClientsDB==='function' ? getClientsDB() : [];
   var inv  = typeof getInventory==='function' ? getInventory() : {};
   var tasa = typeof getTasaHoy==='function' ? (getTasaHoy()||0) : 0;
-  var etiqData={};
-  try{ etiqData=JSON.parse(localStorage.getItem('ms_etiq_'+ped.numP)||'{}');}catch(e){ etiqData=ped.etiqData||{}; }
+  // Cargar etiqData con prioridad multi-dispositivo:
+  // Capa 1: etiqData del pedido (sincronizado vía Firebase)
+  // Capa 2: localStorage local (sobrescribe SOLO con datos válidos)
+  var etiqData = {};
+  try {
+    if (ped && ped.etiqData) Object.assign(etiqData, ped.etiqData);
+    var _lEtiq = JSON.parse(localStorage.getItem('ms_etiq_'+ped.numP)||'{}');
+    Object.keys(_lEtiq).forEach(function(s){
+      if (_lEtiq[s] && Object.keys(_lEtiq[s]).length > 0) etiqData[s] = _lEtiq[s];
+    });
+  } catch(e){}
 
   var subs = ped.sucursales||[];
   var wb   = XLSX.utils.book_new();
@@ -36350,9 +36567,32 @@ window.msAbrirEtiquetas = function() {
   }
 
   // ── Card por sucursal ─────────────────────────────
-  // Recuperar datos guardados de etiquetas previas
+  // Recuperar datos guardados de etiquetas previas con FUSIÓN
+  // multi-dispositivo: combinar localStorage local + etiqData
+  // del pedido (que sí se sincroniza a Firebase).
+  // Esto garantiza que al abrir el pedido en otro dispositivo (tablet, móvil),
+  // se vean las etiquetas creadas en la PC.
   var _etiqData = {};
-  try { _etiqData = JSON.parse(localStorage.getItem('ms_etiq_'+MS.numPedido)||'{}'); } catch(e){}
+  try {
+    // Capa 1: localStorage local (más reciente y específico de este dispositivo)
+    var _localEtiq = JSON.parse(localStorage.getItem('ms_etiq_'+MS.numPedido)||'{}');
+    // Capa 2: etiqData del pedido (sincronizado vía Firebase desde PC u otro dispositivo)
+    var _peds_etiq = (typeof getMsPedidos === 'function') ? getMsPedidos() : [];
+    var _pedEtiq = _peds_etiq.find(function(x){ return x.numP === MS.numPedido; });
+    var _fbEtiq = (_pedEtiq && _pedEtiq.etiqData) ? _pedEtiq.etiqData : {};
+    // Fusionar: localStorage gana sobre Firebase (porque puede ser editado de uso reciente)
+    // Pero si localStorage NO tiene la sucursal, usar el de Firebase
+    _etiqData = Object.assign({}, _fbEtiq, _localEtiq);
+    // GARANTÍA DE SINCRONIZACIÓN: si los datos están en Firebase y NO en localStorage,
+    // copiarlos también a localStorage local para evitar pérdida y mantener consistencia
+    var _necesitaSync = false;
+    Object.keys(_fbEtiq).forEach(function(s){
+      if (!_localEtiq[s]) { _localEtiq[s] = _fbEtiq[s]; _necesitaSync = true; }
+    });
+    if (_necesitaSync) {
+      try { localStorage.setItem('ms_etiq_'+MS.numPedido, JSON.stringify(_localEtiq)); } catch(e){}
+    }
+  } catch(e){ _etiqData = {}; }
 
   // ════════════════════════════════════════════════════════════════
   // CONSTRUIR ETIQDATA LOCAL AUTOCONTENIDO desde localStorage
@@ -36727,14 +36967,24 @@ window.msGenerarEtiquetasPDF = function(sucsFiltradas) {
 
   // Recolectar cajas por sucursal
   var etiquetas=[];
-  // Pre-cargar etiqData desde localStorage para fallback cuando el formulario no está abierto
-  var _etiqFallback={};
-  try{ _etiqFallback=JSON.parse(localStorage.getItem('ms_etiq_'+numP)||'{}'); }catch(e){}
-  // Complementar con etiqData del pedido guardado en farmers_ms_pedidos
-  if(typeof getMsPedidos==='function'){
-    var _pedFB=(getMsPedidos()||[]).find(function(p){return p.numP===numP;});
-    if(_pedFB&&_pedFB.etiqData) Object.assign(_etiqFallback,_pedFB.etiqData);
+  // Pre-cargar etiqData con prioridad para sincronización multi-dispositivo:
+  // 1. Empezar con etiqData del pedido (sincronizado vía Firebase desde otros dispositivos como PC)
+  // 2. Fusionar con localStorage local (que puede tener cambios más recientes hechos en este dispositivo)
+  // Esto garantiza que tablet/móvil/PC vean siempre la información completa.
+  var _etiqFallback = {};
+  if (typeof getMsPedidos === 'function') {
+    var _pedFB = (getMsPedidos() || []).find(function(p){ return p.numP === numP; });
+    if (_pedFB && _pedFB.etiqData) Object.assign(_etiqFallback, _pedFB.etiqData);
   }
+  // localStorage gana SOLO si tiene la sucursal (Object.assign sobrescribe solo claves presentes)
+  try {
+    var _localOverride = JSON.parse(localStorage.getItem('ms_etiq_'+numP)||'{}');
+    Object.keys(_localOverride).forEach(function(s){
+      if (_localOverride[s] && Object.keys(_localOverride[s]).length > 0) {
+        _etiqFallback[s] = _localOverride[s];
+      }
+    });
+  } catch(e){}
 
   // ════════════════════════════════════════════════════════════════
   // CONSTRUIR LBLDATA LOCAL — autocontenido desde localStorage.
