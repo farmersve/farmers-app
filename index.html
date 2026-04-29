@@ -17,7 +17,7 @@
 <meta http-equiv="Expires" content="0">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.04.28.04">
+<meta name="farmers-version" content="2026.04.28.05">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -42166,28 +42166,95 @@ window.cxcRepararFacturasFaltantes = function() {
       reporte.detectados.push({ pedido: ped.numP, sucursal: suc });
 
       try {
-        // Calcular items de la sucursal a partir de ped.data
+        // Calcular items de la sucursal — soportar ambas estructuras (data nueva, items legacy)
         var itemsSuc = [];
-        (ped.data || []).forEach(function(p){
-          var pide = (p.pedidos && p.pedidos[suc]) || 0;
-          if (!pide) return;
-          var desp = Math.min((p.dist && p.dist[suc]) || 0, pide);
-          // Si despachado y desp=0, asumir que se despachó todo lo pedido
-          if (desp === 0) desp = pide;
-          if (!desp) return;
-          var prod = (typeof PRODUCTS!=='undefined') ? PRODUCTS.find(function(x){return x.r===p.ref;}) : null;
-          var precio = (typeof msGetPrecio==='function') ? (msGetPrecio(p.ref)||0) : 0;
-          itemsSuc.push({
-            r: p.ref, d: p.desc || (prod && prod.d) || '',
-            br: (prod && prod.br) || '', e: (prod && prod.e) || '',
-            precio: precio, orden: desp, total: precio * desp,
-            ex_antes: 0, ex_despues: 0
+        var fuenteData = '';
+
+        // ESTRATEGIA 1: estructura nueva (ped.data con pedidos/dist por sucursal)
+        if (ped.data && Array.isArray(ped.data) && ped.data.length) {
+          fuenteData = 'data';
+          ped.data.forEach(function(p){
+            var pide = (p.pedidos && p.pedidos[suc]) || 0;
+            if (!pide) return;
+            var desp = Math.min((p.dist && p.dist[suc]) || 0, pide);
+            // Si despachado y desp=0, asumir que se despachó todo lo pedido
+            if (desp === 0) desp = pide;
+            if (!desp) return;
+            var prod = (typeof PRODUCTS!=='undefined') ? PRODUCTS.find(function(x){return x.r===p.ref;}) : null;
+            var precio = (typeof msGetPrecio==='function') ? (msGetPrecio(p.ref)||0) : 0;
+            // Si msGetPrecio falla, intentar leerlo del item
+            if (!precio && p.precioOverride) precio = p.precioOverride;
+            if (!precio && prod) {
+              precio = (moneda==='USD') ? (prod.u||0)
+                     : (moneda==='BCV') ? (prod.bv||0)
+                     : (prod.t||0);
+            }
+            itemsSuc.push({
+              r: p.ref, d: p.desc || (prod && prod.d) || '',
+              br: (prod && prod.br) || '', e: (prod && prod.e) || '',
+              precio: precio, orden: desp, total: precio * desp,
+              ex_antes: 0, ex_despues: 0
+            });
           });
-        });
+        }
+
+        // ESTRATEGIA 2: estructura legacy (ped.items con sucursales[suc].pide/desp)
+        if (!itemsSuc.length && ped.items && Array.isArray(ped.items) && ped.items.length) {
+          fuenteData = 'items';
+          ped.items.forEach(function(item){
+            var sucData = (item.sucursales || {})[suc] || {};
+            var pide = parseInt(sucData.pide) || 0;
+            if (!pide) return;
+            var desp = parseInt(sucData.desp) || 0;
+            // Si despachado y desp=0, asumir que se despachó todo
+            if (desp === 0) desp = pide;
+            if (!desp) return;
+            var prod = (typeof PRODUCTS!=='undefined') ? PRODUCTS.find(function(x){return x.r===item.ref;}) : null;
+            var precio = (typeof msGetPrecio==='function') ? (msGetPrecio(item.ref)||0) : 0;
+            // Fallback a precio del item o del producto
+            if (!precio && item.precioOverride) precio = item.precioOverride;
+            if (!precio && item.precio) precio = item.precio;
+            if (!precio && prod) {
+              precio = (moneda==='USD') ? (prod.u||0)
+                     : (moneda==='BCV') ? (prod.bv||0)
+                     : (prod.t||0);
+            }
+            itemsSuc.push({
+              r: item.ref, d: item.desc || (prod && prod.d) || '',
+              br: (prod && prod.br) || '', e: (prod && prod.e) || '',
+              precio: precio, orden: desp, total: precio * desp,
+              ex_antes: 0, ex_despues: 0
+            });
+          });
+        }
+
         if (!itemsSuc.length) {
-          reporte.errores.push({pedido:ped.numP, sucursal:suc, error:'Sin items'});
+          // Diagnóstico detallado: ¿por qué no se pudo construir items?
+          var diagDet = {
+            tieneData: !!(ped.data && ped.data.length),
+            tieneItems: !!(ped.items && ped.items.length),
+            sucEnDist: 0,
+            sucEnItems: 0,
+            ejemploDist: null,
+            ejemploItem: null
+          };
+          if (ped.data && ped.data.length) {
+            ped.data.forEach(function(p){
+              if (p.pedidos && p.pedidos[suc]) diagDet.sucEnDist++;
+              if (!diagDet.ejemploDist) diagDet.ejemploDist = { ref: p.ref, pedidos: Object.keys(p.pedidos||{}), dist: Object.keys(p.dist||{}) };
+            });
+          }
+          if (ped.items && ped.items.length) {
+            ped.items.forEach(function(it){
+              if (it.sucursales && it.sucursales[suc]) diagDet.sucEnItems++;
+              if (!diagDet.ejemploItem) diagDet.ejemploItem = { ref: it.ref, sucursales: Object.keys(it.sucursales||{}) };
+            });
+          }
+          console.warn('[Reparación] Sin items para', ped.numP, '/', suc, diagDet);
+          reporte.errores.push({pedido:ped.numP, sucursal:suc, error:'Sin items (data:'+(diagDet.tieneData?'sí':'no')+', items:'+(diagDet.tieneItems?'sí':'no')+', sucEnDist:'+diagDet.sucEnDist+', sucEnItems:'+diagDet.sucEnItems+')'});
           return;
         }
+        console.log('[Reparación] ✓ Items construidos para', ped.numP, '/', suc, '(fuente:'+fuenteData+', '+itemsSuc.length+' items)');
 
         // Resolver cliente
         var Rv = (typeof resolverCliente==='function') ? resolverCliente(suc, {clientesPorSucursal: ped.clientesPorSucursal}) : null;
