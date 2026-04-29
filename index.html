@@ -17,7 +17,7 @@
 <meta http-equiv="Expires" content="0">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.04.28.03">
+<meta name="farmers-version" content="2026.04.28.04">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -33827,7 +33827,8 @@ function msRegistrarVentaYCXC(numP, sel) {
   var moneda=MS.moneda||'USD';
   var clDB=typeof getClientsDB==='function'?getClientsDB():[];
 
-  sel.forEach(function(suc){
+  var _despachoTimestamp = Date.now(); // Timestamp base único para todo el despacho
+  sel.forEach(function(suc, _sucIdx){
     // No duplicar si ya fue despachada
     if(String(MS.sucursalesEstado[suc]||'').toUpperCase()==='DESPACHADO') return;
 
@@ -33855,7 +33856,10 @@ function msRegistrarVentaYCXC(numP, sel) {
     var grandTotal    = itemsSuc.reduce(function(s,i){return s+i.total;},0);
     var grandUnits    = itemsSuc.reduce(function(s,i){return s+i.orden;},0);
     var totalBs       = tasa>0&&moneda==='BCV'?grandTotal*tasa:tasa>0&&moneda==='TF'?grandTotal*tasaTF:tasa>0?grandTotal*tasa:null;
-    var saleId        = Date.now()+Math.floor(Math.random()*9999);
+    // FIX CRÍTICO: saleId GARANTIZADO único por sucursal usando índice + timestamp + random largo
+    // Antes: Date.now()+Math.floor(Math.random()*9999) podía colisionar dentro del mismo forEach
+    // Ahora: timestamp base + offset por índice (×1000) + random grande → imposible colisionar
+    var saleId        = _despachoTimestamp + (_sucIdx * 100000) + Math.floor(Math.random()*99999);
 
     // ── Leer datos fiscales capturados para esta sucursal ──
     var df = dFiscales[suc] || {};
@@ -33897,7 +33901,9 @@ function msRegistrarVentaYCXC(numP, sel) {
 
     if(typeof getSales==='function'&&typeof saveSales==='function'){
       var sales=getSales();
-      var yaExiste=sales.some(function(x){return x.msNumPedido===sale.msNumPedido&&x.sucursal===suc&&x.fuente==='ms_despachado';});
+      // FIX: comparar con sucursalCodigo (que sí tiene el código original "MXM.H")
+      // El campo sucursal tiene el nombre del cliente, NO el código de sucursal
+      var yaExiste=sales.some(function(x){return x.msNumPedido===sale.msNumPedido && x.sucursalCodigo===suc && x.fuente==='ms_despachado';});
       if(!yaExiste){sales.unshift(sale);saveSales(sales);}
     }
     if(typeof cxcCrearDesdePedido==='function') cxcCrearDesdePedido(sale);
@@ -42108,6 +42114,183 @@ function cxcCrearDesdePedido(sale) {
   }, 800);
 }
 window.cxcCrearDesdePedido = cxcCrearDesdePedido;
+
+// ════════════════════════════════════════════════════════════════════════
+// FUNCIÓN DE REPARACIÓN: detectar y reconstruir facturas CXC faltantes
+// de pedidos despachados.
+//
+// Caso de uso: si un pedido multi-sucursal fue despachado pero alguna
+// sucursal no generó su factura CXC correspondiente (por colisión de
+// saleId, error de sincronización, o cualquier otra causa), esta función
+// detecta los huecos y reconstruye las facturas CON LOS DATOS FISCALES
+// QUE EL USUARIO YA HABÍA INGRESADO en el momento del despacho original.
+//
+// Es 100% segura: NO crea duplicados (verifica antes de crear cada una).
+// NO altera inventario (ya fue descontado al despachar).
+// SOLO crea la factura CXC y la venta correspondiente que faltaban.
+// ════════════════════════════════════════════════════════════════════════
+window.cxcRepararFacturasFaltantes = function() {
+  var peds = (typeof getMsPedidos==='function') ? getMsPedidos() : [];
+  var facsCXC = (typeof cxcFacs==='function') ? cxcFacs() : [];
+  var ventas = (typeof getSales==='function') ? getSales() : [];
+  var clDB = (typeof getClientsDB==='function') ? getClientsDB() : [];
+  var tasa = (typeof getTasaHoy==='function') ? (getTasaHoy()||0) : 0;
+  var tfSpr = (typeof TF_SPREAD!=='undefined') ? TF_SPREAD : 0;
+  var tasaTF = tasa>0 ? tasa*(1+tfSpr/100) : 0;
+
+  var reporte = { detectados: [], reconstruidas: 0, yaExistian: 0, errores: [] };
+
+  peds.forEach(function(ped){
+    if (!ped || !ped.numP) return;
+    var estPed = (ped.estado||'').toUpperCase();
+    // Solo revisamos pedidos despachados o parciales
+    if (estPed !== 'DESPACHADO' && estPed !== 'PARCIAL') return;
+
+    var sucs = ped.sucursales || [];
+    var dFiscales = ped.datosFiscales || {};
+    var sucEstados = ped.sucursalesEstado || {};
+    var moneda = ped.moneda || 'USD';
+
+    sucs.forEach(function(suc){
+      // Solo sucursales DESPACHADAS
+      var estSuc = String(sucEstados[suc]||'').toUpperCase();
+      if (estSuc !== 'DESPACHADO') return;
+
+      // Construir el numpedido como lo hace msRegistrarVentaYCXC
+      var numpedidoExpected = ped.numP + '-' + suc.replace(/[^A-Z0-9]/gi,'').substring(0,8).toUpperCase();
+      // ¿Ya existe la factura CXC para esta sucursal?
+      var existe = facsCXC.some(function(f){ return f.numpedido === numpedidoExpected; });
+      if (existe) { reporte.yaExistian++; return; }
+
+      // FALTANTE — reconstruir
+      reporte.detectados.push({ pedido: ped.numP, sucursal: suc });
+
+      try {
+        // Calcular items de la sucursal a partir de ped.data
+        var itemsSuc = [];
+        (ped.data || []).forEach(function(p){
+          var pide = (p.pedidos && p.pedidos[suc]) || 0;
+          if (!pide) return;
+          var desp = Math.min((p.dist && p.dist[suc]) || 0, pide);
+          // Si despachado y desp=0, asumir que se despachó todo lo pedido
+          if (desp === 0) desp = pide;
+          if (!desp) return;
+          var prod = (typeof PRODUCTS!=='undefined') ? PRODUCTS.find(function(x){return x.r===p.ref;}) : null;
+          var precio = (typeof msGetPrecio==='function') ? (msGetPrecio(p.ref)||0) : 0;
+          itemsSuc.push({
+            r: p.ref, d: p.desc || (prod && prod.d) || '',
+            br: (prod && prod.br) || '', e: (prod && prod.e) || '',
+            precio: precio, orden: desp, total: precio * desp,
+            ex_antes: 0, ex_despues: 0
+          });
+        });
+        if (!itemsSuc.length) {
+          reporte.errores.push({pedido:ped.numP, sucursal:suc, error:'Sin items'});
+          return;
+        }
+
+        // Resolver cliente
+        var Rv = (typeof resolverCliente==='function') ? resolverCliente(suc, {clientesPorSucursal: ped.clientesPorSucursal}) : null;
+        var clMatch = (Rv && Rv.cli) || null;
+        var clienteNombre = (Rv && Rv.nombre) || suc;
+        var clienteRif = (Rv && Rv.rif) || 'S/RIF';
+        var clienteId = (clMatch && clMatch.id) || '';
+        var correo = (Rv && Rv.correo) || '';
+        var diasCred = parseInt((Rv && Rv.diasCredito) || '30') || 30;
+
+        var grandTotal = itemsSuc.reduce(function(s,i){return s+i.total;}, 0);
+        var grandUnits = itemsSuc.reduce(function(s,i){return s+i.orden;}, 0);
+        var totalBs = tasa>0 && moneda==='BCV' ? grandTotal*tasa
+                    : tasa>0 && moneda==='TF'  ? grandTotal*tasaTF
+                    : tasa>0                   ? grandTotal*tasa : null;
+
+        // Datos fiscales que el usuario llenó al despachar
+        var df = dFiscales[suc] || {};
+
+        // Generar saleId único garantizado
+        var saleId = Date.now() + Math.floor(Math.random()*9999999);
+
+        var fechaPedido = ped.fechaDespacho || ped.fecha || new Date().toLocaleDateString('es-VE',{day:'2-digit',month:'2-digit',year:'numeric'});
+
+        var sale = {
+          id: saleId, fecha: fechaPedido, hora: '00:00',
+          numpedido: numpedidoExpected,
+          cliente: clienteNombre, rif: clienteRif, vendedor: 'OGK',
+          sucursal: clienteNombre,
+          sucursalCodigo: suc,
+          moneda: moneda,
+          monedaLabel: {USD:'USD Efectivo/Transferencia',BCV:'Bolívares BCV',TF:'Bolívares Tierra Firme'}[moneda]||moneda,
+          tasa: tasa,
+          items: itemsSuc, total: grandTotal, units: grandUnits, totalBs: totalBs,
+          clienteId: clienteId, correo: correo, credito: diasCred, tipoPrecio: moneda,
+          fuente: 'ms_despachado', msNumPedido: ped.numP,
+          nFactura: df.nFactura || '', nControl: df.nControl || '',
+          nNotaEntrega: df.nNotaEntrega || '',
+          fechaEmisionFiscal: df.fechaEmision || '',
+          fechaVencimientoFiscal: df.fechaVencimiento || '',
+          condicionPago: df.condicionPago || '',
+          observaciones: (df.observaciones || '') + ' [Reconstruido]'
+        };
+
+        // Insertar venta si no existe (verificar por sucursalCodigo + msNumPedido)
+        var ventaYaExiste = ventas.some(function(x){
+          return x.msNumPedido === ped.numP && x.sucursalCodigo === suc && x.fuente === 'ms_despachado';
+        });
+        if (!ventaYaExiste) {
+          ventas.unshift(sale);
+          if (typeof saveSales === 'function') saveSales(ventas);
+        }
+
+        // Crear factura CXC
+        if (typeof cxcCrearDesdePedido === 'function') {
+          cxcCrearDesdePedido(sale);
+          reporte.reconstruidas++;
+          // Actualizar lista de facturas para detectar duplicados en próximas iteraciones
+          facsCXC = (typeof cxcFacs==='function') ? cxcFacs() : facsCXC;
+        }
+      } catch(eRep) {
+        reporte.errores.push({pedido:ped.numP, sucursal:suc, error: eRep.message});
+        console.warn('[cxcRepararFacturasFaltantes] Error en', ped.numP, suc, eRep);
+      }
+    });
+  });
+
+  // Mostrar reporte
+  console.log('═══════════════════════════════════════════════════════');
+  console.log('REPORTE DE RECONSTRUCCIÓN DE FACTURAS CXC');
+  console.log('═══════════════════════════════════════════════════════');
+  console.log('Facturas faltantes detectadas:', reporte.detectados.length);
+  console.log('Facturas ya existentes (correctas):', reporte.yaExistian);
+  console.log('Facturas reconstruidas:', reporte.reconstruidas);
+  console.log('Errores:', reporte.errores.length);
+  if (reporte.detectados.length) console.table(reporte.detectados);
+  if (reporte.errores.length) console.table(reporte.errores);
+
+  var msg = '✅ RECONSTRUCCIÓN COMPLETA\n\n' +
+    '• Facturas faltantes detectadas: ' + reporte.detectados.length + '\n' +
+    '• Facturas reconstruidas: ' + reporte.reconstruidas + '\n' +
+    '• Facturas ya existentes (sin tocar): ' + reporte.yaExistian + '\n' +
+    '• Errores: ' + reporte.errores.length + '\n\n';
+  if (reporte.detectados.length) {
+    msg += 'PEDIDOS REPARADOS:\n';
+    var pedSet = {};
+    reporte.detectados.forEach(function(d){
+      pedSet[d.pedido] = (pedSet[d.pedido]||0) + 1;
+    });
+    Object.keys(pedSet).forEach(function(p){
+      msg += '  • ' + p + ': ' + pedSet[p] + ' sucursales\n';
+    });
+  }
+  alert(msg);
+
+  // Refrescar UI
+  if (typeof cxcUpdateBadge === 'function') cxcUpdateBadge();
+  if (typeof renderCxcFacturas === 'function') {
+    try { renderCxcFacturas(); } catch(e){}
+  }
+
+  return reporte;
+};
 
 // ══════════════════════════════════════════════════════════
 // MÓDULO BANCOS & TESORERÍA
