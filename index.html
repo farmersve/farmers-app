@@ -54713,10 +54713,16 @@ function pcRenderConfig(body) {
           '</div>'+
           // Productos a trasladar
           '<div style="background:#fafafa;border:1px solid #e5e7eb;border-radius:12px;padding:16px;">'+
-            '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">'+
+            '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:8px;">'+
               '<div style="font-size:.85rem;font-weight:900;color:#1e293b;text-transform:uppercase;letter-spacing:1px;">Productos a Trasladar</div>'+
-              '<button onclick="trasladoAgregarProducto()" style="background:#0891b2;color:white;border:none;border-radius:6px;padding:6px 12px;font-size:.75rem;font-weight:700;cursor:pointer;">+ Agregar Producto</button>'+
+              '<div style="display:flex;gap:6px;flex-wrap:wrap;">'+
+                '<button onclick="trasladoDescargarPlantilla()" style="background:#16a34a;color:white;border:none;border-radius:6px;padding:6px 12px;font-size:.72rem;font-weight:700;cursor:pointer;display:flex;align-items:center;gap:4px;" title="Descargar plantilla Excel con todos los productos para llenar y reimportar">📥 Plantilla</button>'+
+                '<button onclick="document.getElementById(\'traslado-import-file\').click()" style="background:#7c3aed;color:white;border:none;border-radius:6px;padding:6px 12px;font-size:.72rem;font-weight:700;cursor:pointer;display:flex;align-items:center;gap:4px;" title="Importar Excel o CSV con cantidades a trasladar">📤 Importar</button>'+
+                '<input type="file" id="traslado-import-file" accept=".xlsx,.xls,.csv,.txt" style="display:none;" onchange="trasladoImportarArchivo(event)">'+
+                '<button onclick="trasladoAgregarProducto()" style="background:#0891b2;color:white;border:none;border-radius:6px;padding:6px 12px;font-size:.72rem;font-weight:700;cursor:pointer;">+ Agregar</button>'+
+              '</div>'+
             '</div>'+
+            '<div style="font-size:.7rem;color:#64748b;margin-bottom:10px;background:#f0f9ff;border-left:3px solid #0891b2;padding:6px 10px;border-radius:4px;">💡 <strong>Tip:</strong> Para mover muchos productos, descarga la plantilla, llena la columna <strong>CANTIDAD A TRASLADAR</strong> y reimpórtala.</div>'+
             '<div id="traslado-items-list" style="max-height:280px;overflow-y:auto;"></div>'+
           '</div>'+
         '</div>'+
@@ -54867,6 +54873,330 @@ function pcRenderConfig(body) {
     if (addOv) addOv.remove();
     trasladoRenderItems();
   };
+
+  // ═══ Descargar plantilla Excel con todos los productos ═══
+  window.trasladoDescargarPlantilla = function() {
+    if (typeof XLSX === 'undefined') {
+      alert('La librería de Excel aún no se ha cargado. Espera unos segundos e intenta de nuevo.');
+      return;
+    }
+    if (!Array.isArray(PRODUCTS) || PRODUCTS.length === 0) {
+      alert('No hay productos cargados aún.');
+      return;
+    }
+    var origen = (document.getElementById('traslado-origen')||{value:'NE'}).value;
+    var destino = (document.getElementById('traslado-destino')||{value:'AN'}).value;
+    var fechaTexto = new Date().toLocaleDateString('es-VE',{day:'2-digit',month:'2-digit',year:'numeric'});
+
+    // Header con instrucciones (filas 1 y 2)
+    var headRow1 = ['PLANTILLA TRASLADO ' + origen + ' → ' + destino + ' · ' + fechaTexto, '', '', '', '', '', ''];
+    var headRow2 = ['Llena la columna CANTIDAD A TRASLADAR solo en las filas que quieras mover. Las demás se ignorarán.', '', '', '', '', '', ''];
+    var headRow3 = []; // Fila vacía separadora
+
+    // Header de columnas (fila 4)
+    var headers = ['REFERENCIA','CODIGO BARRA','DESCRIPCION','MARCA','STOCK NE','STOCK AN','CANTIDAD A TRASLADAR'];
+
+    // Productos ordenados alfanuméricamente por referencia
+    var prodsOrdenados = PRODUCTS.slice().sort(function(a,b){
+      return (a.r||'').localeCompare(b.r||'', 'es', {numeric:true});
+    });
+
+    var dataRows = prodsOrdenados.map(function(p){
+      return [
+        p.r || '',
+        String(p.b || ''),
+        p.d || '',
+        p.br || '',
+        parseInt(p.exNE)||0,
+        parseInt(p.exAN)||0,
+        '' // columna a llenar por el usuario
+      ];
+    });
+
+    var aoa = [headRow1, headRow2, headRow3, headers].concat(dataRows);
+
+    var ws = XLSX.utils.aoa_to_sheet(aoa);
+
+    // Anchos de columnas
+    ws['!cols'] = [
+      {wch:14},  // REFERENCIA
+      {wch:18},  // COD BARRA
+      {wch:50},  // DESCRIPCION
+      {wch:14},  // MARCA
+      {wch:10},  // STOCK NE
+      {wch:10},  // STOCK AN
+      {wch:22}   // CANTIDAD A TRASLADAR
+    ];
+
+    // Merge de la primera fila de título y segunda fila de instrucciones
+    ws['!merges'] = [
+      {s:{r:0,c:0}, e:{r:0,c:6}}, // título completo
+      {s:{r:1,c:0}, e:{r:1,c:6}}  // instrucciones
+    ];
+
+    // Estilos del header (limitados — XLSX free no soporta formato avanzado, pero el merge sí)
+    if (ws['A1']) {
+      ws['A1'].s = { font: { bold: true, sz: 14, color: { rgb: "FFFFFF" } }, fill: { fgColor: { rgb: "0891B2" } }, alignment: { horizontal: "center" } };
+    }
+    if (ws['A2']) {
+      ws['A2'].s = { font: { italic: true, sz: 10 }, alignment: { horizontal: "center" } };
+    }
+
+    var wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Traslado ' + origen + '-' + destino);
+
+    var nombreArchivo = 'PLANTILLA_TRASLADO_' + origen + '_a_' + destino + '_' + fechaTexto.replace(/\//g,'-') + '.xlsx';
+    XLSX.writeFile(wb, nombreArchivo);
+    
+    // Notificación visual breve
+    var notif = document.createElement('div');
+    notif.style.cssText = 'position:fixed;bottom:30px;right:30px;background:#16a34a;color:white;padding:14px 20px;border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,.3);z-index:100001;font-weight:700;font-size:.85rem;';
+    notif.innerHTML = '✅ Plantilla descargada con ' + dataRows.length + ' productos<br><span style="font-size:.7rem;font-weight:400;opacity:.9;">Llena la columna CANTIDAD A TRASLADAR y reimpórtala</span>';
+    document.body.appendChild(notif);
+    setTimeout(function(){ notif.style.transition='opacity .5s'; notif.style.opacity='0'; setTimeout(function(){ notif.remove(); },500); }, 4000);
+  };
+
+  // ═══ Importar archivo Excel o CSV con cantidades a trasladar ═══
+  window.trasladoImportarArchivo = function(event) {
+    var file = event.target.files[0];
+    if (!file) return;
+    if (typeof XLSX === 'undefined') {
+      alert('La librería de Excel aún no se ha cargado.');
+      event.target.value = '';
+      return;
+    }
+
+    var origen = (document.getElementById('traslado-origen')||{value:'NE'}).value;
+    var fileName = file.name.toLowerCase();
+    var esCSV = fileName.endsWith('.csv') || fileName.endsWith('.txt');
+
+    var reader = new FileReader();
+    reader.onload = function(e) {
+      try {
+        var data = e.target.result;
+        var workbook;
+        if (esCSV) {
+          // CSV: leer como texto y parsear
+          workbook = XLSX.read(data, { type: 'string', raw: false });
+        } else {
+          // Excel: binario
+          workbook = XLSX.read(data, { type: 'array' });
+        }
+        var sheetName = workbook.SheetNames[0];
+        var sheet = workbook.Sheets[sheetName];
+        var rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
+
+        if (!rows || rows.length === 0) {
+          alert('El archivo está vacío.');
+          event.target.value = '';
+          return;
+        }
+
+        // Detectar fila de encabezados — buscar fila que contenga "REFERENCIA" o "REF"
+        var headerRowIdx = -1;
+        var headers = null;
+        for (var i = 0; i < Math.min(rows.length, 10); i++) {
+          var row = rows[i];
+          if (!row || !row.length) continue;
+          var rowStr = row.map(function(c){ return String(c||'').toUpperCase(); });
+          if (rowStr.some(function(c){ return c.indexOf('REFERENCIA') >= 0 || c === 'REF'; })) {
+            headerRowIdx = i;
+            headers = rowStr;
+            break;
+          }
+        }
+        if (headerRowIdx === -1) {
+          alert('No se encontró la fila de encabezados. Asegúrate de que el archivo tenga una columna llamada "REFERENCIA" o "REF".');
+          event.target.value = '';
+          return;
+        }
+
+        // Localizar índices de columnas críticas
+        var colRef = -1, colQty = -1, colCodBarra = -1;
+        headers.forEach(function(h, idx){
+          var hu = String(h).toUpperCase().trim();
+          if (colRef === -1 && (hu === 'REFERENCIA' || hu === 'REF')) colRef = idx;
+          if (colQty === -1 && (hu.indexOf('CANTIDAD') >= 0 || hu === 'TRASLADAR' || hu === 'CANT' || hu === 'QTY')) colQty = idx;
+          if (colCodBarra === -1 && (hu.indexOf('BARRA') >= 0 || hu === 'EAN' || hu === 'COD BARRA' || hu === 'CODIGO BARRA')) colCodBarra = idx;
+        });
+
+        if (colRef === -1) {
+          alert('No se encontró la columna REFERENCIA en el archivo.');
+          event.target.value = '';
+          return;
+        }
+        if (colQty === -1) {
+          alert('No se encontró la columna CANTIDAD A TRASLADAR (o "CANTIDAD"/"TRASLADAR"/"CANT") en el archivo.');
+          event.target.value = '';
+          return;
+        }
+
+        // Procesar filas de datos
+        var resultados = {
+          cargados: [],     // { ref, qty }
+          ignoradosVacios: 0,
+          ignoradosCero: 0,
+          erroresStock: [], // { ref, solicitado, disponible }
+          desconocidos: [], // refs no encontradas en PRODUCTS
+          ajustadosA: []    // refs que ya estaban en lista actual y se reemplazó qty
+        };
+
+        var dataStart = headerRowIdx + 1;
+        for (var r = dataStart; r < rows.length; r++) {
+          var row = rows[r];
+          if (!row || row.length === 0) { resultados.ignoradosVacios++; continue; }
+
+          var refRaw = String(row[colRef]||'').trim();
+          var qtyRaw = row[colQty];
+          var codBarraRaw = colCodBarra >= 0 ? String(row[colCodBarra]||'').trim() : '';
+
+          // Saltar fila si no hay ref o cantidad
+          if (!refRaw && !codBarraRaw) { resultados.ignoradosVacios++; continue; }
+          var qty = parseInt(qtyRaw);
+          if (isNaN(qty) || qty === 0) { resultados.ignoradosCero++; continue; }
+          if (qty < 0) { resultados.erroresStock.push({ ref: refRaw, solicitado: qty, disponible: 0, motivo: 'Cantidad negativa' }); continue; }
+
+          // Buscar producto: primero por ref exacta, luego por código de barras
+          var p = PRODUCTS.find(function(x){ return x.r === refRaw; });
+          if (!p && codBarraRaw) {
+            p = PRODUCTS.find(function(x){ return String(x.b||'').trim() === codBarraRaw; });
+          }
+          if (!p) {
+            // Búsqueda case-insensitive
+            var refUpper = refRaw.toUpperCase();
+            p = PRODUCTS.find(function(x){ return String(x.r||'').toUpperCase() === refUpper; });
+          }
+          if (!p) {
+            resultados.desconocidos.push(refRaw + (codBarraRaw ? ' (BC:'+codBarraRaw+')' : ''));
+            continue;
+          }
+
+          // Validar stock en origen
+          var stockOrigen = window.getStockByDeposito(p.r, origen);
+          if (qty > stockOrigen) {
+            resultados.erroresStock.push({ ref: p.r, solicitado: qty, disponible: stockOrigen });
+            continue;
+          }
+
+          resultados.cargados.push({ ref: p.r, qty: qty });
+        }
+
+        // Aplicar resultados al estado del modal
+        if (resultados.cargados.length === 0) {
+          var msg = '⚠ No se cargó ningún producto válido.\n\n';
+          msg += '📋 Resumen del archivo:\n';
+          msg += '  • Filas vacías o sin cantidad: ' + (resultados.ignoradosVacios + resultados.ignoradosCero) + '\n';
+          msg += '  • Refs desconocidas: ' + resultados.desconocidos.length + '\n';
+          msg += '  • Errores de stock: ' + resultados.erroresStock.length + '\n';
+          if (resultados.desconocidos.length > 0) msg += '\nRefs no encontradas: ' + resultados.desconocidos.slice(0,5).join(', ') + (resultados.desconocidos.length > 5 ? '...' : '');
+          alert(msg);
+          event.target.value = '';
+          return;
+        }
+
+        // Reemplazar (no mezclar) el arreglo de items con lo cargado del archivo
+        var existentesAntes = _trasladoItems.length;
+        _trasladoItems = resultados.cargados.slice();
+        trasladoRenderItems();
+
+        // Modal de auditoría con resumen detallado
+        trasladoMostrarAuditoriaImport(resultados, existentesAntes);
+
+      } catch(err) {
+        console.error('Error importando archivo:', err);
+        alert('Error al leer el archivo: ' + err.message);
+      } finally {
+        event.target.value = ''; // Reset input para permitir re-importar el mismo archivo
+      }
+    };
+    reader.onerror = function() {
+      alert('Error leyendo el archivo.');
+      event.target.value = '';
+    };
+
+    if (esCSV) {
+      reader.readAsText(file, 'UTF-8');
+    } else {
+      reader.readAsArrayBuffer(file);
+    }
+  };
+
+  // Modal con resumen de la importación
+  function trasladoMostrarAuditoriaImport(res, existentesAntes) {
+    var existing = document.getElementById('traslado-import-result');
+    if (existing) existing.remove();
+
+    var totalUds = res.cargados.reduce(function(s,it){ return s+it.qty; },0);
+    var hayErrores = res.erroresStock.length > 0 || res.desconocidos.length > 0;
+
+    var listaErrStock = '';
+    if (res.erroresStock.length > 0) {
+      listaErrStock = '<div style="margin-top:10px;padding:10px;background:#fef3c7;border-left:3px solid #f59e0b;border-radius:6px;max-height:120px;overflow-y:auto;">'+
+        '<div style="font-weight:900;color:#92400e;font-size:.78rem;margin-bottom:6px;">⚠ ' + res.erroresStock.length + ' refs con stock insuficiente:</div>'+
+        res.erroresStock.slice(0,10).map(function(e){
+          return '<div style="font-size:.72rem;color:#78350f;font-family:\'Barlow Condensed\',sans-serif;">• ' + e.ref + ' — solicitado: ' + e.solicitado + ' / disponible: ' + e.disponible + (e.motivo ? ' ('+e.motivo+')' : '') + '</div>';
+        }).join('') +
+        (res.erroresStock.length > 10 ? '<div style="font-size:.72rem;color:#78350f;font-style:italic;margin-top:4px;">...y ' + (res.erroresStock.length-10) + ' más</div>' : '') +
+      '</div>';
+    }
+
+    var listaDesc = '';
+    if (res.desconocidos.length > 0) {
+      listaDesc = '<div style="margin-top:10px;padding:10px;background:#fee2e2;border-left:3px solid #dc2626;border-radius:6px;max-height:120px;overflow-y:auto;">'+
+        '<div style="font-weight:900;color:#991b1b;font-size:.78rem;margin-bottom:6px;">❌ ' + res.desconocidos.length + ' refs desconocidas:</div>'+
+        res.desconocidos.slice(0,10).map(function(d){
+          return '<div style="font-size:.72rem;color:#7f1d1d;font-family:\'Barlow Condensed\',sans-serif;">• ' + d + '</div>';
+        }).join('') +
+        (res.desconocidos.length > 10 ? '<div style="font-size:.72rem;color:#7f1d1d;font-style:italic;margin-top:4px;">...y ' + (res.desconocidos.length-10) + ' más</div>' : '') +
+      '</div>';
+    }
+
+    var aviso = existentesAntes > 0 ? 
+      '<div style="margin-top:10px;padding:8px 12px;background:#dbeafe;border-radius:6px;font-size:.72rem;color:#1e40af;">ℹ Se reemplazaron los ' + existentesAntes + ' producto(s) que ya tenías en la lista.</div>' : '';
+
+    var html = '<div id="traslado-import-result" style="position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:100001;display:flex;align-items:center;justify-content:center;padding:20px;">'+
+      '<div style="background:white;border-radius:14px;width:min(620px,100%);max-height:85vh;overflow-y:auto;box-shadow:0 24px 64px rgba(0,0,0,.5);">'+
+        '<div style="background:linear-gradient(135deg,#7c3aed,#6d28d9);padding:16px 20px;color:white;display:flex;justify-content:space-between;align-items:center;">'+
+          '<div>'+
+            '<div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;font-size:1.1rem;letter-spacing:1.5px;text-transform:uppercase;">📤 Resultado de la Importación</div>'+
+            '<div style="font-size:.72rem;opacity:.9;margin-top:2px;">Revisa los detalles antes de confirmar la salida</div>'+
+          '</div>'+
+          '<button onclick="document.getElementById(\'traslado-import-result\').remove()" style="background:rgba(255,255,255,.2);border:none;color:white;width:36px;height:36px;border-radius:50%;cursor:pointer;font-size:1.1rem;font-weight:bold;">✕</button>'+
+        '</div>'+
+        '<div style="padding:20px;">'+
+          // Tarjeta verde — cargados
+          '<div style="background:#dcfce7;border:1.5px solid #16a34a;border-radius:10px;padding:14px;margin-bottom:10px;text-align:center;">'+
+            '<div style="font-size:.75rem;font-weight:700;color:#15803d;text-transform:uppercase;letter-spacing:1px;">✅ Cargados Correctamente</div>'+
+            '<div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;font-size:2rem;color:#16a34a;line-height:1.1;margin-top:4px;">' + res.cargados.length + ' refs</div>'+
+            '<div style="font-size:.85rem;color:#15803d;font-weight:700;">' + totalUds.toLocaleString() + ' unidades totales</div>'+
+          '</div>'+
+          // Resumen de descartes
+          '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;font-size:.75rem;">'+
+            '<div style="background:#f1f5f9;border-radius:6px;padding:8px;text-align:center;">'+
+              '<div style="color:#64748b;font-weight:700;text-transform:uppercase;font-size:.65rem;">Filas vacías</div>'+
+              '<div style="font-weight:900;color:#475569;font-size:1.1rem;">' + (res.ignoradosVacios + res.ignoradosCero) + '</div>'+
+            '</div>'+
+            '<div style="background:'+(res.erroresStock.length>0?'#fef3c7':'#f1f5f9')+';border-radius:6px;padding:8px;text-align:center;">'+
+              '<div style="color:'+(res.erroresStock.length>0?'#92400e':'#64748b')+';font-weight:700;text-transform:uppercase;font-size:.65rem;">Stock Insufic.</div>'+
+              '<div style="font-weight:900;color:'+(res.erroresStock.length>0?'#b45309':'#475569')+';font-size:1.1rem;">' + res.erroresStock.length + '</div>'+
+            '</div>'+
+            '<div style="background:'+(res.desconocidos.length>0?'#fee2e2':'#f1f5f9')+';border-radius:6px;padding:8px;text-align:center;">'+
+              '<div style="color:'+(res.desconocidos.length>0?'#991b1b':'#64748b')+';font-weight:700;text-transform:uppercase;font-size:.65rem;">Desconocidas</div>'+
+              '<div style="font-weight:900;color:'+(res.desconocidos.length>0?'#dc2626':'#475569')+';font-size:1.1rem;">' + res.desconocidos.length + '</div>'+
+            '</div>'+
+          '</div>'+
+          aviso +
+          listaErrStock +
+          listaDesc +
+        '</div>'+
+        '<div style="padding:12px 20px;background:#f8fafc;border-top:1px solid #e5e7eb;display:flex;justify-content:flex-end;gap:8px;">'+
+          '<button onclick="document.getElementById(\'traslado-import-result\').remove()" style="background:#0891b2;color:white;border:none;border-radius:8px;padding:9px 18px;font-weight:700;cursor:pointer;">Continuar</button>'+
+        '</div>'+
+      '</div>'+
+    '</div>';
+    document.body.insertAdjacentHTML('beforeend', html);
+  }
+  // Exponer trasladoMostrarAuditoriaImport (función dentro del IIFE, no necesita window. ya que solo se llama internamente)
 
   window.trasladoConfirmarSalida = function() {
     var origen = (document.getElementById('traslado-origen')||{value:'NE'}).value;
