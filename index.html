@@ -42121,16 +42121,20 @@ function cxcCrearDesdePedido(sale) {
 window.cxcCrearDesdePedido = cxcCrearDesdePedido;
 
 // ════════════════════════════════════════════════════════════════════════
-// FIX v06: Detector automático de huérfanos
-// Verifica si hay despachos sin factura CXC y devuelve cuántos son.
+// FIX v06b: Detector automático de huérfanos — MATCHER MEJORADO
+// Verifica si hay despachos sin factura CXC.
+// Reconoce facturas por: numpedido MS-X-Y-SUC, saleId, msNumPedido,
+// O cliente+monto en pedidos sin sufijo MS.
 // Para invocar manualmente: window.cxcDetectarHuerfanos()
 // ════════════════════════════════════════════════════════════════════════
 window.cxcDetectarHuerfanos = function() {
   function _norm(s){ return String(s||'').toUpperCase().replace(/[^A-Z0-9]/g,''); }
   var peds = (typeof getMsPedidos==='function') ? getMsPedidos() : [];
   var facs = (typeof cxcFacs==='function') ? cxcFacs() : [];
+  var ventas = (typeof getSales==='function') ? getSales() : [];
+  var clDB = (typeof getClientsDB==='function') ? getClientsDB() : [];
 
-  // Index facturas existentes por (pedido base → lista de sufijos normalizados)
+  // Index 1: facturas por (pedido base → lista de sufijos normalizados)
   var existPP = {};
   facs.forEach(function(f){
     if (!f.numpedido) return;
@@ -42139,16 +42143,71 @@ window.cxcDetectarHuerfanos = function() {
     if (!existPP[m[1]]) existPP[m[1]] = [];
     existPP[m[1]].push(_norm(m[2]));
   });
-  function _yaExiste(numP, sufNorm) {
+
+  // Index 2: facturas por clienteId (para match cruzado por cliente+monto)
+  var existCli = {};
+  facs.forEach(function(f){
+    if (!f.clienteId) return;
+    if (!existCli[f.clienteId]) existCli[f.clienteId] = [];
+    existCli[f.clienteId].push(f);
+  });
+
+  // Index 3: facturas por saleId (match directo)
+  var existSale = {};
+  facs.forEach(function(f){
+    if (f.saleId) existSale[String(f.saleId)] = f;
+  });
+
+  // Index 4: ventas registradas (para extraer saleId/cliente del pedido)
+  var ventasPorPedSuc = {};
+  ventas.forEach(function(v){
+    if (!v.msNumPedido || !v.sucursalCodigo) return;
+    var key = v.msNumPedido + '||' + v.sucursalCodigo;
+    ventasPorPedSuc[key] = v;
+  });
+
+  function _yaExisteFlex(numP, suc, p) {
+    var sufNorm = _norm(suc);
+
+    // Estrategia A: match por sufijo truncado/no-truncado
     var L = existPP[numP] || [];
     for (var i=0; i<L.length; i++) {
       var e = L[i];
-      // Match flexible: prefijo (compatibilidad con sufijos truncados v05)
       if (e.length>=4 && sufNorm.length>=4) {
         if (sufNorm.indexOf(e)===0) return true;
         if (e.indexOf(sufNorm)===0) return true;
       } else if (e===sufNorm) return true;
     }
+
+    // Estrategia B: match por venta registrada → saleId → factura CXC
+    var venta = ventasPorPedSuc[numP + '||' + suc];
+    if (venta && venta.id && existSale[String(venta.id)]) return true;
+
+    // Estrategia C: match por clienteId del pedido + monto aproximado
+    var clId = (p.clientesPorSucursal || {})[suc];
+    if (clId && existCli[clId]) {
+      // Calcular monto esperado de esta sucursal del pedido
+      var montoEsp = 0;
+      if (venta && venta.total) {
+        montoEsp = venta.total;
+      } else if (p.data && Array.isArray(p.data)) {
+        p.data.forEach(function(prod){
+          var pide = (prod.pedidos && prod.pedidos[suc]) || 0;
+          var desp = Math.min((prod.dist && prod.dist[suc]) || pide, pide);
+          if (desp > 0 && (typeof msGetPrecio === 'function')) {
+            var precio = msGetPrecio(prod.ref) || 0;
+            montoEsp += precio * desp;
+          }
+        });
+      }
+      if (montoEsp > 0) {
+        var matchByMonto = existCli[clId].some(function(f){
+          return Math.abs((f.monto||0) - montoEsp) < 0.5; // tolerancia 0.5
+        });
+        if (matchByMonto) return true;
+      }
+    }
+
     return false;
   }
 
@@ -42160,7 +42219,7 @@ window.cxcDetectarHuerfanos = function() {
     (p.sucursales||[]).forEach(function(suc){
       var est = String((p.sucursalesEstado||{})[suc]||'').toUpperCase();
       if (est && est !== 'DESPACHADO') return;
-      if (!_yaExiste(numP, _norm(suc))) {
+      if (!_yaExisteFlex(numP, suc, p)) {
         huerfanos.push({pedido: numP, sucursal: suc});
       }
     });
