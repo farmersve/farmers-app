@@ -33884,7 +33884,9 @@ function msRegistrarVentaYCXC(numP, sel) {
 
     var sale={
       id:saleId, fecha:dateStrSuc, hora:timeStr,
-      numpedido:(numP||MS.numPedido)+'-'+suc.replace(/[^A-Z0-9]/gi,'').substring(0,8).toUpperCase(),
+      // FIX v06: removido substring(0,8) que truncaba sufijos largos
+      // ej. "IDO MKT ST.C" → "IDOMKTST" perdía la C → confundía sucursales
+      numpedido:(numP||MS.numPedido)+'-'+suc.replace(/[^A-Z0-9]/gi,'').toUpperCase(),
       cliente:clienteNombre, rif:clienteRif, vendedor:'OGK',
       sucursal:clienteNombre,       // nombre del cliente del directorio — no el código del Excel
       sucursalCodigo:suc,           // código original del Excel (HIPER, MXM.L, etc.) — referencia interna
@@ -34631,10 +34633,11 @@ window.msAbrirMonitor = function() {
           if (!window.selectedMoneda) window.selectedMoneda = ped.moneda || 'TF';
         }
 
-        // Filtrar solo sucursales en estado 'reservado' (las que realmente quedan por despachar)
+        // FIX v06: incluir EMBALADO además de reservado (bug despacho EMBALADO→CXC)
+        // Filtrar sucursales que aún no fueron DESPACHADAS (reservado o embalado)
         var sucReservadas = (ped.sucursales || []).filter(function(s){
-          var est = (ped.sucursalesEstado || {})[s];
-          return !est || est === 'reservado' || est === 'RESERVADO';
+          var est = String((ped.sucursalesEstado || {})[s] || '').toUpperCase();
+          return !est || est === 'RESERVADO' || est === 'EMBALADO';
         });
         if (!sucReservadas.length) sucReservadas = (ped.sucursales || []).slice();
 
@@ -35681,7 +35684,9 @@ window.msAbrirOverlayReservado = function(numP, sel, hayPendientes) {
     btn.disabled=false;
     btn.onclick=function(){
       msAbrirOverlayDespacho(numP, MS.sucursales.filter(function(s){
-        return MS.sucursalesEstado[s]==='reservado';
+        // FIX v06: incluir EMBALADO además de reservado (bug despacho EMBALADO→CXC)
+        var e = String(MS.sucursalesEstado[s]||'').toLowerCase();
+        return e==='reservado' || e==='embalado';
       }), hayPendientes);
     };
   }
@@ -42116,6 +42121,54 @@ function cxcCrearDesdePedido(sale) {
 window.cxcCrearDesdePedido = cxcCrearDesdePedido;
 
 // ════════════════════════════════════════════════════════════════════════
+// FIX v06: Detector automático de huérfanos
+// Verifica si hay despachos sin factura CXC y devuelve cuántos son.
+// Para invocar manualmente: window.cxcDetectarHuerfanos()
+// ════════════════════════════════════════════════════════════════════════
+window.cxcDetectarHuerfanos = function() {
+  function _norm(s){ return String(s||'').toUpperCase().replace(/[^A-Z0-9]/g,''); }
+  var peds = (typeof getMsPedidos==='function') ? getMsPedidos() : [];
+  var facs = (typeof cxcFacs==='function') ? cxcFacs() : [];
+
+  // Index facturas existentes por (pedido base → lista de sufijos normalizados)
+  var existPP = {};
+  facs.forEach(function(f){
+    if (!f.numpedido) return;
+    var m = String(f.numpedido).match(/^(MS-\d+-\d+)-(.+)$/);
+    if (!m) return;
+    if (!existPP[m[1]]) existPP[m[1]] = [];
+    existPP[m[1]].push(_norm(m[2]));
+  });
+  function _yaExiste(numP, sufNorm) {
+    var L = existPP[numP] || [];
+    for (var i=0; i<L.length; i++) {
+      var e = L[i];
+      // Match flexible: prefijo (compatibilidad con sufijos truncados v05)
+      if (e.length>=4 && sufNorm.length>=4) {
+        if (sufNorm.indexOf(e)===0) return true;
+        if (e.indexOf(sufNorm)===0) return true;
+      } else if (e===sufNorm) return true;
+    }
+    return false;
+  }
+
+  var huerfanos = [];
+  peds.forEach(function(p){
+    if (String(p.estado||'').toUpperCase() !== 'DESPACHADO') return;
+    var numP = p.numP || p.numero || p.numpedido;
+    if (!numP) return;
+    (p.sucursales||[]).forEach(function(suc){
+      var est = String((p.sucursalesEstado||{})[suc]||'').toUpperCase();
+      if (est && est !== 'DESPACHADO') return;
+      if (!_yaExiste(numP, _norm(suc))) {
+        huerfanos.push({pedido: numP, sucursal: suc});
+      }
+    });
+  });
+  return huerfanos;
+};
+
+// ════════════════════════════════════════════════════════════════════════
 // FUNCIÓN DE REPARACIÓN: detectar y reconstruir facturas CXC faltantes
 // de pedidos despachados.
 //
@@ -42156,10 +42209,13 @@ window.cxcRepararFacturasFaltantes = function() {
       var estSuc = String(sucEstados[suc]||'').toUpperCase();
       if (estSuc !== 'DESPACHADO') return;
 
-      // Construir el numpedido como lo hace msRegistrarVentaYCXC
-      var numpedidoExpected = ped.numP + '-' + suc.replace(/[^A-Z0-9]/gi,'').substring(0,8).toUpperCase();
-      // ¿Ya existe la factura CXC para esta sucursal?
-      var existe = facsCXC.some(function(f){ return f.numpedido === numpedidoExpected; });
+      // Construir el numpedido como lo hace msRegistrarVentaYCXC (sin truncado v06)
+      var numpedidoExpected = ped.numP + '-' + suc.replace(/[^A-Z0-9]/gi,'').toUpperCase();
+      // FIX v06: detectar también con sufijo truncado a 8 chars (compatibilidad histórica)
+      var sufijoTrunc8 = ped.numP + '-' + suc.replace(/[^A-Z0-9]/gi,'').substring(0,8).toUpperCase();
+      var existe = facsCXC.some(function(f){
+        return f.numpedido === numpedidoExpected || f.numpedido === sufijoTrunc8;
+      });
       if (existe) { reporte.yaExistian++; return; }
 
       // FALTANTE — reconstruir
