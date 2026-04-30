@@ -3272,6 +3272,30 @@ tbody td { padding: 8px 10px; vertical-align: middle; }
 
 <!-- STEP 2 -->
 <div class="panel" id="panel2">
+  <!-- ═════════ Multi-Depósito: Selector de origen del pedido ═════════ -->
+  <div style="background:white;border-radius:20px;border:1.5px solid #e2e8f0;overflow:hidden;margin-bottom:20px;box-shadow:0 2px 12px rgba(26,32,80,.06);">
+    <div style="background:linear-gradient(135deg,#0891b2 0%,#0e7490 60%,#155e75 100%);padding:20px 24px;display:flex;align-items:center;justify-content:space-between;">
+      <div>
+        <div style="font-family:'Barlow Condensed',sans-serif;font-weight:900;font-size:1.05rem;color:white;letter-spacing:2px;text-transform:uppercase;">📦 Depósito de Origen</div>
+        <div style="font-size:.7rem;color:rgba(255,255,255,.7);margin-top:2px;font-weight:500;">¿Desde qué depósito sale este pedido? Solo se mostrarán productos con stock en ese depósito.</div>
+      </div>
+    </div>
+    <div style="padding:16px 20px;display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+      <div id="dep-card-NE" onclick="seleccionarDepositoOrigen('NE')" style="cursor:pointer;background:#dbeafe;border:2px solid #1e40af;border-radius:12px;padding:16px;text-align:center;transition:all .2s;">
+        <div style="font-size:2rem;">📦</div>
+        <div style="font-family:'Barlow Condensed',sans-serif;font-weight:900;font-size:1.5rem;color:#1e40af;letter-spacing:2px;">NE</div>
+        <div style="font-size:.78rem;color:#1e40af;font-weight:700;">Margarita</div>
+        <div style="font-size:.65rem;color:#64748b;margin-top:4px;">Nueva Esparta</div>
+      </div>
+      <div id="dep-card-AN" onclick="seleccionarDepositoOrigen('AN')" style="cursor:pointer;background:#f8fafc;border:2px solid #cbd5e1;border-radius:12px;padding:16px;text-align:center;transition:all .2s;">
+        <div style="font-size:2rem;opacity:.5;">📦</div>
+        <div style="font-family:'Barlow Condensed',sans-serif;font-weight:900;font-size:1.5rem;color:#94a3b8;letter-spacing:2px;">AN</div>
+        <div style="font-size:.78rem;color:#94a3b8;font-weight:700;">Anzoátegui</div>
+        <div style="font-size:.65rem;color:#94a3b8;margin-top:4px;">Tierra Firme</div>
+      </div>
+    </div>
+  </div>
+  <!-- ═════════ FIN selector de depósito ═════════ -->
   <div style="background:white;border-radius:20px;border:1.5px solid #e2e8f0;overflow:hidden;margin-bottom:20px;box-shadow:0 2px 12px rgba(26,32,80,.06);">
     <div style="background:linear-gradient(135deg,#0d1140 0%,#1a2050 60%,#1e2a6e 100%);padding:20px 24px;display:flex;align-items:center;justify-content:space-between;">
       <div>
@@ -3659,12 +3683,15 @@ window._aplicarProductsArray = function(nuevoArray) {
       if (Array.isArray(arr) && arr.length > 0) {
         window._aplicarProductsArray(arr);
         console.log('[PRODUCTS] cargado desde localStorage: ' + arr.length + ' productos');
+        // Migración silenciosa multi-depósito (después de cargar productos)
+        setTimeout(function(){ if (window.migrarProductosMultiDeposito) window.migrarProductosMultiDeposito(); }, 100);
         return;
       }
     }
     // Primera vez — guardar el fallback a localStorage para futuras sesiones
     window.saveProducts();
     console.log('[PRODUCTS] cargado desde const-fallback: ' + PRODUCTS.length + ' productos (guardado a localStorage)');
+    setTimeout(function(){ if (window.migrarProductosMultiDeposito) window.migrarProductosMultiDeposito(); }, 100);
   } catch(e) {
     console.error('[PRODUCTS] error en carga inicial:', e);
     console.log('[PRODUCTS] usando const-fallback: ' + PRODUCTS.length + ' productos');
@@ -3687,6 +3714,214 @@ window.fbSaveProducts = window.fbSaveProducts || function(arr) {
 // ══════════════════════════════════════════════════════════════
 var COMP_KEY        = 'farmers_inv_comprometido';
 var MS_PEDIDOS_KEY  = 'farmers_ms_pedidos';
+
+// ══════════════════════════════════════════════════════════════
+// MULTI-DEPÓSITO — Sistema de dos depósitos NE y AN
+// FASE 1: Infraestructura base para inventario por depósito
+// ══════════════════════════════════════════════════════════════
+var DEPOSITOS = [
+  { id: 'NE', nombre: 'Margarita',   estado: 'Nueva Esparta', principal: true  },
+  { id: 'AN', nombre: 'Anzoátegui',  estado: 'Anzoátegui',    principal: false }
+];
+var TRASLADOS_KEY = 'farmers_traslados';
+var DEPOSITO_PEDIDO_ACTUAL = 'NE'; // Depósito seleccionado durante el pedido en curso
+
+// Migración silenciosa: asegurar que cada producto tenga exNE y exAN
+window.migrarProductosMultiDeposito = function() {
+  if (!Array.isArray(PRODUCTS)) return;
+  var inv = (typeof getInventory === 'function') ? getInventory() : {};
+  var migrados = 0;
+  PRODUCTS.forEach(function(p){
+    // Si ya tiene exNE definido, no tocar
+    if (p.exNE === undefined || p.exNE === null) {
+      // Todo el stock actual va a Margarita (NE) por defecto
+      var stockActual = (inv[p.r] !== undefined) ? (parseInt(inv[p.r])||0) : (parseInt(p.ex)||0);
+      p.exNE = stockActual;
+      p.exAN = 0;
+      migrados++;
+    } else if (p.exAN === undefined || p.exAN === null) {
+      p.exAN = 0;
+      migrados++;
+    }
+  });
+  if (migrados > 0) {
+    try { console.log('[Multi-Depósito] Migración silenciosa: ' + migrados + ' productos asignados a NE'); } catch(e){}
+  }
+  return migrados;
+};
+
+// Helper: obtener stock de un producto en un depósito específico
+window.getStockByDeposito = function(ref, dep) {
+  if (!ref || !dep) return 0;
+  var p = PRODUCTS.find(function(x){ return x.r === ref; });
+  if (!p) return 0;
+  if (dep === 'NE') return parseInt(p.exNE)||0;
+  if (dep === 'AN') return parseInt(p.exAN)||0;
+  return 0;
+};
+
+// Helper: recalcular el total ex desde exNE + exAN
+window.recalcularExTotal = function(p) {
+  if (!p) return 0;
+  var ne = parseInt(p.exNE)||0;
+  var an = parseInt(p.exAN)||0;
+  p.ex = ne + an;
+  return p.ex;
+};
+
+// Traslados: estructura {id, fechaSalida, fechaRecepcion, origen, destino, items, estado, transportista, guia, observaciones}
+window.getTraslados = function() {
+  try { var r = localStorage.getItem(TRASLADOS_KEY); if (r) return JSON.parse(r); } catch(e){}
+  return [];
+};
+window.saveTraslados = function(arr) {
+  try { localStorage.setItem(TRASLADOS_KEY, JSON.stringify(arr || [])); } catch(e){}
+};
+
+// Crear traslado (descuenta del origen, pone EN_TRANSITO)
+window.crearTraslado = function(origen, destino, items, transportista, guia, observaciones) {
+  if (!origen || !destino || origen === destino) {
+    alert('Origen y destino deben ser distintos');
+    return null;
+  }
+  if (!Array.isArray(items) || items.length === 0) {
+    alert('Debes agregar al menos un producto al traslado');
+    return null;
+  }
+  // Validar que hay stock suficiente en origen
+  for (var i = 0; i < items.length; i++) {
+    var it = items[i];
+    var stockOrigen = window.getStockByDeposito(it.ref, origen);
+    if (stockOrigen < it.qty) {
+      alert('Stock insuficiente en ' + origen + ' para ' + it.ref + '. Disponible: ' + stockOrigen + ', solicitado: ' + it.qty);
+      return null;
+    }
+  }
+  // Descontar del origen (sin sumar al destino aún - estado EN_TRANSITO)
+  items.forEach(function(it){
+    var p = PRODUCTS.find(function(x){ return x.r === it.ref; });
+    if (p) {
+      if (origen === 'NE') p.exNE = Math.max(0, (parseInt(p.exNE)||0) - it.qty);
+      if (origen === 'AN') p.exAN = Math.max(0, (parseInt(p.exAN)||0) - it.qty);
+      window.recalcularExTotal(p);
+    }
+  });
+  // Crear registro de traslado
+  var traslado = {
+    id: 'TR-' + Date.now(),
+    fechaSalida: new Date().toLocaleDateString('es-VE',{day:'2-digit',month:'2-digit',year:'numeric'}),
+    fechaRecepcion: null,
+    origen: origen,
+    destino: destino,
+    items: items,
+    estado: 'EN_TRANSITO',
+    transportista: transportista || '',
+    guia: guia || '',
+    observaciones: observaciones || ''
+  };
+  var traslados = window.getTraslados();
+  traslados.unshift(traslado);
+  window.saveTraslados(traslados);
+  // Sincronizar inventario y guardar productos
+  if (typeof saveProducts === 'function') saveProducts(PRODUCTS);
+  if (typeof syncProductsToInventory === 'function') syncProductsToInventory();
+  return traslado;
+};
+
+// Confirmar recepción de un traslado (suma al destino)
+window.confirmarRecepcionTraslado = function(trasladoId, itemsRecibidos) {
+  var traslados = window.getTraslados();
+  var idx = traslados.findIndex(function(t){ return t.id === trasladoId; });
+  if (idx === -1) { alert('Traslado no encontrado'); return false; }
+  var t = traslados[idx];
+  if (t.estado !== 'EN_TRANSITO') { alert('Este traslado ya fue procesado'); return false; }
+  // Si no se pasaron items recibidos, asumir que se recibe todo lo enviado
+  var items = itemsRecibidos || t.items;
+  // Sumar al destino
+  items.forEach(function(it){
+    var p = PRODUCTS.find(function(x){ return x.r === it.ref; });
+    if (p) {
+      if (t.destino === 'NE') p.exNE = (parseInt(p.exNE)||0) + (parseInt(it.qty)||0);
+      if (t.destino === 'AN') p.exAN = (parseInt(p.exAN)||0) + (parseInt(it.qty)||0);
+      window.recalcularExTotal(p);
+    }
+  });
+  t.estado = 'RECIBIDO';
+  t.fechaRecepcion = new Date().toLocaleDateString('es-VE',{day:'2-digit',month:'2-digit',year:'numeric'});
+  t.itemsRecibidos = items;
+  traslados[idx] = t;
+  window.saveTraslados(traslados);
+  if (typeof saveProducts === 'function') saveProducts(PRODUCTS);
+  if (typeof syncProductsToInventory === 'function') syncProductsToInventory();
+  return true;
+};
+
+// Cancelar traslado (devuelve mercancía al origen, solo si está EN_TRANSITO)
+window.cancelarTraslado = function(trasladoId) {
+  var traslados = window.getTraslados();
+  var idx = traslados.findIndex(function(t){ return t.id === trasladoId; });
+  if (idx === -1) return false;
+  var t = traslados[idx];
+  if (t.estado !== 'EN_TRANSITO') { alert('Solo se pueden cancelar traslados en tránsito'); return false; }
+  // Devolver stock al origen
+  t.items.forEach(function(it){
+    var p = PRODUCTS.find(function(x){ return x.r === it.ref; });
+    if (p) {
+      if (t.origen === 'NE') p.exNE = (parseInt(p.exNE)||0) + (parseInt(it.qty)||0);
+      if (t.origen === 'AN') p.exAN = (parseInt(p.exAN)||0) + (parseInt(it.qty)||0);
+      window.recalcularExTotal(p);
+    }
+  });
+  t.estado = 'CANCELADO';
+  t.fechaRecepcion = new Date().toLocaleDateString('es-VE',{day:'2-digit',month:'2-digit',year:'numeric'});
+  traslados[idx] = t;
+  window.saveTraslados(traslados);
+  if (typeof saveProducts === 'function') saveProducts(PRODUCTS);
+  if (typeof syncProductsToInventory === 'function') syncProductsToInventory();
+  return true;
+};
+// FIN MULTI-DEPÓSITO HELPERS
+
+// Selector visual de depósito en pedidos
+window.seleccionarDepositoOrigen = function(dep) {
+  if (dep !== 'NE' && dep !== 'AN') return;
+  DEPOSITO_PEDIDO_ACTUAL = dep;
+  // Actualizar estilos de las cards
+  var cardNE = document.getElementById('dep-card-NE');
+  var cardAN = document.getElementById('dep-card-AN');
+  if (cardNE && cardAN) {
+    if (dep === 'NE') {
+      cardNE.style.background = '#dbeafe';
+      cardNE.style.border = '2px solid #1e40af';
+      cardNE.querySelector('div:nth-child(1)').style.opacity = '1';
+      cardNE.querySelector('div:nth-child(2)').style.color = '#1e40af';
+      cardNE.querySelector('div:nth-child(3)').style.color = '#1e40af';
+      cardAN.style.background = '#f8fafc';
+      cardAN.style.border = '2px solid #cbd5e1';
+      cardAN.querySelector('div:nth-child(1)').style.opacity = '.5';
+      cardAN.querySelector('div:nth-child(2)').style.color = '#94a3b8';
+      cardAN.querySelector('div:nth-child(3)').style.color = '#94a3b8';
+    } else {
+      cardAN.style.background = '#dcfce7';
+      cardAN.style.border = '2px solid #16a34a';
+      cardAN.querySelector('div:nth-child(1)').style.opacity = '1';
+      cardAN.querySelector('div:nth-child(2)').style.color = '#16a34a';
+      cardAN.querySelector('div:nth-child(3)').style.color = '#15803d';
+      cardNE.style.background = '#f8fafc';
+      cardNE.style.border = '2px solid #cbd5e1';
+      cardNE.querySelector('div:nth-child(1)').style.opacity = '.5';
+      cardNE.querySelector('div:nth-child(2)').style.color = '#94a3b8';
+      cardNE.querySelector('div:nth-child(3)').style.color = '#94a3b8';
+    }
+  }
+  // Refrescar productos visibles si estamos en panel 3
+  if (typeof renderTable === 'function') renderTable();
+};
+
+// Helper: stock disponible para pedidos según depósito actual
+window.getStockDisponiblePedido = function(ref) {
+  return window.getStockByDeposito(ref, DEPOSITO_PEDIDO_ACTUAL);
+};
 
 window.getComprometido = function() {
   try { var r=localStorage.getItem(COMP_KEY); if(r) return JSON.parse(r); } catch(e){}
@@ -4621,12 +4856,29 @@ function confirmOrder(){
     correo: (window._activeClientObj && window._activeClientObj.correo) || document.getElementById('f_correo') && document.getElementById('f_correo').value || '',
     credito: (window._activeClientObj && window._activeClientObj.diasCredito) || '',
     tipoPrecio: (window._activeClientObj && window._activeClientObj.tipoPrecio) || 'USD',
+    deposito: DEPOSITO_PEDIDO_ACTUAL || 'NE',  // Multi-Depósito: registrar de qué depósito sale
   };
 
-  // Descuenta inventario
+  // Descuenta inventario del depósito correcto (Multi-Depósito)
   const inv=getInventory();
-  items.forEach(i=>{ inv[i.r]=Math.max(0,(inv[i.r]||0)-i.orden); const p=PRODUCTS.find(x=>x.r===i.r); if(p) p.ex=inv[i.r]; });
+  const _depPed = DEPOSITO_PEDIDO_ACTUAL || 'NE';
+  items.forEach(i=>{
+    inv[i.r]=Math.max(0,(inv[i.r]||0)-i.orden);
+    const p=PRODUCTS.find(x=>x.r===i.r);
+    if(p) {
+      // Descontar del depósito específico
+      if (_depPed === 'NE') {
+        p.exNE = Math.max(0, (parseInt(p.exNE)||0) - i.orden);
+      } else if (_depPed === 'AN') {
+        p.exAN = Math.max(0, (parseInt(p.exAN)||0) - i.orden);
+      }
+      // Recalcular total para mantener compatibilidad con código que lee p.ex
+      p.ex = (parseInt(p.exNE)||0) + (parseInt(p.exAN)||0);
+      inv[i.r] = p.ex;
+    }
+  });
   saveInventory(inv);
+  if (typeof saveProducts === 'function') saveProducts(PRODUCTS);
 
   // Guarda venta
   const sales=getSales(); sales.unshift(sale); saveSales(sales);
@@ -7817,6 +8069,14 @@ async function loadFromFirebase() {
     console.log('[loadFromFirebase] ✅ Sincronización multi-dispositivo completa');
     console.log('═══════════════════════════════════════════════════');
   } catch(e) { console.warn('loadFromFirebase:', e); }
+
+  // Migración silenciosa multi-depósito tras cargar productos desde Firebase
+  try {
+    if (window.migrarProductosMultiDeposito) {
+      var migrados = window.migrarProductosMultiDeposito();
+      if (migrados > 0 && typeof saveProducts === 'function') saveProducts(PRODUCTS);
+    }
+  } catch(eMD) { console.warn('Migración multi-depósito:', eMD); }
 
   // Auto-subir logo Farmers a Firestore para que el portal pueda descargarlo
   try {
@@ -22361,6 +22621,8 @@ function doRefSearch() {
           '<button onclick="ptImportarDatosMaestro()" style="background:linear-gradient(135deg,#7c3aed,#6d28d9);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:700;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;" title="Importar y actualizar todos los campos desde Excel">📥 Importar Datos</button>' +
           '<button onclick="ptImportarConIA()" style="background:linear-gradient(135deg,#dc2626,#b91c1c);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:700;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;" title="Usar IA para interpretar catálogo del proveedor (PDF o Excel)">🤖 IA Catálogo</button>' +
           '<button onclick="ptAplicarRefAlFinalMasivo()" style="background:linear-gradient(135deg,#78350f,#a16207);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:700;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;" title="Aplica REF interna al final de TODAS las descripciones del catálogo (necesario para Valery)">✏️ REF al final</button>' +
+          '<button onclick="trasladoAbrirModalCrear()" style="background:linear-gradient(135deg,#0891b2,#0e7490);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:900;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;box-shadow:0 4px 14px rgba(8,145,178,.4);" title="Trasladar mercancía entre depósitos NE ↔ AN">📦 Trasladar</button>' +
+          '<button onclick="trasladoAbrirHistorial()" style="background:linear-gradient(135deg,#0369a1,#075985);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:700;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;" title="Ver traslados pendientes y completados">📋 Traslados</button>' +
           '<button onclick="ptAbrirDiagnosticoInventario()" style="background:linear-gradient(135deg,#7e22ce,#581c87);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:700;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;" title="Ver pedidos reservados, diagnosticar inventario y liberar comprometido huérfano">🔧 Diagnóstico Inventario</button>' +
           '<button id="pt-btn-sync-portal" onclick="ptSincronizarPortal()" style="background:linear-gradient(135deg,#dc2626,#7f1d1d);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:900;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;box-shadow:0 4px 14px rgba(220,38,38,.4);" title="Fuerza la sincronización inmediata de inventario, comprometido y ordenada al portal del cliente">🔄 Sincronizar Portal</button>' +
           '<button id="pt-btn-rescatar-huerfanas" onclick="ptAbrirRescateHuerfanas()" style="background:linear-gradient(135deg,#16a34a,#15803d);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:900;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;box-shadow:0 4px 14px rgba(22,163,74,.4);" title="Reconstruir productos cuyas imágenes están en Firebase pero la ficha se perdió">🖼️ Rescatar Huérfanas</button>' +
@@ -22380,7 +22642,9 @@ function doRefSearch() {
                 '<th style="padding:8px 12px;text-align:center;white-space:nowrap;">P. USD</th>' +
                 '<th style="padding:8px 12px;text-align:center;white-space:nowrap;">P. BCV</th>' +
                 '<th style="padding:8px 12px;text-align:center;white-space:nowrap;">P. TF</th>' +
-                '<th style="padding:8px 12px;text-align:center;white-space:nowrap;">Actual</th>' +
+                '<th style="padding:8px 12px;text-align:center;white-space:nowrap;background:#1e40af;" title="Stock en depósito Margarita (Nueva Esparta)">📦 NE</th>' +
+                '<th style="padding:8px 12px;text-align:center;white-space:nowrap;background:#16a34a;" title="Stock en depósito Anzoátegui (Tierra Firme)">📦 AN</th>' +
+                '<th style="padding:8px 12px;text-align:center;white-space:nowrap;">Total</th>' +
                 '<th style="padding:8px 12px;text-align:center;white-space:nowrap;">ORDENADA</th>' +
                 '<th style="padding:8px 12px;text-align:center;white-space:nowrap;">Disponible</th>' +
                 '<th style="padding:8px 12px;text-align:center;white-space:nowrap;">Comprometida</th>' +
@@ -24070,8 +24334,27 @@ function ptRender() {
     row += '<td style="padding:8px 12px;text-align:right;font-size:.75rem;color:#64748b;">' + (p.bv > 0 ? '$'+p.bv.toFixed(2) : '—') + '</td>';
     row += '<td style="padding:8px 12px;text-align:right;font-size:.75rem;color:#64748b;">' + (p.t > 0 ? '$'+p.t.toFixed(2) : '—') + '</td>';
 
+    // ── Multi-Depósito: stock por depósito ──
+    var stockNE = parseInt(p.exNE)||0;
+    var stockAN = parseInt(p.exAN)||0;
+    var stockTotal = stockNE + stockAN;
+    var neBg = stockNE > 0 ? '#dbeafe' : '#f1f5f9';
+    var neColor = stockNE > 0 ? '#1e40af' : '#94a3b8';
+    var anBg = stockAN > 0 ? '#dcfce7' : '#f1f5f9';
+    var anColor = stockAN > 0 ? '#16a34a' : '#94a3b8';
+    var totBg = stockTotal > 0 ? '#fef3c7' : '#fee2e2';
+    var totColor = stockTotal > 0 ? '#92400e' : '#dc2626';
+
     row += '<td style="padding:8px 12px;text-align:center;">' +
-      '<span style="background:' + exBg + ';color:' + exColor + ';padding:3px 10px;border-radius:12px;font-weight:700;font-size:.78rem;">' + exActual + '</span>' +
+      '<span style="background:' + neBg + ';color:' + neColor + ';padding:3px 10px;border-radius:12px;font-weight:700;font-size:.78rem;">' + stockNE + '</span>' +
+    '</td>';
+
+    row += '<td style="padding:8px 12px;text-align:center;">' +
+      '<span style="background:' + anBg + ';color:' + anColor + ';padding:3px 10px;border-radius:12px;font-weight:700;font-size:.78rem;">' + stockAN + '</span>' +
+    '</td>';
+
+    row += '<td style="padding:8px 12px;text-align:center;">' +
+      '<span style="background:' + totBg + ';color:' + totColor + ';padding:3px 10px;border-radius:12px;font-weight:700;font-size:.78rem;">' + stockTotal + '</span>' +
     '</td>';
 
     row += '<td style="padding:8px 12px;text-align:center;">' +
@@ -24142,7 +24425,7 @@ function ptRender() {
   }).join('');
 
   if (!filtered.length) {
-    tbody.innerHTML = '<tr><td colspan="13" style="text-align:center;padding:40px;color:#94a3b8;">No se encontraron productos</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="15" style="text-align:center;padding:40px;color:#94a3b8;">No se encontraron productos</td></tr>';
   }
 }
 
@@ -54193,6 +54476,311 @@ function pcRenderConfig(body) {
 </style>
 <!-- ══════════════════════════════════════════════════════════════════
      FIN REDISEÑO UI/UX v2026.04.30 — REVISIÓN 2
+══════════════════════════════════════════════════════════════════ -->
+
+<!-- ══════════════════════════════════════════════════════════════════
+     MÓDULO TRASLADOS — Multi-Depósito FASE 1
+     Mover mercancía entre NE ↔ AN con estado EN_TRANSITO
+══════════════════════════════════════════════════════════════════ -->
+<script>
+(function(){
+  'use strict';
+
+  // Construir el HTML del modal de crear traslado
+  function buildModalCrearHTML() {
+    return '<div id="traslado-modal-overlay" style="position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:99999;display:flex;align-items:flex-start;justify-content:center;padding:20px;overflow-y:auto;">'+
+      '<div style="background:white;border-radius:16px;width:min(900px,100%);margin:auto;box-shadow:0 24px 64px rgba(0,0,0,.5);overflow:hidden;">'+
+        '<div style="background:linear-gradient(135deg,#0891b2,#0e7490);padding:20px 24px;color:white;display:flex;align-items:center;justify-content:space-between;">'+
+          '<div>'+
+            '<div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;font-size:1.4rem;letter-spacing:2px;text-transform:uppercase;">📦 Nuevo Traslado de Mercancía</div>'+
+            '<div style="font-size:.78rem;opacity:.9;margin-top:4px;">Mover stock entre depósitos NE y AN</div>'+
+          '</div>'+
+          '<button onclick="trasladoCerrarModal()" style="background:rgba(255,255,255,.2);border:none;color:white;width:40px;height:40px;border-radius:50%;cursor:pointer;font-size:1.2rem;font-weight:bold;">✕</button>'+
+        '</div>'+
+        '<div style="padding:24px;">'+
+          // Selector origen → destino
+          '<div style="background:#f0f9ff;border:1px solid #bae6fd;border-radius:12px;padding:16px;margin-bottom:20px;">'+
+            '<div style="font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:1.5px;color:#0c4a6e;margin-bottom:10px;">Origen → Destino</div>'+
+            '<div style="display:flex;align-items:center;gap:12px;">'+
+              '<select id="traslado-origen" onchange="trasladoActualizarProductos()" style="flex:1;padding:10px;border:1.5px solid #0891b2;border-radius:8px;font-size:.95rem;font-weight:700;color:#0c4a6e;">'+
+                '<option value="NE">📦 NE — Margarita (Nueva Esparta)</option>'+
+                '<option value="AN">📦 AN — Anzoátegui (Tierra Firme)</option>'+
+              '</select>'+
+              '<div style="font-size:1.6rem;color:#0891b2;font-weight:900;">→</div>'+
+              '<select id="traslado-destino" style="flex:1;padding:10px;border:1.5px solid #16a34a;border-radius:8px;font-size:.95rem;font-weight:700;color:#15803d;">'+
+                '<option value="AN">📦 AN — Anzoátegui (Tierra Firme)</option>'+
+                '<option value="NE">📦 NE — Margarita (Nueva Esparta)</option>'+
+              '</select>'+
+            '</div>'+
+          '</div>'+
+          // Datos del traslado
+          '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:20px;">'+
+            '<div>'+
+              '<label style="font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#64748b;display:block;margin-bottom:5px;">Transportista</label>'+
+              '<input type="text" id="traslado-transportista" placeholder="Ej: José Logística" style="width:100%;padding:10px;border:1.5px solid #cbd5e1;border-radius:8px;font-size:.9rem;box-sizing:border-box;">'+
+            '</div>'+
+            '<div>'+
+              '<label style="font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#64748b;display:block;margin-bottom:5px;">N° Guía</label>'+
+              '<input type="text" id="traslado-guia" placeholder="Ej: GUIA-12345" style="width:100%;padding:10px;border:1.5px solid #cbd5e1;border-radius:8px;font-size:.9rem;box-sizing:border-box;">'+
+            '</div>'+
+          '</div>'+
+          '<div style="margin-bottom:20px;">'+
+            '<label style="font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#64748b;display:block;margin-bottom:5px;">Observaciones</label>'+
+            '<textarea id="traslado-obs" placeholder="Notas adicionales del traslado..." style="width:100%;padding:10px;border:1.5px solid #cbd5e1;border-radius:8px;font-size:.9rem;min-height:60px;box-sizing:border-box;resize:vertical;"></textarea>'+
+          '</div>'+
+          // Productos a trasladar
+          '<div style="background:#fafafa;border:1px solid #e5e7eb;border-radius:12px;padding:16px;">'+
+            '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">'+
+              '<div style="font-size:.85rem;font-weight:900;color:#1e293b;text-transform:uppercase;letter-spacing:1px;">Productos a Trasladar</div>'+
+              '<button onclick="trasladoAgregarProducto()" style="background:#0891b2;color:white;border:none;border-radius:6px;padding:6px 12px;font-size:.75rem;font-weight:700;cursor:pointer;">+ Agregar Producto</button>'+
+            '</div>'+
+            '<div id="traslado-items-list" style="max-height:280px;overflow-y:auto;"></div>'+
+          '</div>'+
+        '</div>'+
+        '<div style="padding:16px 24px;background:#f8fafc;border-top:1px solid #e5e7eb;display:flex;justify-content:flex-end;gap:10px;">'+
+          '<button onclick="trasladoCerrarModal()" style="background:#e5e7eb;color:#475569;border:none;border-radius:8px;padding:10px 20px;font-weight:700;cursor:pointer;">Cancelar</button>'+
+          '<button onclick="trasladoConfirmarSalida()" style="background:linear-gradient(135deg,#0891b2,#0e7490);color:white;border:none;border-radius:8px;padding:10px 20px;font-weight:900;cursor:pointer;box-shadow:0 4px 12px rgba(8,145,178,.4);">📦 Confirmar Salida</button>'+
+        '</div>'+
+      '</div>'+
+    '</div>';
+  }
+
+  // Estado interno del traslado en construcción
+  var _trasladoItems = [];
+
+  window.trasladoAbrirModalCrear = function() {
+    var existing = document.getElementById('traslado-modal-overlay');
+    if (existing) existing.remove();
+    document.body.insertAdjacentHTML('beforeend', buildModalCrearHTML());
+    _trasladoItems = [];
+    trasladoActualizarProductos();
+  };
+
+  window.trasladoCerrarModal = function() {
+    var ov = document.getElementById('traslado-modal-overlay');
+    if (ov) ov.remove();
+    _trasladoItems = [];
+  };
+
+  window.trasladoActualizarProductos = function() {
+    var origen = (document.getElementById('traslado-origen')||{value:'NE'}).value;
+    var destino = (document.getElementById('traslado-destino')||{value:'AN'}).value;
+    // Si origen y destino son iguales, cambiar destino al opuesto
+    if (origen === destino) {
+      var destSel = document.getElementById('traslado-destino');
+      if (destSel) destSel.value = (origen === 'NE') ? 'AN' : 'NE';
+    }
+    // Validar items existentes contra el nuevo origen
+    _trasladoItems = _trasladoItems.filter(function(it){
+      var stock = window.getStockByDeposito(it.ref, origen);
+      if (stock < it.qty) {
+        it.qty = stock;
+      }
+      return stock > 0;
+    });
+    trasladoRenderItems();
+  };
+
+  function trasladoRenderItems() {
+    var cont = document.getElementById('traslado-items-list');
+    if (!cont) return;
+    if (_trasladoItems.length === 0) {
+      cont.innerHTML = '<div style="text-align:center;padding:24px;color:#94a3b8;font-size:.85rem;">Aún no has agregado productos. Haz clic en <strong>+ Agregar Producto</strong>.</div>';
+      return;
+    }
+    var origen = (document.getElementById('traslado-origen')||{value:'NE'}).value;
+    cont.innerHTML = _trasladoItems.map(function(it, idx){
+      var p = PRODUCTS.find(function(x){ return x.r === it.ref; });
+      var nombre = p ? (p.d||'').substring(0,50) : '—';
+      var stockOrig = window.getStockByDeposito(it.ref, origen);
+      return '<div style="display:flex;align-items:center;gap:10px;padding:8px;background:white;border:1px solid #e5e7eb;border-radius:8px;margin-bottom:6px;">'+
+        '<div style="flex:1;min-width:0;">'+
+          '<div style="font-weight:700;color:#1e293b;font-size:.85rem;font-family:\'Barlow Condensed\',sans-serif;">'+it.ref+'</div>'+
+          '<div style="font-size:.72rem;color:#64748b;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+nombre+'</div>'+
+          '<div style="font-size:.65rem;color:#0891b2;font-weight:700;">Disponible en '+origen+': '+stockOrig+' uds</div>'+
+        '</div>'+
+        '<input type="number" min="1" max="'+stockOrig+'" value="'+it.qty+'" onchange="trasladoCambiarCantidad('+idx+', this.value)" style="width:80px;padding:6px;border:1.5px solid #0891b2;border-radius:6px;text-align:center;font-weight:700;font-size:.9rem;">'+
+        '<button onclick="trasladoQuitarItem('+idx+')" style="background:#fee2e2;color:#dc2626;border:none;border-radius:6px;padding:6px 10px;font-weight:700;cursor:pointer;font-size:.8rem;">✕</button>'+
+      '</div>';
+    }).join('');
+  }
+
+  window.trasladoCambiarCantidad = function(idx, val) {
+    var n = parseInt(val)||0;
+    if (n <= 0) { trasladoQuitarItem(idx); return; }
+    _trasladoItems[idx].qty = n;
+    trasladoRenderItems();
+  };
+
+  window.trasladoQuitarItem = function(idx) {
+    _trasladoItems.splice(idx, 1);
+    trasladoRenderItems();
+  };
+
+  window.trasladoAgregarProducto = function() {
+    var origen = (document.getElementById('traslado-origen')||{value:'NE'}).value;
+    // Filtrar productos con stock en origen y que no estén ya agregados
+    var refsAgregadas = _trasladoItems.map(function(it){ return it.ref; });
+    var disponibles = PRODUCTS.filter(function(p){
+      var stock = window.getStockByDeposito(p.r, origen);
+      return stock > 0 && refsAgregadas.indexOf(p.r) === -1;
+    });
+    if (disponibles.length === 0) {
+      alert('No hay productos con stock disponible en ' + origen);
+      return;
+    }
+    // Modal simple de selección
+    var existing = document.getElementById('traslado-add-overlay');
+    if (existing) existing.remove();
+    var html = '<div id="traslado-add-overlay" style="position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:100000;display:flex;align-items:center;justify-content:center;padding:20px;">'+
+      '<div style="background:white;border-radius:12px;width:min(640px,100%);max-height:80vh;display:flex;flex-direction:column;box-shadow:0 24px 64px rgba(0,0,0,.4);">'+
+        '<div style="padding:16px 20px;border-bottom:1px solid #e5e7eb;display:flex;justify-content:space-between;align-items:center;">'+
+          '<div style="font-weight:900;font-size:.95rem;">Seleccionar Producto (Stock '+origen+')</div>'+
+          '<button onclick="document.getElementById(\'traslado-add-overlay\').remove()" style="background:none;border:none;font-size:1.4rem;cursor:pointer;color:#64748b;">✕</button>'+
+        '</div>'+
+        '<input type="text" id="traslado-add-search" oninput="trasladoFiltrarLista()" placeholder="🔍 Buscar por referencia o descripción..." style="margin:12px 16px;padding:10px;border:1.5px solid #cbd5e1;border-radius:8px;font-size:.9rem;">'+
+        '<div id="traslado-add-list" style="overflow-y:auto;flex:1;padding:0 16px 16px;"></div>'+
+      '</div>'+
+    '</div>';
+    document.body.insertAdjacentHTML('beforeend', html);
+    window._trasladoAddDisp = disponibles;
+    trasladoFiltrarLista();
+  };
+
+  window.trasladoFiltrarLista = function() {
+    var q = (document.getElementById('traslado-add-search')||{value:''}).value.toLowerCase();
+    var origen = (document.getElementById('traslado-origen')||{value:'NE'}).value;
+    var disp = window._trasladoAddDisp || [];
+    var filtrados = disp.filter(function(p){
+      if (!q) return true;
+      return p.r.toLowerCase().indexOf(q) !== -1 || (p.d||'').toLowerCase().indexOf(q) !== -1;
+    });
+    var cont = document.getElementById('traslado-add-list');
+    if (!cont) return;
+    cont.innerHTML = filtrados.slice(0,100).map(function(p){
+      var stock = window.getStockByDeposito(p.r, origen);
+      return '<div onclick="trasladoSeleccionarProducto(\''+p.r+'\')" style="display:flex;align-items:center;gap:10px;padding:8px;border-bottom:1px solid #f1f5f9;cursor:pointer;" onmouseover="this.style.background=\'#f0f9ff\'" onmouseout="this.style.background=\'white\'">'+
+        '<div style="flex:1;min-width:0;">'+
+          '<div style="font-weight:700;color:#1e293b;font-size:.85rem;font-family:\'Barlow Condensed\',sans-serif;">'+p.r+'</div>'+
+          '<div style="font-size:.72rem;color:#64748b;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+(p.d||'').substring(0,80)+'</div>'+
+        '</div>'+
+        '<div style="background:#dbeafe;color:#1e40af;padding:3px 10px;border-radius:12px;font-weight:700;font-size:.78rem;">'+stock+' uds</div>'+
+      '</div>';
+    }).join('') || '<div style="text-align:center;padding:20px;color:#94a3b8;">Sin resultados</div>';
+  };
+
+  window.trasladoSeleccionarProducto = function(ref) {
+    var origen = (document.getElementById('traslado-origen')||{value:'NE'}).value;
+    var stock = window.getStockByDeposito(ref, origen);
+    var qtyStr = prompt('¿Cuántas unidades trasladar de ' + ref + '?\n\nDisponible en ' + origen + ': ' + stock + ' uds', '1');
+    if (!qtyStr) return;
+    var qty = parseInt(qtyStr)||0;
+    if (qty <= 0 || qty > stock) {
+      alert('Cantidad inválida. Debe estar entre 1 y ' + stock);
+      return;
+    }
+    _trasladoItems.push({ ref: ref, qty: qty });
+    var addOv = document.getElementById('traslado-add-overlay');
+    if (addOv) addOv.remove();
+    trasladoRenderItems();
+  };
+
+  window.trasladoConfirmarSalida = function() {
+    var origen = (document.getElementById('traslado-origen')||{value:'NE'}).value;
+    var destino = (document.getElementById('traslado-destino')||{value:'AN'}).value;
+    var transportista = (document.getElementById('traslado-transportista')||{value:''}).value.trim();
+    var guia = (document.getElementById('traslado-guia')||{value:''}).value.trim();
+    var obs = (document.getElementById('traslado-obs')||{value:''}).value.trim();
+    if (_trasladoItems.length === 0) {
+      alert('Debes agregar al menos un producto');
+      return;
+    }
+    if (!confirm('⚠️ ¿Confirmar salida del traslado ' + origen + ' → ' + destino + '?\n\n' +
+      _trasladoItems.length + ' producto(s) saldrán de ' + origen + ' y entrarán en estado EN_TRÁNSITO.\n' +
+      'Solo se sumarán al stock de ' + destino + ' cuando confirmes la recepción manualmente.')) return;
+    var t = window.crearTraslado(origen, destino, _trasladoItems, transportista, guia, obs);
+    if (t) {
+      alert('✅ Traslado creado: ' + t.id + '\n\nMercancía descontada de ' + origen + '.\nEstado: EN_TRÁNSITO\n\nCuando llegue a ' + destino + ', confirma la recepción desde el botón "📋 Traslados".');
+      trasladoCerrarModal();
+      if (typeof ptRender === 'function') ptRender();
+    }
+  };
+
+  // Modal historial de traslados
+  window.trasladoAbrirHistorial = function() {
+    var existing = document.getElementById('traslado-hist-overlay');
+    if (existing) existing.remove();
+    var traslados = window.getTraslados();
+    var enTransito = traslados.filter(function(t){ return t.estado === 'EN_TRANSITO'; });
+    var rows = traslados.map(function(t){
+      var colorE = t.estado === 'EN_TRANSITO' ? '#f59e0b' : t.estado === 'RECIBIDO' ? '#16a34a' : '#94a3b8';
+      var bgE = t.estado === 'EN_TRANSITO' ? '#fef3c7' : t.estado === 'RECIBIDO' ? '#dcfce7' : '#f1f5f9';
+      var totalUds = (t.items||[]).reduce(function(s,i){ return s+(parseInt(i.qty)||0); },0);
+      var btns = '';
+      if (t.estado === 'EN_TRANSITO') {
+        btns = '<button onclick="trasladoConfirmarRecepcion(\''+t.id+'\')" style="background:#16a34a;color:white;border:none;border-radius:6px;padding:6px 10px;font-size:.72rem;font-weight:700;cursor:pointer;margin-right:4px;">✅ Recibir</button>'+
+               '<button onclick="trasladoCancelar(\''+t.id+'\')" style="background:#dc2626;color:white;border:none;border-radius:6px;padding:6px 10px;font-size:.72rem;font-weight:700;cursor:pointer;">✕ Cancelar</button>';
+      }
+      return '<tr style="border-bottom:1px solid #f1f5f9;">'+
+        '<td style="padding:8px;font-family:\'Barlow Condensed\',sans-serif;font-weight:700;font-size:.78rem;">'+t.id+'</td>'+
+        '<td style="padding:8px;font-size:.78rem;">'+t.fechaSalida+'</td>'+
+        '<td style="padding:8px;text-align:center;font-weight:700;font-size:.78rem;">'+t.origen+' → '+t.destino+'</td>'+
+        '<td style="padding:8px;text-align:center;font-size:.78rem;">'+(t.items||[]).length+' refs / '+totalUds+' uds</td>'+
+        '<td style="padding:8px;text-align:center;"><span style="background:'+bgE+';color:'+colorE+';padding:3px 8px;border-radius:10px;font-weight:700;font-size:.7rem;">'+t.estado+'</span></td>'+
+        '<td style="padding:8px;text-align:center;">'+btns+'</td>'+
+      '</tr>';
+    }).join('');
+    var html = '<div id="traslado-hist-overlay" style="position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:99999;display:flex;align-items:flex-start;justify-content:center;padding:20px;overflow-y:auto;">'+
+      '<div style="background:white;border-radius:16px;width:min(1000px,100%);margin:auto;box-shadow:0 24px 64px rgba(0,0,0,.5);overflow:hidden;">'+
+        '<div style="background:linear-gradient(135deg,#0369a1,#075985);padding:20px 24px;color:white;display:flex;justify-content:space-between;align-items:center;">'+
+          '<div>'+
+            '<div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;font-size:1.4rem;letter-spacing:2px;text-transform:uppercase;">📋 Historial de Traslados</div>'+
+            '<div style="font-size:.78rem;opacity:.9;margin-top:4px;">'+enTransito.length+' en tránsito · '+traslados.length+' totales</div>'+
+          '</div>'+
+          '<button onclick="document.getElementById(\'traslado-hist-overlay\').remove()" style="background:rgba(255,255,255,.2);border:none;color:white;width:40px;height:40px;border-radius:50%;cursor:pointer;font-size:1.2rem;font-weight:bold;">✕</button>'+
+        '</div>'+
+        '<div style="padding:16px;max-height:70vh;overflow-y:auto;">'+
+          (traslados.length === 0 ? '<div style="text-align:center;padding:40px;color:#94a3b8;">No hay traslados registrados aún.</div>' :
+          '<table style="width:100%;border-collapse:collapse;font-size:.85rem;">'+
+            '<thead><tr style="background:#f8fafc;border-bottom:2px solid #e5e7eb;"><th style="padding:8px;text-align:left;">ID</th><th style="padding:8px;text-align:left;">Fecha Salida</th><th style="padding:8px;text-align:center;">Ruta</th><th style="padding:8px;text-align:center;">Carga</th><th style="padding:8px;text-align:center;">Estado</th><th style="padding:8px;text-align:center;">Acciones</th></tr></thead>'+
+            '<tbody>'+rows+'</tbody>'+
+          '</table>')+
+        '</div>'+
+      '</div>'+
+    '</div>';
+    document.body.insertAdjacentHTML('beforeend', html);
+  };
+
+  window.trasladoConfirmarRecepcion = function(id) {
+    var traslados = window.getTraslados();
+    var t = traslados.find(function(x){ return x.id === id; });
+    if (!t) return;
+    var totalUds = (t.items||[]).reduce(function(s,i){ return s+(parseInt(i.qty)||0); },0);
+    if (!confirm('¿Confirmar recepción del traslado ' + id + '?\n\nSe sumarán ' + totalUds + ' unidades al stock de ' + t.destino + '.\n\nNota: si recibiste menos por mermas o daños, ajusta luego en el inventario manualmente.')) return;
+    if (window.confirmarRecepcionTraslado(id)) {
+      alert('✅ Recepción confirmada. Stock actualizado en ' + t.destino + '.');
+      var ov = document.getElementById('traslado-hist-overlay');
+      if (ov) ov.remove();
+      window.trasladoAbrirHistorial();
+      if (typeof ptRender === 'function') ptRender();
+    }
+  };
+
+  window.trasladoCancelar = function(id) {
+    if (!confirm('¿Cancelar el traslado ' + id + '?\n\nLa mercancía será devuelta al depósito de origen.')) return;
+    if (window.cancelarTraslado(id)) {
+      alert('Traslado cancelado. Mercancía devuelta al origen.');
+      var ov = document.getElementById('traslado-hist-overlay');
+      if (ov) ov.remove();
+      window.trasladoAbrirHistorial();
+      if (typeof ptRender === 'function') ptRender();
+    }
+  };
+
+})();
+</script>
+<!-- ══════════════════════════════════════════════════════════════════
+     FIN MÓDULO TRASLADOS
 ══════════════════════════════════════════════════════════════════ -->
 
 
