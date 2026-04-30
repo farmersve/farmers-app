@@ -2976,6 +2976,7 @@ tbody td { padding: 8px 10px; vertical-align: middle; }
     <button class="hdr-btn hdr-btn-teal"   onclick="openMultiSucursal()" data-tip="Multi-Sucursal">🏪</button>
     <button class="hdr-btn hdr-btn-purple" onclick="openVentasIA()"      data-tip="Ventas IA">🧠</button>
     <button class="hdr-btn" onclick="openHCL()" data-tip="Historial de Clientes" style="background:rgba(124,58,237,0.12);border:1.5px solid rgba(124,58,237,0.4);color:#a78bfa;" onmouseover="this.style.background='rgba(124,58,237,0.25)'" onmouseout="this.style.background='rgba(124,58,237,0.12)'">📋</button>
+    <button class="hdr-btn" onclick="openControlEjecutivo()" data-tip="Control Ejecutivo (Ctrl+E)" style="background:linear-gradient(135deg,rgba(244,123,62,0.18),rgba(239,68,68,0.18));border:1.5px solid rgba(244,123,62,0.5);color:#fdba74;" onmouseover="this.style.background='linear-gradient(135deg,rgba(244,123,62,0.32),rgba(239,68,68,0.32))'" onmouseout="this.style.background='linear-gradient(135deg,rgba(244,123,62,0.18),rgba(239,68,68,0.18))'">📊</button>
 
     <div class="hdr-sep"></div>
 
@@ -3161,6 +3162,12 @@ tbody td { padding: 8px 10px; vertical-align: middle; }
         <div class="home-mod-icon">📋</div>
         <div class="home-mod-name">Historial Clientes</div>
         <div class="home-mod-desc">Facturas · Reposición IA</div>
+      </div>
+
+      <div class="home-mod home-mod-tool" style="--mod-color:#f97316;--mod-bg:linear-gradient(135deg,rgba(244,123,62,0.12),rgba(239,68,68,0.08));" onclick="openControlEjecutivo()">
+        <div class="home-mod-icon">📊</div>
+        <div class="home-mod-name">Control Ejecutivo</div>
+        <div class="home-mod-desc">KPIs · alertas · concentración (Ctrl+E)</div>
       </div>
 
     </div>
@@ -52435,5 +52442,1218 @@ function pcRenderConfig(body) {
 }
 
 </script>
+
+
+<!-- ══════════════════════════════════════════════════════════════════
+     MÓDULO: CONTROL EJECUTIVO — VISTA DE OMAR
+     ══════════════════════════════════════════════════════════════════
+     Vista personal del dueño con KPIs estratégicos:
+     - Alertas y fugas de dinero (CXC vencida, stock crítico, capital dormido, OCs sin cierre)
+     - Concentración (top clientes, top productos por rotación)
+     - Salud financiera (bancos USD/Bs, CXC, capital inmovilizado, proyección 30d)
+     - Tendencia de ventas (día/semana/mes/año con comparativas)
+     - Comparativa por sucursal del cliente principal
+
+     CARACTERÍSTICAS:
+     - Solo lectura (no modifica datos)
+     - Lee de localStorage: farmers_sales, farmers_cxc, farmers_pt_data,
+                            farmers_bancos, farmers_inv_comprometido, PRODUCTS, CLIENTS
+     - No reemplaza el dashboard — es vista paralela
+     - Cálculos en JavaScript: cobertura, capital dormido, proyección cobranzas
+══════════════════════════════════════════════════════════════════ -->
+<style>
+  /* ── Modal del Control Ejecutivo ── */
+  .ce-modal {
+    display: none;
+    position: fixed;
+    inset: 0;
+    z-index: 9000;
+    background: rgba(0, 0, 0, 0.85);
+    backdrop-filter: blur(6px);
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    padding: 24px 16px;
+  }
+  .ce-modal.show { display: block; }
+  .ce-container {
+    max-width: 1320px;
+    margin: 0 auto;
+    background: #0d1117;
+    border-radius: 16px;
+    padding: 24px;
+    box-shadow: 0 24px 80px rgba(0,0,0,0.6);
+    font-family: 'Barlow Condensed', 'Barlow', system-ui, sans-serif;
+  }
+  .ce-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding-bottom: 18px;
+    border-bottom: 0.5px solid rgba(255,255,255,0.1);
+    margin-bottom: 20px;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+  .ce-brand { display: flex; align-items: center; gap: 14px; }
+  .ce-logo {
+    height: 50px; width: 50px; border-radius: 8px;
+    background: white; display: flex; align-items: center;
+    justify-content: center; padding: 4px;
+  }
+  .ce-logo img { width: 100%; height: 100%; object-fit: contain; }
+  .ce-title {
+    color: white; font-size: 20px; font-weight: 500;
+    letter-spacing: 1.2px; text-transform: uppercase; margin: 0;
+  }
+  .ce-subtitle {
+    color: rgba(255,255,255,0.55); font-size: 11px;
+    letter-spacing: 0.7px; text-transform: uppercase; margin-top: 3px;
+  }
+  .ce-meta { display: flex; gap: 10px; align-items: center; }
+  .ce-pill {
+    display: flex; align-items: center; gap: 6px;
+    background: rgba(255,255,255,0.06);
+    padding: 6px 11px; border-radius: 6px;
+    font-size: 10px; color: white;
+    letter-spacing: 0.5px; text-transform: uppercase;
+  }
+  .ce-pill.live { background: transparent; color: rgba(255,255,255,0.6); }
+  .ce-pill .ce-dot {
+    width: 7px; height: 7px; border-radius: 50%; background: #22c55e;
+  }
+  .ce-pill-bcv span { color: #f97316; font-weight: 500; margin-left: 4px; }
+  .ce-close-btn {
+    background: rgba(239,68,68,0.15);
+    border: 0.5px solid rgba(239,68,68,0.4);
+    color: #fca5a5;
+    font-size: 11px; padding: 6px 12px; border-radius: 6px;
+    letter-spacing: 0.5px; text-transform: uppercase;
+    font-family: inherit; cursor: pointer; font-weight: 500;
+  }
+  .ce-close-btn:hover { background: rgba(239,68,68,0.25); }
+
+  /* ── BLOQUE 1: ALERTAS Y FUGAS ── */
+  .ce-alertas {
+    background: linear-gradient(135deg, rgba(239,68,68,0.12), rgba(220,38,38,0.04));
+    border: 1px solid rgba(239,68,68,0.35);
+    border-radius: 14px;
+    padding: 18px;
+    margin-bottom: 16px;
+  }
+  .ce-block-head {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 14px;
+  }
+  .ce-block-title-wrap { display: flex; align-items: center; gap: 12px; }
+  .ce-block-icon {
+    width: 36px; height: 36px; border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 16px; font-weight: 500;
+  }
+  .ce-block-title {
+    color: white; font-size: 15px; font-weight: 500;
+    letter-spacing: 1px; text-transform: uppercase; margin: 0;
+  }
+  .ce-block-sub {
+    color: rgba(255,255,255,0.55); font-size: 10px;
+    letter-spacing: 0.5px; text-transform: uppercase; margin-top: 1px;
+  }
+  .ce-badge-count {
+    font-size: 18px; padding: 4px 14px; border-radius: 7px;
+    letter-spacing: 0.5px; font-weight: 500;
+  }
+  .ce-alertas-grid {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px;
+  }
+  .ce-alert-card {
+    background: rgba(0,0,0,0.25); padding: 10px 12px;
+    border-radius: 6px; cursor: pointer;
+    transition: background 0.15s;
+  }
+  .ce-alert-card:hover { background: rgba(0,0,0,0.4); }
+  .ce-alert-card.crit { border-left: 3px solid #ef4444; }
+  .ce-alert-card.warn { border-left: 3px solid #f59e0b; }
+  .ce-alert-card.info { border-left: 3px solid #3b82f6; }
+  .ce-alert-label {
+    font-size: 10px; letter-spacing: 0.5px;
+    text-transform: uppercase; margin-bottom: 3px;
+  }
+  .ce-alert-card.crit .ce-alert-label { color: #fca5a5; }
+  .ce-alert-card.warn .ce-alert-label { color: #fcd34d; }
+  .ce-alert-card.info .ce-alert-label { color: #93c5fd; }
+  .ce-alert-value {
+    font-size: 17px; color: white; font-weight: 500;
+  }
+  .ce-alert-detail {
+    font-size: 10px; color: rgba(255,255,255,0.6);
+    letter-spacing: 0.4px; text-transform: uppercase; margin-top: 2px;
+  }
+
+  /* ── BLOQUE 2: CONCENTRACIÓN (2 columnas) ── */
+  .ce-concentracion {
+    display: grid; grid-template-columns: 1fr 1fr;
+    gap: 14px; margin-bottom: 14px;
+  }
+  .ce-card {
+    background: rgba(255,255,255,0.03);
+    border: 0.5px solid rgba(255,255,255,0.1);
+    border-radius: 12px;
+    padding: 16px;
+  }
+  .ce-bar-row { display: flex; flex-direction: column; gap: 7px; }
+  .ce-bar-item .ce-bar-head {
+    display: flex; justify-content: space-between;
+    font-size: 11px; color: white;
+    letter-spacing: 0.4px; text-transform: uppercase; margin-bottom: 3px;
+  }
+  .ce-bar-track {
+    height: 5px; background: rgba(255,255,255,0.06);
+    border-radius: 3px; overflow: hidden;
+  }
+  .ce-bar-fill { height: 100%; }
+
+  .ce-prod-row {
+    display: flex; flex-direction: column; gap: 6px;
+  }
+  .ce-prod-item {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 6px 8px; border-radius: 5px;
+  }
+  .ce-prod-item.hot   { background: rgba(34,197,94,0.07); }
+  .ce-prod-item.tepid { background: rgba(34,197,94,0.05); }
+  .ce-prod-item.warn  { background: rgba(245,158,11,0.07); }
+  .ce-prod-item.cold  { background: rgba(239,68,68,0.07); }
+  .ce-prod-ref {
+    font-size: 11px; color: white;
+    letter-spacing: 0.4px; text-transform: uppercase; font-weight: 500;
+  }
+  .ce-prod-desc {
+    font-size: 9px; color: rgba(255,255,255,0.55);
+    letter-spacing: 0.4px; text-transform: uppercase;
+  }
+  .ce-prod-qty {
+    text-align: right; font-size: 13px; font-weight: 500;
+  }
+  .ce-prod-cov {
+    font-size: 9px; color: rgba(255,255,255,0.5);
+    letter-spacing: 0.4px; text-transform: uppercase;
+  }
+
+  /* ── BLOQUE 3: SALUD FINANCIERA ── */
+  .ce-salud-grid {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px;
+  }
+  .ce-salud-card {
+    background: rgba(0,0,0,0.25);
+    padding: 10px 12px; border-radius: 6px;
+  }
+  .ce-salud-card.good { border-bottom: 2px solid #22c55e; }
+  .ce-salud-card.warn { border-bottom: 2px solid #f59e0b; }
+  .ce-salud-card.purple { border-bottom: 2px solid #a855f7; }
+  .ce-salud-label {
+    font-size: 9px; color: rgba(255,255,255,0.55);
+    letter-spacing: 0.5px; text-transform: uppercase; margin-bottom: 3px;
+  }
+  .ce-salud-value {
+    font-size: 17px; color: white; font-weight: 500;
+  }
+  .ce-salud-tag {
+    font-size: 9px; letter-spacing: 0.4px; text-transform: uppercase;
+  }
+  .ce-proyeccion-bar {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-top: 14px; padding: 8px 12px;
+    background: rgba(0,0,0,0.2); border-radius: 6px;
+    flex-wrap: wrap; gap: 8px;
+  }
+  .ce-proy-label {
+    font-size: 10px; color: rgba(255,255,255,0.65);
+    letter-spacing: 0.5px; text-transform: uppercase;
+  }
+  .ce-proy-value {
+    font-size: 14px; color: #22c55e; font-weight: 500;
+  }
+  .ce-proy-detail {
+    font-size: 10px; color: rgba(255,255,255,0.55);
+    letter-spacing: 0.4px; text-transform: uppercase;
+  }
+
+  /* ── BLOQUE 4: TENDENCIA DE VENTAS ── */
+  .ce-tend-tabs { display: flex; gap: 6px; }
+  .ce-tab {
+    font-size: 9px; padding: 3px 8px;
+    background: rgba(255,255,255,0.04);
+    border-radius: 4px; letter-spacing: 0.5px;
+    text-transform: uppercase; cursor: pointer;
+    color: rgba(255,255,255,0.55);
+    border: 0.5px solid transparent;
+    font-family: inherit;
+  }
+  .ce-tab.active {
+    background: rgba(249,115,22,0.18);
+    border-color: rgba(249,115,22,0.3);
+    color: white;
+  }
+  .ce-tend-grid {
+    display: grid; grid-template-columns: repeat(4, 1fr);
+    gap: 10px; margin-bottom: 12px;
+  }
+  .ce-kpi-mini-label {
+    font-size: 9px; color: rgba(255,255,255,0.5);
+    letter-spacing: 0.5px; text-transform: uppercase; margin-bottom: 3px;
+  }
+  .ce-kpi-mini-value {
+    font-size: 18px; color: white; font-weight: 500;
+  }
+  .ce-kpi-mini-tag {
+    font-size: 10px; letter-spacing: 0.4px; text-transform: uppercase;
+  }
+  .ce-kpi-mini-tag.up   { color: #4ade80; }
+  .ce-kpi-mini-tag.down { color: #f87171; }
+  .ce-kpi-mini-tag.flat { color: rgba(255,255,255,0.55); }
+
+  /* ── BLOQUE 5: SUCURSALES INV. ORIENTE ── */
+  .ce-suc-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    gap: 8px;
+  }
+  .ce-suc-card {
+    background: rgba(0,0,0,0.2);
+    padding: 9px 11px; border-radius: 6px;
+  }
+  .ce-suc-name {
+    font-size: 11px; color: white;
+    letter-spacing: 0.4px; text-transform: uppercase; font-weight: 500;
+  }
+  .ce-suc-sales {
+    font-size: 10px; letter-spacing: 0.4px;
+    text-transform: uppercase; margin-top: 2px;
+  }
+  .ce-suc-cxc {
+    font-size: 9px; color: rgba(255,255,255,0.5);
+    letter-spacing: 0.4px; text-transform: uppercase;
+  }
+  .ce-link-detail {
+    text-align: right; margin-top: 10px;
+    font-size: 10px; color: rgba(255,255,255,0.5);
+    letter-spacing: 0.5px; text-transform: uppercase; cursor: pointer;
+  }
+  .ce-link-detail:hover { color: #f97316; }
+
+  /* ── PIE ── */
+  .ce-footer {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-top: 18px; padding-top: 14px;
+    border-top: 0.5px solid rgba(255,255,255,0.08);
+    flex-wrap: wrap; gap: 8px;
+  }
+  .ce-footer-info {
+    font-size: 10px; color: rgba(255,255,255,0.45);
+    letter-spacing: 0.5px; text-transform: uppercase;
+  }
+  .ce-footer-actions { display: flex; gap: 8px; }
+  .ce-btn {
+    border: 0.5px solid rgba(255,255,255,0.15);
+    color: white; font-size: 10px;
+    padding: 6px 12px; border-radius: 6px;
+    letter-spacing: 0.5px; text-transform: uppercase;
+    font-family: inherit; cursor: pointer; font-weight: 500;
+    background: rgba(255,255,255,0.06);
+  }
+  .ce-btn:hover { background: rgba(255,255,255,0.12); }
+  .ce-btn-primary {
+    background: #f97316; border-color: transparent;
+  }
+  .ce-btn-primary:hover { background: #ea580c; }
+
+  /* Card filtros del cliente principal */
+  .ce-suc-filters {
+    display: flex; gap: 6px; flex-wrap: wrap;
+    margin-bottom: 10px; align-items: center;
+  }
+  .ce-suc-filter-input {
+    flex: 1;
+    background: rgba(0,0,0,0.3);
+    border: 0.5px solid rgba(255,255,255,0.1);
+    border-radius: 5px; padding: 5px 10px;
+    color: white; font-size: 11px;
+    letter-spacing: 0.5px; text-transform: uppercase;
+    font-family: inherit;
+  }
+  .ce-suc-filter-input::placeholder { color: rgba(255,255,255,0.4); }
+
+  /* Mobile */
+  @media (max-width: 760px) {
+    .ce-alertas-grid,
+    .ce-concentracion,
+    .ce-salud-grid,
+    .ce-tend-grid { grid-template-columns: 1fr 1fr; }
+    .ce-suc-grid { grid-template-columns: 1fr 1fr; }
+    .ce-title { font-size: 16px; }
+  }
+  @media (max-width: 460px) {
+    .ce-alertas-grid,
+    .ce-concentracion,
+    .ce-salud-grid,
+    .ce-tend-grid,
+    .ce-suc-grid { grid-template-columns: 1fr; }
+  }
+</style>
+
+<!-- ══ MODAL CONTROL EJECUTIVO ══ -->
+<div id="ce-modal" class="ce-modal" onclick="if(event.target===this)closeControlEjecutivo()">
+  <div class="ce-container">
+    <div class="ce-header">
+      <div class="ce-brand">
+        <div class="ce-logo">
+          <img id="ce-logo-img" src="" alt="FARMERS C.A.">
+        </div>
+        <div>
+          <div class="ce-title">CONTROL EJECUTIVO</div>
+          <div class="ce-subtitle" id="ce-subtitle-date">VISTA OMAR · CARGANDO...</div>
+        </div>
+      </div>
+      <div class="ce-meta">
+        <div class="ce-pill live">
+          <span class="ce-dot"></span>
+          EN VIVO
+        </div>
+        <div class="ce-pill ce-pill-bcv">BCV <span id="ce-tasa-bcv">--</span></div>
+        <button class="ce-close-btn" onclick="closeControlEjecutivo()">✕ CERRAR</button>
+      </div>
+    </div>
+
+    <!-- BLOQUE 1: ALERTAS Y FUGAS -->
+    <div class="ce-alertas">
+      <div class="ce-block-head">
+        <div class="ce-block-title-wrap">
+          <div class="ce-block-icon" style="background:rgba(239,68,68,0.25);color:#ef4444;">!</div>
+          <div>
+            <div class="ce-block-title">ALERTAS Y FUGAS DE DINERO</div>
+            <div class="ce-block-sub">DONDE ESTAS PERDIENDO PLATA AHORA</div>
+          </div>
+        </div>
+        <div class="ce-badge-count" style="background:rgba(239,68,68,0.25);color:#fca5a5;" id="ce-alert-count">0</div>
+      </div>
+      <div class="ce-alertas-grid" id="ce-alertas-grid"></div>
+      <div class="ce-link-detail" onclick="ceVerCXC()">VER DETALLE EN CXC »</div>
+    </div>
+
+    <!-- BLOQUE 2: CONCENTRACIÓN -->
+    <div class="ce-concentracion">
+      <div class="ce-card">
+        <div class="ce-block-head">
+          <div class="ce-block-title-wrap">
+            <div class="ce-block-icon" style="background:rgba(168,85,247,0.18);color:#a855f7;font-size:13px;">$</div>
+            <div>
+              <div class="ce-block-title" style="font-size:13px;">TOP CLIENTES MES</div>
+              <div class="ce-block-sub">CONCENTRACION DE COMPRAS</div>
+            </div>
+          </div>
+          <span class="ce-link-detail" style="margin:0;" onclick="ceAbrirHCL()">VER MAS »</span>
+        </div>
+        <div class="ce-bar-row" id="ce-top-clientes"></div>
+      </div>
+
+      <div class="ce-card">
+        <div class="ce-block-head">
+          <div class="ce-block-title-wrap">
+            <div class="ce-block-icon" style="background:rgba(34,197,94,0.18);color:#22c55e;font-size:13px;">#</div>
+            <div>
+              <div class="ce-block-title" style="font-size:13px;">PRODUCTOS QUE GIRAN</div>
+              <div class="ce-block-sub">TOP ROTACION 30 DIAS</div>
+            </div>
+          </div>
+          <span class="ce-link-detail" style="margin:0;" onclick="ceAbrirInventario()">VER MAS »</span>
+        </div>
+        <div class="ce-prod-row" id="ce-top-productos"></div>
+      </div>
+    </div>
+
+    <!-- BLOQUE 3: SALUD FINANCIERA -->
+    <div class="ce-card" style="margin-bottom:14px;">
+      <div class="ce-block-head">
+        <div class="ce-block-title-wrap">
+          <div class="ce-block-icon" style="background:rgba(59,130,246,0.18);color:#3b82f6;font-size:13px;">F</div>
+          <div>
+            <div class="ce-block-title" style="font-size:13px;">SALUD FINANCIERA</div>
+            <div class="ce-block-sub">LIQUIDEZ Y CAPITAL DE TRABAJO HOY</div>
+          </div>
+        </div>
+        <div style="font-size:10px;color:rgba(255,255,255,0.5);letter-spacing:0.5px;text-transform:uppercase;">PROYECCION 30 DIAS</div>
+      </div>
+      <div class="ce-salud-grid" id="ce-salud-grid"></div>
+      <div class="ce-proyeccion-bar">
+        <div class="ce-proy-label">PROYECCION COBRANZAS PROX. 30 DIAS</div>
+        <div class="ce-proy-value" id="ce-proy-monto">$0</div>
+        <div class="ce-proy-detail" id="ce-proy-detalle">0 FACTURAS POR VENCER</div>
+      </div>
+    </div>
+
+    <!-- BLOQUE 4: TENDENCIA DE VENTAS -->
+    <div class="ce-card" style="margin-bottom:14px;">
+      <div class="ce-block-head">
+        <div class="ce-block-title-wrap">
+          <div class="ce-block-icon" style="background:rgba(249,115,22,0.18);color:#f97316;font-size:13px;">T</div>
+          <div>
+            <div class="ce-block-title" style="font-size:13px;">TENDENCIA DE VENTAS</div>
+            <div class="ce-block-sub">EVOLUCION DIA SEMANA MES ANO</div>
+          </div>
+        </div>
+      </div>
+      <div class="ce-tend-grid" id="ce-tend-grid"></div>
+    </div>
+
+    <!-- BLOQUE 5: SUCURSALES CLIENTE PRINCIPAL -->
+    <div class="ce-card">
+      <div class="ce-block-head">
+        <div class="ce-block-title-wrap">
+          <div class="ce-block-icon" style="background:rgba(168,85,247,0.18);color:#a855f7;font-size:13px;">S</div>
+          <div>
+            <div class="ce-block-title" style="font-size:13px;">VENTAS POR CLIENTE Y SUCURSAL</div>
+            <div class="ce-block-sub" id="ce-suc-sub">FILTRO LIBRE SOBRE TODA LA BASE</div>
+          </div>
+        </div>
+        <div style="font-size:10px;color:rgba(255,255,255,0.5);letter-spacing:0.5px;text-transform:uppercase;" id="ce-suc-count">0 CLIENTES</div>
+      </div>
+      <div class="ce-suc-filters">
+        <input type="text" class="ce-suc-filter-input" id="ce-suc-filter" placeholder="🔍 BUSCAR CLIENTE O SUCURSAL..." oninput="ceRenderSucursales()">
+        <select class="ce-suc-filter-input" id="ce-suc-periodo" onchange="ceRenderSucursales()" style="flex:0 0 auto;width:auto;cursor:pointer;">
+          <option value="mes">ESTE MES</option>
+          <option value="ano">ESTE AÑO</option>
+          <option value="todo" selected>TODO HISTÓRICO</option>
+        </select>
+      </div>
+      <div class="ce-suc-grid" id="ce-suc-grid"></div>
+    </div>
+
+    <div class="ce-footer">
+      <div class="ce-footer-info" id="ce-footer-info">CALCULADO HACE 0 SEGUNDOS · BCV ACTUALIZADO HOY</div>
+      <div class="ce-footer-actions">
+        <button class="ce-btn" onclick="closeControlEjecutivo()">VOLVER AL DASHBOARD</button>
+        <button class="ce-btn ce-btn-primary" onclick="ceExportarPDF()">EXPORTAR INFORME PDF</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ══════════════════════════════════════════════════════════════════════
+   CONTROL EJECUTIVO — LÓGICA DE CÁLCULO Y RENDERIZADO
+   ══════════════════════════════════════════════════════════════════════
+   Lee SOLO de localStorage. No modifica datos. Es vista pasiva.
+   ══════════════════════════════════════════════════════════════════════ */
+(function(){
+  'use strict';
+
+  // ── HELPERS DE LECTURA SEGURA ──
+  function _ceLeerLS(key, defecto) {
+    try {
+      var raw = localStorage.getItem(key);
+      if (!raw) return defecto;
+      return JSON.parse(raw);
+    } catch(e) { return defecto; }
+  }
+
+  // ── PARSER DE FECHA dd/mm/yyyy → Date ──
+  // Las ventas guardan fecha como "30/04/2026" — necesitamos Date object para filtrar
+  function _ceParseFechaVenta(str) {
+    if (!str) return null;
+    if (str instanceof Date) return str;
+    var s = String(str);
+    // Formato dd/mm/yyyy (formato local)
+    if (/^\d{2}\/\d{2}\/\d{4}/.test(s)) {
+      var p = s.split('/');
+      return new Date(parseInt(p[2]), parseInt(p[1])-1, parseInt(p[0]));
+    }
+    // Fallback ISO
+    try { return new Date(s); } catch(e) { return null; }
+  }
+
+  // ── FORMATEO NÚMEROS ──
+  function _ceFmtUSD(n) {
+    if (typeof n !== 'number' || isNaN(n)) n = 0;
+    if (Math.abs(n) >= 1000000) return '$' + (n/1000000).toFixed(2) + 'M';
+    if (Math.abs(n) >= 1000)    return '$' + (n/1000).toFixed(1) + 'K';
+    return '$' + Math.round(n).toLocaleString('en-US');
+  }
+  function _ceFmtBs(n) {
+    if (typeof n !== 'number' || isNaN(n)) n = 0;
+    if (Math.abs(n) >= 1000000) return 'Bs ' + (n/1000000).toFixed(1) + 'M';
+    if (Math.abs(n) >= 1000)    return 'Bs ' + (n/1000).toFixed(0) + 'K';
+    return 'Bs ' + Math.round(n).toLocaleString('en-US');
+  }
+  function _ceFmtPct(n) {
+    if (typeof n !== 'number' || isNaN(n) || !isFinite(n)) return '0%';
+    return (n>0?'+':'') + n.toFixed(0) + '%';
+  }
+
+  /* ════════════════════════════════════════════════════════════════════
+     CALCULADORAS DE KPIs (lectura pura desde localStorage)
+     ════════════════════════════════════════════════════════════════════ */
+
+  // ── KPI A: ALERTAS Y FUGAS ──
+  function _ceCalcAlertas() {
+    var resultado = { items: [], total: 0 };
+
+    // 1) CXC VENCIDA — facturas con fechaVencimiento pasada y saldo > 0
+    var cxc = _ceLeerLS('farmers_cxc', { facturas: [] });
+    var hoy = new Date(); hoy.setHours(0,0,0,0);
+    var cxcVencidas = (cxc.facturas||[]).filter(function(f){
+      if (!f.fechaVencimiento) return false;
+      if ((f.saldo||0) <= 0) return false;
+      var venc = new Date(f.fechaVencimiento+'T00:00:00');
+      return venc < hoy;
+    });
+    var totalVencido = cxcVencidas.reduce(function(s,f){return s+(f.saldo||0);}, 0);
+    if (cxcVencidas.length > 0) {
+      var clienteRepresentativo = '';
+      if (cxcVencidas.length === 1) clienteRepresentativo = cxcVencidas[0].cliente || '';
+      else {
+        // tomar el más antiguo
+        var mas = cxcVencidas.slice().sort(function(a,b){
+          return new Date(a.fechaVencimiento) - new Date(b.fechaVencimiento);
+        })[0];
+        clienteRepresentativo = (mas.cliente||'') + ' Y MÁS';
+      }
+      resultado.items.push({
+        tipo: 'crit',
+        label: 'CXC VENCIDA',
+        valor: _ceFmtUSD(totalVencido),
+        detalle: cxcVencidas.length + (cxcVencidas.length>1?' FACTURAS · ':' FACTURA · ') + clienteRepresentativo
+      });
+      resultado.total++;
+    }
+
+    // 2) STOCK CRÍTICO CON PEDIDOS — refs con disponible <=0 que estén en farmers_inv_comprometido
+    var comp = _ceLeerLS('farmers_inv_comprometido', {});
+    var pt   = _ceLeerLS('farmers_pt_data', {});
+    var refsConPedidoSinStock = 0;
+    var ventaPerdidaUSD = 0;
+    Object.keys(comp).forEach(function(ref){
+      var c = comp[ref];
+      if (!c || (c.qty||0) <= 0) return;
+      // ¿stock real disponible?
+      var prod = (typeof PRODUCTS!=='undefined') ? PRODUCTS.find(function(p){return p.r===ref;}) : null;
+      var ex = prod ? (parseInt(prod.ex)||0) : 0;
+      // disponible = real - comprometido. Si <=0, hay venta perdida potencial
+      var disp = ex - (c.qty||0);
+      if (disp < 0) {
+        refsConPedidoSinStock++;
+        // estimación: precio del producto × unidades faltantes
+        var precio = prod ? (parseFloat(prod.u)||0) : 0;
+        ventaPerdidaUSD += Math.abs(disp) * precio;
+      }
+    });
+    if (refsConPedidoSinStock > 0) {
+      resultado.items.push({
+        tipo: 'warn',
+        label: 'STOCK CRITICO CON PEDIDO',
+        valor: refsConPedidoSinStock + ' REFS',
+        detalle: 'VENTA PERDIDA EST. ' + _ceFmtUSD(ventaPerdidaUSD)
+      });
+      resultado.total++;
+    }
+
+    // 3) CAPITAL DORMIDO > 90 DÍAS — productos con stock pero sin venta últimos 90 días
+    var sales = _ceLeerLS('farmers_sales', []);
+    var hace90 = new Date(); hace90.setDate(hace90.getDate() - 90); hace90.setHours(0,0,0,0);
+    var refsVendidasUlt90 = {};
+    sales.forEach(function(s){
+      var f = _ceParseFechaVenta(s.fecha);
+      if (!f || f < hace90) return;
+      (s.items||[]).forEach(function(it){ if(it.r) refsVendidasUlt90[it.r] = true; });
+    });
+    var capitalDormido = 0;
+    var refsDormidas = 0;
+    if (typeof PRODUCTS !== 'undefined') {
+      PRODUCTS.forEach(function(p){
+        var stock = parseInt(p.ex)||0;
+        if (stock <= 0) return;
+        if (refsVendidasUlt90[p.r]) return; // sí vendió
+        // no vendió → capital dormido
+        var costoUnit = parseFloat(p.costoCIF || p.u || 0);
+        capitalDormido += stock * costoUnit;
+        refsDormidas++;
+      });
+    }
+    if (refsDormidas > 0) {
+      resultado.items.push({
+        tipo: 'warn',
+        label: 'CAPITAL DORMIDO > 90 DIAS',
+        valor: _ceFmtUSD(capitalDormido),
+        detalle: refsDormidas + ' REFS SIN ROTACION'
+      });
+      resultado.total++;
+    }
+
+    // 4) OCs SIN CIERRE — opcional, depende de si _ocDB está expuesto
+    try {
+      var ocDB = (typeof _ocDB !== 'undefined') ? _ocDB :
+                 (typeof window.getOrdenesCompraDB === 'function' ? window.getOrdenesCompraDB() : []);
+      var ocSinCerrar = (ocDB||[]).filter(function(oc){
+        // Sin recepción O sin CIF aplicado en alguna recepción
+        if (!oc.recepciones || oc.recepciones.length === 0) {
+          // tiene fecha estimada vencida?
+          if (oc.fechaEstimada) {
+            var fe = new Date(oc.fechaEstimada+'T00:00:00');
+            return fe < hoy && oc.estado !== 'CERRADA' && oc.estado !== 'CANCELADA';
+          }
+          return false;
+        }
+        return false;
+      });
+      if (ocSinCerrar.length > 0) {
+        var totalOC = ocSinCerrar.reduce(function(s,oc){return s+(parseFloat(oc.totalUSD)||0);}, 0);
+        resultado.items.push({
+          tipo: 'crit',
+          label: 'OC SIN CIERRE',
+          valor: ocSinCerrar.length + ' OCs',
+          detalle: _ceFmtUSD(totalOC) + ' SIN CONTABILIZAR'
+        });
+        resultado.total++;
+      }
+    } catch(e) {/* OC module no cargado, ignorar */}
+
+    // Si no hay alertas, mostrar mensaje positivo
+    if (resultado.items.length === 0) {
+      resultado.items.push({
+        tipo: 'info',
+        label: 'TODO BAJO CONTROL',
+        valor: '✓',
+        detalle: 'NO HAY ALERTAS CRITICAS HOY'
+      });
+    }
+
+    return resultado;
+  }
+
+  // ── KPI B: TOP CLIENTES DEL MES ──
+  function _ceCalcTopClientes() {
+    var sales = _ceLeerLS('farmers_sales', []);
+    var hoy = new Date();
+    var inicioMes = new Date(hoy.getFullYear(), hoy.getMonth(), 1); inicioMes.setHours(0,0,0,0);
+
+    var porCliente = {};
+    sales.forEach(function(s){
+      var f = _ceParseFechaVenta(s.fecha);
+      if (!f || f < inicioMes) return;
+      var key = (s.cliente || s.sucursal || 'SIN CLIENTE').toUpperCase();
+      // agrupar por cliente raíz (sin sucursal específica)
+      // Si el cliente principal es "INVERSIONES ORIENTE 20.X", agrupar todas las sucursales
+      var raiz = key;
+      var matchOriente = key.match(/^(INVERSIONES\s+ORIENTE)/i);
+      if (matchOriente) raiz = 'INVERSIONES ORIENTE';
+      porCliente[raiz] = (porCliente[raiz] || 0) + (parseFloat(s.total)||0);
+    });
+
+    var arr = Object.keys(porCliente).map(function(k){
+      return { cliente: k, total: porCliente[k] };
+    }).sort(function(a,b){ return b.total - a.total; });
+
+    var totalGral = arr.reduce(function(s,x){return s+x.total;}, 0);
+    var top4 = arr.slice(0, 4);
+    var resto = arr.slice(4);
+    var totalResto = resto.reduce(function(s,x){return s+x.total;}, 0);
+
+    return {
+      top: top4.map(function(c){
+        return {
+          cliente: c.cliente,
+          total: c.total,
+          pct: totalGral > 0 ? (c.total / totalGral * 100) : 0
+        };
+      }),
+      restoCount: resto.length,
+      restoPct: totalGral > 0 ? (totalResto / totalGral * 100) : 0,
+      totalMes: totalGral
+    };
+  }
+
+  // ── KPI C: TOP PRODUCTOS POR ROTACIÓN (últimos 30 días) + cobertura ──
+  function _ceCalcTopProductos() {
+    var sales = _ceLeerLS('farmers_sales', []);
+    var hace30 = new Date(); hace30.setDate(hace30.getDate() - 30); hace30.setHours(0,0,0,0);
+
+    var porRef = {}; // ref → unidades vendidas en últimos 30d
+    sales.forEach(function(s){
+      var f = _ceParseFechaVenta(s.fecha);
+      if (!f || f < hace30) return;
+      (s.items||[]).forEach(function(it){
+        if (!it.r) return;
+        porRef[it.r] = (porRef[it.r]||0) + (parseInt(it.orden)||0);
+      });
+    });
+
+    var arr = Object.keys(porRef).map(function(ref){
+      var unidades30 = porRef[ref];
+      var prod = (typeof PRODUCTS!=='undefined') ? PRODUCTS.find(function(p){return p.r===ref;}) : null;
+      var stock = prod ? (parseInt(prod.ex)||0) : 0;
+      var promedioDiario = unidades30 / 30;
+      var coberturaDias = promedioDiario > 0 ? Math.floor(stock / promedioDiario) : 999;
+      return {
+        ref: ref,
+        desc: prod ? (prod.d||'').substring(0, 35) : '',
+        unidades: unidades30,
+        stock: stock,
+        cobertura: coberturaDias
+      };
+    }).sort(function(a,b){ return b.unidades - a.unidades; });
+
+    return arr.slice(0, 4);
+  }
+
+  // ── KPI D: SALUD FINANCIERA ──
+  function _ceCalcSalud() {
+    // Bancos USD y Bs
+    var bancos = _ceLeerLS('farmers_bancos', { movimientos: [] });
+    var movs = bancos.movimientos || [];
+
+    // Sumar saldos por moneda
+    var saldoUSD = 0;
+    var saldoBs = 0;
+    movs.forEach(function(m){
+      var monto = parseFloat(m.monto) || 0;
+      var signo = (m.tipo === 'INGRESO' || m.tipo === 'ingreso' || m.tipo === 'DEPOSITO') ? 1 : -1;
+      var moneda = (m.moneda || 'USD').toUpperCase();
+      if (moneda === 'USD') saldoUSD += monto * signo;
+      else if (moneda === 'BS' || moneda === 'BOLIVARES' || moneda === 'VES') saldoBs += monto * signo;
+    });
+    if (saldoUSD < 0) saldoUSD = 0; // protección visual
+    if (saldoBs < 0) saldoBs = 0;
+
+    // Tasa BCV
+    var tasaBCV = 0;
+    try {
+      if (typeof getTasaHoy === 'function') tasaBCV = parseFloat(getTasaHoy()) || 0;
+    } catch(e) {}
+    if (!tasaBCV) {
+      try { tasaBCV = parseFloat(localStorage.getItem('farmers_tasa_bcv')) || 0; } catch(e) {}
+    }
+    var bsEqUSD = tasaBCV > 0 ? saldoBs / tasaBCV : 0;
+
+    // CXC TOTAL y vencido
+    var cxc = _ceLeerLS('farmers_cxc', { facturas: [] });
+    var hoy = new Date(); hoy.setHours(0,0,0,0);
+    var cxcTotal = 0;
+    var cxcVencido = 0;
+    (cxc.facturas||[]).forEach(function(f){
+      var saldo = parseFloat(f.saldo)||0;
+      if (saldo <= 0) return;
+      cxcTotal += saldo;
+      if (f.fechaVencimiento) {
+        var v = new Date(f.fechaVencimiento+'T00:00:00');
+        if (v < hoy) cxcVencido += saldo;
+      }
+    });
+
+    // Capital en inventario
+    var capitalInv = 0;
+    var totalRefs = 0;
+    var totalFt3 = 0;
+    if (typeof PRODUCTS !== 'undefined') {
+      PRODUCTS.forEach(function(p){
+        var stock = parseInt(p.ex)||0;
+        if (stock <= 0) return;
+        var costo = parseFloat(p.costoCIF || p.u || 0);
+        capitalInv += stock * costo;
+        totalRefs++;
+        var vol = parseFloat(p.volDirecto || p.vol || 0);
+        if (vol > 0) totalFt3 += vol * stock;
+      });
+    }
+
+    return {
+      bancosUSD: saldoUSD,
+      bancosBs: saldoBs,
+      bancosBsEqUSD: bsEqUSD,
+      cxcTotal: cxcTotal,
+      cxcVencido: cxcVencido,
+      capitalInv: capitalInv,
+      totalRefs: totalRefs,
+      totalFt3: totalFt3,
+      tasaBCV: tasaBCV
+    };
+  }
+
+  // ── KPI E: PROYECCIÓN DE COBRANZAS PRÓXIMOS 30 DÍAS ──
+  function _ceCalcProyeccion30d() {
+    var cxc = _ceLeerLS('farmers_cxc', { facturas: [] });
+    var hoy = new Date(); hoy.setHours(0,0,0,0);
+    var en30 = new Date(); en30.setDate(en30.getDate() + 30); en30.setHours(23,59,59,999);
+
+    var monto = 0;
+    var count = 0;
+    (cxc.facturas||[]).forEach(function(f){
+      var saldo = parseFloat(f.saldo)||0;
+      if (saldo <= 0) return;
+      if (!f.fechaVencimiento) return;
+      var v = new Date(f.fechaVencimiento+'T00:00:00');
+      if (v >= hoy && v <= en30) {
+        monto += saldo;
+        count++;
+      }
+    });
+    return { monto: monto, count: count };
+  }
+
+  // ── KPI F: TENDENCIA VENTAS (hoy / semana / mes / año) con comparativas ──
+  function _ceCalcTendencia() {
+    var sales = _ceLeerLS('farmers_sales', []);
+    var hoy = new Date(); hoy.setHours(0,0,0,0);
+
+    // Rangos
+    function inicioDia(d) { var n=new Date(d); n.setHours(0,0,0,0); return n; }
+    function finDia(d)    { var n=new Date(d); n.setHours(23,59,59,999); return n; }
+
+    var inicioHoy   = inicioDia(hoy);
+    var finHoy      = finDia(hoy);
+    var ayer        = new Date(hoy); ayer.setDate(ayer.getDate()-1);
+    var inicioAyer  = inicioDia(ayer);
+    var finAyer     = finDia(ayer);
+
+    var inicioSem   = new Date(hoy); inicioSem.setDate(inicioSem.getDate() - inicioSem.getDay()); // domingo
+    var finSemAnt   = new Date(inicioSem); finSemAnt.setDate(finSemAnt.getDate()-1); finSemAnt = finDia(finSemAnt);
+    var inicioSemAnt= new Date(finSemAnt); inicioSemAnt.setDate(inicioSemAnt.getDate()-6); inicioSemAnt = inicioDia(inicioSemAnt);
+
+    var inicioMes   = new Date(hoy.getFullYear(), hoy.getMonth(), 1);
+    var finMesAnt   = new Date(inicioMes); finMesAnt.setDate(0); finMesAnt = finDia(finMesAnt);
+    var inicioMesAnt= new Date(finMesAnt.getFullYear(), finMesAnt.getMonth(), 1);
+
+    var inicioAno   = new Date(hoy.getFullYear(), 0, 1);
+    var inicioAnoAnt= new Date(hoy.getFullYear()-1, 0, 1);
+    var finAnoAnt   = new Date(hoy.getFullYear()-1, 11, 31); finAnoAnt = finDia(finAnoAnt);
+
+    // Sumadora
+    function sumar(desde, hasta) {
+      var s = 0;
+      sales.forEach(function(v){
+        var f = _ceParseFechaVenta(v.fecha);
+        if (!f) return;
+        if (f >= desde && f <= hasta) s += parseFloat(v.total)||0;
+      });
+      return s;
+    }
+
+    var ventasHoy   = sumar(inicioHoy, finHoy);
+    var ventasAyer  = sumar(inicioAyer, finAyer);
+    var ventasSem   = sumar(inicioSem, finHoy);
+    var ventasSemAnt= sumar(inicioSemAnt, finSemAnt);
+    var ventasMes   = sumar(inicioMes, finHoy);
+    var ventasMesAnt= sumar(inicioMesAnt, finMesAnt);
+    var ventasAno   = sumar(inicioAno, finHoy);
+    var ventasAnoAnt= sumar(inicioAnoAnt, finAnoAnt);
+
+    function pctChange(actual, anterior) {
+      if (!anterior || anterior === 0) return null;
+      return ((actual - anterior) / anterior) * 100;
+    }
+
+    return {
+      hoy:    { valor: ventasHoy,  delta: pctChange(ventasHoy, ventasAyer) },
+      semana: { valor: ventasSem,  delta: pctChange(ventasSem, ventasSemAnt) },
+      mes:    { valor: ventasMes,  delta: pctChange(ventasMes, ventasMesAnt) },
+      ano:    { valor: ventasAno,  delta: pctChange(ventasAno, ventasAnoAnt) }
+    };
+  }
+
+  // ── KPI G: SUCURSALES POR CLIENTE (con filtro) ──
+  function _ceCalcSucursales(filtro, periodo) {
+    filtro = (filtro||'').trim().toUpperCase();
+    var sales = _ceLeerLS('farmers_sales', []);
+    var cxc   = _ceLeerLS('farmers_cxc', { facturas: [] });
+
+    var hoy = new Date(); hoy.setHours(0,0,0,0);
+    var desde = null;
+    if (periodo === 'mes') desde = new Date(hoy.getFullYear(), hoy.getMonth(), 1);
+    else if (periodo === 'ano') desde = new Date(hoy.getFullYear(), 0, 1);
+
+    // Agrupar ventas por (cliente|sucursal)
+    var clave = function(c, suc) { return (c||'').toUpperCase() + '|' + (suc||'').toUpperCase(); };
+
+    var grupos = {};
+    sales.forEach(function(s){
+      var f = _ceParseFechaVenta(s.fecha);
+      if (desde && f && f < desde) return;
+      var c = (s.cliente || '');
+      var suc = (s.sucursalCodigo || s.sucursal || '');
+      var k = clave(c, suc);
+      if (!grupos[k]) grupos[k] = { cliente: c, sucursal: suc, ventas: 0, cxc: 0 };
+      grupos[k].ventas += parseFloat(s.total)||0;
+    });
+
+    // Sumar CXC pendiente por (cliente|sucursal). NO filtramos CXC por periodo —
+    // CXC es saldo actual, no histórico.
+    (cxc.facturas||[]).forEach(function(f){
+      var saldo = parseFloat(f.saldo)||0;
+      if (saldo <= 0) return;
+      var c = (f.cliente || '');
+      var suc = (f.sucursalCodigo || f.sucursal || '');
+      var k = clave(c, suc);
+      if (!grupos[k]) grupos[k] = { cliente: c, sucursal: suc, ventas: 0, cxc: 0 };
+      grupos[k].cxc += saldo;
+    });
+
+    var arr = Object.keys(grupos).map(function(k){ return grupos[k]; });
+
+    // Filtrar por texto
+    if (filtro) {
+      arr = arr.filter(function(g){
+        return (g.cliente||'').toUpperCase().indexOf(filtro) >= 0
+            || (g.sucursal||'').toUpperCase().indexOf(filtro) >= 0;
+      });
+    }
+
+    // Ordenar por ventas desc
+    arr.sort(function(a,b){ return b.ventas - a.ventas; });
+
+    return arr;
+  }
+
+  /* ════════════════════════════════════════════════════════════════════
+     RENDER (DOM)
+     ════════════════════════════════════════════════════════════════════ */
+
+  function _ceRenderAlertas() {
+    var data = _ceCalcAlertas();
+    document.getElementById('ce-alert-count').textContent = data.total;
+    var html = data.items.map(function(a){
+      return '<div class="ce-alert-card '+a.tipo+'">'+
+             '<div class="ce-alert-label">'+a.label+'</div>'+
+             '<div class="ce-alert-value">'+a.valor+'</div>'+
+             '<div class="ce-alert-detail">'+a.detalle+'</div>'+
+             '</div>';
+    }).join('');
+    document.getElementById('ce-alertas-grid').innerHTML = html;
+  }
+
+  function _ceRenderTopClientes() {
+    var data = _ceCalcTopClientes();
+    var coloresFill = ['#a855f7','rgba(168,85,247,0.7)','rgba(168,85,247,0.55)','rgba(168,85,247,0.45)'];
+    var coloresPct  = ['#a855f7','rgba(168,85,247,0.7)','rgba(168,85,247,0.55)','rgba(168,85,247,0.45)'];
+
+    var html = '';
+    if (data.top.length === 0) {
+      html = '<div style="color:rgba(255,255,255,0.4);font-size:11px;text-align:center;padding:20px;letter-spacing:0.5px;text-transform:uppercase;">SIN VENTAS ESTE MES</div>';
+    } else {
+      html = data.top.map(function(c, i){
+        return '<div class="ce-bar-item">'+
+               '<div class="ce-bar-head">'+
+               '<span>'+c.cliente.substring(0,22)+'</span>'+
+               '<span style="color:'+coloresPct[i]+';font-weight:500;">'+_ceFmtUSD(c.total)+' · '+c.pct.toFixed(0)+'%</span>'+
+               '</div>'+
+               '<div class="ce-bar-track"><div class="ce-bar-fill" style="width:'+c.pct.toFixed(1)+'%;background:'+coloresFill[i]+';"></div></div>'+
+               '</div>';
+      }).join('');
+      if (data.restoCount > 0) {
+        html += '<div style="font-size:10px;color:rgba(255,255,255,0.5);letter-spacing:0.4px;text-transform:uppercase;margin-top:4px;">+ '+data.restoCount+' CLIENTES MENORES · '+data.restoPct.toFixed(0)+'% RESTANTE</div>';
+      }
+    }
+    document.getElementById('ce-top-clientes').innerHTML = html;
+  }
+
+  function _ceRenderTopProductos() {
+    var data = _ceCalcTopProductos();
+    var html = '';
+    if (data.length === 0) {
+      html = '<div style="color:rgba(255,255,255,0.4);font-size:11px;text-align:center;padding:20px;letter-spacing:0.5px;text-transform:uppercase;">SIN VENTAS ULT. 30 DIAS</div>';
+    } else {
+      html = data.map(function(p){
+        var clase = 'hot', color = '#4ade80', leyenda = p.cobertura + ' DIAS COBERTURA';
+        if (p.cobertura >= 60) { clase = 'cold'; color = '#f87171'; leyenda = 'COBERTURA ALTA'; }
+        else if (p.cobertura >= 21) { clase = 'warn'; color = '#fbbf24'; }
+        else if (p.cobertura < 7)   { clase = 'hot';  color = '#4ade80'; leyenda = 'COBERTURA BAJA · REPONER'; }
+        return '<div class="ce-prod-item '+clase+'">'+
+               '<div>'+
+               '<div class="ce-prod-ref">'+p.ref+'</div>'+
+               '<div class="ce-prod-desc">'+(p.desc||'').toUpperCase()+'</div>'+
+               '</div>'+
+               '<div class="ce-prod-qty" style="color:'+color+';">'+p.unidades.toLocaleString()+' UND</div>'+
+               '<div class="ce-prod-cov">'+leyenda+'</div>'+
+               '</div>';
+      }).join('');
+    }
+    document.getElementById('ce-top-productos').innerHTML = html;
+  }
+
+  function _ceRenderSalud() {
+    var s = _ceCalcSalud();
+    var p = _ceCalcProyeccion30d();
+
+    var bsTag = s.tasaBCV > 0 ? 'EQ. ' + _ceFmtUSD(s.bancosBsEqUSD) + ' USD' : 'SIN TASA BCV';
+    var cxcTag = s.cxcVencido > 0 ? _ceFmtUSD(s.cxcVencido) + ' VENCIDA' : 'TODO AL DIA';
+    var cxcClase = s.cxcVencido > 0 ? 'warn' : 'good';
+    var ft3Tag = s.totalFt3 > 0 ? Math.round(s.totalFt3) + ' FT3 · ' + s.totalRefs + ' REFS' : s.totalRefs + ' REFS';
+
+    var html =
+      '<div class="ce-salud-card good">'+
+        '<div class="ce-salud-label">BANCOS USD</div>'+
+        '<div class="ce-salud-value">'+_ceFmtUSD(s.bancosUSD)+'</div>'+
+        '<div class="ce-salud-tag" style="color:rgba(255,255,255,0.55);">SALDO ACTUAL</div>'+
+      '</div>'+
+      '<div class="ce-salud-card good">'+
+        '<div class="ce-salud-label">BANCOS BS</div>'+
+        '<div class="ce-salud-value">'+_ceFmtBs(s.bancosBs)+'</div>'+
+        '<div class="ce-salud-tag" style="color:rgba(255,255,255,0.55);">'+bsTag+'</div>'+
+      '</div>'+
+      '<div class="ce-salud-card '+cxcClase+'">'+
+        '<div class="ce-salud-label">CXC TOTAL</div>'+
+        '<div class="ce-salud-value">'+_ceFmtUSD(s.cxcTotal)+'</div>'+
+        '<div class="ce-salud-tag" style="color:'+(s.cxcVencido>0?'#fbbf24':'#4ade80')+';">'+cxcTag+'</div>'+
+      '</div>'+
+      '<div class="ce-salud-card purple">'+
+        '<div class="ce-salud-label">CAPITAL EN INVENTARIO</div>'+
+        '<div class="ce-salud-value">'+_ceFmtUSD(s.capitalInv)+'</div>'+
+        '<div class="ce-salud-tag" style="color:rgba(168,85,247,0.85);">'+ft3Tag+'</div>'+
+      '</div>';
+
+    document.getElementById('ce-salud-grid').innerHTML = html;
+    document.getElementById('ce-proy-monto').textContent = _ceFmtUSD(p.monto);
+    document.getElementById('ce-proy-detalle').textContent = p.count + (p.count===1?' FACTURA POR VENCER':' FACTURAS POR VENCER');
+
+    // Actualizar tasa BCV en header
+    if (s.tasaBCV > 0) document.getElementById('ce-tasa-bcv').textContent = s.tasaBCV.toFixed(2);
+    else document.getElementById('ce-tasa-bcv').textContent = '--';
+  }
+
+  function _ceRenderTendencia() {
+    var t = _ceCalcTendencia();
+    function fila(label, k) {
+      var clase = 'flat', flecha = '→';
+      var dtx = '';
+      if (k.delta === null) { dtx = 'SIN DATOS PREVIOS'; }
+      else if (k.delta > 0)  { clase='up';   flecha='↑'; dtx = flecha+' '+_ceFmtPct(k.delta); }
+      else if (k.delta < 0)  { clase='down'; flecha='↓'; dtx = flecha+' '+_ceFmtPct(k.delta); }
+      else { dtx = '= IGUAL'; }
+      return '<div>'+
+             '<div class="ce-kpi-mini-label">'+label+'</div>'+
+             '<div class="ce-kpi-mini-value">'+_ceFmtUSD(k.valor)+'</div>'+
+             '<div class="ce-kpi-mini-tag '+clase+'">'+dtx+'</div>'+
+             '</div>';
+    }
+    var html = fila('VENTAS HOY VS AYER', t.hoy)
+             + fila('SEMANA VS ANTERIOR', t.semana)
+             + fila('MES VS ANTERIOR', t.mes)
+             + fila('ANO VS ANTERIOR', t.ano);
+    document.getElementById('ce-tend-grid').innerHTML = html;
+  }
+
+  // Render dinámico de sucursales (re-ejecuta con filtro)
+  window.ceRenderSucursales = function() {
+    var filtro = document.getElementById('ce-suc-filter').value || '';
+    var periodo = document.getElementById('ce-suc-periodo').value || 'todo';
+    var data = _ceCalcSucursales(filtro, periodo);
+
+    document.getElementById('ce-suc-count').textContent = data.length + (data.length===1?' RESULTADO':' RESULTADOS');
+
+    if (data.length === 0) {
+      document.getElementById('ce-suc-grid').innerHTML =
+        '<div style="grid-column:1/-1;color:rgba(255,255,255,0.4);font-size:11px;text-align:center;padding:20px;letter-spacing:0.5px;text-transform:uppercase;">SIN RESULTADOS PARA EL FILTRO ACTUAL</div>';
+      return;
+    }
+
+    var html = data.slice(0, 30).map(function(s){
+      var ventasColor = s.ventas > 1000 ? '#4ade80' : (s.ventas > 0 ? '#fbbf24' : 'rgba(255,255,255,0.4)');
+      var cxcText = s.cxc > 0 ? 'CXC: '+_ceFmtUSD(s.cxc) : 'CXC: $0 (AL DIA)';
+      var nombre = (s.cliente || 'SIN CLIENTE');
+      var sucDisplay = s.sucursal && s.sucursal !== nombre ? s.sucursal : '';
+      return '<div class="ce-suc-card">'+
+             '<div class="ce-suc-name">'+nombre.substring(0,20).toUpperCase()+'</div>'+
+             (sucDisplay ? '<div class="ce-suc-name" style="font-size:9px;color:rgba(255,255,255,0.5);">└─ '+sucDisplay.substring(0,18).toUpperCase()+'</div>' : '')+
+             '<div class="ce-suc-sales" style="color:'+ventasColor+';">'+_ceFmtUSD(s.ventas)+'</div>'+
+             '<div class="ce-suc-cxc">'+cxcText+'</div>'+
+             '</div>';
+    }).join('');
+    if (data.length > 30) {
+      html += '<div style="grid-column:1/-1;color:rgba(255,255,255,0.4);font-size:10px;text-align:center;padding:8px;letter-spacing:0.5px;text-transform:uppercase;">MOSTRANDO 30 DE '+data.length+' · USA EL FILTRO PARA ACOTAR</div>';
+    }
+    document.getElementById('ce-suc-grid').innerHTML = html;
+  };
+
+  /* ════════════════════════════════════════════════════════════════════
+     APERTURA DEL MÓDULO
+     ════════════════════════════════════════════════════════════════════ */
+  window.openControlEjecutivo = function() {
+    var modal = document.getElementById('ce-modal');
+    if (!modal) {
+      console.error('[CE] Modal no encontrado en DOM');
+      return;
+    }
+
+    // Cargar logo oficial Farmers
+    var logoImg = document.getElementById('ce-logo-img');
+    if (logoImg && typeof FARMERS_LOGO_B64 !== 'undefined') {
+      logoImg.src = FARMERS_LOGO_B64;
+    }
+
+    // Subtítulo con fecha
+    var hoy = new Date();
+    var dias = ['DOMINGO','LUNES','MARTES','MIERCOLES','JUEVES','VIERNES','SABADO'];
+    var meses = ['ENERO','FEBRERO','MARZO','ABRIL','MAYO','JUNIO','JULIO','AGOSTO','SEPTIEMBRE','OCTUBRE','NOVIEMBRE','DICIEMBRE'];
+    var hh = String(hoy.getHours()).padStart(2,'0');
+    var mm = String(hoy.getMinutes()).padStart(2,'0');
+    var subtit = 'VISTA OMAR · '+dias[hoy.getDay()]+' '+hoy.getDate()+' '+meses[hoy.getMonth()]+' · '+hh+':'+mm;
+    document.getElementById('ce-subtitle-date').textContent = subtit;
+
+    // Renderizar todos los bloques
+    try { _ceRenderAlertas(); }    catch(e){ console.error('[CE Alertas]', e); }
+    try { _ceRenderTopClientes();} catch(e){ console.error('[CE Clientes]', e); }
+    try { _ceRenderTopProductos();}catch(e){ console.error('[CE Productos]', e); }
+    try { _ceRenderSalud(); }      catch(e){ console.error('[CE Salud]', e); }
+    try { _ceRenderTendencia(); }  catch(e){ console.error('[CE Tendencia]', e); }
+    try { window.ceRenderSucursales(); }   catch(e){ console.error('[CE Sucursales]', e); }
+
+    document.getElementById('ce-footer-info').textContent = 'CALCULADO HACE 0 SEGUNDOS · '+subtit.split('·')[1].trim();
+
+    modal.classList.add('show');
+    document.body.style.overflow = 'hidden';
+  };
+
+  window.closeControlEjecutivo = function() {
+    var modal = document.getElementById('ce-modal');
+    if (modal) modal.classList.remove('show');
+    document.body.style.overflow = '';
+  };
+
+  // ── Atajos a otros módulos ──
+  window.ceVerCXC = function() {
+    closeControlEjecutivo();
+    if (typeof openCXC === 'function') setTimeout(openCXC, 100);
+  };
+  window.ceAbrirHCL = function() {
+    closeControlEjecutivo();
+    if (typeof openHCL === 'function') setTimeout(openHCL, 100);
+  };
+  window.ceAbrirInventario = function() {
+    closeControlEjecutivo();
+    if (typeof openInventoryModal === 'function') setTimeout(openInventoryModal, 100);
+  };
+  window.ceExportarPDF = function() {
+    if (typeof showToast === 'function') {
+      showToast('Exportar PDF — función disponible próximamente', 'info');
+    } else {
+      alert('Exportar PDF — función disponible próximamente');
+    }
+  };
+
+  // ── Atajo de teclado: Ctrl+E ──
+  document.addEventListener('keydown', function(e){
+    if ((e.ctrlKey || e.metaKey) && e.key === 'e' && !e.shiftKey && !e.altKey) {
+      // Solo si NO se está editando un input
+      var tag = (document.activeElement && document.activeElement.tagName) || '';
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || document.activeElement.isContentEditable) return;
+      e.preventDefault();
+      window.openControlEjecutivo();
+    }
+  });
+
+})();
+</script>
+<!-- ══════════════════════════════════════════════════════════════════
+     FIN MÓDULO CONTROL EJECUTIVO
+══════════════════════════════════════════════════════════════════ -->
+
+
 </body>
 </html>
