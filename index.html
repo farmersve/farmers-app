@@ -20318,6 +20318,12 @@ function _doConfirmImport(ajustarStock) {
             style="background:transparent;border:none;color:rgba(255,255,255,.35);font-size:.62rem;font-weight:900;cursor:pointer;border-radius:7px;padding:7px 12px;letter-spacing:.6px;white-space:nowrap;transition:all .2s;font-family:'Barlow Condensed',Arial,sans-serif;text-transform:uppercase;">
             📦 ORDENADA
           </button>
+          <div style="width:1px;height:20px;background:rgba(255,255,255,.08);margin:0 2px;"></div>
+          <button onclick="catCiclarDepoMode()" id="cat-depo-btn"
+            title="CONTROLAR QUÉ DEPÓSITOS SE MUESTRAN EN PANTALLA (NO AFECTA PDF/EXCEL)"
+            style="background:rgba(8,145,178,.15);border:none;color:#67e8f9;font-size:.62rem;font-weight:900;cursor:pointer;border-radius:7px;padding:7px 12px;letter-spacing:.6px;white-space:nowrap;transition:all .2s;font-family:'Barlow Condensed',Arial,sans-serif;text-transform:uppercase;">
+            📦 DEPÓSITOS: AMBOS
+          </button>
         </div>
 
         <!-- SEPARADOR -->
@@ -20758,6 +20764,10 @@ var _refStockFilters = new Set(['ALL']); // selección exclusiva (uno a la vez)
 var _catShowQty   = true;  // mostrar número de existencia en tarjetas
 var _catShowOrden = false;
 var _catExclComp  = false; // ocultar artículos sin disponible (comprometidos 100%)
+// Multi-Depósito: qué depósitos mostrar en el catálogo (pantalla y exportaciones)
+// Valores: 'AMBOS' | 'NE' | 'AN' | 'NINGUNO'
+var _catDepoMode       = 'AMBOS';   // afecta cards de pantalla
+var _catDepoModeExport = 'AMBOS';   // afecta PDF y Excel (selector aparte en modal de exportación)
 
 window.catToggleExclComp = function(){
   _catExclComp = !_catExclComp;
@@ -21262,6 +21272,50 @@ function catAbrirModalExcel() {
   grid.appendChild(btnTodas);
   body.appendChild(grid);
 
+  // ═══ Multi-Depósito: Selector de qué depósitos incluir en Excel ═══
+  var depoLabel = document.createElement('div');
+  depoLabel.textContent = 'Depósitos a incluir:';
+  depoLabel.style.cssText = 'font-size:.8rem;font-weight:800;color:#1B1F6B;margin:8px 0 10px;text-transform:uppercase;letter-spacing:.5px;';
+  body.appendChild(depoLabel);
+
+  var depoGrid = document.createElement('div');
+  depoGrid.style.cssText = 'display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:18px;';
+
+  function makeDepoOption(value, labelText, sub, color, bgActive) {
+    var card = document.createElement('div');
+    card.id = 'lbl-depo-' + value;
+    var isActive = (_catDepoModeExport === value);
+    card.style.cssText = 'display:flex;align-items:center;gap:8px;padding:9px 12px;border:2px solid ' + (isActive ? color : '#e2e8f0') + ';border-radius:8px;cursor:pointer;background:' + (isActive ? bgActive : 'white') + ';transition:all .2s;';
+    card.onclick = function() {
+      _catDepoModeExport = value;
+      // Refrescar UI: marcar este, desmarcar los otros
+      ['AMBOS','NE','AN','NINGUNO'].forEach(function(v){
+        var c = document.getElementById('lbl-depo-' + v);
+        if (!c) return;
+        if (v === value) {
+          var clr = (v==='AMBOS'?'#0891b2':v==='NE'?'#1e40af':v==='AN'?'#16a34a':'#64748b');
+          var bgc = (v==='AMBOS'?'#ecfeff':v==='NE'?'#dbeafe':v==='AN'?'#dcfce7':'#f1f5f9');
+          c.style.borderColor = clr;
+          c.style.background = bgc;
+        } else {
+          c.style.borderColor = '#e2e8f0';
+          c.style.background = 'white';
+        }
+      });
+    };
+    var txt = document.createElement('div');
+    txt.innerHTML = '<div style="font-weight:900;color:' + color + ';font-size:.85rem;">' + labelText + '</div>'
+      + '<div style="font-size:.68rem;color:#64748b;margin-top:1px;">' + sub + '</div>';
+    card.appendChild(txt);
+    return card;
+  }
+
+  depoGrid.appendChild(makeDepoOption('AMBOS',   '📦 Ambos',    'NE + AN',         '#0891b2', '#ecfeff'));
+  depoGrid.appendChild(makeDepoOption('NE',      '📦 Solo NE',  'Solo Margarita',  '#1e40af', '#dbeafe'));
+  depoGrid.appendChild(makeDepoOption('AN',      '📦 Solo AN',  'Solo Anzoátegui', '#16a34a', '#dcfce7'));
+  depoGrid.appendChild(makeDepoOption('NINGUNO', '📦 Ninguno',  'Ocultar columnas','#64748b', '#f1f5f9'));
+  body.appendChild(depoGrid);
+
   // Footer botones
   var footer = document.createElement('div');
   footer.style.cssText = 'display:flex;gap:10px;justify-content:flex-end;';
@@ -21382,14 +21436,23 @@ function catDownloadExcel(monedasParam) {
       var heads, widths, colP, colO, colT, colOrd, ncols;
       var sinPrecio = (campo === null);  // ── Modo sin precio ──
 
+      // ═══ Multi-Depósito: filtrar columnas NE/AN según _catDepoModeExport ═══
+      // Construye un array con las columnas extras a incluir entre ORDEN y EXISTENCIA
+      var depoExtras = []; // array de strings con headers a insertar
+      if (_catDepoModeExport === 'AMBOS') depoExtras = ['EXIST. NE','EXIST. AN'];
+      else if (_catDepoModeExport === 'NE') depoExtras = ['EXIST. NE'];
+      else if (_catDepoModeExport === 'AN') depoExtras = ['EXIST. AN'];
+      // Si NINGUNO → array vacío
+      var depoExtrasWidths = depoExtras.map(function(){ return 11; });
+
       if (sinPrecio) {
         // ── SIN PRECIO — sin columnas PRECIO, TOTAL, EXIST. TOTAL ──
         if (!modoCliente) {
           heads  = ['REFERENCIA','COD. BARRAS','COD. INTERNO','DESCRIPCION',
                     'EMPAQUE','MED/CAJA','MARCA',
-                    'ORDEN','EXIST. NE','EXIST. AN','EXISTENCIA','ORDENADA'];
-          widths = [13,17,15,48,10,10,12,9,11,11,11,12];
-          colO=8; colOrd=12; ncols=12;
+                    'ORDEN'].concat(depoExtras).concat(['EXISTENCIA','ORDENADA']);
+          widths = [13,17,15,48,10,10,12,9].concat(depoExtrasWidths).concat([11,12]);
+          colO=8; colOrd = 9 + depoExtras.length + 1; ncols = 10 + depoExtras.length;
         } else {
           heads  = ['REFERENCIA','COD. BARRAS','DESCRIPCION',
                     'EMPAQUE','MED/CAJA','MARCA','ORDEN'];
@@ -21399,9 +21462,9 @@ function catDownloadExcel(monedasParam) {
       } else if (!modoCliente) {
         heads  = ['REFERENCIA','COD. BARRAS','COD. INTERNO','DESCRIPCION',
                   'EMPAQUE','MED/CAJA','MARCA',
-                  'PRECIO '+monLabel+' ($)','ORDEN','TOTAL ($)','EXIST. NE','EXIST. AN','EXISTENCIA','ORDENADA','EXIST. TOTAL'];
-        widths = [13,17,15,48,10,10,12,14,9,14,11,11,11,12,12];
-        colP=8; colO=9; colT=10; colOrd=14; ncols=15;
+                  'PRECIO '+monLabel+' ($)','ORDEN','TOTAL ($)'].concat(depoExtras).concat(['EXISTENCIA','ORDENADA','EXIST. TOTAL']);
+        widths = [13,17,15,48,10,10,12,14,9,14].concat(depoExtrasWidths).concat([11,12,12]);
+        colP=8; colO=9; colT=10; colOrd = 11 + depoExtras.length + 1; ncols = 13 + depoExtras.length;
       } else {
         heads  = ['REFERENCIA','COD. BARRAS','DESCRIPCION',
                   'EMPAQUE','MED/CAJA','MARCA',
@@ -21414,6 +21477,12 @@ function catDownloadExcel(monedasParam) {
         var ex     = _catGetStock(p, inv);
         var stNE   = (typeof _catGetStockNE==='function') ? _catGetStockNE(p) : (parseInt(p.exNE)||0);
         var stAN   = (typeof _catGetStockAN==='function') ? _catGetStockAN(p) : (parseInt(p.exAN)||0);
+
+        // Construir array de valores extras según _catDepoModeExport
+        var depoVals = [];
+        if (_catDepoModeExport === 'AMBOS') depoVals = [stNE, stAN];
+        else if (_catDepoModeExport === 'NE') depoVals = [stNE];
+        else if (_catDepoModeExport === 'AN') depoVals = [stAN];
 
         // ═══ LEER CANTIDAD ORDENADA ═══
         var ptDataExcel = {};
@@ -21428,7 +21497,7 @@ function catDownloadExcel(monedasParam) {
           if (!modoCliente) {
             return [p.r||'', String(p.b||''), p.c||'', p.d||'',
                     p.e||'UNIDAD', p.m||'', p.br||'',
-                    null, stNE, stAN, ex, exOrdenada];
+                    null].concat(depoVals).concat([ex, exOrdenada]);
           } else {
             return [p.r||'', String(p.b||''), p.d||'',
                     p.e||'UNIDAD', p.m||'', p.br||'', null];
@@ -21442,7 +21511,7 @@ function catDownloadExcel(monedasParam) {
         if (!modoCliente) {
           return [p.r||'', String(p.b||''), p.c||'', p.d||'',
                   p.e||'UNIDAD', p.m||'', p.br||'',
-                  precio, null, {f: ordRef+'*'+preRef}, stNE, stAN, ex, exOrdenada, ex];  // EXIST.TOTAL se sobreescribe con fórmula abajo
+                  precio, null, {f: ordRef+'*'+preRef}].concat(depoVals).concat([ex, exOrdenada, ex]);
         } else {
           return [p.r||'', String(p.b||''), p.d||'',
                   p.e||'UNIDAD', p.m||'', p.br||'',
@@ -21526,6 +21595,97 @@ function catSetOrientation(o) {
 }
 window.catSetOrientation = catSetOrientation;
 function catDownloadPDF() {
+  // Mostrar mini-modal con selector de depósitos antes de generar PDF
+  catAbrirModalPDFOpciones();
+}
+window.catDownloadPDF = catDownloadPDF;
+
+// Modal pequeño que pregunta qué depósitos incluir antes de generar el PDF
+function catAbrirModalPDFOpciones() {
+  // Cerrar si ya hay uno abierto
+  var existing = document.getElementById('modal-cat-pdf-opts');
+  if (existing) existing.remove();
+
+  var el = document.createElement('div');
+  el.id = 'modal-cat-pdf-opts';
+  el.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:99999;display:flex;align-items:center;justify-content:center;';
+  el.onclick = function(e){ if (e.target === el) el.remove(); };
+
+  var box = document.createElement('div');
+  box.style.cssText = 'background:white;border-radius:16px;width:min(420px,92vw);box-shadow:0 24px 60px rgba(0,0,0,.35);overflow:hidden;font-family:Arial,sans-serif;';
+  box.onclick = function(e){ e.stopPropagation(); };
+
+  // Header
+  box.insertAdjacentHTML('beforeend',
+    '<div style="background:linear-gradient(135deg,#22c55e,#16a34a);padding:18px 22px;color:white;">'+
+      '<div style="font-size:1.05rem;font-weight:900;">📄 Exportar Catálogo PDF</div>'+
+      '<div style="font-size:.74rem;opacity:.85;margin-top:2px;">Configura las opciones antes de descargar</div>'+
+    '</div>'
+  );
+
+  var body = document.createElement('div');
+  body.style.padding = '20px 22px';
+
+  var lbl = document.createElement('div');
+  lbl.textContent = 'Depósitos a incluir:';
+  lbl.style.cssText = 'font-size:.78rem;font-weight:800;color:#15803d;margin-bottom:10px;text-transform:uppercase;letter-spacing:.5px;';
+  body.appendChild(lbl);
+
+  var grid = document.createElement('div');
+  grid.style.cssText = 'display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:18px;';
+
+  ['AMBOS','NE','AN','NINGUNO'].forEach(function(value) {
+    var labels = { AMBOS: ['📦 Ambos','NE + AN'], NE: ['📦 Solo NE','Margarita'], AN: ['📦 Solo AN','Anzoátegui'], NINGUNO: ['📦 Ninguno','Ocultar'] };
+    var colors = { AMBOS: ['#0891b2','#ecfeff'], NE: ['#1e40af','#dbeafe'], AN: ['#16a34a','#dcfce7'], NINGUNO: ['#64748b','#f1f5f9'] };
+    var card = document.createElement('div');
+    card.id = 'pdf-depo-' + value;
+    var isActive = (_catDepoModeExport === value);
+    card.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:2px;padding:10px 8px;border:2px solid ' + (isActive ? colors[value][0] : '#e2e8f0') + ';border-radius:8px;cursor:pointer;background:' + (isActive ? colors[value][1] : 'white') + ';transition:all .2s;text-align:center;';
+    card.innerHTML = '<div style="font-weight:900;color:' + colors[value][0] + ';font-size:.85rem;">' + labels[value][0] + '</div>'
+      + '<div style="font-size:.65rem;color:#64748b;">' + labels[value][1] + '</div>';
+    card.onclick = function() {
+      _catDepoModeExport = value;
+      ['AMBOS','NE','AN','NINGUNO'].forEach(function(v){
+        var c2 = document.getElementById('pdf-depo-' + v);
+        if (!c2) return;
+        if (v === value) {
+          c2.style.borderColor = colors[v][0];
+          c2.style.background = colors[v][1];
+        } else {
+          c2.style.borderColor = '#e2e8f0';
+          c2.style.background = 'white';
+        }
+      });
+    };
+    grid.appendChild(card);
+  });
+  body.appendChild(grid);
+
+  // Footer botones
+  var footer = document.createElement('div');
+  footer.style.cssText = 'display:flex;gap:10px;justify-content:flex-end;';
+  var btnCancel = document.createElement('button');
+  btnCancel.textContent = 'Cancelar';
+  btnCancel.style.cssText = 'padding:10px 18px;border-radius:8px;border:1.5px solid #e2e8f0;background:white;color:#475569;font-weight:700;cursor:pointer;';
+  btnCancel.onclick = function() { el.remove(); };
+  var btnDesc = document.createElement('button');
+  btnDesc.innerHTML = '📥 Descargar PDF';
+  btnDesc.style.cssText = 'padding:10px 22px;border-radius:8px;border:none;background:linear-gradient(135deg,#22c55e,#16a34a);color:white;font-weight:900;cursor:pointer;';
+  btnDesc.onclick = function() {
+    el.remove();
+    _catGenerarPDF(); // procede con la generación real
+  };
+  footer.appendChild(btnCancel);
+  footer.appendChild(btnDesc);
+  body.appendChild(footer);
+  box.appendChild(body);
+  el.appendChild(box);
+  document.body.appendChild(el);
+}
+window.catAbrirModalPDFOpciones = catAbrirModalPDFOpciones;
+
+// Función real de generación del PDF (renombrada del original catDownloadPDF)
+function _catGenerarPDF() {
   // Si no hay imágenes en memoria, cargarlas primero desde Firebase
   var _prodImgsLocal = {};
   if (window._prodImgs && Object.keys(window._prodImgs).length > 0) {
@@ -21598,6 +21758,33 @@ function catToggleShowOrden() {
   doRefSearch();
 }
 window.catToggleShowOrden = catToggleShowOrden;
+
+// ═══ Multi-Depósito: ciclar entre AMBOS / NE / AN / NINGUNO en pantalla ═══
+function catCiclarDepoMode() {
+  var ciclo = ['AMBOS', 'NE', 'AN', 'NINGUNO'];
+  var idx = ciclo.indexOf(_catDepoMode);
+  _catDepoMode = ciclo[(idx + 1) % ciclo.length];
+  catActualizarBotonDepoMode();
+  doRefSearch();
+}
+window.catCiclarDepoMode = catCiclarDepoMode;
+
+function catActualizarBotonDepoMode() {
+  var btn = document.getElementById('cat-depo-btn');
+  if (!btn) return;
+  var configs = {
+    'AMBOS':   { txt: '📦 DEPÓSITOS: AMBOS',   bg: 'rgba(8,145,178,.25)',  color: '#67e8f9', border: '1.5px solid rgba(8,145,178,.5)'  },
+    'NE':      { txt: '📦 SOLO NE',            bg: 'rgba(30,64,175,.25)',  color: '#93c5fd', border: '1.5px solid rgba(30,64,175,.5)'  },
+    'AN':      { txt: '📦 SOLO AN',            bg: 'rgba(22,163,74,.25)',  color: '#86efac', border: '1.5px solid rgba(22,163,74,.5)'  },
+    'NINGUNO': { txt: '📦 OCULTOS',            bg: 'rgba(100,116,139,.2)', color: '#94a3b8', border: '1.5px solid rgba(100,116,139,.4)' }
+  };
+  var c = configs[_catDepoMode] || configs['AMBOS'];
+  btn.textContent = c.txt;
+  btn.style.background = c.bg;
+  btn.style.color = c.color;
+  btn.style.border = c.border;
+}
+window.catActualizarBotonDepoMode = catActualizarBotonDepoMode;
 
 function catToggleShowQty() {
   _catShowQty = !_catShowQty;
@@ -21853,17 +22040,24 @@ function _catDownloadPDFWithImgs(_prodImgsLocal) {
           stockPill +
         '</div>' +
 
-        // ── BARRA STOCK POR DEPÓSITO (Multi-Depósito) ──
-        '<div style="display:flex;background:#f8fafc;border-bottom:1px solid #e2e8f0;font-size:.6rem;">' +
-          '<div style="flex:1;padding:4px 6px;text-align:center;border-right:1px solid #e2e8f0;background:' + (_stockNE_cat>0?'#dbeafe':'#f8fafc') + ';">' +
-            '<div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;color:' + (_stockNE_cat>0?'#1e40af':'#94a3b8') + ';font-size:.7rem;letter-spacing:1px;">📦 NE</div>' +
-            '<div style="font-weight:900;color:' + (_stockNE_cat>0?'#1e40af':'#94a3b8') + ';font-size:.85rem;">' + (_catShowQty ? _stockNE_cat : (_stockNE_cat>0?'✓':'—')) + '</div>' +
-          '</div>' +
-          '<div style="flex:1;padding:4px 6px;text-align:center;background:' + (_stockAN_cat>0?'#dcfce7':'#f8fafc') + ';">' +
-            '<div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;color:' + (_stockAN_cat>0?'#16a34a':'#94a3b8') + ';font-size:.7rem;letter-spacing:1px;">📦 AN</div>' +
-            '<div style="font-weight:900;color:' + (_stockAN_cat>0?'#16a34a':'#94a3b8') + ';font-size:.85rem;">' + (_catShowQty ? _stockAN_cat : (_stockAN_cat>0?'✓':'—')) + '</div>' +
-          '</div>' +
-        '</div>' +
+        // ── BARRA STOCK POR DEPÓSITO (Multi-Depósito) — respeta _catDepoMode ──
+        (function(){
+          if (_catDepoMode === 'NINGUNO') return '';
+          var bloqueNE = '<div style="flex:1;padding:4px 6px;text-align:center;border-right:1px solid #e2e8f0;background:' + (_stockNE_cat>0?'#dbeafe':'#f8fafc') + ';">' +
+              '<div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;color:' + (_stockNE_cat>0?'#1e40af':'#94a3b8') + ';font-size:.7rem;letter-spacing:1px;">📦 NE</div>' +
+              '<div style="font-weight:900;color:' + (_stockNE_cat>0?'#1e40af':'#94a3b8') + ';font-size:.85rem;">' + (_catShowQty ? _stockNE_cat : (_stockNE_cat>0?'✓':'—')) + '</div>' +
+            '</div>';
+          var bloqueAN = '<div style="flex:1;padding:4px 6px;text-align:center;background:' + (_stockAN_cat>0?'#dcfce7':'#f8fafc') + ';">' +
+              '<div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;color:' + (_stockAN_cat>0?'#16a34a':'#94a3b8') + ';font-size:.7rem;letter-spacing:1px;">📦 AN</div>' +
+              '<div style="font-weight:900;color:' + (_stockAN_cat>0?'#16a34a':'#94a3b8') + ';font-size:.85rem;">' + (_catShowQty ? _stockAN_cat : (_stockAN_cat>0?'✓':'—')) + '</div>' +
+            '</div>';
+          var contenido = '';
+          if (_catDepoMode === 'AMBOS') contenido = bloqueNE + bloqueAN;
+          else if (_catDepoMode === 'NE') contenido = bloqueNE;
+          else if (_catDepoMode === 'AN') contenido = bloqueAN;
+          if (!contenido) return '';
+          return '<div style="display:flex;background:#f8fafc;border-bottom:1px solid #e2e8f0;font-size:.6rem;">' + contenido + '</div>';
+        })() +
 
         // ── CUERPO ──
         '<div class="card-body">' +
@@ -22355,20 +22549,27 @@ function doRefSearch() {
       // ══ CUERPO ══
       '<div style="padding:10px 13px 4px;">' +
 
-        // ── DEPÓSITOS NE / AN (Multi-Depósito) ──
+        // ── DEPÓSITOS NE / AN (Multi-Depósito) — respeta _catDepoModeExport ──
         (function(){
+          if (_catDepoModeExport === 'NINGUNO') return '';
           var _stNE_pdf = (typeof _catGetStockNE==='function') ? _catGetStockNE(p) : (parseInt(p.exNE)||0);
           var _stAN_pdf = (typeof _catGetStockAN==='function') ? _catGetStockAN(p) : (parseInt(p.exAN)||0);
-          return '<div style="display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-bottom:5px;">' +
-            '<div style="background:' + (_stNE_pdf>0?'#dbeafe':'#f1f5f9') + ';border-radius:6px;padding:5px 9px;border:1px solid ' + (_stNE_pdf>0?'#1e40af':'#e2e8f0') + ';">' +
+          var bloqueNE = '<div style="background:' + (_stNE_pdf>0?'#dbeafe':'#f1f5f9') + ';border-radius:6px;padding:5px 9px;border:1px solid ' + (_stNE_pdf>0?'#1e40af':'#e2e8f0') + ';">' +
               '<div style="color:' + (_stNE_pdf>0?'#1e40af':'#94a3b8') + ';font-size:.52rem;font-weight:900;text-transform:uppercase;letter-spacing:.8px;margin-bottom:1px;">📦 DEP. NE</div>' +
               '<div style="font-weight:900;color:' + (_stNE_pdf>0?'#1e40af':'#94a3b8') + ';font-size:.86rem;font-family:\'Barlow Condensed\',sans-serif;">' + _stNE_pdf + ' UDS</div>' +
-            '</div>' +
-            '<div style="background:' + (_stAN_pdf>0?'#dcfce7':'#f1f5f9') + ';border-radius:6px;padding:5px 9px;border:1px solid ' + (_stAN_pdf>0?'#16a34a':'#e2e8f0') + ';">' +
+            '</div>';
+          var bloqueAN = '<div style="background:' + (_stAN_pdf>0?'#dcfce7':'#f1f5f9') + ';border-radius:6px;padding:5px 9px;border:1px solid ' + (_stAN_pdf>0?'#16a34a':'#e2e8f0') + ';">' +
               '<div style="color:' + (_stAN_pdf>0?'#16a34a':'#94a3b8') + ';font-size:.52rem;font-weight:900;text-transform:uppercase;letter-spacing:.8px;margin-bottom:1px;">📦 DEP. AN</div>' +
               '<div style="font-weight:900;color:' + (_stAN_pdf>0?'#16a34a':'#94a3b8') + ';font-size:.86rem;font-family:\'Barlow Condensed\',sans-serif;">' + _stAN_pdf + ' UDS</div>' +
-            '</div>' +
-          '</div>';
+            '</div>';
+          if (_catDepoModeExport === 'AMBOS') {
+            return '<div style="display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-bottom:5px;">' + bloqueNE + bloqueAN + '</div>';
+          } else if (_catDepoModeExport === 'NE') {
+            return '<div style="margin-bottom:5px;">' + bloqueNE + '</div>';
+          } else if (_catDepoModeExport === 'AN') {
+            return '<div style="margin-bottom:5px;">' + bloqueAN + '</div>';
+          }
+          return '';
         })() +
 
         // ── Empaque | Uds/Caja en fila compacta ──
