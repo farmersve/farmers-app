@@ -42115,6 +42115,10 @@ window.cxcAbrirMultiPago=cxcAbrirMultiPago;
 
 function cxcCloseMultiPago(){
   document.getElementById('cxc-multipago-overlay').classList.remove('open');
+  // Limpiar estado multi-cliente para próxima apertura
+  window._cxcmpClientesAcumulados = [];
+  window._cxcmpIAResultado = null;
+  window._cxcmpFacturaCliente = null;
 }
 window.cxcCloseMultiPago=cxcCloseMultiPago;
 
@@ -42175,16 +42179,120 @@ function cxcmpSeleccionarCliente(cl){
   document.getElementById('cxcmp-file').value='';
   // Renderizar facturas pendientes del cliente
   cxcmpRenderFacs(cl.facs);
+  // Mostrar acumulados si existen
+  if (typeof cxcmpRenderClientesAcumulados === 'function') cxcmpRenderClientesAcumulados();
 }
 
 function cxcmpVolverPaso1(){
   _cxcmpCliente=null; _cxcmpSelFacs=new Set();
+  // Limpiar también acumulados al volver al paso 1
+  window._cxcmpClientesAcumulados = [];
+  cxcmpRenderClientesAcumulados();
   document.getElementById('cxcmp-paso1').style.display='block';
   document.getElementById('cxcmp-paso2').style.display='none';
   document.getElementById('cxcmp-cl-search').value='';
   document.getElementById('cxcmp-cl-lista').innerHTML='';
 }
 window.cxcmpVolverPaso1=cxcmpVolverPaso1;
+
+// ═══ MULTI-CLIENTE: agregar otro cliente al mismo proceso de pago ═══
+window._cxcmpClientesAcumulados = []; // [{cliente: {...}, facsSeleccionadas: Set}]
+
+function cxcmpAgregarOtroCliente() {
+  // Guardar el cliente actual en acumulados (si tiene facturas seleccionadas)
+  if (_cxcmpCliente && _cxcmpSelFacs.size > 0) {
+    // Verificar que no esté ya en acumulados
+    var yaAcumulado = window._cxcmpClientesAcumulados.find(function(a){ return a.cliente && a.cliente.id === _cxcmpCliente.id; });
+    if (!yaAcumulado) {
+      window._cxcmpClientesAcumulados.push({
+        cliente: _cxcmpCliente,
+        facsSeleccionadas: new Set(_cxcmpSelFacs)
+      });
+    } else {
+      // Actualizar facturas del que ya estaba
+      yaAcumulado.facsSeleccionadas = new Set(_cxcmpSelFacs);
+    }
+  } else {
+    if (!confirm('No has seleccionado ninguna factura del cliente actual. ¿Quieres salir igual y elegir otro cliente?')) return;
+  }
+
+  // Volver al paso 1 sin limpiar acumulados
+  _cxcmpCliente = null;
+  _cxcmpSelFacs = new Set();
+  document.getElementById('cxcmp-paso1').style.display = 'block';
+  document.getElementById('cxcmp-paso2').style.display = 'none';
+  document.getElementById('cxcmp-cl-search').value = '';
+  document.getElementById('cxcmp-cl-lista').innerHTML = '';
+  // Mostrar botón en paso 1 indicando que está en modo multi-cliente
+  showToast('🔄 Modo multi-cliente activado — selecciona el siguiente cliente', 'success');
+}
+window.cxcmpAgregarOtroCliente = cxcmpAgregarOtroCliente;
+
+function cxcmpRenderClientesAcumulados() {
+  var cont = document.getElementById('cxcmp-clientes-acumulados');
+  var lista = document.getElementById('cxcmp-clientes-acumulados-lista');
+  if (!cont || !lista) return;
+
+  if (!window._cxcmpClientesAcumulados || window._cxcmpClientesAcumulados.length === 0) {
+    cont.style.display = 'none';
+    return;
+  }
+  cont.style.display = 'block';
+  lista.innerHTML = window._cxcmpClientesAcumulados.map(function(item, idx){
+    var nFacs = item.facsSeleccionadas ? item.facsSeleccionadas.size : 0;
+    // Calcular total de las facturas acumuladas
+    var totalAcum = 0;
+    if (item.cliente && item.cliente.facs && item.facsSeleccionadas) {
+      item.facsSeleccionadas.forEach(function(fid){
+        var f = item.cliente.facs.find(function(x){ return x.id === fid; });
+        if (f) totalAcum += parseFloat(f.saldo) || 0;
+      });
+    }
+    return '<div style="display:flex;align-items:center;gap:10px;padding:6px 10px;background:white;border-radius:6px;border:1px solid #bae6fd;">'+
+      '<div style="font-size:.85rem;">📋</div>'+
+      '<div style="flex:1;min-width:0;">'+
+        '<div style="font-weight:800;color:#0c4a6e;font-size:.78rem;font-family:\'Barlow Condensed\',sans-serif;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+ (item.cliente.nombre||'?') +'</div>'+
+        '<div style="font-size:.65rem;color:#64748b;">'+ nFacs +' factura(s) · $'+ totalAcum.toFixed(2) +'</div>'+
+      '</div>'+
+      '<button onclick="cxcmpQuitarClienteAcumulado('+idx+')" style="background:#fee2e2;color:#dc2626;border:none;border-radius:5px;padding:3px 8px;font-size:.65rem;font-weight:700;cursor:pointer;" title="Quitar este cliente del proceso">✕</button>'+
+    '</div>';
+  }).join('');
+}
+window.cxcmpRenderClientesAcumulados = cxcmpRenderClientesAcumulados;
+
+function cxcmpQuitarClienteAcumulado(idx) {
+  if (!window._cxcmpClientesAcumulados[idx]) return;
+  var nombre = window._cxcmpClientesAcumulados[idx].cliente.nombre;
+  if (!confirm('¿Quitar a "' + nombre + '" de este proceso de pago?\n\nLas facturas de este cliente NO se procesarán.')) return;
+  window._cxcmpClientesAcumulados.splice(idx, 1);
+  cxcmpRenderClientesAcumulados();
+  // Recalcular distribución porque cambió el set total
+  if (typeof cxcmpDistribuir === 'function') cxcmpDistribuir();
+}
+window.cxcmpQuitarClienteAcumulado = cxcmpQuitarClienteAcumulado;
+
+// Helper: obtener TODAS las facturas seleccionadas en el proceso (cliente actual + acumulados)
+window.cxcmpObtenerTodasFacturasSeleccionadas = function() {
+  var todas = [];
+  // Agregar las del cliente actual
+  if (_cxcmpCliente && _cxcmpCliente.facs && _cxcmpSelFacs) {
+    _cxcmpSelFacs.forEach(function(fid){
+      var f = _cxcmpCliente.facs.find(function(x){ return x.id === fid; });
+      if (f) todas.push({ factura: f, cliente: _cxcmpCliente });
+    });
+  }
+  // Agregar las de clientes acumulados
+  if (Array.isArray(window._cxcmpClientesAcumulados)) {
+    window._cxcmpClientesAcumulados.forEach(function(item){
+      if (!item.cliente || !item.cliente.facs || !item.facsSeleccionadas) return;
+      item.facsSeleccionadas.forEach(function(fid){
+        var f = item.cliente.facs.find(function(x){ return x.id === fid; });
+        if (f) todas.push({ factura: f, cliente: item.cliente });
+      });
+    });
+  }
+  return todas;
+};
 
 function cxcmpRenderFacs(facs){
   var lista=document.getElementById('cxcmp-facs-lista');
@@ -42275,74 +42383,373 @@ window.cxcmpFileSelected=cxcmpFileSelected;
 async function cxcmpProcesarArchivo(file){
   document.getElementById('cxcmp-ia-result').style.display='none';
   document.getElementById('cxcmp-ia-loading').style.display='block';
-  try {
-    var contentParts=[];
-    var isPDF=file.type==='application/pdf';
+  // Mensaje de loading dinámico
+  var loadingEl = document.getElementById('cxcmp-ia-loading');
+  if (loadingEl) loadingEl.innerHTML = '<div style="font-size:1.5rem;margin-bottom:6px;">⏳</div>Analizando comprobante con IA...<div style="font-size:.65rem;color:#94a3b8;margin-top:4px;">Extrayendo monto, fecha, banco, referencias y desglose por factura</div>';
 
-    if(isPDF){
+  try {
+    var fileName = (file.name||'').toLowerCase();
+    var esExcel  = fileName.endsWith('.xlsx') || fileName.endsWith('.xls') || file.type.indexOf('spreadsheet')>=0;
+    var esCSV    = fileName.endsWith('.csv') || fileName.endsWith('.txt');
+    var isPDF    = file.type === 'application/pdf' || fileName.endsWith('.pdf');
+
+    var contentParts=[];
+    var promptText = '';
+
+    if (esExcel || esCSV) {
+      // ═══ Excel/CSV: extraer texto plano y enviarlo como texto ═══
+      try {
+        var datosTexto = '';
+        if (esCSV) {
+          datosTexto = await new Promise(function(res, rej){
+            var r = new FileReader();
+            r.onload = function(){ res(r.result); };
+            r.onerror = function(){ rej(new Error('Error leyendo CSV')); };
+            r.readAsText(file, 'UTF-8');
+          });
+        } else {
+          // Excel: usar XLSX
+          if (typeof XLSX === 'undefined') throw new Error('Librería XLSX no disponible');
+          var ab = await file.arrayBuffer();
+          var wb = XLSX.read(new Uint8Array(ab), { type: 'array' });
+          var sheetTexts = [];
+          wb.SheetNames.forEach(function(sn){
+            var sheet = wb.Sheets[sn];
+            var rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
+            sheetTexts.push('=== HOJA: ' + sn + ' ===\n' + rows.map(function(row){
+              return row.map(function(c){ return String(c||'').trim(); }).join(' | ');
+            }).join('\n'));
+          });
+          datosTexto = sheetTexts.join('\n\n');
+        }
+        // Limitar texto a 40k caracteres
+        if (datosTexto.length > 40000) datosTexto = datosTexto.substring(0, 40000) + '\n[TRUNCADO]';
+        contentParts.push({type:'text', text: 'CONTENIDO DEL ARCHIVO ' + (esExcel?'EXCEL':'CSV') + ':\n\n' + datosTexto});
+      } catch(eFile) {
+        document.getElementById('cxcmp-ia-loading').style.display='none';
+        showToast('Error leyendo archivo: ' + eFile.message, 'error');
+        return;
+      }
+    } else if (isPDF) {
       // PDF → base64 document
-      var ab=await file.arrayBuffer();
-      var bytes=new Uint8Array(ab);
-      var bin=''; bytes.forEach(function(b){bin+=String.fromCharCode(b);});
-      var b64=btoa(bin);
+      var ab2 = await file.arrayBuffer();
+      var bytes = new Uint8Array(ab2);
+      var bin = '';
+      for (var i=0; i<bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+      var b64 = btoa(bin);
       contentParts.push({type:'document',source:{type:'base64',media_type:'application/pdf',data:b64}});
     } else {
       // Imagen → base64
-      var b64img=await new Promise(function(res){
+      var b64img = await new Promise(function(res){
         var r=new FileReader();
         r.onload=function(){res(r.result.split(',')[1]);};
         r.readAsDataURL(file);
       });
-      var mt=file.type||'image/jpeg';
+      var mt = file.type || 'image/jpeg';
       contentParts.push({type:'image',source:{type:'base64',media_type:mt,data:b64img}});
     }
 
-    contentParts.push({type:'text',text:'Analiza este comprobante de pago bancario venezolano. Extrae SOLO: monto total pagado (en USD si es transferencia internacional o en Bs si es local), fecha, número de referencia o confirmación, y banco/modalidad. Responde SOLO en JSON sin backticks: {"monto": número, "moneda": "USD" o "BS", "fecha": "YYYY-MM-DD", "referencia": "string", "banco": "string", "notas": "resumen breve del comprobante"}'});
+    // ═══ PROMPT EXTENDIDO ═══
+    // Construir lista de facturas seleccionadas para que la IA pueda matchearlas
+    var facsSeleccionadasContexto = '';
+    if (window._cxcmpSelFacs && window._cxcmpSelFacs.size > 0) {
+      var facs = (typeof cxcFacs === 'function') ? cxcFacs() : [];
+      var seleccionadas = [];
+      window._cxcmpSelFacs.forEach(function(fid){
+        var f = facs.find(function(x){ return x.id === fid; });
+        if (f) seleccionadas.push({ id: f.id, numero: f.numpedido || f.numero || f.id, saldo: f.saldo, cliente: f.cliente });
+      });
+      if (seleccionadas.length > 0) {
+        facsSeleccionadasContexto = '\n\nCONTEXTO: El usuario ha seleccionado estas facturas pendientes que podrían estar siendo pagadas (intenta hacer match si los identifica el comprobante):\n' +
+          seleccionadas.map(function(s){ return '• Factura "' + (s.numero||s.id) + '" — saldo: $' + (s.saldo||0).toFixed(2) + ' — cliente: ' + (s.cliente||''); }).join('\n');
+      }
+    }
 
-    var resp=await fetch('https://farmers-proxy.farmersve.workers.dev/',{
+    promptText = 'Eres un asistente que analiza comprobantes de pago bancarios venezolanos. ' +
+      'Extrae TODOS los datos disponibles del comprobante (sea Excel, PDF o imagen) y devuelve UN ÚNICO objeto JSON sin backticks, sin texto adicional.\n\n' +
+      'IMPORTANTE: Si el comprobante TIENE un desglose por factura (lista de facturas con monto individual), inclúyelo en el campo "desglose". Si NO tiene desglose, deja "desglose" como array vacío.\n\n' +
+      'Estructura JSON requerida:\n' +
+      '{\n' +
+      '  "monto_total": número (en la moneda original del documento),\n' +
+      '  "moneda": "USD" o "BS",\n' +
+      '  "fecha": "YYYY-MM-DD",\n' +
+      '  "referencia": "número de operación o confirmación",\n' +
+      '  "banco_origen": "string",\n' +
+      '  "banco_destino": "string",\n' +
+      '  "beneficiario": "string",\n' +
+      '  "rif_beneficiario": "string",\n' +
+      '  "ordenante": "string (quien hizo el pago)",\n' +
+      '  "rif_ordenante": "string",\n' +
+      '  "concepto": "string",\n' +
+      '  "tipo_transaccion": "string (Transferencia, Pago Móvil, Zelle, etc.)",\n' +
+      '  "tasa_bcv": número (solo si moneda es BS),\n' +
+      '  "monto_usd_equivalente": número (solo si moneda es BS y hay tasa),\n' +
+      '  "desglose": [\n' +
+      '    { "factura": "N4319", "monto": 1190.29, "concepto": "abono parcial" },\n' +
+      '    { "factura": "N4318", "monto": 1372.28, "concepto": "" }\n' +
+      '  ],\n' +
+      '  "confianza_general": número (0-100, cuán seguro estás de los datos extraídos),\n' +
+      '  "advertencias": ["lista de cosas que debas advertir al usuario, ej: imagen borrosa"]\n' +
+      '}\n\n' +
+      'Reglas:\n' +
+      '• Si un campo no está disponible en el comprobante, déjalo como string vacío "" o número 0.\n' +
+      '• Para "desglose": busca cualquier tabla, lista o detalle que asocie facturas con montos individuales. Las facturas suelen tener prefijos como N, F, FA, FAC, FACT.\n' +
+      '• Si hay una conversión Bs/USD explícita en el documento, registra "tasa_bcv" y "monto_usd_equivalente".\n' +
+      '• Para "confianza_general": 100=todo claro y exacto, 70-90=algunos campos inferidos, 50-70=información parcial, <50=documento poco legible.' +
+      facsSeleccionadasContexto;
+
+    contentParts.push({type:'text',text: promptText});
+
+    var resp = await fetch('https://farmers-proxy.farmersve.workers.dev/',{
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:400,messages:[{role:'user',content:contentParts}]})
+      body:JSON.stringify({
+        model:'claude-sonnet-4-20250514',
+        max_tokens: 1500,
+        messages:[{role:'user',content:contentParts}]
+      })
     });
-    var data=await resp.json();
-    var raw=(data.content&&data.content[0]&&data.content[0].text)||'{}';
-    raw=raw.replace(/```json|```/g,'').trim();
-    var parsed=JSON.parse(raw);
-
-    // Llenar campos
-    var monto=parsed.monto||0;
-    // Si es BS y hay tasa, convertir a USD
-    if((parsed.moneda||'').toUpperCase()==='BS' && monto>0){
-      var tasa=parseFloat(prompt('El comprobante está en Bs. ¿Cuál es la tasa BCV hoy? (Bs/$)', '')) || 0;
-      if(tasa>0){ monto=Math.round((monto/tasa)*100)/100; }
+    var data = await resp.json();
+    if (data.error) throw new Error(data.error.message || 'Error de IA');
+    var raw = (data.content && data.content[0] && data.content[0].text) || '{}';
+    raw = raw.replace(/```json|```/g,'').trim();
+    // Limpiar si la IA agregó texto antes/después del JSON
+    var firstBrace = raw.indexOf('{');
+    var lastBrace  = raw.lastIndexOf('}');
+    if (firstBrace > 0 || lastBrace < raw.length-1) {
+      raw = raw.substring(firstBrace, lastBrace+1);
     }
-    document.getElementById('cxcmp-ia-monto').value=monto;
-    document.getElementById('cxcmp-ia-fecha').value=parsed.fecha||new Date().toISOString().slice(0,10);
-    document.getElementById('cxcmp-ia-ref').value=parsed.referencia||'';
-    document.getElementById('cxcmp-ia-notas').value=parsed.notas||'';
+    var parsed = JSON.parse(raw);
 
-    // Detectar modalidad
-    var banco=(parsed.banco||'').toLowerCase();
-    var modalSel=document.getElementById('cxcmp-ia-modal');
-    if(banco.includes('banesco')&&banco.includes('panam')) modalSel.value='banesco_pa';
-    else if(banco.includes('banesco')) modalSel.value='banesco';
-    else if(banco.includes('bdv')||banco.includes('venezuela')) modalSel.value='bdv';
-    else if(banco.includes('binance')||banco.includes('usdt')) modalSel.value='binance';
-    else if(banco.includes('efectivo')||banco.includes('cash')) modalSel.value='usd_ef';
-    else modalSel.value='otro';
+    // ═══ Guardar respuesta IA en variable global para uso en panel de auditoría ═══
+    window._cxcmpIAResultado = parsed;
 
-    document.getElementById('cxcmp-ia-loading').style.display='none';
-    document.getElementById('cxcmp-ia-result').style.display='block';
+    // ═══ Llenar campos básicos ═══
+    var montoTotal = parseFloat(parsed.monto_total)||0;
+    var monedaOrig = (parsed.moneda||'USD').toUpperCase();
+    var montoUSD   = montoTotal;
 
-    // Auto-distribuir si ya hay facturas seleccionadas
-    if(_cxcmpSelFacs.size>0) cxcmpDistribuir();
-    else cxcmpDistribuir(); // Muestra sección aunque no haya sel aún
+    // Si es BS y la IA detectó tasa, usar conversión automática
+    if (monedaOrig === 'BS' && montoTotal > 0) {
+      if (parsed.tasa_bcv && parsed.tasa_bcv > 0) {
+        montoUSD = parsed.monto_usd_equivalente || (montoTotal / parsed.tasa_bcv);
+        montoUSD = Math.round(montoUSD * 100) / 100;
+        // Llenar campos de Bs y tasa
+        var inMontoBs = document.getElementById('cxcmp-monto-bs-input');
+        var inTasaBs  = document.getElementById('cxcmp-tasa-bs-input');
+        if (inMontoBs) inMontoBs.value = montoTotal;
+        if (inTasaBs)  inTasaBs.value  = parsed.tasa_bcv;
+        window._cxcmpTasaBsVal = parsed.tasa_bcv;
+      } else {
+        // Pedir tasa manualmente
+        var tasa = parseFloat(prompt('El comprobante está en Bs pero la IA no detectó la tasa. ¿Cuál es la tasa BCV? (Bs/$)', '')) || 0;
+        if (tasa > 0) {
+          montoUSD = Math.round((montoTotal/tasa)*100)/100;
+          window._cxcmpTasaBsVal = tasa;
+        }
+      }
+    }
+
+    document.getElementById('cxcmp-ia-monto').value = montoUSD;
+    document.getElementById('cxcmp-ia-fecha').value = parsed.fecha || new Date().toISOString().slice(0,10);
+    document.getElementById('cxcmp-ia-ref').value   = parsed.referencia || '';
+    document.getElementById('cxcmp-ia-notas').value = (parsed.concepto || '') + (parsed.tipo_transaccion ? ' [' + parsed.tipo_transaccion + ']' : '') + (parsed.banco_origen ? ' (Origen: ' + parsed.banco_origen + ')' : '');
+
+    // Detectar modalidad por banco
+    var bancoTexto = ((parsed.banco_origen||'') + ' ' + (parsed.banco_destino||'') + ' ' + (parsed.tipo_transaccion||'')).toLowerCase();
+    var modalSel = document.getElementById('cxcmp-ia-modal');
+    if (bancoTexto.indexOf('panam') >= 0 && bancoTexto.indexOf('banesco') >= 0) modalSel.value = 'banesco_pa';
+    else if (bancoTexto.indexOf('banesco') >= 0) modalSel.value = 'banesco';
+    else if (bancoTexto.indexOf('bdv') >= 0 || bancoTexto.indexOf('venezuela') >= 0) modalSel.value = 'bdv';
+    else if (bancoTexto.indexOf('zelle') >= 0) modalSel.value = 'zelle';
+    else if (bancoTexto.indexOf('binance') >= 0 || bancoTexto.indexOf('usdt') >= 0) modalSel.value = 'binance';
+    else if (bancoTexto.indexOf('efectivo') >= 0 || bancoTexto.indexOf('cash') >= 0) {
+      modalSel.value = monedaOrig === 'BS' ? 'bs_ef' : 'usd_ef';
+    } else {
+      modalSel.value = 'otro';
+    }
+    if (typeof cxcmpModalChange === 'function') cxcmpModalChange();
+
+    document.getElementById('cxcmp-ia-loading').style.display = 'none';
+    document.getElementById('cxcmp-ia-result').style.display  = 'block';
+
+    // ═══ Mostrar panel de auditoría enriquecida con todos los campos ═══
+    cxcmpMostrarAuditoriaIA(parsed);
+
+    // ═══ Aplicar desglose por factura si la IA lo detectó ═══
+    var desgloseAplicado = cxcmpAplicarDesgloseIA(parsed.desglose || []);
+
+    // Si no había desglose, distribuir normalmente
+    if (!desgloseAplicado && _cxcmpSelFacs.size > 0) {
+      cxcmpDistribuir();
+    } else if (_cxcmpSelFacs.size === 0 && (parsed.desglose||[]).length > 0) {
+      // La IA detectó desglose pero el usuario aún no marcó facturas — sugerir
+      cxcmpSugerirFacturasDesdeDesglose(parsed.desglose);
+    } else {
+      cxcmpDistribuir();
+    }
 
   } catch(e){
-    document.getElementById('cxcmp-ia-loading').style.display='none';
-    showToast('Error analizando comprobante: '+e.message,'error');
+    console.error('[cxcmp IA]', e);
+    document.getElementById('cxcmp-ia-loading').style.display = 'none';
+    showToast('Error analizando comprobante: ' + e.message, 'error');
   }
 }
+
+// ═══ Mostrar panel ampliado con todos los campos extraídos por la IA (editables) ═══
+function cxcmpMostrarAuditoriaIA(parsed) {
+  // Crear (o actualizar) un bloque de auditoría justo arriba del resumen IA
+  var contenedor = document.getElementById('cxcmp-ia-auditoria');
+  if (!contenedor) {
+    var resultEl = document.getElementById('cxcmp-ia-result');
+    if (!resultEl) return;
+    contenedor = document.createElement('div');
+    contenedor.id = 'cxcmp-ia-auditoria';
+    resultEl.parentNode.insertBefore(contenedor, resultEl);
+  }
+  var conf = parseInt(parsed.confianza_general) || 0;
+  var confColor = conf >= 80 ? '#16a34a' : conf >= 60 ? '#f59e0b' : '#dc2626';
+  var confLabel = conf >= 80 ? 'ALTA' : conf >= 60 ? 'MEDIA' : 'BAJA';
+  var advertencias = (parsed.advertencias||[]).filter(function(a){ return a && a.length > 0; });
+  var advHtml = '';
+  if (advertencias.length > 0) {
+    advHtml = '<div style="margin-top:8px;padding:8px 10px;background:#fef3c7;border-left:3px solid #f59e0b;border-radius:6px;font-size:.7rem;color:#92400e;">' +
+      '<strong>⚠ Advertencias de la IA:</strong><br>' + advertencias.map(function(a){ return '• ' + a; }).join('<br>') +
+      '</div>';
+  }
+  contenedor.style.cssText = 'margin-top:10px;padding:14px 16px;background:linear-gradient(135deg,#eff6ff,#f0f9ff);border:1.5px solid #bfdbfe;border-radius:10px;';
+  contenedor.innerHTML =
+    '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">' +
+      '<div style="font-size:.78rem;font-weight:900;color:#1e40af;text-transform:uppercase;letter-spacing:.8px;">🤖 Datos detectados por IA — todos editables</div>' +
+      '<div style="background:' + confColor + ';color:white;padding:3px 9px;border-radius:8px;font-size:.65rem;font-weight:900;letter-spacing:.5px;">CONFIANZA: ' + confLabel + ' (' + conf + '%)</div>' +
+    '</div>' +
+    '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;font-size:.72rem;">' +
+      _campoIA('Beneficiario', 'cxcmp-ia-benef', parsed.beneficiario||'') +
+      _campoIA('RIF Beneficiario', 'cxcmp-ia-rif-benef', parsed.rif_beneficiario||'') +
+      _campoIA('Ordenante', 'cxcmp-ia-ordenante', parsed.ordenante||'') +
+      _campoIA('RIF Ordenante', 'cxcmp-ia-rif-ord', parsed.rif_ordenante||'') +
+      _campoIA('Banco Origen', 'cxcmp-ia-banco-orig', parsed.banco_origen||'') +
+      _campoIA('Banco Destino', 'cxcmp-ia-banco-dest', parsed.banco_destino||'') +
+      _campoIA('Tipo Transacción', 'cxcmp-ia-tipo', parsed.tipo_transaccion||'') +
+      _campoIA('Concepto', 'cxcmp-ia-concepto', parsed.concepto||'') +
+    '</div>' +
+    advHtml;
+}
+
+function _campoIA(label, id, value) {
+  return '<div>' +
+    '<div style="font-size:.62rem;color:#64748b;font-weight:700;margin-bottom:2px;text-transform:uppercase;letter-spacing:.5px;">' + label + '</div>' +
+    '<input type="text" id="' + id + '" value="' + String(value||'').replace(/"/g,'&quot;') + '" style="width:100%;padding:5px 8px;border:1px solid #cbd5e1;border-radius:5px;font-size:.75rem;font-family:Arial,sans-serif;background:white;">' +
+  '</div>';
+}
+
+// ═══ Aplicar desglose detectado por IA a los inputs de distribución ═══
+// Devuelve true si se aplicó algún match
+function cxcmpAplicarDesgloseIA(desglose) {
+  if (!Array.isArray(desglose) || desglose.length === 0) return false;
+  // Asegurar que las facturas seleccionadas estén distribuidas para tener inputs
+  if (_cxcmpSelFacs.size === 0) return false;
+
+  // Primero hacer la distribución base para tener los inputs renderizados
+  cxcmpDistribuir();
+
+  setTimeout(function(){
+    var facs = (typeof cxcFacs === 'function') ? cxcFacs() : [];
+    var inputs = document.querySelectorAll('#cxcmp-dist-tabla input[data-fid]');
+    if (inputs.length === 0) return;
+
+    // Para cada input, buscar si la IA detectó esa factura en el desglose
+    var matchesEncontrados = 0;
+    inputs.forEach(function(inp){
+      var fid = inp.dataset.fid;
+      var f = facs.find(function(x){ return x.id === fid; });
+      if (!f) return;
+      var numero = (f.numpedido || f.numero || f.id || '').toString();
+
+      // Buscar en desglose por coincidencia flexible
+      var match = desglose.find(function(d){
+        if (!d || !d.factura) return false;
+        var iaFact = String(d.factura).toUpperCase().replace(/[\s\-]/g, '');
+        var sysFact = numero.toUpperCase().replace(/[\s\-]/g, '');
+        // Match exacto, o uno contiene al otro
+        return iaFact === sysFact || iaFact.indexOf(sysFact) >= 0 || sysFact.indexOf(iaFact) >= 0;
+      });
+
+      if (match && match.monto > 0) {
+        var monto = parseFloat(match.monto) || 0;
+        // No exceder el saldo
+        var saldo = parseFloat(f.saldo) || 0;
+        var aplicar = Math.min(monto, saldo);
+        inp.value = aplicar.toFixed(2);
+        matchesEncontrados++;
+        // Marcar visualmente como detectado por IA
+        inp.style.background = '#dcfce7';
+        inp.style.border = '1.5px solid #16a34a';
+        // Tooltip indicando que viene de IA
+        inp.title = '🤖 Detectado por IA — monto original: $' + monto.toFixed(2) + (match.concepto ? ' (' + match.concepto + ')' : '');
+        // Pequeño badge visual
+        var existingBadge = inp.parentElement.querySelector('.cxcmp-ia-badge');
+        if (!existingBadge) {
+          var badge = document.createElement('span');
+          badge.className = 'cxcmp-ia-badge';
+          badge.textContent = '🤖';
+          badge.title = 'Monto detectado por IA';
+          badge.style.cssText = 'position:absolute;right:-8px;top:-8px;background:#16a34a;color:white;border-radius:50%;width:20px;height:20px;display:flex;align-items:center;justify-content:center;font-size:.65rem;box-shadow:0 2px 6px rgba(0,0,0,.2);';
+          inp.parentElement.style.position = 'relative';
+          inp.parentElement.appendChild(badge);
+        }
+      }
+    });
+
+    // Recalcular resumen
+    if (typeof cxcmpRecalcResumen === 'function') cxcmpRecalcResumen();
+
+    if (matchesEncontrados > 0) {
+      showToast('🤖 IA aplicó ' + matchesEncontrados + ' monto(s) automáticamente desde el desglose', 'success');
+    }
+  }, 150);
+
+  return true;
+}
+
+// ═══ Si hay desglose IA pero el usuario no ha seleccionado facturas, sugerirle ═══
+function cxcmpSugerirFacturasDesdeDesglose(desglose) {
+  if (!Array.isArray(desglose) || desglose.length === 0) return;
+  var facs = (typeof cxcFacs === 'function') ? cxcFacs() : [];
+  var sugeridas = [];
+
+  desglose.forEach(function(d){
+    if (!d || !d.factura) return;
+    var iaFact = String(d.factura).toUpperCase().replace(/[\s\-]/g, '');
+    var fEncontrada = facs.find(function(x){
+      if (x.estado === 'PAGADA') return false;
+      var sysFact = (x.numpedido || x.numero || x.id || '').toString().toUpperCase().replace(/[\s\-]/g, '');
+      return iaFact === sysFact || iaFact.indexOf(sysFact) >= 0 || sysFact.indexOf(iaFact) >= 0;
+    });
+    if (fEncontrada) sugeridas.push(fEncontrada);
+  });
+
+  if (sugeridas.length === 0) return;
+
+  var msg = '🤖 La IA detectó un desglose por factura en el comprobante. Encontró estas facturas en tu sistema:\n\n' +
+    sugeridas.map(function(f){ return '• ' + (f.numpedido||f.numero||f.id) + ' — ' + (f.cliente||'') + ' — saldo: $' + (f.saldo||0).toFixed(2); }).join('\n') +
+    '\n\n¿Marcarlas automáticamente y aplicar los montos detectados?';
+  if (confirm(msg)) {
+    sugeridas.forEach(function(f){
+      _cxcmpSelFacs.add(f.id);
+      // Marcar checkbox visual si existe
+      var chk = document.querySelector('input[type=checkbox][data-cxcmp-fid="' + f.id + '"]');
+      if (chk) chk.checked = true;
+    });
+    cxcmpDistribuir();
+    setTimeout(function(){ cxcmpAplicarDesgloseIA(desglose); }, 100);
+  }
+}
+
+window.cxcmpProcesarArchivo = cxcmpProcesarArchivo;
+window.cxcmpMostrarAuditoriaIA = cxcmpMostrarAuditoriaIA;
+window.cxcmpAplicarDesgloseIA = cxcmpAplicarDesgloseIA;
+window.cxcmpSugerirFacturasDesdeDesglose = cxcmpSugerirFacturasDesdeDesglose;
 
 // ── Detectar si modalidad es en Bs ─────────────────────
 var _CXC_MODAL_BS = ['bdv','banesco','bs_ef'];
@@ -42447,13 +42854,33 @@ function cxcmpDistribuir(){
   }
   if(!montoTotal) return;
 
-  var facs=_cxcmpCliente?_cxcmpCliente.facs:[];
-  var selFacs=facs.filter(function(f){return _cxcmpSelFacs.has(f.id);});
+  // ═══ Multi-cliente: combinar cliente actual + clientes acumulados ═══
+  var todasSeleccionadas = (typeof window.cxcmpObtenerTodasFacturasSeleccionadas === 'function')
+    ? window.cxcmpObtenerTodasFacturasSeleccionadas()
+    : [];
 
-  // Si no hay seleccionadas, auto-seleccionar todas
-  if(!selFacs.length){
-    selFacs=facs.filter(function(f){return cxcEstado(f)!=='PAGADA';});
+  // Si no hay nada multi-cliente, usar el flujo legacy
+  var selFacs = [];
+  var facturaCliente = {}; // map fid → cliente para uso en aplicar
+
+  if (todasSeleccionadas.length > 0) {
+    todasSeleccionadas.forEach(function(item){
+      selFacs.push(item.factura);
+      facturaCliente[item.factura.id] = item.cliente;
+    });
+  } else {
+    var facs = _cxcmpCliente ? _cxcmpCliente.facs : [];
+    selFacs = facs.filter(function(f){ return _cxcmpSelFacs.has(f.id); });
+    selFacs.forEach(function(f){ facturaCliente[f.id] = _cxcmpCliente; });
+    // Si no hay seleccionadas, auto-seleccionar todas
+    if (!selFacs.length) {
+      selFacs = facs.filter(function(f){ return cxcEstado(f)!=='PAGADA'; });
+      selFacs.forEach(function(f){ facturaCliente[f.id] = _cxcmpCliente; });
+    }
   }
+
+  // Guardar el mapping para uso en cxcmpAplicarPago
+  window._cxcmpFacturaCliente = facturaCliente;
 
   // Distribuir automáticamente de la más vencida a la más nueva
   selFacs.sort(function(a,b){
@@ -42472,10 +42899,13 @@ function cxcmpDistribuir(){
   // Renderizar tabla distribución
   var tabla=document.getElementById('cxcmp-dist-tabla');
   tabla.innerHTML='';
+  var hayMultiCliente = (window._cxcmpClientesAcumulados && window._cxcmpClientesAcumulados.length > 0);
+
   var t=document.createElement('table');
   t.style.cssText='width:100%;border-collapse:collapse;font-size:.75rem;';
   t.innerHTML='<thead><tr style="background:#1B1F6B;">'
     +'<th style="padding:7px 10px;text-align:left;color:rgba(255,255,255,.8);font-size:.65rem;text-transform:uppercase;letter-spacing:.5px;">Factura</th>'
+    +(hayMultiCliente ? '<th style="padding:7px 10px;text-align:left;color:rgba(255,255,255,.8);font-size:.65rem;text-transform:uppercase;letter-spacing:.5px;">Cliente</th>' : '')
     +'<th style="padding:7px 10px;text-align:right;color:rgba(255,255,255,.8);font-size:.65rem;text-transform:uppercase;letter-spacing:.5px;">Saldo</th>'
     +'<th style="padding:7px 10px;text-align:right;color:rgba(255,255,255,.8);font-size:.65rem;text-transform:uppercase;letter-spacing:.5px;">Abono a aplicar</th>'
     +'<th style="padding:7px 10px;text-align:right;color:rgba(255,255,255,.8);font-size:.65rem;text-transform:uppercase;letter-spacing:.5px;">Saldo restante</th>'
@@ -42487,7 +42917,12 @@ function cxcmpDistribuir(){
     tr.style.background=i%2===0?'#fff':'#f8faff';
     tr.style.borderBottom='1px solid #e8eaf6';
     var nuevoSaldo=Math.max(0,Math.round(((d.fac.saldo||0)-d.abono)*100)/100);
+    var clienteFila = facturaCliente[d.fac.id];
+    var clienteCell = hayMultiCliente
+      ? '<td style="padding:8px 10px;color:#0c4a6e;font-weight:600;font-size:.7rem;">'+ ((clienteFila && clienteFila.nombre) || '—').substring(0,28) +'</td>'
+      : '';
     tr.innerHTML='<td style="padding:8px 10px;font-weight:700;color:var(--cxc-navy);font-family:monospace;">'+d.fac.numpedido+'</td>'
+      + clienteCell
       +'<td style="padding:8px 10px;text-align:right;color:var(--cxc-muted);">$ '+cxcFmt(d.fac.saldo)+'</td>'
       +'<td style="padding:8px 10px;text-align:right;">'
         +'<input type="number" step="0.01" min="0" max="'+d.fac.saldo+'" value="'+d.abono+'" data-fid="'+d.fac.id+'"'
@@ -42547,6 +42982,35 @@ window.cxcmpRecalcResumen=cxcmpRecalcResumen;
 function cxcmpAplicarPago(){
   var inputs=document.querySelectorAll('#cxcmp-dist-tabla input[data-fid]');
   if(!inputs.length){showToast('No hay distribución para aplicar','error');return;}
+
+  // ═══ Validación de sobrante / faltante antes de confirmar ═══
+  var totalAbono = 0;
+  inputs.forEach(function(inp){ totalAbono += parseFloat(inp.value)||0; });
+  totalAbono = Math.round(totalAbono * 100) / 100;
+  var _mpMoneda = (document.getElementById('cxcmp-moneda')||{}).value || 'USD';
+  var montoTotal;
+  if (_mpMoneda === 'BS' && window._cxcmpMontoUSD != null && window._cxcmpMontoUSD > 0) {
+    montoTotal = window._cxcmpMontoUSD;
+  } else {
+    montoTotal = parseFloat(document.getElementById('cxcmp-ia-monto').value)||0;
+  }
+  var diff = Math.round((montoTotal - totalAbono) * 100) / 100;
+
+  if (diff > 0.01) {
+    // El cliente pagó MÁS de lo que se distribuye
+    var msg = '⚠️ MONTO SOBRANTE\n\n' +
+      'Monto del comprobante: $' + montoTotal.toFixed(2) + '\n' +
+      'Total a aplicar: $' + totalAbono.toFixed(2) + '\n' +
+      'Sobrante: $' + diff.toFixed(2) + '\n\n' +
+      '¿Cómo deseas proceder?\n\n' +
+      'OK = Aplicar igual (el sobrante quedará sin asignar)\n' +
+      'Cancelar = Volver a ajustar la distribución';
+    if (!confirm(msg)) return;
+  } else if (diff < -0.01) {
+    showToast('❌ Los abonos superan el monto pagado en $ ' + Math.abs(diff).toFixed(2) + '. Ajusta antes de aplicar.', 'error');
+    return;
+  }
+
   if(!confirm('⚠️ ¿APLICAR PAGO MULTI-FACTURA?\n\nEsto registrará el pago en todas las facturas de la distribución.\n\n¿Estás seguro?')) return;
 
   var fecha=document.getElementById('cxcmp-ia-fecha').value||new Date().toISOString().slice(0,10);
@@ -42555,6 +43019,14 @@ function cxcmpAplicarPago(){
   var notas=document.getElementById('cxcmp-ia-notas').value||'';
   var mod=_CXC_MODALIDADES.find(function(m){return m.id===modalidad;});
   var modalidadLabel=mod?mod.label:modalidad;
+
+  // ═══ Capturar datos extendidos de auditoría IA (si están disponibles) ═══
+  var auditoriaIA = {};
+  ['cxcmp-ia-benef','cxcmp-ia-rif-benef','cxcmp-ia-ordenante','cxcmp-ia-rif-ord',
+   'cxcmp-ia-banco-orig','cxcmp-ia-banco-dest','cxcmp-ia-tipo','cxcmp-ia-concepto'].forEach(function(id){
+    var el = document.getElementById(id);
+    if (el && el.value) auditoriaIA[id.replace('cxcmp-ia-','')] = el.value;
+  });
 
   var facs=cxcFacs();
   var aplicados=0;
@@ -42582,7 +43054,11 @@ function cxcmpAplicarPago(){
       ref:ref, notas:notas,
       modalidad:modalidad, modalidadLabel:modalidadLabel,
       tasa:_tasaPago, montoBs:_montoBsPago,
-      ts:Date.now()
+      ts:Date.now(),
+      // ═══ Datos extendidos del comprobante (IA + auditoría) ═══
+      auditoria: Object.keys(auditoriaIA).length > 0 ? auditoriaIA : null,
+      // Confianza IA si está disponible
+      confianzaIA: (window._cxcmpIAResultado && window._cxcmpIAResultado.confianza_general) || null
     });
     f.saldo=Math.max(0,Math.round(((f.saldo||0)-abono)*100)/100);
     facs[idx]=f;
@@ -45075,14 +45551,24 @@ window.cxcMostrarReconciliacion = cxcMostrarReconciliacion;
       <div id="cxcmp-paso2" style="display:none;padding:20px 24px;">
 
         <!-- Cliente seleccionado -->
-        <div id="cxcmp-cl-hdr" style="background:var(--cxc-navy);border-radius:10px;padding:12px 18px;display:flex;align-items:center;gap:12px;margin-bottom:16px;">
+        <div id="cxcmp-cl-hdr" style="background:var(--cxc-navy);border-radius:10px;padding:12px 18px;display:flex;align-items:center;gap:12px;margin-bottom:16px;flex-wrap:wrap;">
           <div id="cxcmp-cl-avatar" style="width:40px;height:40px;border-radius:9px;background:rgba(255,255,255,.2);display:flex;align-items:center;justify-content:center;font-family:'Barlow Condensed',sans-serif;font-weight:900;color:#fff;font-size:1rem;"></div>
           <div>
             <div id="cxcmp-cl-nombre" style="font-family:'Barlow Condensed',sans-serif;font-weight:900;color:#fff;font-size:1.1rem;"></div>
             <div id="cxcmp-cl-rif" style="font-size:.7rem;color:rgba(255,255,255,.55);"></div>
           </div>
-          <button onclick="cxcmpVolverPaso1()" style="margin-left:auto;background:rgba(255,255,255,.15);border:none;color:#fff;padding:5px 12px;border-radius:6px;font-size:.7rem;cursor:pointer;">↩ Cambiar</button>
+          <div style="margin-left:auto;display:flex;gap:6px;flex-wrap:wrap;">
+            <button onclick="cxcmpAgregarOtroCliente()" id="cxcmp-btn-add-cliente" title="Agregar facturas de OTRO cliente al mismo proceso de pago" style="background:rgba(255,255,255,.15);border:1.5px solid rgba(34,197,94,.5);color:#86efac;padding:5px 12px;border-radius:6px;font-size:.7rem;cursor:pointer;font-weight:700;">➕ Agregar Cliente</button>
+            <button onclick="cxcmpVolverPaso1()" style="background:rgba(255,255,255,.15);border:none;color:#fff;padding:5px 12px;border-radius:6px;font-size:.7rem;cursor:pointer;">↩ Cambiar</button>
+          </div>
         </div>
+
+        <!-- Lista de clientes acumulados (solo visible en modo multi-cliente) -->
+        <div id="cxcmp-clientes-acumulados" style="display:none;background:#f0f9ff;border:1.5px solid #bae6fd;border-radius:10px;padding:10px 14px;margin-bottom:14px;">
+          <div style="font-size:.7rem;font-weight:800;color:#0c4a6e;text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;">📋 Clientes en este proceso de pago</div>
+          <div id="cxcmp-clientes-acumulados-lista" style="display:flex;flex-direction:column;gap:4px;"></div>
+        </div>
+
 
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
 
@@ -45106,9 +45592,9 @@ window.cxcMostrarReconciliacion = cxcMostrarReconciliacion;
               style="border:2px dashed var(--cxc-border);border-radius:10px;padding:24px 16px;text-align:center;cursor:pointer;transition:all .15s;background:#fafbff;min-height:120px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;">
               <div style="font-size:2rem;">📎</div>
               <div style="font-size:.75rem;font-weight:700;color:var(--cxc-navy);">Arrastra aquí el comprobante</div>
-              <div style="font-size:.65rem;color:var(--cxc-muted);">Imagen JPG/PNG o PDF</div>
+              <div style="font-size:.65rem;color:var(--cxc-muted);">Imagen, PDF, Excel o CSV — la IA detectará desglose por factura</div>
             </div>
-            <input type="file" id="cxcmp-file" accept="image/*,.pdf" style="display:none" onchange="cxcmpFileSelected(this)">
+            <input type="file" id="cxcmp-file" accept="image/*,.pdf,.xlsx,.xls,.csv,.txt" style="display:none" onchange="cxcmpFileSelected(this)">
 
             <!-- Resultado IA -->
             <div id="cxcmp-ia-result" style="display:none;margin-top:10px;padding:12px 14px;background:#f0fff4;border:1.5px solid #86efac;border-radius:8px;">
