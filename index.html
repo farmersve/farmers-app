@@ -28,6 +28,7 @@
 <link rel="preload" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;600;700;900&family=Barlow:wght@300;400;500;600&display=swap" as="style" onload="this.onload=null;this.rel='stylesheet'">
 <noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;600;700;900&family=Barlow:wght@300;400;500;600&display=swap"></noscript>
 <link rel="preload" href="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js" as="script">
+<link rel="preload" href="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js" as="script">
 <style>
 :root {
   --navy: #1a2050;
@@ -2927,6 +2928,7 @@ tbody td { padding: 8px 10px; vertical-align: middle; }
 </style>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 </head>
 <body>
 
@@ -17813,6 +17815,33 @@ function getTasaHoy() {
   var entry = hist.find(function(x){ return x.fecha === hoy; });
   return entry ? entry.tasa : 0;
 }
+
+// ═══ Multi-Pago: obtener tasa BCV para una fecha específica ═══
+// Si la fecha exacta tiene tasa registrada, la devuelve.
+// Si no, busca la más cercana hacia atrás (la última válida antes de esa fecha).
+// Si tampoco hay ninguna anterior, devuelve la más reciente disponible.
+// Devuelve un objeto { tasa, fecha, motivo } para que el caller sepa qué se aplicó.
+function getTasaParaFecha(fechaISO) {
+  if (!fechaISO) {
+    var t = getTasaHoy();
+    return { tasa: t, fecha: getTasaFechaKey(), motivo: t > 0 ? 'tasa_de_hoy' : 'sin_historial' };
+  }
+  var hist = getTasaHistory();
+  if (!hist || hist.length === 0) {
+    return { tasa: 0, fecha: '', motivo: 'sin_historial' };
+  }
+  // Match exacto
+  var exacta = hist.find(function(x){ return x.fecha === fechaISO; });
+  if (exacta) return { tasa: exacta.tasa, fecha: exacta.fecha, motivo: 'exacta' };
+  // Buscar la más cercana hacia atrás (fecha menor o igual)
+  var ordenadas = hist.slice().sort(function(a,b){ return b.fecha.localeCompare(a.fecha); });
+  var anterior = ordenadas.find(function(x){ return x.fecha <= fechaISO; });
+  if (anterior) return { tasa: anterior.tasa, fecha: anterior.fecha, motivo: 'anterior_mas_cercana' };
+  // No hay nada anterior — devolver la más reciente disponible
+  var masReciente = ordenadas[0];
+  return { tasa: masReciente.tasa, fecha: masReciente.fecha, motivo: 'posterior_mas_cercana' };
+}
+window.getTasaParaFecha = getTasaParaFecha;
 
 function saveTasaHoy() {
   var input = document.getElementById('tasa-bcv-input');
@@ -39521,13 +39550,21 @@ function cxcTabFacturas(body){
 // ══════════════════════════════════════════════════════════
 
 // ── Comprobante de pago individual (desde Estado de Cuenta) ───────────────
-function cxcComprobantePago(facId, pagoTs) {
+// Si options.returnContent === true, devuelve { html, filename } sin descargar
+function cxcComprobantePago(facId, pagoTs, options) {
+  options = options || {};
   var facs = cxcFacs();
   var f = facs.find(function(x){ return x.id === facId; });
-  if (!f) { showToast('Factura no encontrada', 'error'); return; }
+  if (!f) {
+    if (!options.returnContent) showToast('Factura no encontrada', 'error');
+    return null;
+  }
 
   var pago = (f.pagos||[]).find(function(p){ return String(p.ts) === String(pagoTs); });
-  if (!pago) { showToast('Pago no encontrado', 'error'); return; }
+  if (!pago) {
+    if (!options.returnContent) showToast('Pago no encontrado', 'error');
+    return null;
+  }
 
   var mod = _CXC_MODALIDADES.find(function(m){ return m.id === pago.modalidad; });
   var modLabel = pago.modalidadLabel || (mod ? mod.label : pago.modalidad || '—');
@@ -39605,11 +39642,18 @@ function cxcComprobantePago(facId, pagoTs) {
     + '</div>'
     + '</div></'+'body></'+'html>';
 
+  var filename = 'Comprobante_'+f.clienteNombre.replace(/[^a-zA-Z0-9]/g,'_').slice(0,20)+'_'+f.numpedido+'_'+pago.fecha+'.html';
+
+  if (options.returnContent) {
+    // Modo retorno: solo devolver, no descargar
+    return { html: html, filename: filename, factura: f, pago: pago };
+  }
+
   var blob = new Blob([html], {type:'text/html'});
   var url  = URL.createObjectURL(blob);
   var a    = document.createElement('a');
   a.href   = url;
-  a.download = 'Comprobante_'+f.clienteNombre.replace(/[^a-zA-Z0-9]/g,'_').slice(0,20)+'_'+f.numpedido+'_'+pago.fecha+'.html';
+  a.download = filename;
   a.click();
   setTimeout(function(){ URL.revokeObjectURL(url); }, 3000);
   showToast('📄 Comprobante descargado', 'success');
@@ -41276,7 +41320,10 @@ function cxcConfirmarPago(){
       modalidad: modalidad,
       numpedido: f.numpedido || '',
       montoBs:   montoBs || 0,
-      tasa:      tasa || 0
+      tasa:      tasa || 0,
+      // Datos extendidos si hay un análisis IA en curso
+      auditoria:    (window._cxcPagFac_auditoria) || null,
+      confianzaIA:  (window._cxcPagFac_confianzaIA) || null
     });
   } catch(e) {
     console.error('[CXC→Bancos] Error al registrar:', e);
@@ -42531,21 +42578,59 @@ async function cxcmpProcesarArchivo(file){
 
     // Si es BS y la IA detectó tasa, usar conversión automática
     if (monedaOrig === 'BS' && montoTotal > 0) {
+      var tasaUsada = 0;
+      var fuenteTasa = '';
+
       if (parsed.tasa_bcv && parsed.tasa_bcv > 0) {
-        montoUSD = parsed.monto_usd_equivalente || (montoTotal / parsed.tasa_bcv);
+        // 1ª prioridad: tasa que viene en el comprobante
+        tasaUsada = parsed.tasa_bcv;
+        fuenteTasa = 'archivo';
+      } else if (typeof window.getTasaParaFecha === 'function') {
+        // 2ª prioridad: buscar en historial del sistema según fecha del comprobante
+        var fechaPago = parsed.fecha || new Date().toISOString().slice(0,10);
+        var resTasa = window.getTasaParaFecha(fechaPago);
+        if (resTasa && resTasa.tasa > 0) {
+          tasaUsada = resTasa.tasa;
+          fuenteTasa = resTasa.motivo === 'exacta'
+            ? 'historial_fecha_exacta_' + resTasa.fecha
+            : resTasa.motivo === 'anterior_mas_cercana'
+              ? 'historial_anterior_' + resTasa.fecha
+              : resTasa.motivo === 'posterior_mas_cercana'
+                ? 'historial_posterior_' + resTasa.fecha
+                : 'historial_hoy_' + resTasa.fecha;
+        }
+      }
+
+      if (tasaUsada > 0) {
+        montoUSD = (parsed.monto_usd_equivalente && parsed.monto_usd_equivalente > 0)
+          ? parsed.monto_usd_equivalente
+          : (montoTotal / tasaUsada);
         montoUSD = Math.round(montoUSD * 100) / 100;
-        // Llenar campos de Bs y tasa
+
         var inMontoBs = document.getElementById('cxcmp-monto-bs-input');
         var inTasaBs  = document.getElementById('cxcmp-tasa-bs-input');
         if (inMontoBs) inMontoBs.value = montoTotal;
-        if (inTasaBs)  inTasaBs.value  = parsed.tasa_bcv;
-        window._cxcmpTasaBsVal = parsed.tasa_bcv;
+        if (inTasaBs)  inTasaBs.value  = tasaUsada;
+        window._cxcmpTasaBsVal = tasaUsada;
+
+        // Toast informativo
+        var msg = 'Tasa BCV ' + tasaUsada.toLocaleString('es-VE',{minimumFractionDigits:2});
+        if (fuenteTasa === 'archivo') msg += ' detectada en el archivo';
+        else if (fuenteTasa.indexOf('historial_fecha_exacta_') === 0) msg += ' (historial fecha exacta)';
+        else if (fuenteTasa.indexOf('historial_anterior_') === 0) msg += ' (más cercana del historial: ' + fuenteTasa.replace('historial_anterior_','') + ')';
+        else if (fuenteTasa.indexOf('historial_posterior_') === 0) msg += ' (única tasa cercana del historial: ' + fuenteTasa.replace('historial_posterior_','') + ')';
+        else msg += ' (tasa actual del sistema)';
+        showToast('💱 ' + msg, 'success');
       } else {
-        // Pedir tasa manualmente
-        var tasa = parseFloat(prompt('El comprobante está en Bs pero la IA no detectó la tasa. ¿Cuál es la tasa BCV? (Bs/$)', '')) || 0;
+        // Última opción: pedir manualmente
+        var tasa = parseFloat(prompt('El comprobante está en Bs. No se encontró tasa BCV en el archivo ni en el historial del sistema. Ingresa la tasa manual (Bs/$):', '')) || 0;
         if (tasa > 0) {
           montoUSD = Math.round((montoTotal/tasa)*100)/100;
           window._cxcmpTasaBsVal = tasa;
+          var inMontoBs2 = document.getElementById('cxcmp-monto-bs-input');
+          var inTasaBs2  = document.getElementById('cxcmp-tasa-bs-input');
+          if (inMontoBs2) inMontoBs2.value = montoTotal;
+          if (inTasaBs2)  inTasaBs2.value  = tasa;
         }
       }
     }
@@ -43031,6 +43116,7 @@ function cxcmpAplicarPago(){
   var facs=cxcFacs();
   var aplicados=0;
   var _totalBsReal=0;   // suma de Bs reales cobrados en este pago multi
+  var _pagosAplicados=[]; // ═══ Lista de {facId, pagoTs} para generar comprobantes individuales ═══
 
   inputs.forEach(function(inp){
     var abono=parseFloat(inp.value)||0;
@@ -43049,12 +43135,13 @@ function cxcmpAplicarPago(){
       // montoBs proporcional al abono en USD
       _montoBsPago = abono * _tasaPago;
     }
+    var _pagoTs = Date.now() + aplicados; // timestamp único por pago (offset para evitar colisiones)
     f.pagos.push({
       fecha:fecha, tipo:'pago', monto:abono,
       ref:ref, notas:notas,
       modalidad:modalidad, modalidadLabel:modalidadLabel,
       tasa:_tasaPago, montoBs:_montoBsPago,
-      ts:Date.now(),
+      ts:_pagoTs,
       // ═══ Datos extendidos del comprobante (IA + auditoría) ═══
       auditoria: Object.keys(auditoriaIA).length > 0 ? auditoriaIA : null,
       // Confianza IA si está disponible
@@ -43064,6 +43151,7 @@ function cxcmpAplicarPago(){
     facs[idx]=f;
     aplicados++;
     _totalBsReal += _montoBsPago;   // acumular Bs reales de cada factura
+    _pagosAplicados.push({ facId: f.id, pagoTs: _pagoTs }); // guardar para ZIP
   });
 
   cxcSaveFacs(facs);
@@ -43089,27 +43177,79 @@ function cxcmpAplicarPago(){
 
   // ── CONEXIÓN CXC → BANCOS ── REGISTRO DIRECTO ──────────────
   try {
+    // Multi-Cliente: construir descripción correcta de cliente(s) y referencias
+    var clienteRegistro = '';
+    var hayMultiCliente = (window._cxcmpClientesAcumulados && window._cxcmpClientesAcumulados.length > 0);
+    if (hayMultiCliente) {
+      // Recolectar nombres únicos de todos los clientes con facturas pagadas
+      var clientesUnicos = new Set();
+      if (_cxcmpCliente && _cxcmpSelFacs && _cxcmpSelFacs.size > 0) {
+        clientesUnicos.add(_cxcmpCliente.nombre);
+      }
+      window._cxcmpClientesAcumulados.forEach(function(item){
+        if (item.cliente && item.facsSeleccionadas && item.facsSeleccionadas.size > 0) {
+          clientesUnicos.add(item.cliente.nombre);
+        }
+      });
+      var nombresArr = Array.from(clientesUnicos);
+      if (nombresArr.length === 1) {
+        clienteRegistro = nombresArr[0];
+      } else if (nombresArr.length === 2) {
+        clienteRegistro = nombresArr.join(' + ');
+      } else {
+        clienteRegistro = nombresArr[0] + ' + ' + (nombresArr.length - 1) + ' clientes más';
+      }
+    } else {
+      clienteRegistro = _cxcmpCliente ? _cxcmpCliente.nombre : '';
+    }
+
+    // Construir descripción detallada del pago multi-cliente
+    var descripcionMulti = 'MULTI (' + aplicados + ' factura' + (aplicados!==1?'s':'') + ')';
+    if (hayMultiCliente) {
+      descripcionMulti += ' [' + Array.from(clientesUnicos).length + ' cliente(s)]';
+    }
+
     bkRegistrarDesdeCXC({
       monto:     montoTotal,
       ref:       refMP,
       fecha:     fechaMP,
-      cliente:   _cxcmpCliente ? _cxcmpCliente.nombre : '',
+      cliente:   clienteRegistro,
       modalidad: modalMP,
-      numpedido: 'MULTI (' + aplicados + ' facturas)',
+      numpedido: descripcionMulti,
       montoBs:   _totalBsReal,
-      tasa:      window._cxcmpTasaBsVal || _mpTasaVal || 0
+      tasa:      window._cxcmpTasaBsVal || _mpTasaVal || 0,
+      // ═══ Multi-Depósito + auditoría: pasar info extendida si está disponible ═══
+      auditoria: Object.keys(auditoriaIA).length > 0 ? auditoriaIA : null,
+      multiCliente: hayMultiCliente ? Array.from(clientesUnicos) : null,
+      confianzaIA: (window._cxcmpIAResultado && window._cxcmpIAResultado.confianza_general) || null
     });
   } catch(e) {
     console.error('[CXC→Bancos Multi] Error:', e);
     showToast('⚠️ Error al transferir a Bancos: ' + e.message, 'error');
   }
 
+  // Cerrar modal antes de generar comprobantes (para que no estorbe la descarga)
+  // ⚠ Guardamos referencia ANTES de cerrar porque el cierre limpia el estado
+  var _pagosParaZip = _pagosAplicados.slice();
+  var _resumenZip = {
+    totalUSD: montoTotal,
+    totalBs: _totalBsReal,
+    fecha: fechaMP,
+    ref: refMP,
+    modalidad: modalMP,
+    modalidadLabel: modalidadLabel,
+    multiCliente: hayMultiCliente ? Array.from(clientesUnicos) : null
+  };
+
   cxcCloseMultiPago();
   if(typeof _cxcTab!=='undefined'&&typeof cxcGoTab==='function') cxcGoTab(_cxcTab);
   cxcUpdateBadge();
-  // ── Comprobante automático Multi-Factura ──
+
+  // ── Comprobantes individuales empaquetados en ZIP ──
   setTimeout(function(){
-    if(typeof cxcmpDescargarComprobante==='function') cxcmpDescargarComprobante();
+    if (typeof cxcmpDescargarComprobantesZIP === 'function') {
+      cxcmpDescargarComprobantesZIP(_pagosParaZip, _resumenZip);
+    }
   }, 800);
 }
 
@@ -43252,6 +43392,119 @@ function cxcmpDescargarComprobante(){
   showToast('📄 Comprobante descargado', 'success');
 }
 window.cxcmpDescargarComprobante = cxcmpDescargarComprobante;
+
+// ═══════════════════════════════════════════════════════════════════
+// ZIP con N comprobantes individuales (uno por factura)
+// pagosAplicados: [{ facId, pagoTs }]
+// resumen: { totalUSD, totalBs, fecha, ref, modalidad, modalidadLabel, multiCliente }
+// ═══════════════════════════════════════════════════════════════════
+async function cxcmpDescargarComprobantesZIP(pagosAplicados, resumen) {
+  if (!Array.isArray(pagosAplicados) || pagosAplicados.length === 0) {
+    showToast('No hay comprobantes para generar', 'error');
+    return;
+  }
+
+  // Verificar JSZip disponible
+  if (typeof JSZip === 'undefined') {
+    console.warn('JSZip no disponible — descargando comprobantes uno por uno');
+    pagosAplicados.forEach(function(p, i){
+      setTimeout(function(){ cxcComprobantePago(p.facId, p.pagoTs); }, i * 400);
+    });
+    showToast('📄 Descargando ' + pagosAplicados.length + ' comprobantes individuales...', 'success');
+    return;
+  }
+
+  try {
+    var zip = new JSZip();
+    var generados = 0;
+    var fallidos = 0;
+    var nombresUsados = {}; // evitar colisiones de nombres
+
+    pagosAplicados.forEach(function(p){
+      try {
+        var resultado = cxcComprobantePago(p.facId, p.pagoTs, { returnContent: true });
+        if (resultado && resultado.html) {
+          var nombre = resultado.filename;
+          // Manejar colisiones
+          if (nombresUsados[nombre]) {
+            var ext = nombre.lastIndexOf('.');
+            var base = ext > 0 ? nombre.substring(0, ext) : nombre;
+            var sufijo = ext > 0 ? nombre.substring(ext) : '';
+            nombre = base + '_' + (nombresUsados[resultado.filename] + 1) + sufijo;
+            nombresUsados[resultado.filename]++;
+          } else {
+            nombresUsados[nombre] = 1;
+          }
+          zip.file(nombre, resultado.html);
+          generados++;
+        } else {
+          fallidos++;
+        }
+      } catch(e) {
+        console.error('[ZIP comprobante]', e);
+        fallidos++;
+      }
+    });
+
+    if (generados === 0) {
+      showToast('❌ No se pudo generar ningún comprobante', 'error');
+      return;
+    }
+
+    // ── Agregar README con resumen general del lote ──
+    var fechaActual = new Date().toLocaleString('es-VE',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'});
+    var clientesTxt = resumen && resumen.multiCliente && resumen.multiCliente.length > 1
+      ? resumen.multiCliente.join(', ')
+      : (resumen && resumen.multiCliente ? resumen.multiCliente[0] : '');
+    var readme =
+      'COMPROBANTES DE COBRO MULTI-FACTURA — FARMERS C.A.\n' +
+      '====================================================\n\n' +
+      'Generado: ' + fechaActual + '\n' +
+      'Total comprobantes: ' + generados + (fallidos > 0 ? ' (' + fallidos + ' fallidos)' : '') + '\n\n' +
+      '── DATOS DEL PAGO ──\n' +
+      'Monto total USD: $' + (resumen.totalUSD||0).toFixed(2) + '\n' +
+      (resumen.totalBs > 0 ? 'Monto total Bs: ' + resumen.totalBs.toLocaleString('es-VE',{minimumFractionDigits:2}) + '\n' : '') +
+      'Fecha del pago: ' + (resumen.fecha||'—') + '\n' +
+      'Referencia: ' + (resumen.ref||'—') + '\n' +
+      'Modalidad: ' + (resumen.modalidadLabel || resumen.modalidad || '—') + '\n' +
+      (clientesTxt ? 'Cliente(s): ' + clientesTxt + '\n' : '') +
+      '\n── INSTRUCCIONES ──\n' +
+      'Cada archivo .html dentro de este ZIP corresponde a una factura pagada.\n' +
+      'Para imprimir o convertir a PDF: abre el archivo en tu navegador y pulsa\n' +
+      'el botón "Imprimir / Guardar PDF" en la esquina inferior derecha.\n\n' +
+      '── ARCHIVOS INCLUIDOS ──\n' +
+      Object.keys(nombresUsados).map(function(n){ return '• ' + n; }).join('\n') + '\n';
+    zip.file('00_RESUMEN.txt', readme);
+
+    // ── Generar y descargar ZIP ──
+    var blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' });
+    var nombreZip = 'Comprobantes_';
+    if (resumen && resumen.multiCliente && resumen.multiCliente.length === 1) {
+      nombreZip += resumen.multiCliente[0].replace(/[^a-zA-Z0-9]/g,'_').slice(0,25) + '_';
+    } else if (resumen && resumen.multiCliente && resumen.multiCliente.length > 1) {
+      nombreZip += 'MultiCliente_';
+    }
+    nombreZip += (resumen.fecha||new Date().toISOString().slice(0,10)).replace(/-/g,'') + '_';
+    nombreZip += generados + 'facturas.zip';
+
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = nombreZip;
+    a.click();
+    setTimeout(function(){ URL.revokeObjectURL(url); }, 5000);
+
+    showToast('📦 ZIP descargado con ' + generados + ' comprobantes' + (fallidos > 0 ? ' (' + fallidos + ' no se pudieron generar)' : ''), 'success');
+  } catch(err) {
+    console.error('[cxcmpDescargarComprobantesZIP]', err);
+    showToast('❌ Error generando ZIP: ' + err.message, 'error');
+    // Fallback: descargar uno por uno
+    pagosAplicados.forEach(function(p, i){
+      setTimeout(function(){ cxcComprobantePago(p.facId, p.pagoTs); }, i * 400);
+    });
+  }
+}
+window.cxcmpDescargarComprobantesZIP = cxcmpDescargarComprobantesZIP;
 
 window.cxcmpAplicarPago=cxcmpAplicarPago;
 
@@ -44831,7 +45084,13 @@ function bkRegistrarDesdeCXC(pagoData) {
     cliente:  pagoData.cliente || '',
     desc:     'Cobro CXC — '+(pagoData.numpedido||'')
               +(esBS&&tasa>0 ? ' [Tasa '+tasa.toLocaleString('es-VE',{minimumFractionDigits:2})+']' : ''),
-    ts:       Date.now()
+    ts:       Date.now(),
+    // ═══ Datos extendidos del análisis IA y auditoría ═══
+    auditoria: pagoData.auditoria || null,
+    // Si fue un pago multi-cliente, guardar lista completa de clientes
+    multiCliente: pagoData.multiCliente || null,
+    // Confianza de la IA al procesar el comprobante (si aplica)
+    confianzaIA: pagoData.confianzaIA || null
   };
 
   // ── Guardar en localStorage + Firebase (síncrono local) ────
@@ -45531,12 +45790,12 @@ window.cxcMostrarReconciliacion = cxcMostrarReconciliacion;
 
 <!-- ── Modal: Pago Multi-Factura ─────────────────────────── -->
 <div class="cxc-overlay" id="cxc-multipago-overlay">
-  <div class="cxc-dialog" style="max-width:760px;width:95vw;">
-    <div class="cxc-dialog-hdr" style="background:linear-gradient(135deg,#1B1F6B,#3730a3);">
+  <div class="cxc-dialog" style="max-width:90vw;width:90vw;max-height:90vh;height:90vh;display:flex;flex-direction:column;">
+    <div class="cxc-dialog-hdr" style="background:linear-gradient(135deg,#1B1F6B,#3730a3);flex-shrink:0;">
       <div class="cxc-dialog-title">💳 Pago Multi-Factura</div>
       <button class="cxc-dialog-close" onclick="cxcCloseMultiPago()">✕</button>
     </div>
-    <div class="cxc-dialog-body" style="max-height:80vh;overflow-y:auto;padding:0;">
+    <div class="cxc-dialog-body" style="flex:1;overflow-y:auto;padding:0;min-height:0;">
 
       <!-- PASO 1: Seleccionar cliente -->
       <div id="cxcmp-paso1" style="padding:20px 24px;">
