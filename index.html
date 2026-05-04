@@ -20870,6 +20870,15 @@ function _doConfirmImport(ajustarStock) {
           <span id="cat-vista-badge" style="background:rgba(139,92,246,.4);color:white;border-radius:8px;padding:2px 7px;font-size:.6rem;font-weight:900;margin-left:4px;display:none;">0</span>
         </button>
 
+        <!-- BOTÓN: Comprometido Detallado — abre vista dedicada con tabla -->
+        <button onclick="catAbrirComprometidoDetallado()" id="cat-comp-btn"
+          title="VER MERCANCÍA COMPROMETIDA EN DETALLE — POR REFERENCIA, PEDIDO Y CLIENTE"
+          style="background:linear-gradient(135deg,rgba(217,119,6,.18),rgba(245,158,11,.15));border:1.5px solid rgba(245,158,11,.4);color:#fbbf24;font-size:.65rem;font-weight:900;cursor:pointer;border-radius:10px;padding:8px 16px;letter-spacing:.6px;white-space:nowrap;transition:all .2s;font-family:'Barlow Condensed',Arial,sans-serif;text-transform:uppercase;display:flex;align-items:center;gap:6px;flex-shrink:0;box-shadow:0 2px 8px rgba(245,158,11,.15);">
+          <span style="font-size:.95rem;">🔒</span>
+          <span>Comprometido</span>
+          <span id="cat-comp-badge" style="background:rgba(245,158,11,.4);color:white;border-radius:8px;padding:2px 7px;font-size:.6rem;font-weight:900;margin-left:4px;display:none;">0</span>
+        </button>
+
         <!-- SEPARADOR -->
         <div style="width:1px;height:28px;background:rgba(255,255,255,.1);flex-shrink:0;"></div>
 
@@ -22572,6 +22581,351 @@ function catAbrirPanelVista() {
 }
 window.catAbrirPanelVista = catAbrirPanelVista;
 
+// ═══════════════════════════════════════════════════════════════════════
+// COMPROMETIDO DETALLADO — vista dedicada con tabla
+// Lectura/análisis (no acciones correctivas — esas están en libAbrirPanelAuditoria)
+// Muestra: REF, descripción, qty comprometida, qty disponible, lista de pedidos con cliente y fecha
+// Filtros: por marca, por cliente, por antigüedad
+// Acción: enlace al sincerar inventario para casos críticos
+// ═══════════════════════════════════════════════════════════════════════
+function catAbrirComprometidoDetallado() {
+  var existing = document.getElementById('cat-comp-overlay');
+  if (existing) { existing.remove(); return; }
+
+  var comp = (typeof getComprometido === 'function') ? getComprometido() : {};
+  var inv  = (typeof getInventory === 'function') ? getInventory() : {};
+  var msPedidos = (typeof getMsPedidos === 'function') ? getMsPedidos() : [];
+  var pedidosMap = {};
+  msPedidos.forEach(function(p){ pedidosMap[p.numP] = p; });
+
+  // Construir lista detallada de refs comprometidas
+  var rows = Object.keys(comp).filter(function(r){
+    return comp[r] && comp[r].qty > 0;
+  }).map(function(r){
+    var prod = (typeof PRODUCTS !== 'undefined') ? PRODUCTS.find(function(p){ return p.r === r; }) : null;
+    var stockReal = inv[r] !== undefined ? inv[r] : (prod ? (prod.ex||0) : 0);
+    var qtyComp = comp[r].qty || 0;
+    var disponible = Math.max(0, stockReal - qtyComp);
+    var pedidos = (comp[r].pedidos || []).map(function(pc){
+      var p = pedidosMap[pc.numP];
+      return {
+        numP: pc.numP,
+        qty: pc.qty,
+        fecha: pc.fecha || (p ? (p.fecha||'') : ''),
+        cliente: p ? (p.cliente || p.clienteNombre || '—') : '⚠ HUÉRFANO',
+        esHuerfano: !p
+      };
+    });
+    return {
+      ref: r,
+      desc: prod ? (prod.d || '') : '—',
+      barra: prod ? (prod.b || '') : '',
+      marca: prod ? (prod.br || '—') : '—',
+      stockReal: stockReal,
+      qtyComp: qtyComp,
+      disponible: disponible,
+      pedidos: pedidos,
+      problematico: stockReal < qtyComp,
+      huerfanoTotal: pedidos.length > 0 && pedidos.every(function(pi){ return pi.esHuerfano; }),
+      // Para ordenar por antigüedad: tomar el pedido más antiguo
+      fechaMasAntigua: pedidos.reduce(function(min, pi){
+        if (!pi.fecha) return min;
+        return (!min || pi.fecha < min) ? pi.fecha : min;
+      }, '')
+    };
+  });
+
+  // Estado de filtros (cerrado dentro de la función)
+  var filtros = {
+    busqueda: '',
+    marca: 'TODAS',
+    cliente: 'TODOS',
+    soloProblema: false,
+    soloHuerfano: false,
+    orden: 'qty_desc'  // qty_desc | qty_asc | fecha_desc | fecha_asc | ref_asc
+  };
+
+  // Listas de marcas y clientes únicos para los selectores
+  var marcasUnicas = Array.from(new Set(rows.map(function(r){ return r.marca; }).filter(Boolean))).sort();
+  var clientesUnicos = Array.from(new Set(
+    rows.flatMap(function(r){ return r.pedidos.map(function(p){ return p.cliente; }); }).filter(Boolean)
+  )).sort();
+
+  var overlay = document.createElement('div');
+  overlay.id = 'cat-comp-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(10,15,50,.75);z-index:99999;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(4px);padding:20px;';
+  overlay.onclick = function(e){ if (e.target === overlay) overlay.remove(); };
+
+  var box = document.createElement('div');
+  box.style.cssText = 'background:white;border-radius:14px;width:min(1300px,100%);max-height:92vh;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 24px 64px rgba(0,0,0,.45);font-family:"Barlow",Arial,sans-serif;border:2px solid #d97706;';
+  box.onclick = function(e){ e.stopPropagation(); };
+
+  function aplicarFiltros() {
+    var filtradas = rows.slice();
+
+    // Búsqueda
+    if (filtros.busqueda) {
+      var q = filtros.busqueda.toLowerCase();
+      filtradas = filtradas.filter(function(r){
+        if (r.ref.toLowerCase().indexOf(q) >= 0) return true;
+        if (r.desc.toLowerCase().indexOf(q) >= 0) return true;
+        if (String(r.barra).toLowerCase().indexOf(q) >= 0) return true;
+        if (r.pedidos.some(function(p){ return p.numP.toLowerCase().indexOf(q) >= 0 || (p.cliente||'').toLowerCase().indexOf(q) >= 0; })) return true;
+        return false;
+      });
+    }
+    // Marca
+    if (filtros.marca !== 'TODAS') {
+      filtradas = filtradas.filter(function(r){ return r.marca === filtros.marca; });
+    }
+    // Cliente
+    if (filtros.cliente !== 'TODOS') {
+      filtradas = filtradas.filter(function(r){ return r.pedidos.some(function(p){ return p.cliente === filtros.cliente; }); });
+    }
+    // Solo problemáticos
+    if (filtros.soloProblema) {
+      filtradas = filtradas.filter(function(r){ return r.problematico; });
+    }
+    // Solo huérfanos
+    if (filtros.soloHuerfano) {
+      filtradas = filtradas.filter(function(r){ return r.huerfanoTotal; });
+    }
+    // Orden
+    filtradas.sort(function(a,b){
+      switch(filtros.orden) {
+        case 'qty_desc':   return b.qtyComp - a.qtyComp;
+        case 'qty_asc':    return a.qtyComp - b.qtyComp;
+        case 'fecha_desc': return (b.fechaMasAntigua||'').localeCompare(a.fechaMasAntigua||'');
+        case 'fecha_asc':  return (a.fechaMasAntigua||'').localeCompare(b.fechaMasAntigua||'');
+        case 'ref_asc':    return a.ref.localeCompare(b.ref, undefined, { numeric: true });
+        default:           return 0;
+      }
+    });
+
+    return filtradas;
+  }
+
+  function renderTabla() {
+    var filtradas = aplicarFiltros();
+    var totalRefs = filtradas.length;
+    var totalQty = filtradas.reduce(function(s,r){ return s + r.qtyComp; }, 0);
+    var totalProblema = filtradas.filter(function(r){ return r.problematico; }).length;
+    var totalHuerf = filtradas.filter(function(r){ return r.huerfanoTotal; }).length;
+
+    // Stats
+    var statsEl = document.getElementById('cat-comp-stats');
+    if (statsEl) {
+      statsEl.innerHTML =
+        '<div style="background:#f0f4ff;border:1.5px solid #c7d2fe;border-radius:8px;padding:8px 14px;flex:1;min-width:120px;">' +
+          '<div style="font-size:.6rem;color:#4338ca;font-weight:800;letter-spacing:1px;text-transform:uppercase;">REFERENCIAS</div>' +
+          '<div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;font-size:1.5rem;color:#1B1F6B;">' + totalRefs + '</div>' +
+        '</div>' +
+        '<div style="background:#fef3c7;border:1.5px solid #fcd34d;border-radius:8px;padding:8px 14px;flex:1;min-width:120px;">' +
+          '<div style="font-size:.6rem;color:#78350f;font-weight:800;letter-spacing:1px;text-transform:uppercase;">UDS COMPROMETIDAS</div>' +
+          '<div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;font-size:1.5rem;color:#b45309;">' + totalQty + '</div>' +
+        '</div>' +
+        '<div style="background:#fee2e2;border:1.5px solid #fca5a5;border-radius:8px;padding:8px 14px;flex:1;min-width:120px;">' +
+          '<div style="font-size:.6rem;color:#7f1d1d;font-weight:800;letter-spacing:1px;text-transform:uppercase;">⚠ PROBLEMÁTICOS</div>' +
+          '<div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;font-size:1.5rem;color:#dc2626;">' + totalProblema + '</div>' +
+        '</div>' +
+        '<div style="background:#fef9c3;border:1.5px solid #fde047;border-radius:8px;padding:8px 14px;flex:1;min-width:120px;">' +
+          '<div style="font-size:.6rem;color:#713f12;font-weight:800;letter-spacing:1px;text-transform:uppercase;">👻 HUÉRFANOS</div>' +
+          '<div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;font-size:1.5rem;color:#a16207;">' + totalHuerf + '</div>' +
+        '</div>';
+    }
+
+    var tbody = document.getElementById('cat-comp-tbody');
+    if (!tbody) return;
+
+    if (filtradas.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="8" style="padding:40px 20px;text-align:center;color:#64748b;font-size:.9rem;">' +
+        (rows.length === 0 ? '✓ No hay mercancía comprometida actualmente.' : '⚠ No se encontraron resultados con los filtros aplicados.') +
+        '</td></tr>';
+      return;
+    }
+
+    tbody.innerHTML = filtradas.map(function(r,i){
+      var bg = i%2===0 ? '#fff' : '#f8faff';
+      // Estatus visual
+      var statusBg = '#f0f4ff', statusFg = '#1B1F6B', statusTxt = '✓ OK';
+      if (r.problematico) { statusBg='#fee2e2'; statusFg='#dc2626'; statusTxt='⚠ STOCK INSUFIC.'; }
+      else if (r.huerfanoTotal) { statusBg='#fef3c7'; statusFg='#b45309'; statusTxt='👻 HUÉRFANO'; }
+
+      // Lista de pedidos (compacta pero legible)
+      var pedidosHTML = r.pedidos.map(function(p){
+        var bgP = p.esHuerfano ? '#fef3c7' : '#eef2ff';
+        var fgP = p.esHuerfano ? '#92400e' : '#3730a3';
+        return '<div style="background:' + bgP + ';border-radius:6px;padding:5px 9px;margin-bottom:4px;display:flex;justify-content:space-between;align-items:center;gap:8px;">' +
+          '<div style="flex:1;min-width:0;">' +
+            '<div style="font-family:monospace;font-weight:700;color:' + fgP + ';font-size:.72rem;">' + p.numP + '</div>' +
+            '<div style="font-size:.65rem;color:#64748b;text-transform:uppercase;letter-spacing:.3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + (p.cliente || '—') + '</div>' +
+            (p.fecha ? '<div style="font-size:.6rem;color:#94a3b8;">' + p.fecha + '</div>' : '') +
+          '</div>' +
+          '<div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;color:' + fgP + ';font-size:1.1rem;flex-shrink:0;">' + p.qty + '</div>' +
+        '</div>';
+      }).join('');
+
+      return '<tr style="background:' + bg + ';border-bottom:1px solid #f0f2f8;">' +
+        '<td style="padding:10px 12px;vertical-align:top;">' +
+          '<div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;color:#1B1F6B;font-size:.95rem;letter-spacing:.5px;">' + r.ref + '</div>' +
+          (r.barra ? '<div style="font-family:monospace;font-size:.62rem;color:#94a3b8;letter-spacing:.3px;">' + r.barra + '</div>' : '') +
+          '<div style="display:inline-block;background:#eef0f8;color:#1a2050;padding:2px 7px;border-radius:8px;font-size:.6rem;font-weight:700;margin-top:3px;">' + r.marca + '</div>' +
+        '</td>' +
+        '<td style="padding:10px 12px;vertical-align:top;font-size:.74rem;color:#475569;max-width:200px;line-height:1.4;">' + r.desc + '</td>' +
+        '<td style="padding:10px 12px;text-align:center;vertical-align:top;"><div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;font-size:1.2rem;color:' + (r.stockReal > 0 ? '#16a34a' : '#dc2626') + ';">' + r.stockReal + '</div></td>' +
+        '<td style="padding:10px 12px;text-align:center;vertical-align:top;"><div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;font-size:1.4rem;color:#dc2626;">' + r.qtyComp + '</div></td>' +
+        '<td style="padding:10px 12px;text-align:center;vertical-align:top;"><div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;font-size:1.2rem;color:' + (r.disponible > 0 ? '#16a34a' : '#94a3b8') + ';">' + r.disponible + '</div></td>' +
+        '<td style="padding:10px 12px;text-align:center;vertical-align:top;"><span style="background:' + statusBg + ';color:' + statusFg + ';padding:3px 9px;border-radius:10px;font-size:.62rem;font-weight:800;letter-spacing:.4px;white-space:nowrap;">' + statusTxt + '</span></td>' +
+        '<td style="padding:10px 12px;vertical-align:top;min-width:240px;">' + pedidosHTML + '</td>' +
+        '<td style="padding:10px 12px;text-align:center;vertical-align:top;"><button onclick="catAbrirComprometidoDetallado(); setTimeout(function(){ if(typeof libModalLiberar===\'function\') libModalLiberar(\'' + r.ref + '\', { onSuccess: function(){ if(typeof catAbrirComprometidoDetallado===\'function\') catAbrirComprometidoDetallado(); } }); }, 100);" style="background:linear-gradient(135deg,#dc2626,#991b1b);color:#fff;border:none;border-radius:6px;padding:6px 12px;cursor:pointer;font-weight:800;font-size:.65rem;font-family:inherit;text-transform:uppercase;letter-spacing:.4px;">🔓 LIBERAR</button></td>' +
+      '</tr>';
+    }).join('');
+  }
+
+  // Construir HTML del overlay
+  box.innerHTML =
+    // Header
+    '<div style="background:linear-gradient(135deg,#92400e,#d97706);padding:18px 24px;color:#fff;display:flex;justify-content:space-between;align-items:center;flex-shrink:0;">' +
+      '<div>' +
+        '<div style="font-size:.65rem;font-weight:800;letter-spacing:2.5px;text-transform:uppercase;opacity:.7;">VISTA DEDICADA</div>' +
+        '<div style="font-family:\'Barlow Condensed\',sans-serif;font-size:1.6rem;font-weight:900;letter-spacing:.5px;text-transform:uppercase;margin-top:2px;">🔒 Mercancía Comprometida — Detalle</div>' +
+      '</div>' +
+      '<button onclick="document.getElementById(\'cat-comp-overlay\').remove()" style="background:rgba(255,255,255,.18);border:none;color:#fff;width:36px;height:36px;border-radius:8px;cursor:pointer;font-size:1.1rem;font-weight:900;">✕</button>' +
+    '</div>' +
+
+    // Stats
+    '<div id="cat-comp-stats" style="padding:14px 24px;background:#fafbfd;border-bottom:1px solid #e8eaf6;display:flex;gap:10px;flex-wrap:wrap;flex-shrink:0;"></div>' +
+
+    // Filtros
+    '<div style="padding:12px 24px;background:#fff;border-bottom:1px solid #e8eaf6;display:flex;gap:10px;flex-wrap:wrap;align-items:center;flex-shrink:0;">' +
+      '<input id="cat-comp-search" type="text" placeholder="🔍 Buscar por REF, descripción, código de barra, pedido o cliente..." style="flex:1;min-width:280px;padding:8px 12px;border:1.5px solid #e0e4f0;border-radius:8px;font-size:.78rem;outline:none;font-family:inherit;">' +
+      '<select id="cat-comp-marca" style="padding:8px 12px;border:1.5px solid #e0e4f0;border-radius:8px;font-size:.74rem;background:white;cursor:pointer;font-weight:600;color:#475569;font-family:inherit;">' +
+        '<option value="TODAS">Todas las marcas</option>' +
+        marcasUnicas.map(function(m){ return '<option value="' + m.replace(/"/g,'&quot;') + '">' + m + '</option>'; }).join('') +
+      '</select>' +
+      '<select id="cat-comp-cliente" style="padding:8px 12px;border:1.5px solid #e0e4f0;border-radius:8px;font-size:.74rem;background:white;cursor:pointer;font-weight:600;color:#475569;font-family:inherit;max-width:220px;">' +
+        '<option value="TODOS">Todos los clientes</option>' +
+        clientesUnicos.map(function(c){ return '<option value="' + c.replace(/"/g,'&quot;') + '">' + c + '</option>'; }).join('') +
+      '</select>' +
+      '<select id="cat-comp-orden" style="padding:8px 12px;border:1.5px solid #e0e4f0;border-radius:8px;font-size:.74rem;background:white;cursor:pointer;font-weight:600;color:#475569;font-family:inherit;">' +
+        '<option value="qty_desc">Más comprometido primero</option>' +
+        '<option value="qty_asc">Menos comprometido primero</option>' +
+        '<option value="fecha_asc">Más antiguo primero</option>' +
+        '<option value="fecha_desc">Más reciente primero</option>' +
+        '<option value="ref_asc">REF (A→Z)</option>' +
+      '</select>' +
+      '<label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:.72rem;font-weight:700;color:#dc2626;background:#fee2e2;padding:7px 11px;border-radius:8px;border:1.5px solid #fca5a5;"><input type="checkbox" id="cat-comp-prob" style="cursor:pointer;">⚠ Solo problemáticos</label>' +
+      '<label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:.72rem;font-weight:700;color:#a16207;background:#fef9c3;padding:7px 11px;border-radius:8px;border:1.5px solid #fde047;"><input type="checkbox" id="cat-comp-huerf" style="cursor:pointer;">👻 Solo huérfanos</label>' +
+    '</div>' +
+
+    // Tabla
+    '<div style="flex:1;overflow:auto;">' +
+      '<table style="width:100%;border-collapse:collapse;font-size:.78rem;">' +
+        '<thead style="position:sticky;top:0;z-index:1;">' +
+          '<tr style="background:#1B1F6B;color:#fff;">' +
+            '<th style="padding:11px 12px;text-align:left;font-size:.68rem;letter-spacing:.5px;font-family:\'Barlow Condensed\',sans-serif;">REFERENCIA</th>' +
+            '<th style="padding:11px 12px;text-align:left;font-size:.68rem;letter-spacing:.5px;font-family:\'Barlow Condensed\',sans-serif;">DESCRIPCIÓN</th>' +
+            '<th style="padding:11px 12px;text-align:center;font-size:.68rem;letter-spacing:.5px;font-family:\'Barlow Condensed\',sans-serif;">STOCK REAL</th>' +
+            '<th style="padding:11px 12px;text-align:center;font-size:.68rem;letter-spacing:.5px;font-family:\'Barlow Condensed\',sans-serif;background:#b45309;">COMPROMETIDO</th>' +
+            '<th style="padding:11px 12px;text-align:center;font-size:.68rem;letter-spacing:.5px;font-family:\'Barlow Condensed\',sans-serif;">DISPONIBLE</th>' +
+            '<th style="padding:11px 12px;text-align:center;font-size:.68rem;letter-spacing:.5px;font-family:\'Barlow Condensed\',sans-serif;">ESTATUS</th>' +
+            '<th style="padding:11px 12px;text-align:left;font-size:.68rem;letter-spacing:.5px;font-family:\'Barlow Condensed\',sans-serif;">PEDIDOS Y CLIENTES</th>' +
+            '<th style="padding:11px 12px;text-align:center;font-size:.68rem;letter-spacing:.5px;font-family:\'Barlow Condensed\',sans-serif;">ACCIÓN</th>' +
+          '</tr>' +
+        '</thead>' +
+        '<tbody id="cat-comp-tbody"></tbody>' +
+      '</table>' +
+    '</div>' +
+
+    // Footer
+    '<div style="padding:12px 24px;background:#fafbfd;border-top:1px solid #e8eaf6;display:flex;justify-content:space-between;align-items:center;flex-shrink:0;flex-wrap:wrap;gap:8px;">' +
+      '<div style="font-size:.7rem;color:#64748b;">💡 <strong>Stock insuficiente</strong>: comprometido > stock real. <strong>Huérfano</strong>: el pedido ya no existe pero la reserva sigue.</div>' +
+      '<div style="display:flex;gap:8px;">' +
+        '<button id="cat-comp-export" style="background:rgba(34,197,94,.1);border:1.5px solid rgba(34,197,94,.4);color:#15803d;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:800;font-size:.72rem;font-family:inherit;text-transform:uppercase;letter-spacing:.4px;">📊 Exportar Excel</button>' +
+        '<button onclick="document.getElementById(\'cat-comp-overlay\').remove(); if(typeof libAbrirPanelAuditoria===\'function\') libAbrirPanelAuditoria();" style="background:linear-gradient(135deg,#dc2626,#991b1b);color:#fff;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:800;font-size:.72rem;font-family:inherit;text-transform:uppercase;letter-spacing:.4px;">🔓 Ir a Sincerar Inventario</button>' +
+      '</div>' +
+    '</div>';
+
+  overlay.appendChild(box);
+  document.body.appendChild(overlay);
+
+  // Listeners de filtros
+  var inSearch = document.getElementById('cat-comp-search');
+  var selMarca = document.getElementById('cat-comp-marca');
+  var selCliente = document.getElementById('cat-comp-cliente');
+  var selOrden = document.getElementById('cat-comp-orden');
+  var chkProb = document.getElementById('cat-comp-prob');
+  var chkHuerf = document.getElementById('cat-comp-huerf');
+  var btnExport = document.getElementById('cat-comp-export');
+
+  if (inSearch) inSearch.oninput = function(){ filtros.busqueda = this.value.trim(); renderTabla(); };
+  if (selMarca) selMarca.onchange = function(){ filtros.marca = this.value; renderTabla(); };
+  if (selCliente) selCliente.onchange = function(){ filtros.cliente = this.value; renderTabla(); };
+  if (selOrden) selOrden.onchange = function(){ filtros.orden = this.value; renderTabla(); };
+  if (chkProb) chkProb.onchange = function(){ filtros.soloProblema = this.checked; renderTabla(); };
+  if (chkHuerf) chkHuerf.onchange = function(){ filtros.soloHuerfano = this.checked; renderTabla(); };
+
+  if (btnExport) btnExport.onclick = function(){
+    if (typeof XLSX === 'undefined') {
+      alert('La librería XLSX no está disponible. Recarga la página.');
+      return;
+    }
+    var filtradas = aplicarFiltros();
+    if (filtradas.length === 0) { alert('No hay datos para exportar'); return; }
+
+    var data = [];
+    filtradas.forEach(function(r){
+      r.pedidos.forEach(function(p){
+        data.push({
+          'REFERENCIA': r.ref,
+          'COD. BARRA': r.barra || '',
+          'DESCRIPCION': r.desc,
+          'MARCA': r.marca,
+          'STOCK REAL': r.stockReal,
+          'COMPROMETIDO TOTAL': r.qtyComp,
+          'DISPONIBLE': r.disponible,
+          'ESTATUS': r.problematico ? 'STOCK INSUFICIENTE' : (r.huerfanoTotal ? 'HUERFANO' : 'OK'),
+          'PEDIDO': p.numP,
+          'QTY EN PEDIDO': p.qty,
+          'CLIENTE': p.cliente,
+          'FECHA PEDIDO': p.fecha || '',
+          'PEDIDO HUERFANO': p.esHuerfano ? 'SI' : 'NO'
+        });
+      });
+    });
+
+    var ws = XLSX.utils.json_to_sheet(data);
+    var wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Comprometido');
+    var fechaArch = new Date().toISOString().slice(0,10).replace(/-/g,'');
+    XLSX.writeFile(wb, 'Comprometido_Detallado_' + fechaArch + '.xlsx');
+  };
+
+  renderTabla();
+}
+window.catAbrirComprometidoDetallado = catAbrirComprometidoDetallado;
+
+// Actualizar el badge contador del botón "🔒 Comprometido"
+function catActualizarBadgeComp() {
+  var comp = (typeof getComprometido === 'function') ? getComprometido() : {};
+  var totalRefs = Object.keys(comp).filter(function(r){ return comp[r] && comp[r].qty > 0; }).length;
+  var badge = document.getElementById('cat-comp-badge');
+  if (!badge) return;
+  if (totalRefs > 0) {
+    badge.textContent = totalRefs;
+    badge.style.display = 'inline-block';
+  } else {
+    badge.style.display = 'none';
+  }
+}
+window.catActualizarBadgeComp = catActualizarBadgeComp;
+// Actualizar badge cada vez que renderiza el catálogo
+document.addEventListener('DOMContentLoaded', function(){
+  setTimeout(catActualizarBadgeComp, 1500);
+  // Refrescar cada 30s para reflejar cambios
+  setInterval(catActualizarBadgeComp, 30000);
+});
+
 // Actualizar el badge contador del botón "Mostrar / Ocultar"
 // Cuenta cuántos toggles están activos para dar visibilidad rápida
 function catActualizarBadgeVista() {
@@ -22719,10 +23073,24 @@ function _catDownloadPDFWithImgs(_prodImgsLocal) {
     }
   }
 
-  // Moneda: en modo cliente toma lo seleccionado; en modo interno solo se respeta 'NONE' (Sin Precio); resto fuerza USD
+  // Moneda: en modo cliente toma lo seleccionado; en modo interno respeta el _catModoPrecio del panel Mostrar/Ocultar
   var _selMonedaVal = (document.getElementById('cat-moneda-select') || {value:'USD'}).value;
-  var _catM = _catClientMode ? _selMonedaVal : (_selMonedaVal === 'NONE' ? 'NONE' : 'USD');
-  // Modo 'Sin Precio' — oculta todos los precios en el PDF. No afecta pantalla.
+  var _catM;
+  if (_catClientMode) {
+    _catM = _selMonedaVal;
+  } else if (_selMonedaVal === 'NONE') {
+    // Si el selector legacy de moneda dice NONE, respeta
+    _catM = 'NONE';
+  } else if (typeof _catModoPrecio !== 'undefined' && _catModoPrecio === 'NONE') {
+    // Nuevo: si el panel Mostrar/Ocultar tiene 'Sin Precio', el PDF también
+    _catM = 'NONE';
+  } else if (typeof _catModoPrecio !== 'undefined' && (_catModoPrecio === 'USD' || _catModoPrecio === 'BCV' || _catModoPrecio === 'TF')) {
+    // Nuevo: si el panel tiene un tipo de precio específico, el PDF lo respeta
+    _catM = _catModoPrecio;
+  } else {
+    _catM = 'USD';
+  }
+  // Modo 'Sin Precio' — oculta todos los precios en el PDF.
   var _catSinPrecio = (_catM === 'NONE');
   if (_catSinPrecio) _catM = 'USD'; // para cálculos internos de capital, etc., se normaliza a USD
   var tasaHoy = getTasaHoy() || 0;
@@ -23010,7 +23378,9 @@ function _catDownloadPDFWithImgs(_prodImgsLocal) {
     (function(){
       var bColor = ({EXCALIBUR:'#818cf8',GENIAL:'#34d399',MATRIX:'#fbbf24',LUMEN:'#f87171',MAXKILLER:'#c084fc',VARIOS:'#94a3b8'})[_refBrandFilter] || '#f47b3e';
       var brandLabel = _refBrandFilter !== 'ALL' ? _refBrandFilter : 'TODAS LAS MARCAS';
-      var monedaFull = _catSinPrecio ? 'Sin Precio' : (_catM === 'BCV' ? 'Bolívares BCV' : _catM === 'TF' ? 'Tierra Firme' : 'Dólares USD');
+      var monedaFull = _catSinPrecio
+        ? 'Sin Precio'
+        : (_catM === 'BCV' ? 'Bolívares (BCV)' : _catM === 'TF' ? 'Tierra Firme' : 'Dólares USD');
       var contactHTML = _catClientMode
         ? '<div class="cover-contact-name">FARMERS C.A.</div><div class="cover-contact-info">📞 0412-0445797<br>✉ farmersve@gmail.com</div>'
         : '<div class="cover-contact-name">USO INTERNO</div><div class="cover-contact-info">📞 0412-0445797 &nbsp;·&nbsp; ✉ farmersve@gmail.com<br><span style=\"color:rgba(255,255,255,.3);font-size:.65rem;\">Documento confidencial — No distribuir</span></div>';
