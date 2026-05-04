@@ -22123,7 +22123,8 @@ function catDownloadExcel(monedasParam) {
       var depoExtrasWidths = depoExtras.map(function(){ return 11; });
 
       if (sinPrecio) {
-        // ── SIN PRECIO — sin columnas PRECIO, TOTAL, EXIST. TOTAL ──
+        // ── SIN PRECIO — sin columnas PRECIO, TOTAL, EXIST. TOTAL, RESTANTE ──
+        // Modo Cliente solo oculta código interno; el resto siempre visible.
         if (!modoCliente) {
           heads  = ['REFERENCIA','COD. BARRAS','COD. INTERNO','DESCRIPCION',
                     'EMPAQUE','MED/CAJA','MARCA',
@@ -22131,23 +22132,28 @@ function catDownloadExcel(monedasParam) {
           widths = [13,17,15,48,10,10,12,9].concat(depoExtrasWidths).concat([11,12]);
           colO=8; colOrd = 9 + depoExtras.length + 1; ncols = 10 + depoExtras.length;
         } else {
+          // Cliente: oculta COD. INTERNO. Mantiene depósitos, EXISTENCIA y ORDENADA si los toggles del panel los pidieron.
           heads  = ['REFERENCIA','COD. BARRAS','DESCRIPCION',
-                    'EMPAQUE','MED/CAJA','MARCA','ORDEN'];
-          widths = [13,17,52,10,10,12,9];
-          colO=7; ncols=7;
+                    'EMPAQUE','MED/CAJA','MARCA',
+                    'ORDEN'].concat(depoExtras).concat(['EXISTENCIA','ORDENADA']);
+          widths = [13,17,52,10,10,12,9].concat(depoExtrasWidths).concat([11,12]);
+          colO=7; colOrd = 8 + depoExtras.length + 1; ncols = 9 + depoExtras.length;
         }
       } else if (!modoCliente) {
+        // Interno: muestra todo (incluye PRECIO, TOTAL, EXIST. TOTAL, RESTANTE)
         heads  = ['REFERENCIA','COD. BARRAS','COD. INTERNO','DESCRIPCION',
                   'EMPAQUE','MED/CAJA','MARCA',
                   'PRECIO '+monLabel+' ($)','ORDEN','TOTAL ($)'].concat(depoExtras).concat(['EXISTENCIA','ORDENADA','EXIST. TOTAL','RESTANTE']);
         widths = [13,17,15,48,10,10,12,14,9,14].concat(depoExtrasWidths).concat([11,12,12,12]);
         colP=8; colO=9; colT=10; colOrd = 11 + depoExtras.length + 1; ncols = 14 + depoExtras.length;
       } else {
+        // Cliente con precio: oculta COD. INTERNO, mantiene PRECIO/ORDEN/TOTAL.
+        // Mantiene depósitos, EXISTENCIA y ORDENADA. Sigue ocultando EXIST. TOTAL y RESTANTE (son cálculos internos).
         heads  = ['REFERENCIA','COD. BARRAS','DESCRIPCION',
                   'EMPAQUE','MED/CAJA','MARCA',
-                  'PRECIO '+monLabel+' ($)','ORDEN','TOTAL ($)'];
-        widths = [13,17,52,10,10,12,14,9,14];
-        colP=7; colO=8; colT=9; ncols=9;
+                  'PRECIO '+monLabel+' ($)','ORDEN','TOTAL ($)'].concat(depoExtras).concat(['EXISTENCIA','ORDENADA']);
+        widths = [13,17,52,10,10,12,14,9,14].concat(depoExtrasWidths).concat([11,12]);
+        colP=7; colO=8; colT=9; colOrd = 10 + depoExtras.length + 1; ncols = 11 + depoExtras.length;
       }
 
       // ═══ Calcular ORDENADA REAL una sola vez antes del map (de OCs vivas) ═══
@@ -22174,8 +22180,10 @@ function catDownloadExcel(monedasParam) {
                     p.e||'UNIDAD', p.m||'', p.br||'',
                     null].concat(depoVals).concat([ex, exOrdenada]);
           } else {
+            // Cliente: oculta COD. INTERNO. Mantiene depo, EXISTENCIA, ORDENADA.
             return [p.r||'', String(p.b||''), p.d||'',
-                    p.e||'UNIDAD', p.m||'', p.br||'', null];
+                    p.e||'UNIDAD', p.m||'', p.br||'',
+                    null].concat(depoVals).concat([ex, exOrdenada]);
           }
         }
 
@@ -22184,15 +22192,16 @@ function catDownloadExcel(monedasParam) {
         var ordRef = XLSX.utils.encode_col(colO-1) + fila;
         var preRef = XLSX.utils.encode_col(colP-1) + fila;
         if (!modoCliente) {
-          // El último null será reemplazado por una fórmula (RESTANTE = EXIST.TOTAL - ORDEN)
-          // que se inserta después con ws[col+row] = {f:...} para que Excel calcule en vivo
+          // Interno: incluye COD. INTERNO + EXIST. TOTAL + RESTANTE
           return [p.r||'', String(p.b||''), p.c||'', p.d||'',
                   p.e||'UNIDAD', p.m||'', p.br||'',
                   precio, null, {f: ordRef+'*'+preRef}].concat(depoVals).concat([ex, exOrdenada, ex, null]);
         } else {
+          // Cliente: oculta COD. INTERNO + EXIST. TOTAL + RESTANTE.
+          // Mantiene PRECIO/ORDEN/TOTAL + depo + EXISTENCIA + ORDENADA.
           return [p.r||'', String(p.b||''), p.d||'',
                   p.e||'UNIDAD', p.m||'', p.br||'',
-                  precio, null, {f: ordRef+'*'+preRef}];
+                  precio, null, {f: ordRef+'*'+preRef}].concat(depoVals).concat([ex, exOrdenada]);
         }
       });
 
@@ -22206,9 +22215,9 @@ function catDownloadExcel(monedasParam) {
         totRow[colT-1] = {f:'SUM('+totCol+'6:'+totCol+lastData+')'};
       }
 
-      // ═══ TOTAL PARA ORDENADA (solo modo interno) ═══
-      if (!modoCliente && colOrd) {
-        var ordCol2 = XLSX.utils.encode_col(colOrd-1);  // L = ORDENADA
+      // ═══ TOTAL PARA ORDENADA (aplica también en Modo Cliente porque la columna sigue presente) ═══
+      if (colOrd) {
+        var ordCol2 = XLSX.utils.encode_col(colOrd-1);  // posición de ORDENADA
         totRow[colOrd-1] = {f:'SUM('+ordCol2+'6:'+ordCol2+lastData+')'};
       }
       var r1 = new Array(ncols).fill(null);
