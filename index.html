@@ -3935,6 +3935,149 @@ window.saveComprometido = function(comp) {
   if(window.fbSaveComprometido) window.fbSaveComprometido(comp);
   if(window.fbTriggerPortalSnapshot) window.fbTriggerPortalSnapshot('saveComprometido');
 };
+
+// ═══════════════════════════════════════════════════════════════════════
+// MOTOR DE LIBERACIÓN DE COMPROMETIDO
+// ═══════════════════════════════════════════════════════════════════════
+// Estructura del comprometido: comp[ref] = { qty: number, pedidos: [{numP, qty, fecha}] }
+// Política: al liberar, ELIMINAR la línea completa del pedido que reservaba esa ref.
+// Genera un log persistente en farmers_liberacion_log para auditoría.
+
+var LIB_LOG_KEY = 'farmers_liberacion_log';
+
+window.libGetLog = function() {
+  try { var r = localStorage.getItem(LIB_LOG_KEY); if(r) return JSON.parse(r); } catch(e){}
+  return [];
+};
+
+window.libSaveLog = function(entry) {
+  try {
+    var log = window.libGetLog();
+    log.unshift(entry); // más nuevo primero
+    if(log.length > 500) log = log.slice(0, 500); // límite 500 entradas
+    localStorage.setItem(LIB_LOG_KEY, JSON.stringify(log));
+  } catch(e){ console.warn('[libSaveLog]', e); }
+};
+
+// libLiberarRef(ref, opciones)
+//   ref: string — referencia a liberar
+//   opciones: {
+//     numP: string|null         — si se pasa, libera SOLO de ese pedido. Si null, libera TODOS los pedidos
+//     qty: number|null          — cantidad a liberar. Si null, libera TODA la qty
+//     eliminarLineaPedido: bool — true = quita la línea del pedido en farmers_ms_pedidos
+//     motivo: string            — texto descriptivo opcional
+//     skipConfirm: bool         — si true no muestra modal (usado desde batch)
+//   }
+// Devuelve { ok: bool, qtyLiberada: number, pedidosAfectados: [{numP, qty}], mensaje: string }
+window.libLiberarRef = function(ref, opciones) {
+  opciones = opciones || {};
+  var resultado = { ok: false, qtyLiberada: 0, pedidosAfectados: [], mensaje: '' };
+
+  var comp = window.getComprometido();
+  if (!comp[ref] || !comp[ref].qty || comp[ref].qty <= 0) {
+    resultado.mensaje = 'La referencia ' + ref + ' no tiene unidades comprometidas.';
+    return resultado;
+  }
+
+  var pedidosComp = (comp[ref].pedidos || []).slice();
+  var qtyLiberar = opciones.qty || comp[ref].qty;
+  qtyLiberar = Math.min(qtyLiberar, comp[ref].qty);
+
+  // ── Filtrar pedidos a afectar ──
+  var pedidosAAfectar = [];
+  if (opciones.numP) {
+    var p = pedidosComp.find(function(x){ return x.numP === opciones.numP; });
+    if (!p) {
+      resultado.mensaje = 'No se encontró el pedido ' + opciones.numP + ' en el comprometido de ' + ref;
+      return resultado;
+    }
+    pedidosAAfectar.push({ numP: p.numP, qty: Math.min(qtyLiberar, p.qty||0) });
+  } else {
+    // Liberar de todos los pedidos hasta cubrir qtyLiberar
+    var restante = qtyLiberar;
+    pedidosComp.forEach(function(p){
+      if (restante <= 0) return;
+      var libDeEste = Math.min(restante, p.qty||0);
+      if (libDeEste > 0) {
+        pedidosAAfectar.push({ numP: p.numP, qty: libDeEste });
+        restante -= libDeEste;
+      }
+    });
+  }
+
+  if (pedidosAAfectar.length === 0) {
+    resultado.mensaje = 'No hay pedidos que liberar para ' + ref;
+    return resultado;
+  }
+
+  // ── 1. Actualizar el comprometido ──
+  var qtyTotalLiberada = 0;
+  pedidosAAfectar.forEach(function(pa){
+    var idx = comp[ref].pedidos.findIndex(function(x){ return x.numP === pa.numP; });
+    if (idx >= 0) {
+      comp[ref].pedidos[idx].qty = Math.max(0, (comp[ref].pedidos[idx].qty||0) - pa.qty);
+      if (comp[ref].pedidos[idx].qty === 0) {
+        comp[ref].pedidos.splice(idx, 1);
+      }
+    }
+    comp[ref].qty = Math.max(0, (comp[ref].qty||0) - pa.qty);
+    qtyTotalLiberada += pa.qty;
+  });
+
+  // Si quedó en 0, eliminar la entrada completa
+  if (comp[ref].qty <= 0) {
+    delete comp[ref];
+  }
+  window.saveComprometido(comp);
+
+  // ── 2. Eliminar línea del pedido en farmers_ms_pedidos (si así se pidió) ──
+  if (opciones.eliminarLineaPedido !== false) {
+    var pedidos = window.getMsPedidos();
+    var huboCambios = false;
+    pedidosAAfectar.forEach(function(pa){
+      var pidx = pedidos.findIndex(function(x){ return x.numP === pa.numP; });
+      if (pidx >= 0) {
+        var pedido = pedidos[pidx];
+        if (pedido.items && Array.isArray(pedido.items)) {
+          var iidx = pedido.items.findIndex(function(it){ return it.ref === ref; });
+          if (iidx >= 0) {
+            pedido.items.splice(iidx, 1);
+            huboCambios = true;
+          }
+        }
+      }
+    });
+    if (huboCambios) {
+      window.saveMsPedidos(pedidos);
+      // También limpiar de MS.data si está activo el mismo pedido
+      if (typeof MS !== 'undefined' && MS && MS.data && Array.isArray(MS.data)) {
+        var didx = MS.data.findIndex(function(d){ return d.ref === ref; });
+        var coincide = pedidosAAfectar.some(function(pa){ return MS.numPedido === pa.numP; });
+        if (coincide && didx >= 0) {
+          MS.data.splice(didx, 1);
+        }
+      }
+    }
+  }
+
+  // ── 3. Log de auditoría ──
+  window.libSaveLog({
+    fecha: new Date().toISOString(),
+    fechaLocal: new Date().toLocaleString('es-VE'),
+    ref: ref,
+    qtyLiberada: qtyTotalLiberada,
+    pedidosAfectados: pedidosAAfectar.slice(),
+    eliminoLineas: opciones.eliminarLineaPedido !== false,
+    motivo: opciones.motivo || '',
+    usuario: (typeof CURRENT_USER!=='undefined'&&CURRENT_USER)?CURRENT_USER:'OGK'
+  });
+
+  resultado.ok = true;
+  resultado.qtyLiberada = qtyTotalLiberada;
+  resultado.pedidosAfectados = pedidosAAfectar;
+  resultado.mensaje = '✓ Liberadas ' + qtyTotalLiberada + ' uds de ' + ref + ' (' + pedidosAAfectar.length + ' pedido' + (pedidosAAfectar.length!==1?'s':'') + ')';
+  return resultado;
+};
 window.getDisponible = function(ref) {
   var inv  = typeof getInventory==='function' ? getInventory() : {};
   var comp = getComprometido();
@@ -3951,6 +4094,396 @@ window.saveMsPedidos = function(pedidos) {
   if(window.fbSaveMsPedidos) window.fbSaveMsPedidos(pedidos);
   // Trigger snapshot del portal — los ms_pedidos afectan el comprometido visible
   if(window.fbTriggerPortalSnapshot) window.fbTriggerPortalSnapshot('saveMsPedidos');
+};
+
+// ═══════════════════════════════════════════════════════════════════════
+// MODAL DE CONFIRMACIÓN DE LIBERACIÓN (reutilizable por las 3 vías)
+// ═══════════════════════════════════════════════════════════════════════
+// Muestra detalles de la ref comprometida y ejecuta la liberación.
+// libModalLiberar(ref, opts)
+//   ref: string — referencia
+//   opts: { numP: string|null (si se pasa, restringe a un solo pedido),
+//           onSuccess: function (callback tras liberar exitosamente) }
+window.libModalLiberar = function(ref, opts) {
+  opts = opts || {};
+  var comp = window.getComprometido();
+  if (!comp[ref] || !comp[ref].qty || comp[ref].qty <= 0) {
+    if (typeof showToast === 'function') showToast('La referencia ' + ref + ' no tiene unidades comprometidas.', 'info');
+    else alert('La referencia ' + ref + ' no tiene unidades comprometidas.');
+    return;
+  }
+
+  // Eliminar modal previo si existe
+  var prev = document.getElementById('lib-modal-overlay');
+  if (prev) prev.remove();
+
+  var prod = (typeof PRODUCTS !== 'undefined') ? PRODUCTS.find(function(p){ return p.r === ref; }) : null;
+  var pedidosComp = (comp[ref].pedidos || []).slice();
+
+  // Si está restringido a un pedido, filtrar
+  var pedidosMostrar = opts.numP
+    ? pedidosComp.filter(function(p){ return p.numP === opts.numP; })
+    : pedidosComp;
+
+  var qtyTotal = pedidosMostrar.reduce(function(s,p){ return s + (p.qty||0); }, 0);
+
+  // Buscar info de cada pedido (cliente, fecha)
+  var msPedidos = window.getMsPedidos();
+  var pedidosInfo = pedidosMostrar.map(function(pc){
+    var pedido = msPedidos.find(function(mp){ return mp.numP === pc.numP; });
+    return {
+      numP: pc.numP,
+      qty: pc.qty,
+      fecha: pc.fecha || (pedido ? pedido.fecha : ''),
+      cliente: pedido ? (pedido.cliente || pedido.clienteNombre || '—') : '⚠ Pedido huérfano (no existe)',
+      esHuerfano: !pedido
+    };
+  });
+
+  var ov = document.createElement('div');
+  ov.id = 'lib-modal-overlay';
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:99999;display:flex;align-items:center;justify-content:center;padding:20px;font-family:Barlow,sans-serif;';
+
+  var box = document.createElement('div');
+  box.style.cssText = 'background:#fff;border-radius:12px;max-width:680px;width:100%;max-height:90vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,.5);border:2px solid #1B1F6B;';
+
+  // Generar lista de pedidos afectados
+  var pedidosHTML = pedidosInfo.map(function(pi){
+    return '<div style="background:' + (pi.esHuerfano ? '#fef3c7' : '#f8faff') + ';border:1px solid ' + (pi.esHuerfano ? '#f59e0b' : '#e8eaf6') + ';border-radius:8px;padding:10px 14px;margin-bottom:6px;display:flex;justify-content:space-between;align-items:center;">' +
+      '<div>' +
+        '<div style="font-family:monospace;font-weight:700;color:#1B1F6B;font-size:.85rem;">' + pi.numP + '</div>' +
+        '<div style="font-size:.7rem;color:#64748b;margin-top:2px;text-transform:uppercase;letter-spacing:.3px;">' + (pi.cliente || '—') + '</div>' +
+        (pi.fecha ? '<div style="font-size:.65rem;color:#94a3b8;margin-top:1px;">' + pi.fecha + '</div>' : '') +
+      '</div>' +
+      '<div style="text-align:right;">' +
+        '<div style="font-family:Barlow Condensed,sans-serif;font-weight:900;font-size:1.4rem;color:#dc2626;">' + pi.qty + '</div>' +
+        '<div style="font-size:.62rem;color:#94a3b8;text-transform:uppercase;letter-spacing:.5px;">unidades</div>' +
+      '</div>' +
+    '</div>';
+  }).join('');
+
+  box.innerHTML =
+    // Header
+    '<div style="background:linear-gradient(135deg,#dc2626,#7f1d1d);padding:18px 24px;color:#fff;display:flex;justify-content:space-between;align-items:center;">' +
+      '<div>' +
+        '<div style="font-size:.65rem;font-weight:800;letter-spacing:2.5px;text-transform:uppercase;opacity:.7;">SINCERAR INVENTARIO</div>' +
+        '<div style="font-family:\'Barlow Condensed\',sans-serif;font-size:1.6rem;font-weight:900;letter-spacing:.5px;text-transform:uppercase;margin-top:2px;">🔓 Liberar Comprometido</div>' +
+      '</div>' +
+      '<button onclick="document.getElementById(\'lib-modal-overlay\').remove()" style="background:rgba(255,255,255,.15);border:none;color:#fff;width:34px;height:34px;border-radius:8px;cursor:pointer;font-size:1.1rem;font-weight:900;">✕</button>' +
+    '</div>' +
+
+    // Body
+    '<div style="padding:20px 24px;">' +
+      // Info ref
+      '<div style="background:#f8faff;border:1.5px solid #e8eaf6;border-radius:10px;padding:14px 18px;margin-bottom:18px;">' +
+        '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:14px;flex-wrap:wrap;">' +
+          '<div style="flex:1;min-width:240px;">' +
+            '<div style="font-size:.62rem;font-weight:800;color:#94a3b8;text-transform:uppercase;letter-spacing:1.5px;">REFERENCIA</div>' +
+            '<div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;color:#1B1F6B;font-size:1.4rem;letter-spacing:.5px;">' + ref + '</div>' +
+            (prod ? '<div style="font-size:.78rem;color:#64748b;margin-top:3px;">' + (prod.d||'—') + '</div>' : '') +
+            (prod && prod.b ? '<div style="font-family:monospace;font-size:.7rem;color:#94a3b8;margin-top:4px;">' + prod.b + '</div>' : '') +
+          '</div>' +
+          '<div style="text-align:right;background:#fee2e2;border-radius:8px;padding:10px 16px;border:1.5px solid #fca5a5;">' +
+            '<div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;font-size:2.2rem;color:#dc2626;line-height:1;">' + qtyTotal + '</div>' +
+            '<div style="font-size:.6rem;color:#7f1d1d;text-transform:uppercase;letter-spacing:1px;font-weight:700;margin-top:2px;">A LIBERAR</div>' +
+          '</div>' +
+        '</div>' +
+      '</div>' +
+
+      // Lista pedidos
+      '<div style="font-size:.68rem;font-weight:800;color:#64748b;text-transform:uppercase;letter-spacing:1.5px;margin-bottom:8px;">PEDIDO' + (pedidosInfo.length!==1?'S':'') + ' AFECTADO' + (pedidosInfo.length!==1?'S':'') + '</div>' +
+      '<div style="max-height:240px;overflow-y:auto;margin-bottom:18px;">' + pedidosHTML + '</div>' +
+
+      // Acción + motivo
+      '<div style="background:#fffbeb;border:1.5px solid #fde68a;border-radius:8px;padding:12px 16px;margin-bottom:16px;">' +
+        '<div style="font-size:.72rem;color:#78350f;line-height:1.5;">' +
+          '<strong>⚠ Esta acción:</strong>' +
+          '<ul style="margin:6px 0 0 18px;padding:0;">' +
+            '<li>Libera <strong>' + qtyTotal + ' unidades</strong> del inventario comprometido</li>' +
+            '<li><strong>Elimina la línea de ' + ref + '</strong> del pedido (la referencia desaparece del pedido)</li>' +
+            '<li>Queda registrada en el log de auditoría</li>' +
+          '</ul>' +
+        '</div>' +
+      '</div>' +
+
+      // Motivo (opcional)
+      '<div style="margin-bottom:8px;">' +
+        '<div style="font-size:.68rem;font-weight:800;color:#64748b;text-transform:uppercase;letter-spacing:1.5px;margin-bottom:5px;">MOTIVO (OPCIONAL)</div>' +
+        '<input id="lib-motivo" type="text" placeholder="Ej: Inventario físico no coincide, mercancía dañada, etc." style="width:100%;padding:9px 12px;border:1.5px solid #e0e4f0;border-radius:8px;font-size:.82rem;outline:none;font-family:inherit;" />' +
+      '</div>' +
+    '</div>' +
+
+    // Footer
+    '<div style="padding:14px 24px;background:#f8faff;border-top:1px solid #e8eaf6;display:flex;justify-content:flex-end;gap:10px;">' +
+      '<button id="lib-cancel" style="background:#f3f4f6;color:#4b5563;border:1.5px solid #e5e7eb;border-radius:8px;padding:10px 22px;cursor:pointer;font-weight:700;font-size:.78rem;font-family:inherit;text-transform:uppercase;letter-spacing:.5px;">CANCELAR</button>' +
+      '<button id="lib-confirm" style="background:linear-gradient(135deg,#dc2626,#991b1b);color:#fff;border:none;border-radius:8px;padding:10px 22px;cursor:pointer;font-weight:800;font-size:.78rem;font-family:inherit;text-transform:uppercase;letter-spacing:.5px;box-shadow:0 4px 14px rgba(220,38,38,.4);">🔓 CONFIRMAR LIBERACIÓN</button>' +
+    '</div>';
+
+  ov.appendChild(box);
+  document.body.appendChild(ov);
+
+  document.getElementById('lib-cancel').onclick = function(){ ov.remove(); };
+  document.getElementById('lib-confirm').onclick = function(){
+    var motivo = (document.getElementById('lib-motivo')||{value:''}).value.trim();
+    var libOpts = {
+      eliminarLineaPedido: true,
+      motivo: motivo
+    };
+    if (opts.numP) libOpts.numP = opts.numP;
+
+    var resultado = window.libLiberarRef(ref, libOpts);
+    ov.remove();
+
+    if (resultado.ok) {
+      if (typeof showToast === 'function') showToast(resultado.mensaje, 'success');
+      else alert(resultado.mensaje);
+      // Refrescar UIs activas
+      if (typeof renderInvTable === 'function') renderInvTable();
+      if (typeof ptRender === 'function') ptRender();
+      if (typeof opts.onSuccess === 'function') opts.onSuccess(resultado);
+    } else {
+      if (typeof showToast === 'function') showToast(resultado.mensaje || 'Error al liberar', 'error');
+      else alert(resultado.mensaje || 'Error al liberar');
+    }
+  };
+};
+
+// ═══════════════════════════════════════════════════════════════════════
+// PANEL DE AUDITORÍA — lista todas las refs con comprometido
+// ═══════════════════════════════════════════════════════════════════════
+window.libAbrirPanelAuditoria = function() {
+  var prev = document.getElementById('lib-audit-overlay');
+  if (prev) prev.remove();
+
+  var comp = window.getComprometido();
+  var inv = (typeof getInventory === 'function') ? getInventory() : {};
+  var msPedidos = window.getMsPedidos();
+  var pedidosMap = {};
+  msPedidos.forEach(function(p){ pedidosMap[p.numP] = p; });
+
+  // Construir lista de refs comprometidas
+  var refsComp = Object.keys(comp).filter(function(r){
+    return comp[r] && comp[r].qty > 0;
+  }).map(function(r){
+    var prod = (typeof PRODUCTS !== 'undefined') ? PRODUCTS.find(function(p){ return p.r === r; }) : null;
+    var stock = inv[r] !== undefined ? inv[r] : (prod ? (prod.ex||0) : 0);
+    var qtyComp = comp[r].qty || 0;
+    var disponible = Math.max(0, stock - qtyComp);
+    var pedidos = (comp[r].pedidos||[]).map(function(pc){
+      var p = pedidosMap[pc.numP];
+      return { numP: pc.numP, qty: pc.qty, fecha: pc.fecha, cliente: p?(p.cliente||p.clienteNombre||'—'):'⚠ HUÉRFANO', esHuerfano: !p };
+    });
+    return {
+      ref: r,
+      desc: prod ? (prod.d||'') : '—',
+      barra: prod ? (prod.b||'') : '',
+      stock: stock,
+      qtyComp: qtyComp,
+      disponible: disponible,
+      pedidos: pedidos,
+      problematico: stock < qtyComp,  // stock real menor que comprometido = problema serio
+      huerfanoTotal: pedidos.every(function(pi){ return pi.esHuerfano; })
+    };
+  }).sort(function(a,b){
+    // Problemáticos primero, luego huérfanos, luego por qty descendente
+    if (a.problematico && !b.problematico) return -1;
+    if (!a.problematico && b.problematico) return 1;
+    if (a.huerfanoTotal && !b.huerfanoTotal) return -1;
+    if (!a.huerfanoTotal && b.huerfanoTotal) return 1;
+    return b.qtyComp - a.qtyComp;
+  });
+
+  var ov = document.createElement('div');
+  ov.id = 'lib-audit-overlay';
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:99998;display:flex;align-items:center;justify-content:center;padding:20px;font-family:Barlow,sans-serif;';
+
+  var box = document.createElement('div');
+  box.style.cssText = 'background:#fff;border-radius:12px;max-width:1100px;width:100%;max-height:92vh;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.5);border:2px solid #1B1F6B;';
+
+  var problematicos = refsComp.filter(function(r){ return r.problematico; }).length;
+  var huerfanos = refsComp.filter(function(r){ return r.huerfanoTotal; }).length;
+
+  // Generar filas tabla
+  var rows = refsComp.map(function(r, i){
+    var bg = i%2===0 ? '#fff' : '#f8faff';
+    var alertColor = r.problematico ? '#dc2626' : (r.huerfanoTotal ? '#b45309' : '#1B1F6B');
+    var alertBg = r.problematico ? '#fee2e2' : (r.huerfanoTotal ? '#fef3c7' : '#f0f4ff');
+    var alertText = r.problematico ? '⚠ STOCK INSUFICIENTE' : (r.huerfanoTotal ? '👻 HUÉRFANO' : '✓ OK');
+
+    var pedidosTxt = r.pedidos.map(function(p){
+      return '<div style="font-size:.65rem;color:' + (p.esHuerfano?'#b45309':'#64748b') + ';margin-top:2px;"><span style="font-family:monospace;font-weight:700;">' + p.numP + '</span> (' + p.qty + ') ' + (p.cliente||'—') + '</div>';
+    }).join('');
+
+    return '<tr style="background:' + bg + ';border-bottom:1px solid #f0f2f8;">' +
+      '<td style="padding:10px 12px;"><input type="checkbox" class="lib-audit-chk" data-ref="' + r.ref + '" style="width:16px;height:16px;cursor:pointer;"></td>' +
+      '<td style="padding:10px 12px;font-family:\'Barlow Condensed\',sans-serif;font-weight:900;color:#1B1F6B;font-size:.95rem;">' + r.ref + (r.barra?'<div style="font-family:monospace;font-size:.6rem;color:#94a3b8;font-weight:500;letter-spacing:.3px;">' + r.barra + '</div>':'') + '</td>' +
+      '<td style="padding:10px 12px;font-size:.74rem;color:#64748b;max-width:200px;">' + r.desc + '</td>' +
+      '<td style="padding:10px 12px;text-align:center;font-weight:700;color:' + (r.stock>0?'#16a34a':'#dc2626') + ';">' + r.stock + '</td>' +
+      '<td style="padding:10px 12px;text-align:center;font-family:\'Barlow Condensed\',sans-serif;font-weight:900;color:#dc2626;font-size:1.05rem;">' + r.qtyComp + '</td>' +
+      '<td style="padding:10px 12px;text-align:center;font-weight:700;color:' + (r.disponible>0?'#16a34a':'#94a3b8') + ';">' + r.disponible + '</td>' +
+      '<td style="padding:10px 12px;text-align:center;"><span style="background:' + alertBg + ';color:' + alertColor + ';padding:3px 8px;border-radius:10px;font-size:.62rem;font-weight:800;text-transform:uppercase;letter-spacing:.5px;">' + alertText + '</span></td>' +
+      '<td style="padding:10px 12px;font-size:.7rem;">' + pedidosTxt + '</td>' +
+      '<td style="padding:10px 12px;text-align:center;"><button onclick="libModalLiberar(\'' + r.ref + '\', { onSuccess: libAbrirPanelAuditoria })" style="background:linear-gradient(135deg,#dc2626,#991b1b);color:#fff;border:none;border-radius:6px;padding:5px 12px;cursor:pointer;font-weight:800;font-size:.7rem;font-family:inherit;text-transform:uppercase;letter-spacing:.4px;">🔓 LIBERAR</button></td>' +
+    '</tr>';
+  }).join('');
+
+  if (refsComp.length === 0) {
+    rows = '<tr><td colspan="9" style="padding:40px 20px;text-align:center;color:#64748b;font-size:.9rem;">✓ No hay referencias comprometidas. Inventario sincerado.</td></tr>';
+  }
+
+  box.innerHTML =
+    // Header
+    '<div style="background:linear-gradient(135deg,#1B1F6B,#312e81);padding:18px 24px;color:#fff;display:flex;justify-content:space-between;align-items:center;flex-shrink:0;">' +
+      '<div>' +
+        '<div style="font-size:.65rem;font-weight:800;letter-spacing:2.5px;text-transform:uppercase;opacity:.7;">AUDITORÍA DE INVENTARIO COMPROMETIDO</div>' +
+        '<div style="font-family:\'Barlow Condensed\',sans-serif;font-size:1.6rem;font-weight:900;letter-spacing:.5px;text-transform:uppercase;margin-top:2px;">🔓 Sincerar Inventario</div>' +
+      '</div>' +
+      '<button onclick="document.getElementById(\'lib-audit-overlay\').remove()" style="background:rgba(255,255,255,.15);border:none;color:#fff;width:34px;height:34px;border-radius:8px;cursor:pointer;font-size:1.1rem;font-weight:900;">✕</button>' +
+    '</div>' +
+
+    // Stats
+    '<div style="padding:14px 24px;background:#f8faff;border-bottom:1px solid #e8eaf6;display:flex;gap:12px;flex-wrap:wrap;flex-shrink:0;">' +
+      '<div style="background:#f0f4ff;border:1.5px solid #c7d2fe;border-radius:8px;padding:8px 14px;flex:1;min-width:140px;">' +
+        '<div style="font-size:.62rem;color:#4338ca;font-weight:800;letter-spacing:1px;text-transform:uppercase;">TOTAL REFS</div>' +
+        '<div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;font-size:1.6rem;color:#1B1F6B;">' + refsComp.length + '</div>' +
+      '</div>' +
+      '<div style="background:#fee2e2;border:1.5px solid #fca5a5;border-radius:8px;padding:8px 14px;flex:1;min-width:140px;">' +
+        '<div style="font-size:.62rem;color:#7f1d1d;font-weight:800;letter-spacing:1px;text-transform:uppercase;">⚠ STOCK INSUFICIENTE</div>' +
+        '<div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;font-size:1.6rem;color:#dc2626;">' + problematicos + '</div>' +
+      '</div>' +
+      '<div style="background:#fef3c7;border:1.5px solid #fcd34d;border-radius:8px;padding:8px 14px;flex:1;min-width:140px;">' +
+        '<div style="font-size:.62rem;color:#78350f;font-weight:800;letter-spacing:1px;text-transform:uppercase;">👻 HUÉRFANOS</div>' +
+        '<div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;font-size:1.6rem;color:#b45309;">' + huerfanos + '</div>' +
+      '</div>' +
+      '<div style="flex:1;min-width:200px;display:flex;align-items:center;justify-content:flex-end;gap:8px;">' +
+        '<button id="lib-audit-only-problem" style="background:#fff;color:#dc2626;border:1.5px solid #fca5a5;border-radius:8px;padding:7px 14px;cursor:pointer;font-weight:700;font-size:.72rem;font-family:inherit;text-transform:uppercase;letter-spacing:.3px;">SOLO PROBLEMAS</button>' +
+        '<button id="lib-audit-batch" style="background:linear-gradient(135deg,#dc2626,#991b1b);color:#fff;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:800;font-size:.72rem;font-family:inherit;text-transform:uppercase;letter-spacing:.5px;">🔓 LIBERAR SELECCIONADAS</button>' +
+      '</div>' +
+    '</div>' +
+
+    // Tabla
+    '<div style="flex:1;overflow-y:auto;">' +
+      '<table style="width:100%;border-collapse:collapse;font-size:.78rem;">' +
+        '<thead style="position:sticky;top:0;z-index:1;">' +
+          '<tr style="background:#1B1F6B;color:#fff;">' +
+            '<th style="padding:10px 12px;text-align:left;width:36px;"><input type="checkbox" id="lib-audit-chkall" style="width:16px;height:16px;cursor:pointer;"></th>' +
+            '<th style="padding:10px 12px;text-align:left;font-size:.7rem;letter-spacing:.5px;">REFERENCIA</th>' +
+            '<th style="padding:10px 12px;text-align:left;font-size:.7rem;letter-spacing:.5px;">DESCRIPCIÓN</th>' +
+            '<th style="padding:10px 12px;text-align:center;font-size:.7rem;letter-spacing:.5px;">STOCK REAL</th>' +
+            '<th style="padding:10px 12px;text-align:center;font-size:.7rem;letter-spacing:.5px;">COMPROMETIDO</th>' +
+            '<th style="padding:10px 12px;text-align:center;font-size:.7rem;letter-spacing:.5px;">DISPONIBLE</th>' +
+            '<th style="padding:10px 12px;text-align:center;font-size:.7rem;letter-spacing:.5px;">ESTATUS</th>' +
+            '<th style="padding:10px 12px;text-align:left;font-size:.7rem;letter-spacing:.5px;">PEDIDOS</th>' +
+            '<th style="padding:10px 12px;text-align:center;font-size:.7rem;letter-spacing:.5px;">ACCIÓN</th>' +
+          '</tr>' +
+        '</thead>' +
+        '<tbody>' + rows + '</tbody>' +
+      '</table>' +
+    '</div>' +
+
+    // Footer
+    '<div style="padding:12px 24px;background:#f8faff;border-top:1px solid #e8eaf6;display:flex;justify-content:space-between;align-items:center;font-size:.7rem;color:#64748b;flex-shrink:0;">' +
+      '<div>💡 <strong>Stock insuficiente</strong>: el comprometido es mayor al stock real (lo más urgente). <strong>Huérfano</strong>: el pedido ya no existe pero la reserva quedó.</div>' +
+      '<button onclick="libVerLog()" style="background:none;border:none;color:#3b82f6;cursor:pointer;font-size:.7rem;font-weight:700;text-decoration:underline;font-family:inherit;">📋 Ver historial de liberaciones</button>' +
+    '</div>';
+
+  ov.appendChild(box);
+  document.body.appendChild(ov);
+
+  // Listeners
+  var chkAll = document.getElementById('lib-audit-chkall');
+  if (chkAll) chkAll.onchange = function(){
+    document.querySelectorAll('.lib-audit-chk').forEach(function(c){ c.checked = chkAll.checked; });
+  };
+  var btnOnlyP = document.getElementById('lib-audit-only-problem');
+  if (btnOnlyP) btnOnlyP.onclick = function(){
+    document.querySelectorAll('.lib-audit-chk').forEach(function(c){
+      var ref = c.dataset.ref;
+      var info = refsComp.find(function(r){ return r.ref === ref; });
+      c.checked = info && (info.problematico || info.huerfanoTotal);
+    });
+  };
+  var btnBatch = document.getElementById('lib-audit-batch');
+  if (btnBatch) btnBatch.onclick = function(){
+    var seleccionadas = Array.from(document.querySelectorAll('.lib-audit-chk:checked')).map(function(c){ return c.dataset.ref; });
+    if (seleccionadas.length === 0) {
+      if (typeof showToast === 'function') showToast('Selecciona al menos una referencia', 'info');
+      return;
+    }
+    if (!confirm('¿Liberar ' + seleccionadas.length + ' referencia' + (seleccionadas.length!==1?'s':'') + ' comprometida' + (seleccionadas.length!==1?'s':'') + ' y eliminar las líneas de los pedidos correspondientes?\n\nEsta acción quedará registrada en el log de auditoría.')) return;
+
+    var totalLib = 0, errores = 0;
+    seleccionadas.forEach(function(ref){
+      var res = window.libLiberarRef(ref, { eliminarLineaPedido: true, motivo: 'Liberación masiva desde auditoría' });
+      if (res.ok) totalLib += res.qtyLiberada;
+      else errores++;
+    });
+    if (typeof showToast === 'function') {
+      showToast('✓ Liberadas ' + totalLib + ' uds en ' + (seleccionadas.length-errores) + ' referencias' + (errores>0?' ('+errores+' fallaron)':''), 'success');
+    }
+    if (typeof renderInvTable === 'function') renderInvTable();
+    if (typeof ptRender === 'function') ptRender();
+    window.libAbrirPanelAuditoria();
+  };
+};
+
+// Ver historial de liberaciones
+window.libVerLog = function() {
+  var log = window.libGetLog();
+  if (log.length === 0) {
+    alert('No hay liberaciones registradas todavía.');
+    return;
+  }
+
+  var prev = document.getElementById('lib-log-overlay');
+  if (prev) prev.remove();
+
+  var ov = document.createElement('div');
+  ov.id = 'lib-log-overlay';
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:99999;display:flex;align-items:center;justify-content:center;padding:20px;font-family:Barlow,sans-serif;';
+
+  var box = document.createElement('div');
+  box.style.cssText = 'background:#fff;border-radius:12px;max-width:900px;width:100%;max-height:90vh;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.5);border:2px solid #1B1F6B;';
+
+  var rows = log.map(function(e, i){
+    var bg = i%2===0 ? '#fff' : '#f8faff';
+    var pedidos = (e.pedidosAfectados||[]).map(function(p){ return p.numP+' ('+p.qty+')'; }).join(', ');
+    return '<tr style="background:' + bg + ';border-bottom:1px solid #f0f2f8;">' +
+      '<td style="padding:8px 12px;font-size:.7rem;color:#64748b;white-space:nowrap;">' + (e.fechaLocal||e.fecha) + '</td>' +
+      '<td style="padding:8px 12px;font-family:\'Barlow Condensed\',sans-serif;font-weight:900;color:#1B1F6B;">' + e.ref + '</td>' +
+      '<td style="padding:8px 12px;text-align:center;font-weight:900;color:#dc2626;">' + e.qtyLiberada + '</td>' +
+      '<td style="padding:8px 12px;font-family:monospace;font-size:.7rem;color:#64748b;">' + pedidos + '</td>' +
+      '<td style="padding:8px 12px;font-size:.72rem;color:#475569;">' + (e.motivo||'—') + '</td>' +
+      '<td style="padding:8px 12px;font-size:.7rem;color:#64748b;">' + (e.usuario||'—') + '</td>' +
+    '</tr>';
+  }).join('');
+
+  box.innerHTML =
+    '<div style="background:linear-gradient(135deg,#1B1F6B,#312e81);padding:18px 24px;color:#fff;display:flex;justify-content:space-between;align-items:center;flex-shrink:0;">' +
+      '<div>' +
+        '<div style="font-size:.65rem;font-weight:800;letter-spacing:2.5px;text-transform:uppercase;opacity:.7;">HISTORIAL DE AUDITORÍA</div>' +
+        '<div style="font-family:\'Barlow Condensed\',sans-serif;font-size:1.4rem;font-weight:900;letter-spacing:.5px;text-transform:uppercase;margin-top:2px;">📋 Liberaciones Registradas (' + log.length + ')</div>' +
+      '</div>' +
+      '<button onclick="document.getElementById(\'lib-log-overlay\').remove()" style="background:rgba(255,255,255,.15);border:none;color:#fff;width:34px;height:34px;border-radius:8px;cursor:pointer;font-size:1.1rem;font-weight:900;">✕</button>' +
+    '</div>' +
+    '<div style="flex:1;overflow-y:auto;">' +
+      '<table style="width:100%;border-collapse:collapse;font-size:.8rem;">' +
+        '<thead style="position:sticky;top:0;z-index:1;">' +
+          '<tr style="background:#1B1F6B;color:#fff;">' +
+            '<th style="padding:10px 12px;text-align:left;font-size:.7rem;">FECHA</th>' +
+            '<th style="padding:10px 12px;text-align:left;font-size:.7rem;">REF</th>' +
+            '<th style="padding:10px 12px;text-align:center;font-size:.7rem;">QTY</th>' +
+            '<th style="padding:10px 12px;text-align:left;font-size:.7rem;">PEDIDOS</th>' +
+            '<th style="padding:10px 12px;text-align:left;font-size:.7rem;">MOTIVO</th>' +
+            '<th style="padding:10px 12px;text-align:left;font-size:.7rem;">USUARIO</th>' +
+          '</tr>' +
+        '</thead>' +
+        '<tbody>' + rows + '</tbody>' +
+      '</table>' +
+    '</div>';
+
+  ov.appendChild(box);
+  document.body.appendChild(ov);
 };
 
 function sortProducts() {
@@ -20771,6 +21304,11 @@ var _catExclComp  = false; // ocultar artículos sin disponible (comprometidos 1
 var _catDepoMode       = 'AMBOS';   // afecta cards de pantalla
 var _catDepoModeExport = 'AMBOS';   // afecta PDF y Excel (selector aparte en modal de exportación)
 
+// ═══ Modo de Precio del catálogo ═══
+// Valores: 'TODOS' (USD+BCV+TF) | 'USD' | 'BCV' | 'TF' | 'NONE' (sin precio)
+// Afecta cards en pantalla. Para PDF se respeta el selector cat-moneda-select existente.
+var _catModoPrecio = 'TODOS';
+
 window.catToggleExclComp = function(){
   _catExclComp = !_catExclComp;
   var btn = document.getElementById('cat-btn-excl-comp');
@@ -21917,7 +22455,62 @@ function catAbrirPanelVista() {
     }
   }));
 
-  // Sección 2: Depósitos (selector con 4 botones radio)
+  // Sección 2: Tipo de Precio (4 cards radio)
+  var sec2pTitle = document.createElement('div');
+  sec2pTitle.textContent = 'Tipo de Precio en Pantalla';
+  sec2pTitle.style.cssText = 'font-size:.7rem;font-weight:900;color:#94a3b8;text-transform:uppercase;letter-spacing:1.5px;margin:18px 0 8px;padding-left:4px;';
+  body.appendChild(sec2pTitle);
+
+  var precioGrid = document.createElement('div');
+  precioGrid.style.cssText = 'display:grid;grid-template-columns:1fr 1fr;gap:8px;';
+
+  function makePrecioCard(value, labelText, sub, color, bgActive) {
+    var card = document.createElement('div');
+    card.id = 'precio-card-' + value;
+    var isActive = (_catModoPrecio === value);
+    card.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:2px;padding:12px 8px;border:2px solid ' + (isActive ? color : '#e2e8f0') + ';border-radius:10px;cursor:pointer;background:' + (isActive ? bgActive : 'white') + ';transition:all .2s;text-align:center;';
+    card.innerHTML = '<div style="font-weight:900;color:' + color + ';font-size:.9rem;">' + labelText + '</div>'
+      + '<div style="font-size:.68rem;color:#64748b;">' + sub + '</div>';
+    card.onclick = function() {
+      _catModoPrecio = value;
+      // Refrescar visualmente las cards de precio
+      var configs = {
+        TODOS: ['#7c3aed','#f5f3ff'],
+        USD:   ['#16a34a','#dcfce7'],
+        BCV:   ['#2563eb','#dbeafe'],
+        TF:    ['#d97706','#fef3c7'],
+        NONE:  ['#64748b','#f1f5f9']
+      };
+      ['TODOS','USD','BCV','TF','NONE'].forEach(function(v){
+        var c2 = document.getElementById('precio-card-' + v);
+        if (!c2) return;
+        if (v === value) {
+          c2.style.borderColor = configs[v][0];
+          c2.style.background  = configs[v][1];
+        } else {
+          c2.style.borderColor = '#e2e8f0';
+          c2.style.background  = 'white';
+        }
+      });
+      catActualizarBadgeVista();
+      doRefSearch();
+    };
+    return card;
+  }
+
+  precioGrid.appendChild(makePrecioCard('TODOS', '💵 Todos',  'USD + BCV + TF',     '#7c3aed', '#f5f3ff'));
+  precioGrid.appendChild(makePrecioCard('USD',   '💲 Solo USD','Dólares',           '#16a34a', '#dcfce7'));
+  precioGrid.appendChild(makePrecioCard('BCV',   '🏦 Solo BCV','Bolívares (BCV)',   '#2563eb', '#dbeafe'));
+  precioGrid.appendChild(makePrecioCard('TF',    '🔄 Solo TF', 'Tierra Firme',      '#d97706', '#fef3c7'));
+  body.appendChild(precioGrid);
+
+  // Card NONE en fila propia, full width
+  var precioGridNone = document.createElement('div');
+  precioGridNone.style.cssText = 'display:grid;grid-template-columns:1fr;gap:8px;margin-top:8px;';
+  precioGridNone.appendChild(makePrecioCard('NONE',  '🚫 Sin Precio', 'Oculta todos los precios', '#64748b', '#f1f5f9'));
+  body.appendChild(precioGridNone);
+
+  // Sección 3: Depósitos (selector con 4 botones radio)
   var sec2Title = document.createElement('div');
   sec2Title.textContent = 'Depósitos en Pantalla';
   sec2Title.style.cssText = 'font-size:.7rem;font-weight:900;color:#94a3b8;text-transform:uppercase;letter-spacing:1.5px;margin:18px 0 8px;padding-left:4px;';
@@ -21988,6 +22581,7 @@ function catActualizarBadgeVista() {
   if (_catShowOrden) activos++;
   if (_catExclComp) activos++;
   if (_catDepoMode !== 'AMBOS') activos++;  // si cambió el default, cuenta
+  if (_catModoPrecio !== 'TODOS') activos++; // si cambió el default, cuenta
   var badge = document.getElementById('cat-vista-badge');
   if (!badge) return;
   if (activos > 0) {
@@ -22213,20 +22807,31 @@ function _catDownloadPDFWithImgs(_prodImgsLocal) {
       }
 
       var preciosHTML;
-      if (_catSinPrecio) {
+      // ═══ Aplicar _catModoPrecio (USD/BCV/TF/NONE/TODOS) en pantalla ═══
+      // Solo aplica fuera de modo cliente (en modo cliente ya manda la moneda del cliente)
+      if (_catSinPrecio || _catModoPrecio === 'NONE') {
         // Modo 'Sin Precio' — omite completamente el bloque de precios
         preciosHTML = '';
       } else if (!_catClientMode) {
-        preciosHTML = '<div class="precios-grid">' +
-            '<div class="precio-cell"><div class="pcel-label">USD</div><div class="pcel-val">' + pUSD + '</div></div>' +
-            '<div class="precio-cell"><div class="pcel-label">BCV</div><div class="pcel-val">' + pBCV + '</div></div>' +
-            '<div class="precio-cell"><div class="pcel-label">TF</div><div class="pcel-val">' + pTF + '</div></div>' +
-          '</div>';
+        if (_catModoPrecio === 'USD') {
+          preciosHTML = '<div class="precio-cliente"><span class="pcel-label">PRECIO USD</span><span class="pcel-val-big">' + pUSD + '</span></div>';
+        } else if (_catModoPrecio === 'BCV') {
+          preciosHTML = '<div class="precio-cliente"><span class="pcel-label">PRECIO BCV</span><span class="pcel-val-big">' + pBCV + '</span></div>';
+        } else if (_catModoPrecio === 'TF') {
+          preciosHTML = '<div class="precio-cliente"><span class="pcel-label">PRECIO TF</span><span class="pcel-val-big">' + pTF + '</span></div>';
+        } else {
+          // 'TODOS' — comportamiento actual
+          preciosHTML = '<div class="precios-grid">' +
+              '<div class="precio-cell"><div class="pcel-label">USD</div><div class="pcel-val">' + pUSD + '</div></div>' +
+              '<div class="precio-cell"><div class="pcel-label">BCV</div><div class="pcel-val">' + pBCV + '</div></div>' +
+              '<div class="precio-cell"><div class="pcel-label">TF</div><div class="pcel-val">' + pTF + '</div></div>' +
+            '</div>';
+        }
       } else {
         preciosHTML = '<div class="precio-cliente"><span class="pcel-label">PRECIO ' + monLabel + '</span><span class="pcel-val-big">' + getPrecioStr(p) + '</span></div>';
       }
 
-      var capitalHTML = (!_catSinPrecio && !_catClientMode && capital > 0)
+      var capitalHTML = (!_catSinPrecio && _catModoPrecio !== 'NONE' && !_catClientMode && capital > 0)
         ? '<div class="capital-row"><span>💰 CAPITAL</span><strong>$ ' + capital.toFixed(2) + '</strong><span class="cap-det">' + stock + ' uds × ' + pUSD + '</span></div>'
         : '';
 
@@ -23122,6 +23727,7 @@ function doRefSearch() {
           '<button onclick="ptAbrirDiagnosticoInventario()" style="background:linear-gradient(135deg,#7e22ce,#581c87);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:700;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;" title="Ver pedidos reservados, diagnosticar inventario y liberar comprometido huérfano">🔧 Diagnóstico Inventario</button>' +
           '<button id="pt-btn-sync-portal" onclick="ptSincronizarPortal()" style="background:linear-gradient(135deg,#dc2626,#7f1d1d);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:900;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;box-shadow:0 4px 14px rgba(220,38,38,.4);" title="Fuerza la sincronización inmediata de inventario, comprometido y ordenada al portal del cliente">🔄 Sincronizar Portal</button>' +
           '<button id="pt-btn-rescatar-huerfanas" onclick="ptAbrirRescateHuerfanas()" style="background:linear-gradient(135deg,#16a34a,#15803d);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:900;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;box-shadow:0 4px 14px rgba(22,163,74,.4);" title="Reconstruir productos cuyas imágenes están en Firebase pero la ficha se perdió">🖼️ Rescatar Huérfanas</button>' +
+          '<button id="pt-btn-sincerar" onclick="libAbrirPanelAuditoria()" style="background:linear-gradient(135deg,#dc2626,#991b1b);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:900;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;box-shadow:0 4px 14px rgba(220,38,38,.4);" title="Liberar inventario comprometido cuando no coincide con stock real (sincerar inventario)">🔓 Sincerar Inventario</button>' +
           '<button id="pt-btn-auditoria" onclick="ptAbrirAuditoriaIntegral()" style="background:linear-gradient(135deg,#7c3aed,#5b21b6);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:900;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;box-shadow:0 4px 14px rgba(124,58,237,.4);" title="Auditoría visual completa del sistema (local vs Firebase, integridad, salud)">🔍 Auditoría Integral</button>' +
         '</div>' +
         '<div id="pt-stats" style="padding:8px 20px;background:#fff;border-bottom:1px solid #eef0f8;display:flex;gap:16px;font-size:.72rem;color:#5a6080;flex-wrap:wrap;"></div>' +
@@ -23235,7 +23841,7 @@ function renderInvTable() {
     row+='<td style="padding:7px 10px;text-align:center;">'
       +'<div style="display:flex;flex-direction:column;align-items:center;gap:2px;">'
         +'<span style="background:'+stBg+';color:'+stC+';padding:3px 10px;border-radius:12px;font-weight:700;">'+_dispInv+'</span>'
-        +(_compInvQty>0?'<span style="font-size:.6rem;color:#b45309;background:#fffbeb;padding:1px 6px;border-radius:8px;font-weight:700;">🔒 '+_compInvQty+' comprometido</span>':'')
+        +(_compInvQty>0?'<span style="font-size:.6rem;color:#b45309;background:#fffbeb;padding:1px 6px;border-radius:8px;font-weight:700;cursor:pointer;" onclick="event.stopPropagation();libModalLiberar(\''+p.r+'\', { onSuccess: renderInvTable })" title="Click para liberar este comprometido">🔒 '+_compInvQty+' comprometido 🔓</span>':'')
         +'<span style="font-size:.58rem;color:#94a3b8;">Real: '+ex+'</span>'
       +'</div>'
     +'</td>';
@@ -35800,17 +36406,42 @@ window.msAbrirEditorPedido = function(ped) {
       totalCell.textContent='$ '+totalLinea.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
       tr.appendChild(mkTd(totalCell,'text-align:right;padding-right:10px;'));
 
-      // ELIMINAR
+      // ELIMINAR / LIBERAR
+      // Si la línea tiene comprometido activo en este pedido, ofrecer liberar (que también elimina la línea)
+      var compMap = (typeof getComprometido==='function') ? getComprometido() : {};
+      var tieneComp = compMap[item.ref] && (compMap[item.ref].pedidos||[]).some(function(pc){
+        return pc.numP === ped.numP && (pc.qty||0) > 0;
+      });
+
       var delBtn=document.createElement('button');
-      delBtn.textContent='✕';
-      delBtn.title='ELIMINAR REFERENCIA';
-      delBtn.style.cssText='background:rgba(220,38,38,.12);color:#f87171;border:1.5px solid rgba(220,38,38,.25);border-radius:6px;width:28px;height:28px;cursor:pointer;font-size:.85rem;font-weight:900;transition:all .15s;';
-      delBtn.onmouseover=function(){delBtn.style.background='rgba(220,38,38,.3)';};
-      delBtn.onmouseout=function(){delBtn.style.background='rgba(220,38,38,.12)';};
-      delBtn.onclick=(function(i){ return function(){
-        editData.splice(i,1);
-        renderTabla();
-      }; })(idx);
+      if (tieneComp) {
+        delBtn.textContent='🔓';
+        delBtn.title='LIBERAR COMPROMETIDO Y ELIMINAR LÍNEA';
+        delBtn.style.cssText='background:rgba(245,158,11,.15);color:#fbbf24;border:1.5px solid rgba(245,158,11,.3);border-radius:6px;width:28px;height:28px;cursor:pointer;font-size:.8rem;font-weight:900;transition:all .15s;';
+        delBtn.onmouseover=function(){delBtn.style.background='rgba(245,158,11,.3)';};
+        delBtn.onmouseout=function(){delBtn.style.background='rgba(245,158,11,.15)';};
+        delBtn.onclick=(function(i,refLib){ return function(){
+          // Cerrar modal editor primero, abrir el de liberación
+          window.libModalLiberar(refLib, {
+            numP: ped.numP,
+            onSuccess: function(){
+              // tras liberar, también remover de editData local del editor
+              editData.splice(i,1);
+              renderTabla();
+            }
+          });
+        }; })(idx, item.ref);
+      } else {
+        delBtn.textContent='✕';
+        delBtn.title='ELIMINAR REFERENCIA';
+        delBtn.style.cssText='background:rgba(220,38,38,.12);color:#f87171;border:1.5px solid rgba(220,38,38,.25);border-radius:6px;width:28px;height:28px;cursor:pointer;font-size:.85rem;font-weight:900;transition:all .15s;';
+        delBtn.onmouseover=function(){delBtn.style.background='rgba(220,38,38,.3)';};
+        delBtn.onmouseout=function(){delBtn.style.background='rgba(220,38,38,.12)';};
+        delBtn.onclick=(function(i){ return function(){
+          editData.splice(i,1);
+          renderTabla();
+        }; })(idx);
+      }
       tr.appendChild(mkTd(delBtn,'text-align:center;'));
 
       tbody.appendChild(tr);
