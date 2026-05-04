@@ -22122,38 +22122,56 @@ function catDownloadExcel(monedasParam) {
       // Si NINGUNO → array vacío
       var depoExtrasWidths = depoExtras.map(function(){ return 11; });
 
+      // ═══ Toggle ORDENADA — solo se incluye si _catShowOrden está ON ═══
+      var incluirOrdenada = (typeof _catShowOrden !== 'undefined' && _catShowOrden);
+      var trailHeadsBase = ['EXISTENCIA'];
+      var trailWidthsBase = [11];
+      if (incluirOrdenada) { trailHeadsBase.push('ORDENADA'); trailWidthsBase.push(12); }
+
       if (sinPrecio) {
         // ── SIN PRECIO — sin columnas PRECIO, TOTAL, EXIST. TOTAL, RESTANTE ──
         // Modo Cliente solo oculta código interno; el resto siempre visible.
         if (!modoCliente) {
           heads  = ['REFERENCIA','COD. BARRAS','COD. INTERNO','DESCRIPCION',
                     'EMPAQUE','MED/CAJA','MARCA',
-                    'ORDEN'].concat(depoExtras).concat(['EXISTENCIA','ORDENADA']);
-          widths = [13,17,15,48,10,10,12,9].concat(depoExtrasWidths).concat([11,12]);
-          colO=8; colOrd = 9 + depoExtras.length + 1; ncols = 10 + depoExtras.length;
+                    'ORDEN'].concat(depoExtras).concat(trailHeadsBase);
+          widths = [13,17,15,48,10,10,12,9].concat(depoExtrasWidths).concat(trailWidthsBase);
+          colO=8;
+          colOrd = incluirOrdenada ? (9 + depoExtras.length + 1) : null;
+          ncols = 9 + depoExtras.length + trailHeadsBase.length;
         } else {
-          // Cliente: oculta COD. INTERNO. Mantiene depósitos, EXISTENCIA y ORDENADA si los toggles del panel los pidieron.
+          // Cliente: oculta COD. INTERNO. Mantiene depósitos, EXISTENCIA y ORDENADA si los toggles los pidieron.
           heads  = ['REFERENCIA','COD. BARRAS','DESCRIPCION',
                     'EMPAQUE','MED/CAJA','MARCA',
-                    'ORDEN'].concat(depoExtras).concat(['EXISTENCIA','ORDENADA']);
-          widths = [13,17,52,10,10,12,9].concat(depoExtrasWidths).concat([11,12]);
-          colO=7; colOrd = 8 + depoExtras.length + 1; ncols = 9 + depoExtras.length;
+                    'ORDEN'].concat(depoExtras).concat(trailHeadsBase);
+          widths = [13,17,52,10,10,12,9].concat(depoExtrasWidths).concat(trailWidthsBase);
+          colO=7;
+          colOrd = incluirOrdenada ? (8 + depoExtras.length + 1) : null;
+          ncols = 8 + depoExtras.length + trailHeadsBase.length;
         }
       } else if (!modoCliente) {
         // Interno: muestra todo (incluye PRECIO, TOTAL, EXIST. TOTAL, RESTANTE)
+        var internoTrail = trailHeadsBase.concat(['EXIST. TOTAL','RESTANTE']);
+        var internoTrailW = trailWidthsBase.concat([12,12]);
         heads  = ['REFERENCIA','COD. BARRAS','COD. INTERNO','DESCRIPCION',
                   'EMPAQUE','MED/CAJA','MARCA',
-                  'PRECIO '+monLabel+' ($)','ORDEN','TOTAL ($)'].concat(depoExtras).concat(['EXISTENCIA','ORDENADA','EXIST. TOTAL','RESTANTE']);
-        widths = [13,17,15,48,10,10,12,14,9,14].concat(depoExtrasWidths).concat([11,12,12,12]);
-        colP=8; colO=9; colT=10; colOrd = 11 + depoExtras.length + 1; ncols = 14 + depoExtras.length;
+                  'PRECIO '+monLabel+' ($)','ORDEN','TOTAL ($)'].concat(depoExtras).concat(internoTrail);
+        widths = [13,17,15,48,10,10,12,14,9,14].concat(depoExtrasWidths).concat(internoTrailW);
+        colP=8; colO=9; colT=10;
+        colOrd = incluirOrdenada ? (11 + depoExtras.length + 1) : null;
+        ncols = 10 + depoExtras.length + internoTrail.length;
       } else {
-        // Cliente con precio: oculta COD. INTERNO, mantiene PRECIO/ORDEN/TOTAL.
-        // Mantiene depósitos, EXISTENCIA y ORDENADA. Sigue ocultando EXIST. TOTAL y RESTANTE (son cálculos internos).
+        // Cliente con precio: oculta COD. INTERNO + EXIST. TOTAL.
+        // Mantiene PRECIO/ORDEN/TOTAL + depósitos + EXISTENCIA + (ORDENADA si toggle ON) + RESTANTE.
+        var clienteTrail = trailHeadsBase.concat(['RESTANTE']);
+        var clienteTrailW = trailWidthsBase.concat([12]);
         heads  = ['REFERENCIA','COD. BARRAS','DESCRIPCION',
                   'EMPAQUE','MED/CAJA','MARCA',
-                  'PRECIO '+monLabel+' ($)','ORDEN','TOTAL ($)'].concat(depoExtras).concat(['EXISTENCIA','ORDENADA']);
-        widths = [13,17,52,10,10,12,14,9,14].concat(depoExtrasWidths).concat([11,12]);
-        colP=7; colO=8; colT=9; colOrd = 10 + depoExtras.length + 1; ncols = 11 + depoExtras.length;
+                  'PRECIO '+monLabel+' ($)','ORDEN','TOTAL ($)'].concat(depoExtras).concat(clienteTrail);
+        widths = [13,17,52,10,10,12,14,9,14].concat(depoExtrasWidths).concat(clienteTrailW);
+        colP=7; colO=8; colT=9;
+        colOrd = incluirOrdenada ? (10 + depoExtras.length + 1) : null;
+        ncols = 9 + depoExtras.length + clienteTrail.length;
       }
 
       // ═══ Calcular ORDENADA REAL una sola vez antes del map (de OCs vivas) ═══
@@ -22173,17 +22191,21 @@ function catDownloadExcel(monedasParam) {
         // ═══ ORDENADA REAL (lo que está en tránsito en OCs BORRADOR/EN_TRANSITO) ═══
         var exOrdenada = parseInt(_ordenadaRealMap[p.r]) || 0;
 
+        // Construir el "trail" base — EXISTENCIA + (ORDENADA opcional)
+        var trailBase = [ex];
+        if (incluirOrdenada) trailBase.push(exOrdenada);
+
         if (sinPrecio) {
           // ── Filas sin precio (sin PRECIO, TOTAL, EXIST. TOTAL, RESTANTE) ──
           if (!modoCliente) {
             return [p.r||'', String(p.b||''), p.c||'', p.d||'',
                     p.e||'UNIDAD', p.m||'', p.br||'',
-                    null].concat(depoVals).concat([ex, exOrdenada]);
+                    null].concat(depoVals).concat(trailBase);
           } else {
-            // Cliente: oculta COD. INTERNO. Mantiene depo, EXISTENCIA, ORDENADA.
+            // Cliente: oculta COD. INTERNO.
             return [p.r||'', String(p.b||''), p.d||'',
                     p.e||'UNIDAD', p.m||'', p.br||'',
-                    null].concat(depoVals).concat([ex, exOrdenada]);
+                    null].concat(depoVals).concat(trailBase);
           }
         }
 
@@ -22192,16 +22214,17 @@ function catDownloadExcel(monedasParam) {
         var ordRef = XLSX.utils.encode_col(colO-1) + fila;
         var preRef = XLSX.utils.encode_col(colP-1) + fila;
         if (!modoCliente) {
-          // Interno: incluye COD. INTERNO + EXIST. TOTAL + RESTANTE
+          // Interno: incluye COD. INTERNO + EXIST. TOTAL + RESTANTE (los dos se calculan después como fórmulas vivas)
           return [p.r||'', String(p.b||''), p.c||'', p.d||'',
                   p.e||'UNIDAD', p.m||'', p.br||'',
-                  precio, null, {f: ordRef+'*'+preRef}].concat(depoVals).concat([ex, exOrdenada, ex, null]);
+                  precio, null, {f: ordRef+'*'+preRef}].concat(depoVals).concat(trailBase).concat([ex, null]);
         } else {
-          // Cliente: oculta COD. INTERNO + EXIST. TOTAL + RESTANTE.
-          // Mantiene PRECIO/ORDEN/TOTAL + depo + EXISTENCIA + ORDENADA.
+          // Cliente: oculta COD. INTERNO + EXIST. TOTAL.
+          // Mantiene PRECIO/ORDEN/TOTAL + depo + EXISTENCIA + (ORDENADA si toggle ON) + RESTANTE.
+          // El último null se reemplaza con fórmula RESTANTE = EXISTENCIA - ORDEN
           return [p.r||'', String(p.b||''), p.d||'',
                   p.e||'UNIDAD', p.m||'', p.br||'',
-                  precio, null, {f: ordRef+'*'+preRef}].concat(depoVals).concat([ex, exOrdenada]);
+                  precio, null, {f: ordRef+'*'+preRef}].concat(depoVals).concat(trailBase).concat([null]);
         }
       });
 
@@ -22232,33 +22255,43 @@ function catDownloadExcel(monedasParam) {
       var ws  = XLSX.utils.aoa_to_sheet(aoa);
 
       // Escribir fórmulas EXIST. TOTAL y RESTANTE directamente en cada celda
-      // EXIST. TOTAL  = EXISTENCIA - ORDEN (lo que queda físico tras pedido)
-      // RESTANTE      = EXIST. TOTAL - ORDEN (queda igual cálculo, mantenido por compatibilidad)
-      // Solo aplica en modo interno CON precio.
-      // Las posiciones se calculan dinámicamente porque varían según depoExtras.
-      if (!modoCliente && !sinPrecio) {
-        // colP=8 (PRECIO), colO=9 (ORDEN), colT=10 (TOTAL)
-        // Después de TOTAL vienen los depoExtras (NE, AN según config)
-        // Luego: EXISTENCIA, ORDENADA, EXIST. TOTAL, RESTANTE
-        var existenciaIdx = 10 + depoExtras.length;       // K (con AMBOS=2 deps → 12)
-        var ordenadaIdx   = 11 + depoExtras.length;       // L
-        var existTotalIdx = 12 + depoExtras.length;       // M
-        var restanteIdx   = 13 + depoExtras.length;       // N
+      // EXIST. TOTAL  = EXISTENCIA - ORDEN (lo que queda físico tras pedido) — solo modo interno
+      // RESTANTE      = EXISTENCIA - ORDEN — aparece en interno Y cliente (en cliente es la única que queda)
+      // Las posiciones se calculan dinámicamente porque varían según depoExtras y _catShowOrden.
+      if (!sinPrecio) {
+        // Cálculo dinámico de índices según el modo:
+        //
+        // INTERNO con precio: REF(0) BARRAS(1) INTERNO(2) DESC(3) EMPAQUE(4) MEDCJA(5) MARCA(6)
+        //                     PRECIO(7) ORDEN(8) TOTAL(9) [depoExtras] EXISTENCIA [ORDENADA?] EXIST.TOTAL RESTANTE
+        // CLIENTE con precio: REF(0) BARRAS(1) DESC(2) EMPAQUE(3) MEDCJA(4) MARCA(5)
+        //                     PRECIO(6) ORDEN(7) TOTAL(8) [depoExtras] EXISTENCIA [ORDENADA?] RESTANTE
+
+        var baseTrasTotal;        // índice donde inicia depoExtras
+        if (!modoCliente) baseTrasTotal = 10;
+        else baseTrasTotal = 9;
+
+        var existenciaIdx = baseTrasTotal + depoExtras.length;
+        var ordenadaIdx   = incluirOrdenada ? (existenciaIdx + 1) : null;
+        var lastIdxBase   = incluirOrdenada ? ordenadaIdx : existenciaIdx;
+
+        // EXIST. TOTAL solo en interno
+        // RESTANTE en ambos (es la última columna antes del fin)
+        var existTotalIdx = !modoCliente ? (lastIdxBase + 1) : null;
+        var restanteIdx   = !modoCliente ? (lastIdxBase + 2) : (lastIdxBase + 1);
 
         var existCol  = XLSX.utils.encode_col(existenciaIdx);
-        var ordColL   = XLSX.utils.encode_col(colO-1);     // I = ORDEN
-        var etCol     = XLSX.utils.encode_col(existTotalIdx);
+        var ordColL   = XLSX.utils.encode_col(colO-1);     // ORDEN
         var resCol    = XLSX.utils.encode_col(restanteIdx);
+        var etCol     = (existTotalIdx !== null) ? XLSX.utils.encode_col(existTotalIdx) : null;
 
         prods.forEach(function(p, i) {
           var row = i + 6;
           var exVal = _catGetStock(p, inv);
-          // EXIST. TOTAL = EXISTENCIA - ORDEN
-          ws[etCol + row] = { t:'n', f: existCol+row+'-'+ordColL+row, v: exVal };
-          // RESTANTE = EXIST. TOTAL - ORDEN (alias visual de EXIST. TOTAL para claridad post-pedido)
-          // Nota: matemáticamente equivale a EXISTENCIA - 2*ORDEN si ORDEN se cuenta dos veces.
-          // Lo correcto aquí es: RESTANTE = EXISTENCIA - ORDEN (mismo cálculo que EXIST.TOTAL)
-          // pero conceptualmente representa "lo que queda en bodega después de despachar este pedido"
+          // EXIST. TOTAL = EXISTENCIA - ORDEN (solo interno)
+          if (etCol) {
+            ws[etCol + row] = { t:'n', f: existCol+row+'-'+ordColL+row, v: exVal };
+          }
+          // RESTANTE = EXISTENCIA - ORDEN (interno y cliente)
           ws[resCol + row] = { t:'n', f: existCol+row+'-'+ordColL+row, v: exVal };
         });
       }
