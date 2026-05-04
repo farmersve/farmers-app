@@ -9077,6 +9077,72 @@ window.saveOrdenesCompraDB = function(data) {
   if (window.fbSaveOrdenesCompra) window.fbSaveOrdenesCompra(data);
 };
 
+// ═══════════════════════════════════════════════════════════════════════
+// CÁLCULO DE ORDENADA REAL — basado en OCs vivas (no en farmers_pt_data)
+// ═══════════════════════════════════════════════════════════════════════
+// Devuelve un mapa { ref: cantidadEnTransito } sumando solo OCs en estado vivo
+// (BORRADOR o EN_TRANSITO), restando lo que ya se haya recibido.
+// Esta es la fuente de verdad para "lo que está en camino del proveedor".
+window.getOrdenadaReal = function() {
+  var resultado = {};
+  var ocs = window.getOrdenesCompraDB();
+  if (!Array.isArray(ocs) || ocs.length === 0) return resultado;
+
+  // Solo estados vivos cuentan como "en camino"
+  var estadosVivos = ['BORRADOR', 'EN_TRANSITO'];
+
+  ocs.forEach(function(oc){
+    if (!oc || !estadosVivos.indexOf || estadosVivos.indexOf(oc.estado) < 0) return;
+    if (!Array.isArray(oc.items)) return;
+    oc.items.forEach(function(it){
+      if (!it || !it.refFarmers) return;
+      var pedido = parseInt(it.cantidad) || 0;
+      var recibido = parseInt(it.cantidadRecibida) || 0;
+      var enCamino = Math.max(0, pedido - recibido);
+      if (enCamino > 0) {
+        resultado[it.refFarmers] = (resultado[it.refFarmers] || 0) + enCamino;
+      }
+    });
+  });
+  return resultado;
+};
+
+// ═══════════════════════════════════════════════════════════════════════
+// LIMPIAR ORDENADA FANTASMA — housekeeping
+// ═══════════════════════════════════════════════════════════════════════
+// Compara farmers_pt_data[ref].exOrdenada con OCs vivas reales.
+// Si una ref tiene exOrdenada > 0 pero no hay OC viva que la justifique → resetea a 0
+// Devuelve { limpiadas: N, refs: [..lista de refs limpiadas] }
+window.limpiarOrdenadaFantasma = function() {
+  var ordenadaReal = window.getOrdenadaReal();
+  var ptData = {};
+  try { ptData = JSON.parse(localStorage.getItem('farmers_pt_data') || '{}'); } catch(e){}
+
+  var limpiadas = 0;
+  var refsLimpiadas = [];
+
+  Object.keys(ptData).forEach(function(ref){
+    var entry = ptData[ref];
+    if (!entry) return;
+    var exOrd = parseInt(entry.exOrdenada) || 0;
+    var realOrd = parseInt(ordenadaReal[ref]) || 0;
+
+    // Si la fantasma es mayor que la real → corregir
+    if (exOrd > realOrd) {
+      ptData[ref].exOrdenada = realOrd;
+      limpiadas++;
+      refsLimpiadas.push({ ref: ref, anterior: exOrd, nuevo: realOrd });
+    }
+  });
+
+  if (limpiadas > 0) {
+    try { localStorage.setItem('farmers_pt_data', JSON.stringify(ptData)); } catch(e){}
+    if (window.fbSavePtData) window.fbSavePtData(ptData);
+  }
+
+  return { limpiadas: limpiadas, refs: refsLimpiadas };
+};
+
 // Generar número secuencial OC-AÑO-NNN (editable por el usuario)
 window.ocGenerarNumero = function() {
   var ocs = getOrdenesCompraDB();
@@ -21671,7 +21737,61 @@ function catCerrarModalExcel() {
 }
 window.catCerrarModalExcel = catCerrarModalExcel;
 
+// ═══════════════════════════════════════════════════════════════════════
+// EXCEL DIRECTO — sin modal, usa filtros del panel Mostrar/Ocultar
+// ═══════════════════════════════════════════════════════════════════════
+// Esta función reemplazó al modal anterior. Lee _catModoPrecio y exporta
+// el Excel con los filtros configurados en el panel.
 function catAbrirModalExcel() {
+  // ═══ Sincronizar depósitos: lo que está en pantalla se exporta ═══
+  if (typeof _catDepoMode !== 'undefined') {
+    _catDepoModeExport = _catDepoMode;
+  }
+
+  // ═══ Construir lista de monedas según _catModoPrecio del panel ═══
+  var monSelec = [];
+  var modoPrecio = (typeof _catModoPrecio !== 'undefined') ? _catModoPrecio : 'TODOS';
+
+  if (modoPrecio === 'NONE') {
+    monSelec.push({ label: 'SIN PRECIO', campo: null });
+  } else if (modoPrecio === 'USD') {
+    monSelec.push({ label: 'USD', campo: 'u' });
+  } else if (modoPrecio === 'BCV') {
+    monSelec.push({ label: 'BCV', campo: 'bv' });
+  } else if (modoPrecio === 'TF') {
+    monSelec.push({ label: 'TF', campo: 't' });
+  } else {
+    // 'TODOS' → genera 3 hojas
+    monSelec.push({ label: 'USD', campo: 'u' });
+    monSelec.push({ label: 'BCV', campo: 'bv' });
+    monSelec.push({ label: 'TF',  campo: 't' });
+  }
+
+  // Toast informativo
+  if (typeof showToast === 'function') {
+    var resumen = [];
+    if (modoPrecio !== 'TODOS') {
+      resumen.push(modoPrecio === 'NONE' ? 'Sin Precio' : 'Solo ' + modoPrecio);
+    }
+    if (typeof _catDepoMode !== 'undefined' && _catDepoMode !== 'AMBOS') {
+      resumen.push(_catDepoMode === 'NINGUNO' ? 'Sin depósitos' : _catDepoMode);
+    }
+    if (typeof _catExclComp !== 'undefined' && _catExclComp) resumen.push('Excl. sin disponible');
+    if (typeof _catClientMode !== 'undefined' && _catClientMode) resumen.push('Modo Cliente');
+    var msg = resumen.length > 0
+      ? '📊 Generando Excel · ' + resumen.join(' · ')
+      : '📊 Generando Excel · Configuración por defecto';
+    showToast(msg, 'info');
+  }
+
+  catDownloadExcel(monSelec);
+}
+window.catAbrirModalExcel = catAbrirModalExcel;
+
+// ═══════════════════════════════════════════════════════════════════════
+// catAbrirModalExcelLegacy — modal antiguo (NO usar, dejado por compatibilidad)
+// ═══════════════════════════════════════════════════════════════════════
+function catAbrirModalExcelLegacy() {
   var inv = getInventory();
   var filtroMarca = (typeof _refBrandFilter !== 'undefined' && _refBrandFilter && _refBrandFilter !== 'ALL') ? _refBrandFilter : 'TODAS';
   var filtroStock = (typeof _refStockFilters !== 'undefined') ? _refStockFilters : new Set(['ALL']);
@@ -21886,7 +22006,7 @@ function catAbrirModalExcel() {
   el.appendChild(box);
   document.body.appendChild(el);
 }
-window.catAbrirModalExcel = catAbrirModalExcel;
+window.catAbrirModalExcelLegacy = catAbrirModalExcelLegacy;
 
 function catSeleccionarTodasMonedas() {
   ['usd','bcv','tf'].forEach(function(id) {
@@ -21949,6 +22069,14 @@ function catDownloadExcel(monedasParam) {
         if (!(p.r||'').toUpperCase().includes(q) && !(p.d||'').toUpperCase().includes(q) &&
             !(p.b||'').toUpperCase().includes(q) && !(p.c||'').toUpperCase().includes(q)) return false;
       }
+
+      // ═══ Filtro Ocultar Sin Disponible (_catExclComp) — coherencia con pantalla/PDF ═══
+      if (typeof _catExclComp !== 'undefined' && _catExclComp) {
+        var _stEx = (inv && inv[p.r] !== undefined) ? (parseInt(inv[p.r]) || 0) : (parseInt(p.ex) || 0);
+        var _cQEx = (_compExcel[p.r] && _compExcel[p.r].qty) ? (parseInt(_compExcel[p.r].qty) || 0) : 0;
+        if (Math.max(0, _stEx - _cQEx) <= 0) return false;
+      }
+
       // Si el filtro es "Todos" dejamos pasar todo
       if (filtroStock.has('ALL')) return true;
 
@@ -22011,9 +22139,9 @@ function catDownloadExcel(monedasParam) {
       } else if (!modoCliente) {
         heads  = ['REFERENCIA','COD. BARRAS','COD. INTERNO','DESCRIPCION',
                   'EMPAQUE','MED/CAJA','MARCA',
-                  'PRECIO '+monLabel+' ($)','ORDEN','TOTAL ($)'].concat(depoExtras).concat(['EXISTENCIA','ORDENADA','EXIST. TOTAL']);
-        widths = [13,17,15,48,10,10,12,14,9,14].concat(depoExtrasWidths).concat([11,12,12]);
-        colP=8; colO=9; colT=10; colOrd = 11 + depoExtras.length + 1; ncols = 13 + depoExtras.length;
+                  'PRECIO '+monLabel+' ($)','ORDEN','TOTAL ($)'].concat(depoExtras).concat(['EXISTENCIA','ORDENADA','EXIST. TOTAL','RESTANTE']);
+        widths = [13,17,15,48,10,10,12,14,9,14].concat(depoExtrasWidths).concat([11,12,12,12]);
+        colP=8; colO=9; colT=10; colOrd = 11 + depoExtras.length + 1; ncols = 14 + depoExtras.length;
       } else {
         heads  = ['REFERENCIA','COD. BARRAS','DESCRIPCION',
                   'EMPAQUE','MED/CAJA','MARCA',
@@ -22021,6 +22149,9 @@ function catDownloadExcel(monedasParam) {
         widths = [13,17,52,10,10,12,14,9,14];
         colP=7; colO=8; colT=9; ncols=9;
       }
+
+      // ═══ Calcular ORDENADA REAL una sola vez antes del map (de OCs vivas) ═══
+      var _ordenadaRealMap = (typeof window.getOrdenadaReal === 'function') ? window.getOrdenadaReal() : {};
 
       var rows = prods.map(function(p, i) {
         var ex     = _catGetStock(p, inv);
@@ -22033,16 +22164,11 @@ function catDownloadExcel(monedasParam) {
         else if (_catDepoModeExport === 'NE') depoVals = [stNE];
         else if (_catDepoModeExport === 'AN') depoVals = [stAN];
 
-        // ═══ LEER CANTIDAD ORDENADA ═══
-        var ptDataExcel = {};
-        try {
-          ptDataExcel = JSON.parse(localStorage.getItem('farmers_pt_data') || '{}');
-        } catch(e) {}
-        var exOrdenada = (ptDataExcel[p.r] && ptDataExcel[p.r].exOrdenada) ?
-                         parseInt(ptDataExcel[p.r].exOrdenada) : 0;
+        // ═══ ORDENADA REAL (lo que está en tránsito en OCs BORRADOR/EN_TRANSITO) ═══
+        var exOrdenada = parseInt(_ordenadaRealMap[p.r]) || 0;
 
         if (sinPrecio) {
-          // ── Filas sin precio (sin PRECIO, TOTAL, EXIST. TOTAL) ──
+          // ── Filas sin precio (sin PRECIO, TOTAL, EXIST. TOTAL, RESTANTE) ──
           if (!modoCliente) {
             return [p.r||'', String(p.b||''), p.c||'', p.d||'',
                     p.e||'UNIDAD', p.m||'', p.br||'',
@@ -22058,9 +22184,11 @@ function catDownloadExcel(monedasParam) {
         var ordRef = XLSX.utils.encode_col(colO-1) + fila;
         var preRef = XLSX.utils.encode_col(colP-1) + fila;
         if (!modoCliente) {
+          // El último null será reemplazado por una fórmula (RESTANTE = EXIST.TOTAL - ORDEN)
+          // que se inserta después con ws[col+row] = {f:...} para que Excel calcule en vivo
           return [p.r||'', String(p.b||''), p.c||'', p.d||'',
                   p.e||'UNIDAD', p.m||'', p.br||'',
-                  precio, null, {f: ordRef+'*'+preRef}].concat(depoVals).concat([ex, exOrdenada, ex]);
+                  precio, null, {f: ordRef+'*'+preRef}].concat(depoVals).concat([ex, exOrdenada, ex, null]);
         } else {
           return [p.r||'', String(p.b||''), p.d||'',
                   p.e||'UNIDAD', p.m||'', p.br||'',
@@ -22094,16 +22222,35 @@ function catDownloadExcel(monedasParam) {
       var aoa = [r1, r2, r3, new Array(ncols).fill(null), heads].concat(rows).concat([totRow]);
       var ws  = XLSX.utils.aoa_to_sheet(aoa);
 
-      // Escribir fórmulas EXIST. TOTAL directamente en cada celda (col M = índice 12)
-      // Solo aplica en modo interno CON precio (en modo sin precio no hay columna EXIST. TOTAL).
+      // Escribir fórmulas EXIST. TOTAL y RESTANTE directamente en cada celda
+      // EXIST. TOTAL  = EXISTENCIA - ORDEN (lo que queda físico tras pedido)
+      // RESTANTE      = EXIST. TOTAL - ORDEN (queda igual cálculo, mantenido por compatibilidad)
+      // Solo aplica en modo interno CON precio.
+      // Las posiciones se calculan dinámicamente porque varían según depoExtras.
       if (!modoCliente && !sinPrecio) {
-        var existCol = XLSX.utils.encode_col(10);  // K = EXISTENCIA
-        var ordColL  = XLSX.utils.encode_col(8);   // I = ORDEN
-        var etCol    = XLSX.utils.encode_col(12);  // M = EXIST. TOTAL
+        // colP=8 (PRECIO), colO=9 (ORDEN), colT=10 (TOTAL)
+        // Después de TOTAL vienen los depoExtras (NE, AN según config)
+        // Luego: EXISTENCIA, ORDENADA, EXIST. TOTAL, RESTANTE
+        var existenciaIdx = 10 + depoExtras.length;       // K (con AMBOS=2 deps → 12)
+        var ordenadaIdx   = 11 + depoExtras.length;       // L
+        var existTotalIdx = 12 + depoExtras.length;       // M
+        var restanteIdx   = 13 + depoExtras.length;       // N
+
+        var existCol  = XLSX.utils.encode_col(existenciaIdx);
+        var ordColL   = XLSX.utils.encode_col(colO-1);     // I = ORDEN
+        var etCol     = XLSX.utils.encode_col(existTotalIdx);
+        var resCol    = XLSX.utils.encode_col(restanteIdx);
+
         prods.forEach(function(p, i) {
           var row = i + 6;
           var exVal = _catGetStock(p, inv);
+          // EXIST. TOTAL = EXISTENCIA - ORDEN
           ws[etCol + row] = { t:'n', f: existCol+row+'-'+ordColL+row, v: exVal };
+          // RESTANTE = EXIST. TOTAL - ORDEN (alias visual de EXIST. TOTAL para claridad post-pedido)
+          // Nota: matemáticamente equivale a EXISTENCIA - 2*ORDEN si ORDEN se cuenta dos veces.
+          // Lo correcto aquí es: RESTANTE = EXISTENCIA - ORDEN (mismo cálculo que EXIST.TOTAL)
+          // pero conceptualmente representa "lo que queda en bodega después de despachar este pedido"
+          ws[resCol + row] = { t:'n', f: existCol+row+'-'+ordColL+row, v: exVal };
         });
       }
       ws['!calcpr'] = { fullCalcOnLoad: true };
@@ -22144,8 +22291,29 @@ function catSetOrientation(o) {
 }
 window.catSetOrientation = catSetOrientation;
 function catDownloadPDF() {
-  // Mostrar mini-modal con selector de depósitos antes de generar PDF
-  catAbrirModalPDFOpciones();
+  // ═══ UNIFICACIÓN: aplicar filtros del panel Mostrar/Ocultar directamente ═══
+  // Sincronizar depósitos: lo que está en pantalla se exporta
+  if (typeof _catDepoMode !== 'undefined') {
+    _catDepoModeExport = _catDepoMode;
+  }
+  // Toast informativo de filtros aplicados
+  if (typeof showToast === 'function') {
+    var resumen = [];
+    if (typeof _catModoPrecio !== 'undefined' && _catModoPrecio !== 'TODOS') {
+      var lblPre = _catModoPrecio === 'NONE' ? 'Sin Precio' : 'Solo ' + _catModoPrecio;
+      resumen.push(lblPre);
+    }
+    if (typeof _catDepoMode !== 'undefined' && _catDepoMode !== 'AMBOS') {
+      resumen.push(_catDepoMode === 'NINGUNO' ? 'Sin depósitos' : _catDepoMode);
+    }
+    if (typeof _catExclComp !== 'undefined' && _catExclComp) resumen.push('Excl. sin disponible');
+    if (typeof _catClientMode !== 'undefined' && _catClientMode) resumen.push('Modo Cliente');
+    var msg = resumen.length > 0
+      ? '📄 Generando PDF · ' + resumen.join(' · ')
+      : '📄 Generando PDF · Configuración por defecto';
+    showToast(msg, 'info');
+  }
+  _catGenerarPDF(); // procede directo
 }
 window.catDownloadPDF = catDownloadPDF;
 
@@ -22358,7 +22526,7 @@ function catAbrirPanelVista() {
     '<div style="background:linear-gradient(135deg,#6366f1,#8b5cf6);padding:18px 22px;color:white;display:flex;justify-content:space-between;align-items:center;">'+
       '<div>'+
         '<div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;font-size:1.3rem;letter-spacing:1.5px;text-transform:uppercase;">👁 Mostrar / Ocultar</div>'+
-        '<div style="font-size:.74rem;opacity:.9;margin-top:2px;">Configura qué información ves en el catálogo</div>'+
+        '<div style="font-size:.74rem;opacity:.9;margin-top:2px;">Estos filtros aplican a pantalla, PDF y Excel</div>'+
       '</div>'+
       '<button onclick="document.getElementById(\'cat-panel-vista\').remove()" style="background:rgba(255,255,255,.2);border:none;color:white;width:36px;height:36px;border-radius:50%;cursor:pointer;font-size:1.1rem;font-weight:bold;">✕</button>'+
     '</div>'
@@ -22537,6 +22705,7 @@ function catAbrirPanelVista() {
       + '<div style="font-size:.68rem;color:#64748b;">' + sub + '</div>';
     card.onclick = function() {
       _catDepoMode = value;
+      _catDepoModeExport = value;  // ═══ Sincronización automática con exportación ═══
       // Refrescar visualmente las 4 cards
       ['AMBOS','NE','AN','NINGUNO'].forEach(function(v){
         var c2 = document.getElementById('depo-card-' + v);
@@ -23041,6 +23210,19 @@ function _catDownloadPDFWithImgs(_prodImgsLocal) {
     pool = window._catSelectionOverride;
   } else {
     pool = (_refBrandFilter === 'ALL') ? PRODUCTS.slice() : PRODUCTS.filter(function(p){ return p.br === _refBrandFilter; });
+
+    // ═══ Filtro de búsqueda (cat-search-input) — coherencia con pantalla/Excel ═══
+    var _filtroQPDF = (document.getElementById('cat-search-input') || {}).value || '';
+    if (_filtroQPDF) {
+      var _qPDF = _filtroQPDF.toUpperCase();
+      pool = pool.filter(function(p){
+        return (p.r||'').toUpperCase().indexOf(_qPDF) >= 0
+            || (p.d||'').toUpperCase().indexOf(_qPDF) >= 0
+            || String(p.b||'').toUpperCase().indexOf(_qPDF) >= 0
+            || String(p.c||'').toUpperCase().indexOf(_qPDF) >= 0;
+      });
+    }
+
     // Filtro: ocultar artículos sin disponible (comprometidos al 100%)
     if(_catExclComp){
       var _compPool = typeof getComprometido==='function' ? getComprometido() : {};
@@ -24098,6 +24280,7 @@ function doRefSearch() {
           '<button id="pt-btn-sync-portal" onclick="ptSincronizarPortal()" style="background:linear-gradient(135deg,#dc2626,#7f1d1d);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:900;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;box-shadow:0 4px 14px rgba(220,38,38,.4);" title="Fuerza la sincronización inmediata de inventario, comprometido y ordenada al portal del cliente">🔄 Sincronizar Portal</button>' +
           '<button id="pt-btn-rescatar-huerfanas" onclick="ptAbrirRescateHuerfanas()" style="background:linear-gradient(135deg,#16a34a,#15803d);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:900;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;box-shadow:0 4px 14px rgba(22,163,74,.4);" title="Reconstruir productos cuyas imágenes están en Firebase pero la ficha se perdió">🖼️ Rescatar Huérfanas</button>' +
           '<button id="pt-btn-sincerar" onclick="libAbrirPanelAuditoria()" style="background:linear-gradient(135deg,#dc2626,#991b1b);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:900;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;box-shadow:0 4px 14px rgba(220,38,38,.4);" title="Liberar inventario comprometido cuando no coincide con stock real (sincerar inventario)">🔓 Sincerar Inventario</button>' +
+          '<button id="pt-btn-limpiar-ord" onclick="ptLimpiarOrdenadaFantasma()" style="background:linear-gradient(135deg,#0891b2,#155e75);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:900;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;box-shadow:0 4px 14px rgba(8,145,178,.4);" title="Resetear cantidades ORDENADA fantasma — refs cuya OC ya fue recibida o no existe">🧹 Limpiar Ordenada</button>' +
           '<button id="pt-btn-auditoria" onclick="ptAbrirAuditoriaIntegral()" style="background:linear-gradient(135deg,#7c3aed,#5b21b6);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:900;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;box-shadow:0 4px 14px rgba(124,58,237,.4);" title="Auditoría visual completa del sistema (local vs Firebase, integridad, salud)">🔍 Auditoría Integral</button>' +
         '</div>' +
         '<div id="pt-stats" style="padding:8px 20px;background:#fff;border-bottom:1px solid #eef0f8;display:flex;gap:16px;font-size:.72rem;color:#5a6080;flex-wrap:wrap;"></div>' +
@@ -24804,6 +24987,160 @@ window.ptDescargarReporteAuditoria = function() {
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
   if (typeof showToast === 'function') showToast('📥 Reporte de auditoría descargado', 'success');
+};
+
+// ═══════════════════════════════════════════════════════════════════════
+// LIMPIAR ORDENADA FANTASMA — Botón en barra Productos Terminados
+// ═══════════════════════════════════════════════════════════════════════
+// Compara farmers_pt_data[ref].exOrdenada con OCs vivas (BORRADOR/EN_TRANSITO)
+// y muestra modal con preview de qué se va a limpiar antes de aplicar.
+// ═══════════════════════════════════════════════════════════════════════
+window.ptLimpiarOrdenadaFantasma = function() {
+  if (typeof window.getOrdenadaReal !== 'function') {
+    showToast('Error interno: función getOrdenadaReal no disponible', 'error');
+    return;
+  }
+
+  var ordenadaReal = window.getOrdenadaReal();
+  var ptData = {};
+  try { ptData = JSON.parse(localStorage.getItem('farmers_pt_data') || '{}'); } catch(e){}
+
+  // Identificar refs con discrepancia (fantasma)
+  var fantasmas = [];
+  Object.keys(ptData).forEach(function(ref){
+    var entry = ptData[ref];
+    if (!entry) return;
+    var exOrd = parseInt(entry.exOrdenada) || 0;
+    var realOrd = parseInt(ordenadaReal[ref]) || 0;
+    if (exOrd > realOrd) {
+      // Buscar producto para descripción
+      var prod = (typeof PRODUCTS !== 'undefined') ? PRODUCTS.find(function(p){ return p.r === ref; }) : null;
+      fantasmas.push({
+        ref: ref,
+        desc: prod ? (prod.d || '') : '—',
+        anterior: exOrd,
+        nuevo: realOrd,
+        diferencia: exOrd - realOrd
+      });
+    }
+  });
+
+  // Eliminar overlay previo si existe
+  var prev = document.getElementById('limpiar-ord-overlay');
+  if (prev) prev.remove();
+
+  var ov = document.createElement('div');
+  ov.id = 'limpiar-ord-overlay';
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(10,15,50,.75);z-index:99999;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(4px);padding:20px;font-family:Barlow,sans-serif;';
+
+  var box = document.createElement('div');
+  box.style.cssText = 'background:#fff;border-radius:14px;width:min(900px,100%);max-height:88vh;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 24px 64px rgba(0,0,0,.45);border:2px solid #0891b2;';
+
+  // Estado vacío
+  if (fantasmas.length === 0) {
+    box.innerHTML =
+      '<div style="background:linear-gradient(135deg,#0891b2,#155e75);padding:18px 24px;color:#fff;display:flex;justify-content:space-between;align-items:center;">' +
+        '<div>' +
+          '<div style="font-size:.65rem;font-weight:800;letter-spacing:2.5px;text-transform:uppercase;opacity:.7;">HOUSEKEEPING</div>' +
+          '<div style="font-family:\'Barlow Condensed\',sans-serif;font-size:1.5rem;font-weight:900;letter-spacing:.5px;text-transform:uppercase;margin-top:2px;">🧹 Limpiar Ordenada Fantasma</div>' +
+        '</div>' +
+        '<button onclick="document.getElementById(\'limpiar-ord-overlay\').remove()" style="background:rgba(255,255,255,.18);border:none;color:#fff;width:36px;height:36px;border-radius:8px;cursor:pointer;font-size:1.1rem;font-weight:900;">✕</button>' +
+      '</div>' +
+      '<div style="padding:60px 32px;text-align:center;">' +
+        '<div style="font-size:3rem;margin-bottom:14px;">✅</div>' +
+        '<div style="font-family:\'Barlow Condensed\',sans-serif;font-size:1.4rem;font-weight:900;color:#0e7490;margin-bottom:8px;">No hay datos fantasma</div>' +
+        '<div style="font-size:.9rem;color:#475569;line-height:1.6;max-width:520px;margin:0 auto;">Todas las cantidades en la columna ORDENADA están correctamente respaldadas por Órdenes de Compra activas (en estado BORRADOR o EN_TRANSITO). Tu inventario está coherente.</div>' +
+      '</div>' +
+      '<div style="padding:14px 24px;background:#f8faff;border-top:1px solid #e8eaf6;display:flex;justify-content:flex-end;">' +
+        '<button onclick="document.getElementById(\'limpiar-ord-overlay\').remove()" style="background:#1B1F6B;color:#fff;border:none;border-radius:8px;padding:9px 22px;cursor:pointer;font-weight:800;font-size:.78rem;font-family:inherit;text-transform:uppercase;letter-spacing:.5px;">CERRAR</button>' +
+      '</div>';
+    ov.appendChild(box);
+    document.body.appendChild(ov);
+    return;
+  }
+
+  // Stats
+  var totalFantasma = fantasmas.reduce(function(s,f){ return s + f.diferencia; }, 0);
+
+  // Tabla
+  var rows = fantasmas.map(function(f, i){
+    var bg = i%2===0 ? '#fff' : '#f8faff';
+    return '<tr style="background:' + bg + ';border-bottom:1px solid #f0f2f8;">' +
+      '<td style="padding:9px 12px;font-family:\'Barlow Condensed\',sans-serif;font-weight:900;color:#1B1F6B;font-size:.95rem;">' + f.ref + '</td>' +
+      '<td style="padding:9px 12px;font-size:.74rem;color:#64748b;">' + f.desc + '</td>' +
+      '<td style="padding:9px 12px;text-align:center;font-family:\'Barlow Condensed\',sans-serif;font-weight:900;color:#dc2626;font-size:1.1rem;text-decoration:line-through;">' + f.anterior + '</td>' +
+      '<td style="padding:9px 12px;text-align:center;font-size:1.1rem;color:#94a3b8;">→</td>' +
+      '<td style="padding:9px 12px;text-align:center;font-family:\'Barlow Condensed\',sans-serif;font-weight:900;color:#16a34a;font-size:1.1rem;">' + f.nuevo + '</td>' +
+      '<td style="padding:9px 12px;text-align:center;font-family:\'Barlow Condensed\',sans-serif;font-weight:800;color:#0891b2;">' + f.diferencia + '</td>' +
+    '</tr>';
+  }).join('');
+
+  box.innerHTML =
+    '<div style="background:linear-gradient(135deg,#0891b2,#155e75);padding:18px 24px;color:#fff;display:flex;justify-content:space-between;align-items:center;flex-shrink:0;">' +
+      '<div>' +
+        '<div style="font-size:.65rem;font-weight:800;letter-spacing:2.5px;text-transform:uppercase;opacity:.7;">HOUSEKEEPING</div>' +
+        '<div style="font-family:\'Barlow Condensed\',sans-serif;font-size:1.5rem;font-weight:900;letter-spacing:.5px;text-transform:uppercase;margin-top:2px;">🧹 Limpiar Ordenada Fantasma</div>' +
+      '</div>' +
+      '<button onclick="document.getElementById(\'limpiar-ord-overlay\').remove()" style="background:rgba(255,255,255,.18);border:none;color:#fff;width:36px;height:36px;border-radius:8px;cursor:pointer;font-size:1.1rem;font-weight:900;">✕</button>' +
+    '</div>' +
+
+    // Explicación
+    '<div style="padding:16px 24px;background:#ecfeff;border-bottom:1.5px solid #cffafe;flex-shrink:0;">' +
+      '<div style="font-size:.78rem;color:#155e75;line-height:1.6;">' +
+        '<strong>Qué hace esta acción:</strong> Compara la columna ORDENADA de tu inventario con las Órdenes de Compra realmente vivas (en estado BORRADOR o EN_TRANSITO) y resetea las cantidades fantasma que ya no corresponden a una OC viva. Esto elimina valores incorrectos que pudieron haber quedado de OCs ya recibidas o canceladas.' +
+      '</div>' +
+    '</div>' +
+
+    // Stats
+    '<div style="padding:14px 24px;background:#fafbfd;border-bottom:1px solid #e8eaf6;display:flex;gap:12px;flex-shrink:0;">' +
+      '<div style="background:#fee2e2;border:1.5px solid #fca5a5;border-radius:8px;padding:8px 14px;flex:1;">' +
+        '<div style="font-size:.62rem;color:#7f1d1d;font-weight:800;letter-spacing:1px;text-transform:uppercase;">REFERENCIAS FANTASMA</div>' +
+        '<div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;font-size:1.7rem;color:#dc2626;">' + fantasmas.length + '</div>' +
+      '</div>' +
+      '<div style="background:#fef3c7;border:1.5px solid #fcd34d;border-radius:8px;padding:8px 14px;flex:1;">' +
+        '<div style="font-size:.62rem;color:#78350f;font-weight:800;letter-spacing:1px;text-transform:uppercase;">UDS A LIMPIAR</div>' +
+        '<div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;font-size:1.7rem;color:#b45309;">' + totalFantasma + '</div>' +
+      '</div>' +
+    '</div>' +
+
+    // Tabla
+    '<div style="flex:1;overflow:auto;">' +
+      '<table style="width:100%;border-collapse:collapse;font-size:.78rem;">' +
+        '<thead style="position:sticky;top:0;z-index:1;">' +
+          '<tr style="background:#1B1F6B;color:#fff;">' +
+            '<th style="padding:11px 12px;text-align:left;font-size:.68rem;letter-spacing:.5px;font-family:\'Barlow Condensed\',sans-serif;">REFERENCIA</th>' +
+            '<th style="padding:11px 12px;text-align:left;font-size:.68rem;letter-spacing:.5px;font-family:\'Barlow Condensed\',sans-serif;">DESCRIPCIÓN</th>' +
+            '<th style="padding:11px 12px;text-align:center;font-size:.68rem;letter-spacing:.5px;font-family:\'Barlow Condensed\',sans-serif;">ORDENADA ACTUAL</th>' +
+            '<th style="padding:11px 12px;text-align:center;font-size:.68rem;letter-spacing:.5px;font-family:\'Barlow Condensed\',sans-serif;"></th>' +
+            '<th style="padding:11px 12px;text-align:center;font-size:.68rem;letter-spacing:.5px;font-family:\'Barlow Condensed\',sans-serif;">ORDENADA REAL</th>' +
+            '<th style="padding:11px 12px;text-align:center;font-size:.68rem;letter-spacing:.5px;font-family:\'Barlow Condensed\',sans-serif;">SE LIMPIAN</th>' +
+          '</tr>' +
+        '</thead>' +
+        '<tbody>' + rows + '</tbody>' +
+      '</table>' +
+    '</div>' +
+
+    // Footer
+    '<div style="padding:14px 24px;background:#fafbfd;border-top:1px solid #e8eaf6;display:flex;justify-content:flex-end;gap:10px;flex-shrink:0;">' +
+      '<button onclick="document.getElementById(\'limpiar-ord-overlay\').remove()" style="background:#f3f4f6;color:#4b5563;border:1.5px solid #e5e7eb;border-radius:8px;padding:10px 22px;cursor:pointer;font-weight:700;font-size:.78rem;font-family:inherit;text-transform:uppercase;letter-spacing:.5px;">CANCELAR</button>' +
+      '<button id="lim-ord-confirm" style="background:linear-gradient(135deg,#0891b2,#155e75);color:#fff;border:none;border-radius:8px;padding:10px 22px;cursor:pointer;font-weight:800;font-size:.78rem;font-family:inherit;text-transform:uppercase;letter-spacing:.5px;box-shadow:0 4px 14px rgba(8,145,178,.4);">🧹 LIMPIAR ' + fantasmas.length + ' REFERENCIA' + (fantasmas.length!==1?'S':'') + '</button>' +
+    '</div>';
+
+  ov.appendChild(box);
+  document.body.appendChild(ov);
+
+  document.getElementById('lim-ord-confirm').onclick = function() {
+    var resultado = window.limpiarOrdenadaFantasma();
+    ov.remove();
+    if (resultado.limpiadas > 0) {
+      if (typeof showToast === 'function') showToast('🧹 Limpieza completa: ' + resultado.limpiadas + ' referencia' + (resultado.limpiadas!==1?'s':'') + ' actualizada' + (resultado.limpiadas!==1?'s':''), 'success');
+      // Refrescar UI
+      if (typeof ptRender === 'function') ptRender();
+      if (typeof renderInvTable === 'function') renderInvTable();
+    } else {
+      if (typeof showToast === 'function') showToast('No hubo datos para limpiar', 'info');
+    }
+  };
 };
 
 window.ptAbrirRescateHuerfanas = async function() {
