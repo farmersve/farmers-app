@@ -17,7 +17,7 @@
 <meta http-equiv="Expires" content="0">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.05.05.03">
+<meta name="farmers-version" content="2026.05.05.04">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -58708,12 +58708,63 @@ function pcAbrirFormToken(existente, clDB) {
   }
   var marcas = Array.from(marcasSet).sort();
 
-  // Opciones de clientes
-  var clienteOpts = '<option value="">-- Sin vincular --</option>';
-  clDB.forEach(function(c){
-    var sel = (existente && existente.clienteNombre === c.nombre) ? 'selected' : '';
-    clienteOpts += '<option value="' + encodeURIComponent(c.nombre) + '" data-rif="' + (c.rif || '') + '" ' + sel + '>' + c.nombre + '</option>';
+  // ── Lista de clientes para el selector ──
+  // Mejoras: ordenado alfabéticamente, deduplicado por RIF, agrupado por estado
+  // (vinculado a CRM vs nuevos), con búsqueda
+  var allTokens = (typeof _pcGetTokens === 'function') ? _pcGetTokens() : [];
+  var clientesConToken = {};  // RIF normalizado → token
+  allTokens.forEach(function(tk){
+    var rifKey = (tk.rifEsperado || tk.clienteNombre || '').toUpperCase().replace(/[\s\-\.]/g, '');
+    if (rifKey) clientesConToken[rifKey] = tk;
   });
+
+  // Deduplicar por RIF y nombre normalizado
+  var clMap = {};
+  clDB.forEach(function(c){
+    if (!c.nombre) return;
+    var key = (c.rif || c.nombre).toUpperCase().replace(/[\s\-\.]/g, '');
+    if (!clMap[key]) clMap[key] = c;
+  });
+  var clOrdenados = Object.values(clMap);
+
+  // Ordenar alfabéticamente con localeCompare español
+  clOrdenados.sort(function(a, b){
+    return (a.nombre || '').localeCompare((b.nombre || ''), 'es', { sensitivity: 'base' });
+  });
+
+  // Separar en 3 grupos: ya tiene link, nuevos sin link, sin RIF
+  var conLink = [];
+  var sinLink = [];
+  clOrdenados.forEach(function(c){
+    var rifKey = (c.rif || c.nombre || '').toUpperCase().replace(/[\s\-\.]/g, '');
+    if (clientesConToken[rifKey]) conLink.push(c);
+    else sinLink.push(c);
+  });
+
+  // Construir opciones agrupadas
+  var clienteOpts = '<option value="">— Sin vincular (link manual) —</option>';
+
+  if (sinLink.length > 0) {
+    clienteOpts += '<optgroup label="✨ Sin link aún (' + sinLink.length + ')">';
+    sinLink.forEach(function(c){
+      var sel = (existente && existente.clienteNombre === c.nombre) ? 'selected' : '';
+      var rifTxt = c.rif ? ' · ' + c.rif : '';
+      var sucsTxt = (c.sucursales && c.sucursales.length > 0) ? ' (' + c.sucursales.length + ' sucs)' : '';
+      clienteOpts += '<option value="' + encodeURIComponent(c.nombre) + '" data-rif="' + (c.rif || '') + '" ' + sel + '>' + c.nombre + rifTxt + sucsTxt + '</option>';
+    });
+    clienteOpts += '</optgroup>';
+  }
+
+  if (conLink.length > 0) {
+    clienteOpts += '<optgroup label="🔗 Con link existente (' + conLink.length + ')">';
+    conLink.forEach(function(c){
+      var sel = (existente && existente.clienteNombre === c.nombre) ? 'selected' : '';
+      var rifTxt = c.rif ? ' · ' + c.rif : '';
+      var sucsTxt = (c.sucursales && c.sucursales.length > 0) ? ' (' + c.sucursales.length + ' sucs)' : '';
+      clienteOpts += '<option value="' + encodeURIComponent(c.nombre) + '" data-rif="' + (c.rif || '') + '" ' + sel + '>' + c.nombre + rifTxt + sucsTxt + '</option>';
+    });
+    clienteOpts += '</optgroup>';
+  }
 
   var marcasChecks = marcas.map(function(m){
     var checked = (data.configVista.marcasVisibles || []).includes(m) ? 'checked' : '';
@@ -58738,8 +58789,10 @@ function pcAbrirFormToken(existente, clDB) {
       // ═══ SECCIÓN 1: Datos del cliente ═══
       '<div style="font-size:.7rem;font-weight:900;color:#F47B3E;text-transform:uppercase;letter-spacing:2px;margin-bottom:10px;">👤 DATOS DEL CLIENTE</div>' +
 
-      '<label style="display:block;font-size:.7rem;font-weight:800;color:#1B1F6B;margin-bottom:5px;text-transform:uppercase;letter-spacing:.8px;">Cliente (vincular con CRM)</label>' +
-      '<select id="pc-cliente" style="width:100%;padding:11px 13px;border:1.5px solid #e2e8f0;border-radius:10px;font-size:.85rem;margin-bottom:14px;background:#fff;font-weight:600;">' + clienteOpts + '</select>' +
+      '<label style="display:block;font-size:.7rem;font-weight:800;color:#1B1F6B;margin-bottom:5px;text-transform:uppercase;letter-spacing:.8px;">🔍 Cliente (vincular con CRM) · ' + clOrdenados.length + ' registros</label>' +
+      '<input type="text" id="pc-cliente-search" placeholder="Filtrar por nombre o RIF..." style="width:100%;padding:9px 13px;border:1.5px solid #e2e8f0;border-radius:10px;font-size:.78rem;margin-bottom:6px;background:#f8faff;font-weight:600;outline:none;" oninput="(function(v){var s=document.getElementById(\'pc-cliente\');if(!s)return;v=v.toUpperCase();var found=0,total=0;Array.from(s.querySelectorAll(\'option\')).forEach(function(o){if(!o.value){return;}total++;var t=o.textContent.toUpperCase();var match=!v||t.indexOf(v)>=0;o.style.display=match?\'\':\'none\';if(match)found++;});Array.from(s.querySelectorAll(\'optgroup\')).forEach(function(g){var visibles=Array.from(g.querySelectorAll(\'option\')).filter(function(o){return o.style.display!==\'none\';}).length;g.style.display=visibles>0?\'\':\'none\';});var c=document.getElementById(\'pc-cliente-counter\');if(c)c.textContent=v?\'Mostrando \'+found+\'/\'+total:\'\';})(this.value)">' +
+      '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:5px;font-size:.65rem;color:#64748b;"><span id="pc-cliente-counter"></span><span id="pc-cliente-warning" style="color:#dc2626;font-weight:700;display:none;">⚠ Este cliente ya tiene un link activo</span></div>' +
+      '<select id="pc-cliente" size="6" style="width:100%;padding:8px;border:1.5px solid #e2e8f0;border-radius:10px;font-size:.82rem;margin-bottom:14px;background:#fff;font-weight:600;font-family:Barlow,sans-serif;">' + clienteOpts + '</select>' +
 
       '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">' +
         '<div>' +
@@ -58824,9 +58877,20 @@ function pcAbrirFormToken(existente, clDB) {
 
   document.getElementById('pc-cliente').addEventListener('change', function(e){
     var sel = e.target.options[e.target.selectedIndex];
+    var warning = document.getElementById('pc-cliente-warning');
     if (sel.value) {
       document.getElementById('pc-nombre').value = decodeURIComponent(sel.value);
       if (sel.dataset.rif) document.getElementById('pc-rif').value = sel.dataset.rif;
+      // Verificar si ya tiene link
+      var rifKey = (sel.dataset.rif || decodeURIComponent(sel.value)).toUpperCase().replace(/[\s\-\.]/g, '');
+      if (clientesConToken[rifKey] && warning && !isEdit) {
+        warning.style.display = '';
+        warning.textContent = '⚠ Este cliente ya tiene un link activo';
+      } else if (warning) {
+        warning.style.display = 'none';
+      }
+    } else if (warning) {
+      warning.style.display = 'none';
     }
   });
 
