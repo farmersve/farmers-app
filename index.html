@@ -17566,6 +17566,165 @@ window.crmCalcularFrecuencia = function(cliente) {
 };
 
 // ──────────────────────────────────────────────────────────────────
+// SCORE DE PAGO — Mide qué tan serio paga el cliente (0-100)
+// ──────────────────────────────────────────────────────────────────
+// Combina 3 factores:
+//   • % facturas pagadas a tiempo (40 pts)
+//   • Días promedio de retraso (30 pts) — penaliza pagos tardíos
+//   • Saldo pendiente actual vs ventas (30 pts) — premia clientes al día
+window.crmCalcularScorePago = function(cliente) {
+  // Cargar facturas CXC del cliente
+  var cxcFacs = [];
+  try {
+    var raw = localStorage.getItem('farmers_cxc');
+    if (raw) {
+      var data = JSON.parse(raw);
+      cxcFacs = data.facturas || [];
+    }
+  } catch(e) { cxcFacs = []; }
+
+  // Filtrar facturas del cliente (por nombre o RIF)
+  var normRif = function(r){ return (r||'').replace(/[-.\s]/g,'').toUpperCase(); };
+  var normNombre = function(n){ return (n||'').toUpperCase().trim(); };
+  var clienteRifNorm = normRif(cliente.rif);
+  var clienteNomNorm = normNombre(cliente.nombre);
+
+  var facsCliente = cxcFacs.filter(function(f){
+    if (clienteRifNorm && normRif(f.rif) === clienteRifNorm) return true;
+    var fNom = normNombre(f.cliente || f.clienteNombre || '');
+    if (fNom && clienteNomNorm && (fNom.indexOf(clienteNomNorm) >= 0 || clienteNomNorm.indexOf(fNom) >= 0)) return true;
+    return false;
+  });
+
+  if (facsCliente.length === 0) {
+    return {
+      total: null,        // null = sin datos
+      categoria: 'SIN_DATOS',
+      desglose: null,
+      facturas: 0
+    };
+  }
+
+  // Métricas
+  var nFacs = facsCliente.length;
+  var nPagadasATiempo = 0;
+  var nPagadasTarde = 0;
+  var nSinPagar = 0;
+  var sumaDiasRetraso = 0;
+  var nConRetrasoMedible = 0;
+  var saldoPendiente = 0;
+  var totalFacturado = 0;
+  var nVencidas = 0;
+
+  facsCliente.forEach(function(f){
+    var total = parseFloat(f.total || f.montoTotal || 0) || 0;
+    var saldo = parseFloat(f.saldo || 0) || 0;
+    totalFacturado += total;
+    saldoPendiente += saldo;
+
+    // ¿Tiene fecha de vencimiento?
+    var fVenc = f.fechaVencimiento;
+    var pagos = f.pagos || [];
+
+    if (saldo > 0) {
+      // Aún no pagada completamente
+      nSinPagar++;
+      if (fVenc) {
+        var hoy = new Date(); hoy.setHours(0,0,0,0);
+        var fv = new Date(fVenc + 'T00:00:00');
+        if (fv < hoy) nVencidas++;
+      }
+    } else if (pagos.length > 0 && fVenc) {
+      // Pagada — ver fecha del último pago
+      var ultPago = pagos[pagos.length - 1];
+      var fechaPagoStr = ultPago.fecha || (ultPago.ts ? new Date(ultPago.ts).toISOString().slice(0,10) : null);
+      if (fechaPagoStr && fVenc) {
+        var fp = new Date(fechaPagoStr + (fechaPagoStr.length === 10 ? 'T00:00:00' : ''));
+        var fv2 = new Date(fVenc + 'T00:00:00');
+        var diasRetraso = Math.floor((fp - fv2) / (1000*60*60*24));
+        // Tolerancia: hasta 3 días después del vencimiento se considera "a tiempo"
+        if (diasRetraso <= 3) {
+          nPagadasATiempo++;
+          if (diasRetraso > 0) { sumaDiasRetraso += diasRetraso; nConRetrasoMedible++; }
+        } else {
+          nPagadasTarde++;
+          sumaDiasRetraso += diasRetraso;
+          nConRetrasoMedible++;
+        }
+      } else {
+        // Pagada pero sin fechas claras — asumir a tiempo
+        nPagadasATiempo++;
+      }
+    } else {
+      // Pagada sin pagos registrados o sin vencimiento — asumir a tiempo
+      nPagadasATiempo++;
+    }
+  });
+
+  var nPagadas = nPagadasATiempo + nPagadasTarde;
+  var pctATiempo = nPagadas > 0 ? (nPagadasATiempo / nPagadas) * 100 : 0;
+  var diasRetrasoPromedio = nConRetrasoMedible > 0 ? Math.round(sumaDiasRetraso / nConRetrasoMedible) : 0;
+  var pctSaldoPendiente = totalFacturado > 0 ? (saldoPendiente / totalFacturado) * 100 : 0;
+
+  // ── Calcular score 0-100 ──
+  // Componente 1: Puntualidad (0-40 pts)
+  var puntPts = (pctATiempo / 100) * 40;
+
+  // Componente 2: Retraso (0-30 pts) — escala invertida
+  // 0 días → 30, 7 días → 24, 15 días → 18, 30 días → 12, 60+ días → 0
+  var retrasoPts;
+  if (diasRetrasoPromedio === 0) retrasoPts = 30;
+  else if (diasRetrasoPromedio <= 7) retrasoPts = 24;
+  else if (diasRetrasoPromedio <= 15) retrasoPts = 18;
+  else if (diasRetrasoPromedio <= 30) retrasoPts = 12;
+  else if (diasRetrasoPromedio <= 60) retrasoPts = 6;
+  else retrasoPts = 0;
+
+  // Componente 3: Saldo pendiente actual (0-30 pts)
+  // 0% pendiente → 30, <10% → 25, <25% → 18, <50% → 10, >50% → 0
+  var saldoPts;
+  if (pctSaldoPendiente === 0) saldoPts = 30;
+  else if (pctSaldoPendiente < 10) saldoPts = 25;
+  else if (pctSaldoPendiente < 25) saldoPts = 18;
+  else if (pctSaldoPendiente < 50) saldoPts = 10;
+  else saldoPts = 0;
+
+  // Penalización por facturas vencidas (resta del score final)
+  if (nVencidas >= 3) saldoPts = Math.max(0, saldoPts - 8);
+  else if (nVencidas >= 1) saldoPts = Math.max(0, saldoPts - 4);
+
+  var total = Math.round(puntPts + retrasoPts + saldoPts);
+  total = Math.max(0, Math.min(100, total));
+
+  var categoria = total >= 90 ? 'EXCELENTE' :
+                  total >= 75 ? 'BUENO' :
+                  total >= 55 ? 'REGULAR' :
+                  total >= 35 ? 'PROBLEMÁTICO' : 'CRÍTICO';
+
+  return {
+    total: total,
+    categoria: categoria,
+    desglose: {
+      puntualidad: Math.round(puntPts),
+      retraso: retrasoPts,
+      saldo: saldoPts
+    },
+    metricas: {
+      facturas: nFacs,
+      pagadasATiempo: nPagadasATiempo,
+      pagadasTarde: nPagadasTarde,
+      sinPagar: nSinPagar,
+      vencidas: nVencidas,
+      pctATiempo: Math.round(pctATiempo),
+      diasRetrasoPromedio: diasRetrasoPromedio,
+      saldoPendiente: saldoPendiente,
+      pctSaldoPendiente: Math.round(pctSaldoPendiente),
+      totalFacturado: totalFacturado
+    }
+  };
+};
+
+// ──────────────────────────────────────────────────────────────────
 // SCORE FARMERS — Calificación 0-100 quirúrgica de mejor a peor
 // ──────────────────────────────────────────────────────────────────
 // Combina: RFM (40 pts) + Tendencia (20 pts) + Diversidad (20 pts) + Lealtad (20 pts)
@@ -17928,15 +18087,16 @@ window.crmRenderDashboard = function() {
   _crmDashboardData = data;
   var clientes = Object.values(data.ventasPorCliente);
 
-  // Calcular RFM y estado para cada cliente
+  // Calcular todos los scores
   clientes.forEach(function(c){
     c.estado = window.crmCalcularEstado(c);
     c.rfm = window.crmCalcularRFM(c, clientes);
     c.tendencia = window.crmCalcularTendencia(c);
     c.frecuencia = window.crmCalcularFrecuencia(c);
+    c.scorePago = window.crmCalcularScorePago(c);
   });
 
-  // KPIs globales
+  // ── KPIs GLOBALES ──
   var totalVentas = clientes.reduce(function(s,c){ return s + c.totalVentas; }, 0);
   var totalFacturas = clientes.reduce(function(s,c){ return s + c.cantFacturas; }, 0);
   var clientesActivos = clientes.filter(function(c){ return c.estado === 'ACTIVO'; }).length;
@@ -17944,38 +18104,59 @@ window.crmRenderDashboard = function() {
   var clientesDormidos = clientes.filter(function(c){ return c.estado === 'DORMIDO'; }).length;
   var ticketPromedio = totalFacturas > 0 ? totalVentas / totalFacturas : 0;
 
-  // Mes actual ventas
+  // CXC: total pendiente
+  var cxcFacs = [];
+  try { var raw = localStorage.getItem('farmers_cxc'); if (raw) cxcFacs = (JSON.parse(raw).facturas) || []; } catch(e){}
+  var saldoTotalCXC = 0;
+  var nVencidas = 0;
+  var nPxV = 0;
+  var hoyCXC = new Date(); hoyCXC.setHours(0,0,0,0);
+  cxcFacs.forEach(function(f){
+    var saldo = parseFloat(f.saldo||0)||0;
+    if (saldo > 0) {
+      saldoTotalCXC += saldo;
+      if (f.fechaVencimiento) {
+        var fv = new Date(f.fechaVencimiento+'T00:00:00');
+        var d = Math.floor((fv-hoyCXC)/86400000);
+        if (d < 0) nVencidas++;
+        else if (d <= 3) nPxV++;
+      }
+    }
+  });
+
+  // Score pago promedio (solo de quienes tienen score)
+  var scoresValidos = clientes.map(function(c){ return c.scorePago && c.scorePago.total; }).filter(function(s){ return s !== null && s !== undefined; });
+  var scorePagoProm = scoresValidos.length > 0 ? Math.round(scoresValidos.reduce(function(a,b){return a+b;},0) / scoresValidos.length) : null;
+
+  // Mes actual y mes anterior
   var hoy = new Date();
   var mesActualKey = hoy.getFullYear() + '-' + String(hoy.getMonth()+1).padStart(2,'0');
-  var ventasMesActual = clientes.reduce(function(s,c){
-    return s + ((c.meses[mesActualKey] && c.meses[mesActualKey].total) || 0);
-  }, 0);
-
-  // Mes anterior
+  var ventasMesActual = clientes.reduce(function(s,c){ return s + ((c.meses[mesActualKey] && c.meses[mesActualKey].total) || 0); }, 0);
   var mesAnt = new Date(hoy.getFullYear(), hoy.getMonth()-1, 1);
   var mesAntKey = mesAnt.getFullYear() + '-' + String(mesAnt.getMonth()+1).padStart(2,'0');
-  var ventasMesAnt = clientes.reduce(function(s,c){
-    return s + ((c.meses[mesAntKey] && c.meses[mesAntKey].total) || 0);
-  }, 0);
+  var ventasMesAnt = clientes.reduce(function(s,c){ return s + ((c.meses[mesAntKey] && c.meses[mesAntKey].total) || 0); }, 0);
   var pctMesVsAnt = ventasMesAnt > 0 ? ((ventasMesActual - ventasMesAnt)/ventasMesAnt)*100 : 0;
 
-  // Top productos del mes actual
+  // Mejor cliente del mes
+  var clientesMes = clientes.map(function(c){ return { c:c, monto:(c.meses[mesActualKey]&&c.meses[mesActualKey].total)||0 }; }).sort(function(a,b){ return b.monto - a.monto; });
+  var mejorMes = clientesMes[0] && clientesMes[0].monto > 0 ? clientesMes[0] : null;
+
+  // Top productos del mes
   var prodMes = {};
   clientes.forEach(function(c){
     Object.keys(c.productos).forEach(function(ref){
       var p = c.productos[ref];
-      // sumar solo si última compra es de mes actual
       if (p.ultimaCompra && p.ultimaCompra.indexOf(mesActualKey) === 0) {
-        if (!prodMes[ref]) prodMes[ref] = { qty:0, monto:0, descripcion:p.descripcion };
+        if (!prodMes[ref]) prodMes[ref] = { qty:0, monto:0, descripcion:p.descripcion, marca:p.marca };
         prodMes[ref].qty += p.qty;
         prodMes[ref].monto += p.monto;
       }
     });
   });
-  var topProdMes = Object.keys(prodMes).map(function(r){ return { ref:r, ...prodMes[r] }; })
-    .sort(function(a,b){ return b.monto - a.monto; }).slice(0, 8);
+  var topProdMes = Object.keys(prodMes).map(function(r){ var x = prodMes[r]; return { ref:r, qty:x.qty, monto:x.monto, descripcion:x.descripcion, marca:x.marca }; })
+    .sort(function(a,b){ return b.monto - a.monto; }).slice(0, 6);
 
-  // ── Ventas por mes (últimos 12 meses) ──
+  // Ventas por mes (últimos 12)
   var ventasMensuales = [];
   for (var i = 11; i >= 0; i--) {
     var d = new Date(hoy.getFullYear(), hoy.getMonth()-i, 1);
@@ -17986,124 +18167,171 @@ window.crmRenderDashboard = function() {
   }
   var maxVenta = Math.max.apply(null, ventasMensuales.map(function(v){ return v.total; })) || 1;
 
-  // Aplicar filtros antes de renderizar tabla
+  // Filtros del ranking
   var filtrados = clientes.slice();
-  if (_crmFiltroEstado !== 'TODOS') {
-    filtrados = filtrados.filter(function(c){ return c.estado === _crmFiltroEstado; });
-  }
-  if (_crmFiltroSegmento !== 'TODOS') {
-    filtrados = filtrados.filter(function(c){ return c.rfm.segmento === _crmFiltroSegmento; });
-  }
+  if (_crmFiltroEstado !== 'TODOS') filtrados = filtrados.filter(function(c){ return c.estado === _crmFiltroEstado; });
+  if (_crmFiltroSegmento !== 'TODOS') filtrados = filtrados.filter(function(c){ return c.rfm.segmento === _crmFiltroSegmento; });
   if (_crmFiltroBusqueda) {
     var q = _crmFiltroBusqueda.toUpperCase();
     filtrados = filtrados.filter(function(c){
       return (c.nombre||'').toUpperCase().indexOf(q) >= 0 || (c.rif||'').toUpperCase().indexOf(q) >= 0;
     });
   }
-  // Ordenar por totalVentas desc
   filtrados.sort(function(a,b){ return b.totalVentas - a.totalVentas; });
 
-  // Renderizar HTML
-  var html = '<div style="padding:20px 24px;">';
+  // ═══════════════════════════════════════════════════════════════
+  // RENDER
+  // ═══════════════════════════════════════════════════════════════
+  var html = '<div style="padding:24px 28px;">';
 
-  // ── KPI Cards ──
-  html += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px;margin-bottom:20px;">';
-  html += '<div style="background:linear-gradient(135deg,rgba(34,197,94,.18),rgba(22,163,74,.08));border:1.5px solid rgba(34,197,94,.3);border-radius:12px;padding:14px 16px;">' +
-    '<div style="font-size:.62rem;font-weight:800;color:#86efac;text-transform:uppercase;letter-spacing:1.5px;margin-bottom:4px;">VENTAS MES ACTUAL</div>' +
-    '<div style="font-family:Barlow Condensed,sans-serif;font-weight:900;font-size:1.7rem;color:#dcfce7;">$ ' + ventasMesActual.toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g,',') + '</div>' +
-    '<div style="font-size:.7rem;color:' + (pctMesVsAnt>=0?'#86efac':'#fca5a5') + ';margin-top:3px;font-weight:700;">' + (pctMesVsAnt>=0?'↑':'↓') + ' ' + Math.abs(pctMesVsAnt).toFixed(1) + '% vs mes anterior</div>' +
-  '</div>';
+  // ──────────────────────────────────────────────────
+  // FILA 1: 4 KPI CARDS GRANDES
+  // ──────────────────────────────────────────────────
+  html += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px;margin-bottom:20px;">';
 
-  html += '<div style="background:linear-gradient(135deg,rgba(244,123,62,.18),rgba(234,88,12,.08));border:1.5px solid rgba(244,123,62,.3);border-radius:12px;padding:14px 16px;">' +
-    '<div style="font-size:.62rem;font-weight:800;color:#fdba74;text-transform:uppercase;letter-spacing:1.5px;margin-bottom:4px;">VENTAS HISTÓRICAS</div>' +
-    '<div style="font-family:Barlow Condensed,sans-serif;font-weight:900;font-size:1.7rem;color:#ffedd5;">$ ' + totalVentas.toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g,',') + '</div>' +
-    '<div style="font-size:.7rem;color:rgba(255,237,213,.7);margin-top:3px;font-weight:700;">' + totalFacturas + ' facturas registradas</div>' +
-  '</div>';
-
-  html += '<div style="background:linear-gradient(135deg,rgba(99,102,241,.18),rgba(79,70,229,.08));border:1.5px solid rgba(99,102,241,.3);border-radius:12px;padding:14px 16px;">' +
-    '<div style="font-size:.62rem;font-weight:800;color:#a5b4fc;text-transform:uppercase;letter-spacing:1.5px;margin-bottom:4px;">TICKET PROMEDIO</div>' +
-    '<div style="font-family:Barlow Condensed,sans-serif;font-weight:900;font-size:1.7rem;color:#e0e7ff;">$ ' + ticketPromedio.toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g,',') + '</div>' +
-    '<div style="font-size:.7rem;color:rgba(224,231,255,.7);margin-top:3px;font-weight:700;">por factura</div>' +
-  '</div>';
-
-  html += '<div style="background:linear-gradient(135deg,rgba(168,85,247,.18),rgba(147,51,234,.08));border:1.5px solid rgba(168,85,247,.3);border-radius:12px;padding:14px 16px;">' +
-    '<div style="font-size:.62rem;font-weight:800;color:#d8b4fe;text-transform:uppercase;letter-spacing:1.5px;margin-bottom:4px;">CLIENTES ACTIVOS</div>' +
-    '<div style="font-family:Barlow Condensed,sans-serif;font-weight:900;font-size:1.7rem;color:#f3e8ff;">' + clientesActivos + ' / ' + clientes.length + '</div>' +
-    '<div style="font-size:.7rem;color:rgba(243,232,255,.7);margin-top:3px;font-weight:700;">' + clientesRiesgo + ' en riesgo · ' + clientesDormidos + ' dormidos</div>' +
-  '</div>';
+  // CARD 1: VENTAS MES ACTUAL
+  html += '<div style="background:linear-gradient(135deg,rgba(34,197,94,.18),rgba(22,163,74,.06));border:1.5px solid rgba(34,197,94,.35);border-radius:14px;padding:18px 20px;">';
+  html += '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px;">';
+  html += '<div style="font-size:.66rem;font-weight:800;color:#86efac;text-transform:uppercase;letter-spacing:1.5px;">💰 VENTAS MES ACTUAL</div>';
+  html += '<div style="font-size:1.2rem;">📈</div>';
+  html += '</div>';
+  html += '<div style="font-family:Barlow Condensed,sans-serif;font-weight:900;font-size:2.2rem;color:#dcfce7;line-height:1;">$ ' + ventasMesActual.toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g,',') + '</div>';
+  html += '<div style="font-size:.78rem;color:' + (pctMesVsAnt>=0?'#86efac':'#fca5a5') + ';margin-top:8px;font-weight:700;">' + (pctMesVsAnt>=0?'↑':'↓') + ' ' + Math.abs(pctMesVsAnt).toFixed(1) + '% vs mes anterior</div>';
+  if (mejorMes) {
+    html += '<div style="margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,.08);font-size:.7rem;color:rgba(220,252,231,.7);"><strong style="color:#fbbf24;">🏆 Mejor:</strong> ' + (mejorMes.c.nombre||'—').substring(0,28) + ' · $' + mejorMes.monto.toFixed(0) + '</div>';
+  }
   html += '</div>';
 
-  // ── Gráfico de barras de ventas mensuales ──
-  html += '<div style="background:rgba(255,255,255,.04);border:1.5px solid rgba(255,255,255,.08);border-radius:12px;padding:18px 22px;margin-bottom:20px;">';
-  html += '<div style="font-family:Barlow Condensed,sans-serif;font-weight:900;font-size:1rem;color:#fdba74;text-transform:uppercase;letter-spacing:1.5px;margin-bottom:14px;">📈 Ventas Mensuales — Últimos 12 Meses</div>';
-  html += '<div style="display:flex;align-items:flex-end;gap:6px;height:160px;border-bottom:1px solid rgba(255,255,255,.1);padding-bottom:6px;">';
+  // CARD 2: CXC PENDIENTE
+  var cxcColor = saldoTotalCXC > 5000 ? '#fca5a5' : saldoTotalCXC > 1000 ? '#fcd34d' : '#86efac';
+  var cxcBgColor = saldoTotalCXC > 5000 ? 'rgba(220,38,38,.18)' : saldoTotalCXC > 1000 ? 'rgba(245,158,11,.18)' : 'rgba(34,197,94,.18)';
+  var cxcBdColor = saldoTotalCXC > 5000 ? 'rgba(220,38,38,.35)' : saldoTotalCXC > 1000 ? 'rgba(245,158,11,.35)' : 'rgba(34,197,94,.35)';
+  html += '<div style="background:linear-gradient(135deg,' + cxcBgColor + ',rgba(0,0,0,.05));border:1.5px solid ' + cxcBdColor + ';border-radius:14px;padding:18px 20px;">';
+  html += '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px;">';
+  html += '<div style="font-size:.66rem;font-weight:800;color:' + cxcColor + ';text-transform:uppercase;letter-spacing:1.5px;">💸 CXC PENDIENTE</div>';
+  html += '<div style="font-size:1.2rem;">⏰</div>';
+  html += '</div>';
+  html += '<div style="font-family:Barlow Condensed,sans-serif;font-weight:900;font-size:2.2rem;color:#fff;line-height:1;">$ ' + saldoTotalCXC.toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g,',') + '</div>';
+  html += '<div style="display:flex;gap:14px;margin-top:8px;font-size:.72rem;flex-wrap:wrap;">';
+  html += '<div><strong style="color:#fca5a5;">' + nVencidas + '</strong> <span style="color:rgba(255,255,255,.55);">vencidas</span></div>';
+  html += '<div><strong style="color:#fcd34d;">' + nPxV + '</strong> <span style="color:rgba(255,255,255,.55);">por vencer</span></div>';
+  html += '</div>';
+  if (scorePagoProm !== null) {
+    var spColor = scorePagoProm >= 75 ? '#86efac' : scorePagoProm >= 55 ? '#fcd34d' : '#fca5a5';
+    html += '<div style="margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,.08);font-size:.72rem;color:rgba(255,255,255,.65);">Score pago promedio: <strong style="color:' + spColor + ';font-size:.85rem;">' + scorePagoProm + '/100</strong></div>';
+  }
+  html += '</div>';
+
+  // CARD 3: VENTAS HISTÓRICAS
+  html += '<div style="background:linear-gradient(135deg,rgba(244,123,62,.18),rgba(234,88,12,.06));border:1.5px solid rgba(244,123,62,.35);border-radius:14px;padding:18px 20px;">';
+  html += '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px;">';
+  html += '<div style="font-size:.66rem;font-weight:800;color:#fdba74;text-transform:uppercase;letter-spacing:1.5px;">📊 VENTAS HISTÓRICAS</div>';
+  html += '<div style="font-size:1.2rem;">💼</div>';
+  html += '</div>';
+  html += '<div style="font-family:Barlow Condensed,sans-serif;font-weight:900;font-size:2.2rem;color:#ffedd5;line-height:1;">$ ' + totalVentas.toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g,',') + '</div>';
+  html += '<div style="display:flex;gap:14px;margin-top:8px;font-size:.72rem;flex-wrap:wrap;">';
+  html += '<div><strong style="color:#fbbf24;">' + totalFacturas + '</strong> <span style="color:rgba(255,237,213,.6);">facturas</span></div>';
+  html += '<div><strong style="color:#fbbf24;">' + clientes.length + '</strong> <span style="color:rgba(255,237,213,.6);">clientes</span></div>';
+  html += '</div>';
+  html += '<div style="margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,.08);font-size:.72rem;color:rgba(255,237,213,.7);">Ticket promedio: <strong style="color:#fbbf24;font-size:.85rem;">$ ' + ticketPromedio.toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g,',') + '</strong></div>';
+  html += '</div>';
+
+  // CARD 4: CLIENTES BY ESTADO
+  html += '<div style="background:linear-gradient(135deg,rgba(168,85,247,.18),rgba(147,51,234,.06));border:1.5px solid rgba(168,85,247,.35);border-radius:14px;padding:18px 20px;">';
+  html += '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px;">';
+  html += '<div style="font-size:.66rem;font-weight:800;color:#d8b4fe;text-transform:uppercase;letter-spacing:1.5px;">👥 CLIENTES</div>';
+  html += '<div style="font-size:1.2rem;">🎯</div>';
+  html += '</div>';
+  html += '<div style="font-family:Barlow Condensed,sans-serif;font-weight:900;font-size:2.2rem;color:#f3e8ff;line-height:1;">' + clientes.length + '</div>';
+  html += '<div style="display:flex;gap:8px;margin-top:8px;font-size:.7rem;flex-wrap:wrap;">';
+  html += '<div style="background:rgba(34,197,94,.2);color:#86efac;padding:2px 8px;border-radius:8px;font-weight:700;">🟢 ' + clientesActivos + ' activos</div>';
+  if (clientesRiesgo > 0) html += '<div style="background:rgba(245,158,11,.2);color:#fcd34d;padding:2px 8px;border-radius:8px;font-weight:700;">🟡 ' + clientesRiesgo + ' riesgo</div>';
+  if (clientesDormidos > 0) html += '<div style="background:rgba(220,38,38,.2);color:#fca5a5;padding:2px 8px;border-radius:8px;font-weight:700;">🔴 ' + clientesDormidos + ' dormidos</div>';
+  html += '</div>';
+  html += '</div>';
+  html += '</div>';
+
+  // ──────────────────────────────────────────────────
+  // FILA 2: GRÁFICO DE VENTAS MENSUALES (más grande)
+  // ──────────────────────────────────────────────────
+  html += '<div style="background:rgba(255,255,255,.04);border:1.5px solid rgba(255,255,255,.08);border-radius:14px;padding:20px 24px;margin-bottom:20px;">';
+  html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:8px;">';
+  html += '<div><div style="font-family:Barlow Condensed,sans-serif;font-weight:900;font-size:1.15rem;color:#fdba74;text-transform:uppercase;letter-spacing:1.5px;">📈 Ventas Mensuales — Últimos 12 Meses</div>';
+  html += '<div style="font-size:.74rem;color:rgba(255,255,255,.4);margin-top:2px;">Hover en cada barra para ver detalles</div></div>';
+  html += '</div>';
+  html += '<div style="display:flex;align-items:flex-end;gap:8px;height:200px;border-bottom:1.5px solid rgba(255,255,255,.1);padding-bottom:8px;">';
   ventasMensuales.forEach(function(v){
     var altura = maxVenta > 0 ? (v.total/maxVenta)*100 : 0;
     var color = v.total === 0 ? 'rgba(100,116,139,.3)' : 'linear-gradient(to top,#f47b3e,#fbbf24)';
-    html += '<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;height:100%;justify-content:flex-end;" title="' + v.mes + ': $ ' + v.total.toFixed(0) + '">' +
-      (v.total > 0 ? '<div style="font-size:.55rem;color:#fbbf24;font-weight:700;">$' + (v.total/1000).toFixed(1) + 'k</div>' : '') +
-      '<div style="width:100%;background:' + color + ';border-radius:4px 4px 0 0;height:' + altura + '%;min-height:' + (v.total>0?4:1) + 'px;transition:all .2s;"></div>' +
-      '<div style="font-size:.6rem;color:rgba(255,255,255,.5);font-weight:700;text-transform:uppercase;letter-spacing:.5px;margin-top:4px;">' + v.mes + '</div>' +
+    html += '<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:4px;height:100%;justify-content:flex-end;cursor:pointer;" title="' + v.mes + ': $ ' + v.total.toFixed(0) + '">' +
+      (v.total > 0 ? '<div style="font-size:.62rem;color:#fbbf24;font-weight:800;font-family:Barlow Condensed,sans-serif;">$' + (v.total/1000).toFixed(1) + 'k</div>' : '') +
+      '<div style="width:100%;background:' + color + ';border-radius:5px 5px 0 0;height:' + altura + '%;min-height:' + (v.total>0?5:1) + 'px;transition:all .2s;"></div>' +
+      '<div style="font-size:.66rem;color:rgba(255,255,255,.55);font-weight:700;text-transform:uppercase;letter-spacing:.5px;margin-top:5px;">' + v.mes + '</div>' +
     '</div>';
   });
-  html += '</div>';
-  html += '</div>';
+  html += '</div></div>';
 
-  // ── Top productos del mes ──
+  // ──────────────────────────────────────────────────
+  // FILA 3: TOP PRODUCTOS DEL MES (lado a lado)
+  // ──────────────────────────────────────────────────
   if (topProdMes.length > 0) {
-    html += '<div style="background:rgba(255,255,255,.04);border:1.5px solid rgba(255,255,255,.08);border-radius:12px;padding:18px 22px;margin-bottom:20px;">';
-    html += '<div style="font-family:Barlow Condensed,sans-serif;font-weight:900;font-size:1rem;color:#fdba74;text-transform:uppercase;letter-spacing:1.5px;margin-bottom:14px;">🏆 Top Productos del Mes</div>';
-    html += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;">';
+    html += '<div style="background:rgba(255,255,255,.04);border:1.5px solid rgba(255,255,255,.08);border-radius:14px;padding:20px 24px;margin-bottom:20px;">';
+    html += '<div style="font-family:Barlow Condensed,sans-serif;font-weight:900;font-size:1.15rem;color:#fdba74;text-transform:uppercase;letter-spacing:1.5px;margin-bottom:14px;">🏆 Top Productos del Mes</div>';
+    html += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:10px;">';
+    var maxMonto = topProdMes[0].monto || 1;
     topProdMes.forEach(function(p, i){
-      html += '<div style="background:rgba(244,123,62,.1);border-left:3px solid #f47b3e;border-radius:6px;padding:8px 12px;">' +
+      var medalla = i===0 ? '🥇' : i===1 ? '🥈' : i===2 ? '🥉' : '⭐';
+      var pctBar = (p.monto / maxMonto) * 100;
+      html += '<div style="background:linear-gradient(90deg,rgba(244,123,62,.15) 0%,rgba(244,123,62,.15) ' + pctBar + '%,rgba(244,123,62,.04) ' + pctBar + '%,rgba(244,123,62,.04) 100%);border-left:3px solid #f47b3e;border-radius:8px;padding:10px 14px;">' +
         '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;">' +
           '<div style="flex:1;min-width:0;">' +
-            '<div style="font-family:monospace;font-weight:900;color:#fbbf24;font-size:.82rem;">' + p.ref + '</div>' +
-            '<div style="font-size:.65rem;color:rgba(255,255,255,.55);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:200px;">' + (p.descripcion||'—').substring(0,40) + '</div>' +
+            '<div style="display:flex;align-items:center;gap:8px;"><span style="font-size:1.1rem;">' + medalla + '</span><span style="font-family:monospace;font-weight:900;color:#fbbf24;font-size:.88rem;">' + p.ref + '</span></div>' +
+            '<div style="font-size:.7rem;color:rgba(255,255,255,.55);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:240px;margin-top:3px;">' + (p.descripcion||'—').substring(0,42) + '</div>' +
           '</div>' +
           '<div style="text-align:right;flex-shrink:0;">' +
-            '<div style="font-family:Barlow Condensed,sans-serif;font-weight:900;color:#86efac;font-size:.95rem;">' + p.qty + ' uds</div>' +
-            '<div style="font-size:.6rem;color:rgba(255,255,255,.45);">$ ' + p.monto.toFixed(0) + '</div>' +
+            '<div style="font-family:Barlow Condensed,sans-serif;font-weight:900;color:#86efac;font-size:1.05rem;">' + p.qty + ' uds</div>' +
+            '<div style="font-size:.65rem;color:rgba(255,255,255,.5);">$ ' + p.monto.toFixed(0) + '</div>' +
           '</div>' +
         '</div>' +
       '</div>';
     });
-    html += '</div>';
-    html += '</div>';
+    html += '</div></div>';
   }
 
-  // ── Filtros + Tabla de clientes ──
-  html += '<div style="background:rgba(255,255,255,.04);border:1.5px solid rgba(255,255,255,.08);border-radius:12px;padding:18px 22px;">';
+  // ──────────────────────────────────────────────────
+  // FILA 4: RANKING DE CLIENTES (TABLA GRANDE con score pago)
+  // ──────────────────────────────────────────────────
+  html += '<div style="background:rgba(255,255,255,.04);border:1.5px solid rgba(255,255,255,.08);border-radius:14px;padding:20px 24px;">';
   html += '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:14px;">';
-  html += '<div style="font-family:Barlow Condensed,sans-serif;font-weight:900;font-size:1rem;color:#fdba74;text-transform:uppercase;letter-spacing:1.5px;">👥 Ranking de Clientes (' + filtrados.length + ')</div>';
+  html += '<div><div style="font-family:Barlow Condensed,sans-serif;font-weight:900;font-size:1.15rem;color:#fdba74;text-transform:uppercase;letter-spacing:1.5px;">👥 Ranking de Clientes (' + filtrados.length + ')</div>';
+  html += '<div style="font-size:.74rem;color:rgba(255,255,255,.4);margin-top:2px;">Cruza ventas + comportamiento de pago + tendencias</div></div>';
   html += '<div style="display:flex;gap:6px;flex-wrap:wrap;">';
-  // Filtro estado
   ['TODOS','ACTIVO','RIESGO','DORMIDO','NUEVO'].forEach(function(e){
     var activo = _crmFiltroEstado === e;
     var colors = { TODOS:'#94a3b8', ACTIVO:'#22c55e', RIESGO:'#f59e0b', DORMIDO:'#dc2626', NUEVO:'#3b82f6' };
-    html += '<button onclick="_crmFiltroEstado=\'' + e + '\';crmRenderDashboard();" style="background:' + (activo?colors[e]:'transparent') + ';border:1.5px solid ' + colors[e] + ';color:' + (activo?'#fff':colors[e]) + ';border-radius:6px;padding:5px 11px;cursor:pointer;font-size:.65rem;font-weight:800;text-transform:uppercase;letter-spacing:.5px;font-family:Barlow,sans-serif;">' + e + '</button>';
+    html += '<button onclick="_crmFiltroEstado=\'' + e + '\';crmRenderDashboard();" style="background:' + (activo?colors[e]:'transparent') + ';border:1.5px solid ' + colors[e] + ';color:' + (activo?'#fff':colors[e]) + ';border-radius:6px;padding:5px 12px;cursor:pointer;font-size:.66rem;font-weight:800;text-transform:uppercase;letter-spacing:.5px;font-family:Barlow,sans-serif;">' + e + '</button>';
   });
   html += '</div></div>';
 
-  html += '<input type="text" placeholder="🔍 Buscar cliente por nombre o RIF..." value="' + _crmFiltroBusqueda.replace(/"/g,'&quot;') + '" oninput="_crmFiltroBusqueda=this.value;clearTimeout(window._crmSearchT);window._crmSearchT=setTimeout(crmRenderDashboard,300);" style="width:100%;padding:9px 14px;border:1.5px solid rgba(255,255,255,.1);border-radius:8px;background:rgba(0,0,0,.25);color:#fff;font-size:.82rem;outline:none;font-family:inherit;margin-bottom:14px;">';
+  html += '<input type="text" placeholder="🔍 Buscar cliente por nombre o RIF..." value="' + _crmFiltroBusqueda.replace(/"/g,'&quot;') + '" oninput="_crmFiltroBusqueda=this.value;clearTimeout(window._crmSearchT);window._crmSearchT=setTimeout(crmRenderDashboard,300);" style="width:100%;padding:10px 16px;border:1.5px solid rgba(255,255,255,.1);border-radius:8px;background:rgba(0,0,0,.25);color:#fff;font-size:.85rem;outline:none;font-family:inherit;margin-bottom:14px;">';
 
-  // Tabla
-  html += '<div style="overflow:auto;max-height:520px;border-radius:8px;border:1px solid rgba(255,255,255,.06);">';
+  html += '<div style="overflow:auto;max-height:540px;border-radius:8px;border:1px solid rgba(255,255,255,.06);">';
   html += '<table style="width:100%;border-collapse:collapse;font-size:.78rem;">';
   html += '<thead style="position:sticky;top:0;z-index:1;"><tr style="background:#1a2050;color:#fff;">' +
-    '<th style="padding:10px 12px;text-align:left;font-size:.68rem;letter-spacing:.5px;font-family:Barlow Condensed,sans-serif;">CLIENTE</th>' +
-    '<th style="padding:10px 12px;text-align:center;font-size:.68rem;letter-spacing:.5px;font-family:Barlow Condensed,sans-serif;">ESTADO</th>' +
-    '<th style="padding:10px 12px;text-align:right;font-size:.68rem;letter-spacing:.5px;font-family:Barlow Condensed,sans-serif;">VENTAS TOTAL</th>' +
-    '<th style="padding:10px 12px;text-align:right;font-size:.68rem;letter-spacing:.5px;font-family:Barlow Condensed,sans-serif;">MES ACTUAL</th>' +
-    '<th style="padding:10px 12px;text-align:center;font-size:.68rem;letter-spacing:.5px;font-family:Barlow Condensed,sans-serif;">TENDENCIA</th>' +
-    '<th style="padding:10px 12px;text-align:center;font-size:.68rem;letter-spacing:.5px;font-family:Barlow Condensed,sans-serif;">FRECUENCIA</th>' +
-    '<th style="padding:10px 12px;text-align:center;font-size:.68rem;letter-spacing:.5px;font-family:Barlow Condensed,sans-serif;">ÚLTIMA</th>' +
-    '<th style="padding:10px 12px;text-align:center;font-size:.68rem;letter-spacing:.5px;font-family:Barlow Condensed,sans-serif;">SEGMENTO</th>' +
-    '<th style="padding:10px 12px;text-align:center;font-size:.68rem;letter-spacing:.5px;font-family:Barlow Condensed,sans-serif;">ACCIÓN</th>' +
+    '<th style="padding:11px 12px;text-align:left;font-size:.66rem;letter-spacing:.5px;font-family:Barlow Condensed,sans-serif;">CLIENTE</th>' +
+    '<th style="padding:11px 12px;text-align:center;font-size:.66rem;letter-spacing:.5px;font-family:Barlow Condensed,sans-serif;">ESTADO</th>' +
+    '<th style="padding:11px 12px;text-align:right;font-size:.66rem;letter-spacing:.5px;font-family:Barlow Condensed,sans-serif;">VENTAS TOTAL</th>' +
+    '<th style="padding:11px 12px;text-align:right;font-size:.66rem;letter-spacing:.5px;font-family:Barlow Condensed,sans-serif;">MES ACTUAL</th>' +
+    '<th style="padding:11px 12px;text-align:center;font-size:.66rem;letter-spacing:.5px;font-family:Barlow Condensed,sans-serif;">TENDENCIA</th>' +
+    '<th style="padding:11px 12px;text-align:center;font-size:.66rem;letter-spacing:.5px;font-family:Barlow Condensed,sans-serif;">FRECUENCIA</th>' +
+    '<th style="padding:11px 12px;text-align:center;font-size:.66rem;letter-spacing:.5px;font-family:Barlow Condensed,sans-serif;">ÚLTIMA</th>' +
+    '<th style="padding:11px 12px;text-align:center;font-size:.66rem;letter-spacing:.5px;font-family:Barlow Condensed,sans-serif;">SEGMENTO</th>' +
+    '<th style="padding:11px 12px;text-align:center;font-size:.66rem;letter-spacing:.5px;font-family:Barlow Condensed,sans-serif;background:#0d9488;">💰 PAGO</th>' +
+    '<th style="padding:11px 12px;text-align:center;font-size:.66rem;letter-spacing:.5px;font-family:Barlow Condensed,sans-serif;">ACCIÓN</th>' +
   '</tr></thead><tbody>';
 
   if (filtrados.length === 0) {
-    html += '<tr><td colspan="9" style="padding:30px;text-align:center;color:rgba(255,255,255,.4);">No hay clientes que coincidan con los filtros</td></tr>';
+    html += '<tr><td colspan="10" style="padding:30px;text-align:center;color:rgba(255,255,255,.4);">No hay clientes que coincidan con los filtros</td></tr>';
   } else {
     filtrados.forEach(function(c, i){
       var bg = i%2===0 ? 'rgba(255,255,255,.02)' : 'rgba(255,255,255,.04)';
@@ -18130,16 +18358,33 @@ window.crmRenderDashboard = function() {
       };
       var sc = segColors[c.rfm.segmento] || segColors.OTHERS;
 
+      // ── CELDA SCORE PAGO ──
+      var pagoCell;
+      if (c.scorePago && c.scorePago.total !== null) {
+        var sp = c.scorePago.total;
+        var spColor = sp >= 90 ? '#16a34a' : sp >= 75 ? '#22c55e' : sp >= 55 ? '#3b82f6' : sp >= 35 ? '#f59e0b' : '#dc2626';
+        var spIcon = sp >= 90 ? '⭐' : sp >= 75 ? '✓' : sp >= 55 ? '~' : sp >= 35 ? '⚠' : '🚨';
+        var tooltip = c.scorePago.metricas.facturas + ' fac · ' + c.scorePago.metricas.pctATiempo + '% a tiempo · retraso prom ' + c.scorePago.metricas.diasRetrasoPromedio + 'd';
+        if (c.scorePago.metricas.saldoPendiente > 0) tooltip += ' · Saldo: $' + c.scorePago.metricas.saldoPendiente.toFixed(0);
+        pagoCell = '<div title="' + tooltip + '" style="display:inline-flex;align-items:center;gap:5px;background:' + spColor + ';color:#fff;padding:3px 10px;border-radius:11px;font-weight:900;font-size:.78rem;font-family:Barlow Condensed,sans-serif;">' + spIcon + ' ' + sp + '</div>';
+        if (c.scorePago.metricas.vencidas > 0) {
+          pagoCell += '<div style="font-size:.55rem;color:#fca5a5;font-weight:700;margin-top:2px;">' + c.scorePago.metricas.vencidas + ' venc.</div>';
+        }
+      } else {
+        pagoCell = '<span style="color:rgba(255,255,255,.25);font-size:.65rem;">—</span>';
+      }
+
       html += '<tr style="background:' + bg + ';border-bottom:1px solid rgba(255,255,255,.04);">' +
-        '<td style="padding:9px 12px;"><div style="font-weight:800;color:#e0e7ff;font-size:.82rem;">' + (c.nombre||'—').substring(0,42) + '</div>' + (c.rif?'<div style="font-family:monospace;font-size:.62rem;color:rgba(255,255,255,.35);">' + c.rif + '</div>':'') + '</td>' +
-        '<td style="padding:9px 12px;text-align:center;"><span style="background:' + ec[1] + ';color:' + ec[0] + ';padding:3px 9px;border-radius:10px;font-size:.62rem;font-weight:800;letter-spacing:.4px;white-space:nowrap;">' + ec[2] + ' ' + c.estado + '</span></td>' +
-        '<td style="padding:9px 12px;text-align:right;"><div style="font-family:Barlow Condensed,sans-serif;font-weight:900;color:#fbbf24;font-size:1rem;">$ ' + c.totalVentas.toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g,',') + '</div><div style="font-size:.6rem;color:rgba(255,255,255,.35);">' + c.cantFacturas + ' facturas</div></td>' +
-        '<td style="padding:9px 12px;text-align:right;"><div style="font-family:Barlow Condensed,sans-serif;font-weight:900;color:#86efac;font-size:.95rem;">$ ' + c.tendencia.actual.toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g,',') + '</div></td>' +
-        '<td style="padding:9px 12px;text-align:center;font-weight:700;font-size:.78rem;">' + tendIcon + '</td>' +
-        '<td style="padding:9px 12px;text-align:center;color:rgba(255,255,255,.6);font-size:.72rem;">' + freqStr + '</td>' +
-        '<td style="padding:9px 12px;text-align:center;color:' + (diasUlt!==null && diasUlt<=30?'#86efac':diasUlt!==null && diasUlt<=60?'#fbbf24':'#fca5a5') + ';font-weight:700;">' + ultStr + '</td>' +
-        '<td style="padding:9px 12px;text-align:center;"><span style="background:' + sc[1] + ';color:' + sc[0] + ';padding:3px 9px;border-radius:10px;font-size:.62rem;font-weight:800;white-space:nowrap;">' + sc[2] + '</span></td>' +
-        '<td style="padding:9px 12px;text-align:center;"><button onclick="crmAbrirCliente(\'' + c.id.replace(/'/g,"\\'") + '\')" style="background:linear-gradient(135deg,#f47b3e,#ea580c);color:#fff;border:none;border-radius:6px;padding:5px 12px;cursor:pointer;font-weight:800;font-size:.65rem;font-family:inherit;text-transform:uppercase;letter-spacing:.4px;">📊 Analizar</button></td>' +
+        '<td style="padding:10px 12px;"><div style="font-weight:800;color:#e0e7ff;font-size:.85rem;">' + (c.nombre||'—').substring(0,42) + '</div>' + (c.rif?'<div style="font-family:monospace;font-size:.62rem;color:rgba(255,255,255,.35);">' + c.rif + '</div>':'') + '</td>' +
+        '<td style="padding:10px 12px;text-align:center;"><span style="background:' + ec[1] + ';color:' + ec[0] + ';padding:3px 9px;border-radius:10px;font-size:.62rem;font-weight:800;letter-spacing:.4px;white-space:nowrap;">' + ec[2] + ' ' + c.estado + '</span></td>' +
+        '<td style="padding:10px 12px;text-align:right;"><div style="font-family:Barlow Condensed,sans-serif;font-weight:900;color:#fbbf24;font-size:1rem;">$ ' + c.totalVentas.toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g,',') + '</div><div style="font-size:.6rem;color:rgba(255,255,255,.35);">' + c.cantFacturas + ' facturas</div></td>' +
+        '<td style="padding:10px 12px;text-align:right;"><div style="font-family:Barlow Condensed,sans-serif;font-weight:900;color:#86efac;font-size:.95rem;">$ ' + c.tendencia.actual.toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g,',') + '</div></td>' +
+        '<td style="padding:10px 12px;text-align:center;font-weight:700;font-size:.78rem;">' + tendIcon + '</td>' +
+        '<td style="padding:10px 12px;text-align:center;color:rgba(255,255,255,.6);font-size:.72rem;">' + freqStr + '</td>' +
+        '<td style="padding:10px 12px;text-align:center;color:' + (diasUlt!==null && diasUlt<=30?'#86efac':diasUlt!==null && diasUlt<=60?'#fbbf24':'#fca5a5') + ';font-weight:700;">' + ultStr + '</td>' +
+        '<td style="padding:10px 12px;text-align:center;"><span style="background:' + sc[1] + ';color:' + sc[0] + ';padding:3px 9px;border-radius:10px;font-size:.62rem;font-weight:800;white-space:nowrap;">' + sc[2] + '</span></td>' +
+        '<td style="padding:10px 12px;text-align:center;background:rgba(13,148,136,.05);">' + pagoCell + '</td>' +
+        '<td style="padding:10px 12px;text-align:center;"><button onclick="crmAbrirCliente(\'' + c.id.replace(/\'/g,"\\\'") + '\')" style="background:linear-gradient(135deg,#f47b3e,#ea580c);color:#fff;border:none;border-radius:6px;padding:6px 13px;cursor:pointer;font-weight:800;font-size:.65rem;font-family:inherit;text-transform:uppercase;letter-spacing:.4px;">📊 Analizar</button></td>' +
       '</tr>';
     });
   }
@@ -19015,30 +19260,79 @@ window.invSaveMapeoSucs = function(clienteId, mapeo) {
 // FORMATO LARGO (estilo RIO): tabla normalizada
 //   Tiene columnas: TIENDA, MARCA, BARRA, PRODUCTO, EXISTENCIA, etc
 window.invDetectarFormato = function(workbook) {
-  // Buscar la hoja con más datos
-  var mejorHoja = null;
-  var maxData = 0;
+  // ── ESTRATEGIA MULTI-HOJA ──
+  // Analizar TODAS las hojas con datos significativos.
+  // Cada hoja puede ser:
+  //  - Una sucursal individual (formato LARGO sin columna TIENDA, todo es de esa sucursal)
+  //  - Un grupo (formato PIVOT con sub-sucursales en columnas)
+  //  - Una tabla normalizada (formato LARGO con columna TIENDA)
+
+  var hojas = []; // array de detecciones por hoja
   workbook.SheetNames.forEach(function(name){
     var ws = workbook.Sheets[name];
-    var range = XLSX.utils.decode_range(ws['!ref'] || 'A1');
-    var celdas = (range.e.r - range.s.r + 1) * (range.e.c - range.s.c + 1);
-    if (celdas > maxData) {
-      maxData = celdas;
-      mejorHoja = name;
+    if (!ws['!ref']) return;
+    var range = XLSX.utils.decode_range(ws['!ref']);
+    var nFilas = range.e.r - range.s.r + 1;
+    var nCols = range.e.c - range.s.c + 1;
+    if (nFilas < 3 || nCols < 2) return; // hoja muy chica
+    // Saltar hojas obvias de gráficos/resúmenes/configuración
+    var nameUp = name.toUpperCase();
+    if (nameUp.indexOf('GRAFICO') >= 0 || nameUp.indexOf('GRÁFICO') >= 0 || nameUp.indexOf('CHART') >= 0) return;
+    if (nameUp.indexOf('CONFIG') >= 0 || nameUp.indexOf('AYUDA') >= 0 || nameUp.indexOf('INSTRUC') >= 0) return;
+
+    var deteccionHoja = window.invDetectarFormatoHoja(ws, name);
+    if (deteccionHoja.formato !== 'DESCONOCIDO') {
+      hojas.push(deteccionHoja);
     }
   });
 
-  if (!mejorHoja) return { formato: 'DESCONOCIDO' };
+  if (hojas.length === 0) {
+    // Fallback: intentar con la hoja principal aunque sea desconocido
+    var mejorHoja = null;
+    var maxData = 0;
+    workbook.SheetNames.forEach(function(name){
+      var ws = workbook.Sheets[name];
+      if (!ws['!ref']) return;
+      var range = XLSX.utils.decode_range(ws['!ref']);
+      var celdas = (range.e.r - range.s.r + 1) * (range.e.c - range.s.c + 1);
+      if (celdas > maxData) { maxData = celdas; mejorHoja = name; }
+    });
+    if (mejorHoja) {
+      var det = window.invDetectarFormatoHoja(workbook.Sheets[mejorHoja], mejorHoja);
+      hojas.push(det);
+    }
+  }
 
-  var ws = workbook.Sheets[mejorHoja];
+  // Modo único (compat con código existente): si solo 1 hoja procesable, retornar como antes
+  if (hojas.length === 1) {
+    return {
+      formato: hojas[0].formato,
+      hoja: hojas[0].hoja,
+      filaHeader: hojas[0].filaHeader,
+      idxsLargo: hojas[0].idxsLargo,
+      data: hojas[0].data,
+      multiHoja: false,
+      hojas: hojas
+    };
+  }
+
+  // Multi-hoja: retornar todas
+  return {
+    formato: 'MULTI_HOJA',
+    multiHoja: true,
+    hojas: hojas
+  };
+};
+
+// Detección dentro de UNA hoja (lógica original extraída)
+window.invDetectarFormatoHoja = function(ws, sheetName) {
   var data = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null });
 
-  // Buscar fila de header en las primeras 10
   var formato = 'DESCONOCIDO';
   var filaHeader = -1;
   var idxsLargo = {};
 
-  // Primero intentar formato LARGO buscando keywords típicos
+  // Intentar formato LARGO
   var keywordsLargo = {
     tienda: ['TIENDA','SUCURSAL','SHOP','LOCAL','TRECE','STORE'],
     marca: ['MARCA','BRAND'],
@@ -19067,22 +19361,17 @@ window.invDetectarFormato = function(workbook) {
     }
   }
 
-  // Si no es LARGO, intentar PIVOT (matriz)
+  // PIVOT
   if (formato === 'DESCONOCIDO') {
-    // PIVOT: la primera fila tiene nombres de sucursales, la columna A tiene códigos
-    // Buscar primera fila con varios códigos numéricos largos en col A
     for (var fi = 0; fi < Math.min(15, data.length); fi++) {
       var row = data[fi] || [];
-      // Verificar que haya varias filas siguientes con código de barra (numérico largo)
       var barrasOk = 0;
       for (var fj = fi+1; fj < Math.min(fi+10, data.length); fj++) {
         var v = data[fj] && data[fj][0];
         if (v && String(v).replace(/\D/g,'').length >= 12) barrasOk++;
       }
       if (barrasOk >= 3) {
-        // Esta fila ANTERIOR (fi-1) o esta misma debe tener nombres de sucursales
         var posibleHeader = data[Math.max(0, fi-1)] || row;
-        // Contar columnas con string corto (códigos sucursal)
         var colsConNombre = 0;
         for (var ci = 2; ci < (posibleHeader.length||0); ci++) {
           if (posibleHeader[ci] != null && String(posibleHeader[ci]).trim().length > 0) colsConNombre++;
@@ -19097,9 +19386,37 @@ window.invDetectarFormato = function(workbook) {
     }
   }
 
+  // ── NUEVO: Formato SUCURSAL_INDIVIDUAL ──
+  // Hoja con código de barra y existencia, pero SIN columna sucursal/tienda
+  // Toda la hoja representa UNA sola sucursal (el nombre de la hoja)
+  if (formato === 'DESCONOCIDO') {
+    // Buscar header con barra + existencia pero sin tienda
+    for (var fi = 0; fi < Math.min(15, data.length); fi++) {
+      var row = data[fi] || [];
+      var matches = {};
+      for (var k in keywordsLargo) {
+        if (k === 'tienda') continue; // ignorar tienda en este formato
+        var kws = keywordsLargo[k];
+        for (var ci = 0; ci < row.length; ci++) {
+          var v = String(row[ci]||'').toUpperCase().trim();
+          for (var ki = 0; ki < kws.length; ki++) {
+            if (v.indexOf(kws[ki]) >= 0) { matches[k] = ci; break; }
+          }
+        }
+      }
+      if (matches.barra !== undefined && matches.existencia !== undefined) {
+        formato = 'SUCURSAL_INDIVIDUAL';
+        filaHeader = fi;
+        idxsLargo = matches;
+        idxsLargo.sucursalImplicita = sheetName; // el nombre de la hoja es la sucursal
+        break;
+      }
+    }
+  }
+
   return {
     formato: formato,
-    hoja: mejorHoja,
+    hoja: sheetName,
     filaHeader: filaHeader,
     idxsLargo: idxsLargo,
     data: data
@@ -19110,27 +19427,81 @@ window.invDetectarFormato = function(workbook) {
 // PARSER: Extraer productos y sucursales del formato detectado
 // ──────────────────────────────────────────────────────────────────
 window.invParsearArchivo = function(deteccion) {
+  // ── MULTI-HOJA: combinar resultados de cada hoja ──
+  if (deteccion.multiHoja) {
+    var todosProductos = {}; // codBarra → producto unificado
+    var todasSucursales = {}; // codigo → sucursal
+
+    deteccion.hojas.forEach(function(detHoja){
+      var resHoja = window.invParsearHojaIndividual(detHoja);
+
+      // Combinar sucursales
+      resHoja.sucursales.forEach(function(s){
+        if (!todasSucursales[s.codigo]) {
+          todasSucursales[s.codigo] = { codigo: s.codigo, totalUds: 0, prodsConStock: 0, grupo: s.grupo, hojaOrigen: detHoja.hoja };
+        }
+        todasSucursales[s.codigo].totalUds += s.totalUds;
+        todasSucursales[s.codigo].prodsConStock += s.prodsConStock;
+      });
+
+      // Combinar productos
+      resHoja.productos.forEach(function(p){
+        if (!todosProductos[p.codBarra]) {
+          todosProductos[p.codBarra] = {
+            codBarra: p.codBarra,
+            descripcion: p.descripcion,
+            marca: p.marca,
+            totalCliente: 0,
+            porSucursal: {},
+            refFarmers: '',
+            descFarmers: '',
+            ventas90: 0
+          };
+        }
+        var prodAcum = todosProductos[p.codBarra];
+        // Mejorar descripción si esta hoja tiene mejor info
+        if (!prodAcum.descripcion && p.descripcion) prodAcum.descripcion = p.descripcion;
+        if (!prodAcum.marca && p.marca) prodAcum.marca = p.marca;
+        // Sumar stock por sucursal
+        Object.keys(p.porSucursal || {}).forEach(function(sucCod){
+          var qty = p.porSucursal[sucCod] || 0;
+          prodAcum.porSucursal[sucCod] = (prodAcum.porSucursal[sucCod] || 0) + qty;
+          prodAcum.totalCliente += qty;
+        });
+        if (p.ventas90) prodAcum.ventas90 = (prodAcum.ventas90 || 0) + p.ventas90;
+      });
+    });
+
+    var sucsArr = Object.values(todasSucursales);
+    sucsArr.sort(function(a,b){
+      if (a.grupo !== b.grupo) return a.grupo.localeCompare(b.grupo);
+      return b.totalUds - a.totalUds;
+    });
+
+    return { sucursales: sucsArr, productos: Object.values(todosProductos) };
+  }
+
+  // ── HOJA ÚNICA ──
+  return window.invParsearHojaIndividual(deteccion);
+};
+
+// Procesa UNA hoja según su formato detectado
+window.invParsearHojaIndividual = function(deteccion) {
   var data = deteccion.data;
-  var sucursales = [];      // [{ codigo, totalUds, prodsConStock }]
-  var productos = [];       // [{ codBarra, descripcion, totalCliente, porSucursal, marca, otros }]
+  var sucursales = [];
+  var productos = [];
 
   if (deteccion.formato === 'PIVOT') {
-    // Headers están en filaHeader, productos empiezan en filaHeader+1
     var headerRow = data[deteccion.filaHeader] || [];
-
-    // La columna 0 = código, columna 1 = descripción
-    // Las columnas siguientes son sucursales (excluir "inventario total" si aparece)
-    var indicesSucs = []; // [{ idx, codigo }]
+    var indicesSucs = [];
     for (var ci = 2; ci < headerRow.length; ci++) {
       var nombre = headerRow[ci];
       if (nombre == null || String(nombre).trim() === '') continue;
       var nombreStr = String(nombre).trim();
-      // Saltar "inventario total" o variantes
       if (nombreStr.toLowerCase().indexOf('total') >= 0 && ci === 2) continue;
       indicesSucs.push({ idx: ci, codigo: nombreStr });
     }
 
-    // Inicializar sucursales
     indicesSucs.forEach(function(s){
       sucursales.push({
         codigo: s.codigo,
@@ -19141,14 +19512,12 @@ window.invParsearArchivo = function(deteccion) {
       });
     });
 
-    // Procesar productos
     for (var ri = deteccion.filaHeader + 1; ri < data.length; ri++) {
       var row = data[ri] || [];
       var cod = row[0];
       var desc = row[1];
       if (!cod || !desc) continue;
       var codStr = String(cod).trim();
-      // Filtrar fila de footer si dice "CODIGO" o similar
       if (codStr.toUpperCase() === 'CODIGO' || codStr.toUpperCase() === 'CÓDIGO') continue;
 
       var prod = {
@@ -19176,9 +19545,8 @@ window.invParsearArchivo = function(deteccion) {
     }
   } else if (deteccion.formato === 'LARGO') {
     var idx = deteccion.idxsLargo;
-    // Agrupar por código de barra → mapa de productos
-    var prodMap = {}; // codBarra → producto
-    var sucMap = {};  // tienda → datos
+    var prodMap = {};
+    var sucMap = {};
 
     for (var ri = deteccion.filaHeader + 1; ri < data.length; ri++) {
       var row = data[ri] || [];
@@ -19192,12 +19560,6 @@ window.invParsearArchivo = function(deteccion) {
       var desc = idx.producto !== undefined ? String(row[idx.producto]||'').trim() : '';
       var marca = idx.marca !== undefined ? String(row[idx.marca]||'').trim() : '';
 
-      // Buscar campos extra (ventas, días, etc.)
-      var ventas90 = null, ultVenta = null, costoNeto = null, pvp = null;
-      for (var ci = 0; ci < row.length; ci++) {
-        // Detectar columnas adicionales por contenido (no por header, ya que hay variabilidad)
-      }
-
       if (!prodMap[barraStr]) {
         prodMap[barraStr] = {
           codBarra: barraStr,
@@ -19206,7 +19568,6 @@ window.invParsearArchivo = function(deteccion) {
           totalCliente: 0,
           porSucursal: {},
           ventas90: 0,
-          extras: {}, // campos adicionales por sucursal
           refFarmers: '',
           descFarmers: ''
         };
@@ -19214,7 +19575,6 @@ window.invParsearArchivo = function(deteccion) {
       prodMap[barraStr].porSucursal[tienda] = (prodMap[barraStr].porSucursal[tienda]||0) + existencia;
       prodMap[barraStr].totalCliente += existencia;
 
-      // Buscar VENTAS 90 DIAS si está en headers
       var headerR = data[deteccion.filaHeader] || [];
       for (var hi = 0; hi < headerR.length; hi++) {
         var hv = String(headerR[hi]||'').toUpperCase();
@@ -19235,9 +19595,49 @@ window.invParsearArchivo = function(deteccion) {
 
     productos = Object.values(prodMap);
     sucursales = Object.values(sucMap);
+  } else if (deteccion.formato === 'SUCURSAL_INDIVIDUAL') {
+    // Hoja completa = una sola sucursal (nombre = sheetName)
+    var idx = deteccion.idxsLargo;
+    var sucName = idx.sucursalImplicita || deteccion.hoja;
+    var prodMap = {};
+    var sucData = { codigo: sucName, totalUds: 0, prodsConStock: 0, grupo: invDetectarGrupo(sucName) };
+
+    for (var ri = deteccion.filaHeader + 1; ri < data.length; ri++) {
+      var row = data[ri] || [];
+      var barra = row[idx.barra];
+      if (!barra) continue;
+      var barraStr = String(barra).trim();
+      if (!barraStr) continue;
+
+      var existencia = idx.existencia !== undefined ? (parseFloat(row[idx.existencia])||0) : 0;
+      var desc = idx.producto !== undefined ? String(row[idx.producto]||'').trim() : '';
+      var marca = idx.marca !== undefined ? String(row[idx.marca]||'').trim() : '';
+
+      if (!prodMap[barraStr]) {
+        prodMap[barraStr] = {
+          codBarra: barraStr,
+          descripcion: desc,
+          marca: marca,
+          totalCliente: 0,
+          porSucursal: {},
+          ventas90: 0,
+          refFarmers: '',
+          descFarmers: ''
+        };
+      }
+      prodMap[barraStr].porSucursal[sucName] = (prodMap[barraStr].porSucursal[sucName]||0) + existencia;
+      prodMap[barraStr].totalCliente += existencia;
+
+      if (existencia > 0) {
+        sucData.totalUds += existencia;
+        sucData.prodsConStock++;
+      }
+    }
+
+    productos = Object.values(prodMap);
+    sucursales = [sucData];
   }
 
-  // Ordenar sucursales por nombre dentro de su grupo
   sucursales.sort(function(a,b){
     if (a.grupo !== b.grupo) return a.grupo.localeCompare(b.grupo);
     return b.totalUds - a.totalUds;
@@ -19557,7 +19957,11 @@ window.invProcesarArchivo = function(file) {
       window.invConstruirAnalisisPorSucursal();
 
       if (typeof showToast === 'function') {
-        showToast('✅ ' + _invProductos.length + ' productos · ' + matchInfo.matched + '/' + matchInfo.total + ' cruzados con tu catálogo (' + Math.round(matchInfo.matched/matchInfo.total*100) + '%)', 'success');
+        var msg = '✅ ' + _invProductos.length + ' productos · ' + matchInfo.matched + '/' + matchInfo.total + ' cruzados con tu catálogo (' + Math.round(matchInfo.matched/matchInfo.total*100) + '%)';
+        if (deteccion.multiHoja) {
+          msg += ' · ' + deteccion.hojas.length + ' hojas combinadas';
+        }
+        showToast(msg, 'success');
       }
 
       crmRenderInventarios();
