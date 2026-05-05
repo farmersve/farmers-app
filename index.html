@@ -17,7 +17,7 @@
 <meta http-equiv="Expires" content="0">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.05.05.02">
+<meta name="farmers-version" content="2026.05.05.03">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -17398,8 +17398,9 @@ window.crmConstruirDataset = function() {
   }
 
   // ── Procesar facturas HCL ──
-  // Estructura real: { clienteNombre, rif, sucursal, nroFactura, fechaEmision, items[], total }
-  // Cada item: { refFarmers, descripcion, cantidad, precio, totalLinea, codigoBarra, marca? }
+  // Estructura real (verificada en hclTabFacturas/hclVerFactura):
+  //   { id, nroFactura, clienteNombre, rif, sucursal, fechaEmision, items[], totalFactura, fuente }
+  // Cada item: { ref, descripcion, cantidad, precioUnitario, totalLinea, codigoBarra }
   hclFacs.forEach(function(f){
     if (!f) return;
     var nombre = f.clienteNombre || f.cliente || f.razonSocial || '';
@@ -17414,35 +17415,49 @@ window.crmConstruirDataset = function() {
     var key = normRif(rif) || ('__' + nombre.substring(0, 20));
     var c = getOrCreate(key, nombre, rif);
 
-    var fecha = f.fechaEmision || f.fecha || '';
-    var fechaObj = fecha ? new Date(fecha) : null;
-    var mes = fechaObj && !isNaN(fechaObj) ? (fechaObj.getFullYear() + '-' + String(fechaObj.getMonth()+1).padStart(2,'0')) : null;
+    // ── FECHA: HCL guarda como YYYY-MM-DD o DD/MM/YYYY ──
+    var fechaRaw = f.fechaEmision || f.fecha || f.fechaFactura || '';
+    var fechaISO = '';
+    if (fechaRaw) {
+      var fStr = String(fechaRaw).trim();
+      if (/^\d{2}\/\d{2}\/\d{4}$/.test(fStr)) {
+        var p = fStr.split('/');
+        fechaISO = p[2] + '-' + p[1] + '-' + p[0];
+      } else if (/^\d{4}-\d{2}-\d{2}/.test(fStr)) {
+        fechaISO = fStr.slice(0,10);
+      } else {
+        var d = new Date(fStr);
+        if (!isNaN(d.getTime())) {
+          fechaISO = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+        }
+      }
+    }
+    var mes = '';
+    if (fechaISO) mes = fechaISO.slice(0,7);
 
     var items = f.items || f.lineas || [];
 
-    // Calcular total y unidades de la factura desde sus items
-    var totalFactura = 0;
-    var unidadesFactura = 0;
-    items.forEach(function(it){
-      if (!it) return;
-      var qty = parseInt(it.cantidad) || 0;
-      var totLinea = parseFloat(it.totalLinea) || (parseFloat(it.precio||0) * qty) || 0;
-      totalFactura += totLinea;
-      unidadesFactura += qty;
-    });
-
-    // Si la factura tiene total propio, preferir ese (más confiable)
-    if (f.total && parseFloat(f.total) > 0) {
-      totalFactura = parseFloat(f.total);
+    // ── TOTAL: HCL guarda en f.totalFactura (NO f.total) ──
+    var totalFactura = parseFloat(f.totalFactura) || 0;
+    if (totalFactura === 0) {
+      // Fallback: calcular desde items
+      items.forEach(function(it){
+        if (!it) return;
+        var qty = parseInt(it.cantidad) || 0;
+        var totLinea = parseFloat(it.totalLinea) || (parseFloat(it.precioUnitario || it.precio || 0) * qty) || 0;
+        totalFactura += totLinea;
+      });
     }
+
+    var unidadesFactura = items.reduce(function(s, it){ return s + (parseInt(it && it.cantidad) || 0); }, 0);
 
     c.totalVentas += totalFactura;
     c.totalUnidades += unidadesFactura;
     c.cantFacturas++;
 
-    if (fecha) {
-      if (!c.primeraCompra || fecha < c.primeraCompra) c.primeraCompra = fecha;
-      if (!c.ultimaCompra || fecha > c.ultimaCompra) c.ultimaCompra = fecha;
+    if (fechaISO) {
+      if (!c.primeraCompra || fechaISO < c.primeraCompra) c.primeraCompra = fechaISO;
+      if (!c.ultimaCompra || fechaISO > c.ultimaCompra) c.ultimaCompra = fechaISO;
     }
 
     if (mes) {
@@ -17455,13 +17470,15 @@ window.crmConstruirDataset = function() {
     // Detalle por producto
     items.forEach(function(it){
       if (!it) return;
-      var ref = it.refFarmers || it.ref || it.codigo || '';
+      // ── REF: HCL guarda en it.ref (NO it.refFarmers) ──
+      var ref = it.ref || it.refFarmers || it.codigo || '';
       if (!ref) return;
       ref = String(ref).trim().toUpperCase();
       if (!ref) return;
 
       var qty = parseInt(it.cantidad) || 0;
-      var monto = parseFloat(it.totalLinea) || (parseFloat(it.precio||0) * qty) || 0;
+      var precio = parseFloat(it.precioUnitario || it.precio || 0) || 0;
+      var monto = parseFloat(it.totalLinea) || (precio * qty) || 0;
 
       if (!c.productos[ref]) {
         c.productos[ref] = {
@@ -17478,9 +17495,9 @@ window.crmConstruirDataset = function() {
       c.productos[ref].qty += qty;
       c.productos[ref].monto += monto;
       c.productos[ref].vecesComprado++;
-      if (fecha) {
-        if (!c.productos[ref].ultimaCompra || fecha > c.productos[ref].ultimaCompra) c.productos[ref].ultimaCompra = fecha;
-        if (!c.productos[ref].primeraCompra || fecha < c.productos[ref].primeraCompra) c.productos[ref].primeraCompra = fecha;
+      if (fechaISO) {
+        if (!c.productos[ref].ultimaCompra || fechaISO > c.productos[ref].ultimaCompra) c.productos[ref].ultimaCompra = fechaISO;
+        if (!c.productos[ref].primeraCompra || fechaISO < c.productos[ref].primeraCompra) c.productos[ref].primeraCompra = fechaISO;
       }
       if (it.descripcion && !c.productos[ref].descripcion) c.productos[ref].descripcion = it.descripcion;
 
@@ -17505,13 +17522,14 @@ window.crmConstruirDataset = function() {
     c.sucursales[sucursal].total += totalFactura;
     c.sucursales[sucursal].unidades += unidadesFactura;
     c.sucursales[sucursal].facturas++;
-    if (fecha && (!c.sucursales[sucursal].ultimaCompra || fecha > c.sucursales[sucursal].ultimaCompra)) {
-      c.sucursales[sucursal].ultimaCompra = fecha;
+    if (fechaISO && (!c.sucursales[sucursal].ultimaCompra || fechaISO > c.sucursales[sucursal].ultimaCompra)) {
+      c.sucursales[sucursal].ultimaCompra = fechaISO;
     }
 
     c.facturas.push({
+      id: f.id,
       numero: f.nroFactura || f.numero || f.numFactura || '',
-      fecha: fecha,
+      fecha: fechaISO || fechaRaw,
       total: totalFactura,
       unidades: unidadesFactura,
       sucursal: sucursal,
@@ -17524,22 +17542,45 @@ window.crmConstruirDataset = function() {
 };
 
 // ──────────────────────────────────────────────────────────────────
+// HELPERS: parseo seguro de fechas (evita desfases UTC con YYYY-MM-DD)
+// ──────────────────────────────────────────────────────────────────
+window.crmParseFecha = function(f) {
+  if (!f) return null;
+  var s = String(f).trim();
+  if (!s) return null;
+  // YYYY-MM-DD agregar mediodía para evitar UTC offset
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) s = s + 'T12:00:00';
+  // DD/MM/YYYY → convertir
+  else if (/^\d{2}\/\d{2}\/\d{4}$/.test(s)) {
+    var p = s.split('/');
+    s = p[2] + '-' + p[1] + '-' + p[0] + 'T12:00:00';
+  }
+  var d = new Date(s);
+  return isNaN(d.getTime()) ? null : d;
+};
+
+window.crmDiasDesde = function(fechaStr) {
+  var d = window.crmParseFecha(fechaStr);
+  if (!d) return null;
+  var hoy = new Date(); hoy.setHours(12,0,0,0);
+  return Math.floor((hoy - d) / (1000*60*60*24));
+};
+
+// ──────────────────────────────────────────────────────────────────
 // SCORING Y SEGMENTACIÓN
 // ──────────────────────────────────────────────────────────────────
 window.crmCalcularEstado = function(cliente) {
-  if (!cliente.ultimaCompra) return 'NUEVO';
-  var dias = Math.floor((new Date() - new Date(cliente.ultimaCompra)) / (1000*60*60*24));
+  var dias = window.crmDiasDesde(cliente.ultimaCompra);
+  if (dias === null) return 'NUEVO';
   if (dias <= 30) return 'ACTIVO';
-  if (dias <= 60) return 'RIESGO';
   if (dias <= 90) return 'RIESGO';
   return 'DORMIDO';
 };
 
 // RFM: Recency, Frequency, Monetary — score 1-5 cada uno
 window.crmCalcularRFM = function(cliente, todosClientes) {
-  if (!cliente.ultimaCompra) return { r:1, f:1, m:1, segmento:'NEW' };
-
-  var dias = Math.floor((new Date() - new Date(cliente.ultimaCompra)) / (1000*60*60*24));
+  var dias = window.crmDiasDesde(cliente.ultimaCompra);
+  if (dias === null) return { r:1, f:1, m:1, segmento:'NEW' };
   // R: 5=muy reciente, 1=muy antiguo
   var r = dias <= 14 ? 5 : dias <= 30 ? 4 : dias <= 60 ? 3 : dias <= 90 ? 2 : 1;
 
@@ -17591,8 +17632,10 @@ window.crmCalcularTendencia = function(cliente) {
 
 window.crmCalcularFrecuencia = function(cliente) {
   if (cliente.cantFacturas < 2) return null;
-  if (!cliente.primeraCompra || !cliente.ultimaCompra) return null;
-  var dias = Math.floor((new Date(cliente.ultimaCompra) - new Date(cliente.primeraCompra)) / (1000*60*60*24));
+  var prim = window.crmParseFecha(cliente.primeraCompra);
+  var ult  = window.crmParseFecha(cliente.ultimaCompra);
+  if (!prim || !ult) return null;
+  var dias = Math.floor((ult - prim) / (1000*60*60*24));
   if (dias === 0) return null;
   return Math.round(dias / (cliente.cantFacturas - 1));
 };
@@ -17787,7 +17830,7 @@ window.crmCalcularScoreFarmers = function(cliente, todosClientes) {
   // 4) Lealtad (0-20 pts) — antigüedad + consistencia mensual
   var lealtadScore = 0;
   if (cliente.primeraCompra) {
-    var diasAntig = Math.floor((new Date() - new Date(cliente.primeraCompra)) / (1000*60*60*24));
+    var diasAntig = (window.crmDiasDesde(cliente.primeraCompra) || 0);
     lealtadScore += diasAntig >= 365 ? 12 : diasAntig >= 180 ? 9 : diasAntig >= 90 ? 6 : diasAntig >= 30 ? 3 : 0;
   }
   // Consistencia: cuántos meses distintos compró
@@ -17835,7 +17878,7 @@ window.crmGenerarAlertas = function(data) {
   // ── ALERTA 1: Clientes que rompen su patrón (no compran cuando deberían) ──
   clientes.forEach(function(c){
     if (!c.frecuencia || !c.ultimaCompra) return;
-    var diasUlt = Math.floor((new Date() - new Date(c.ultimaCompra)) / (1000*60*60*24));
+    var diasUlt = (window.crmDiasDesde(c.ultimaCompra) || 0);
     if (diasUlt > c.frecuencia * 1.5 && c.cantFacturas >= 3 && c.totalVentas > 200) {
       var prioridad = diasUlt > c.frecuencia * 3 ? 'CRITICA' : diasUlt > c.frecuencia * 2 ? 'ALTA' : 'MEDIA';
       alertas.push({
@@ -17876,7 +17919,7 @@ window.crmGenerarAlertas = function(data) {
     Object.keys(c.productos).forEach(function(ref){
       var p = c.productos[ref];
       if (!p.ultimaCompra) return;
-      var fp = new Date(p.ultimaCompra);
+      var fp = window.crmParseFecha(p.ultimaCompra); if (!fp) return;
       if (!productosCount[ref]) productosCount[ref] = { reciente:0, anterior:0, descripcion:p.descripcion, marca:p.marca };
       if (fp >= hace60) productosCount[ref].reciente++;
       else if (fp >= hace120) productosCount[ref].anterior++;
@@ -17953,7 +17996,8 @@ window.crmPredecirProximaCompra = function(cliente) {
   if (!cliente.frecuencia || !cliente.ultimaCompra) return null;
 
   var hoy = new Date();
-  var ult = new Date(cliente.ultimaCompra);
+  var ult = window.crmParseFecha(cliente.ultimaCompra);
+  if (!ult) return null;
   var diasDesdeUlt = Math.floor((hoy - ult) / (1000*60*60*24));
 
   // Próxima compra estimada: ult + frecuencia
@@ -18374,7 +18418,7 @@ window.crmRenderDashboard = function() {
                      c.tendencia.dir === 'down' ? '<span style="color:#dc2626;">↓ ' + Math.abs(c.tendencia.pct).toFixed(0) + '%</span>' :
                      '<span style="color:rgba(255,255,255,.3);">—</span>';
 
-      var diasUlt = c.ultimaCompra ? Math.floor((new Date() - new Date(c.ultimaCompra)) / (1000*60*60*24)) : null;
+      var diasUlt = window.crmDiasDesde(c.ultimaCompra);
       var ultStr = diasUlt === null ? '—' : diasUlt === 0 ? 'hoy' : diasUlt + 'd';
 
       var freqStr = c.frecuencia ? 'cada ' + c.frecuencia + 'd' : '—';
@@ -18481,8 +18525,8 @@ window.crmRenderCliente = function() {
   c.tendencia = window.crmCalcularTendencia(c);
   c.frecuencia = window.crmCalcularFrecuencia(c);
 
-  var diasUlt = c.ultimaCompra ? Math.floor((new Date() - new Date(c.ultimaCompra)) / (1000*60*60*24)) : null;
-  var diasPrim = c.primeraCompra ? Math.floor((new Date() - new Date(c.primeraCompra)) / (1000*60*60*24)) : null;
+  var diasUlt = window.crmDiasDesde(c.ultimaCompra);
+  var diasPrim = window.crmDiasDesde(c.primeraCompra);
   var ticketPromedio = c.cantFacturas > 0 ? c.totalVentas / c.cantFacturas : 0;
 
   // Estado visual
@@ -18535,6 +18579,70 @@ window.crmRenderCliente = function() {
   '</div>';
   html += '</div>';
 
+  // ──────────────────────────────────────────────────────────────
+  // BLOQUE FINANCIERO: Score de Pago + Estado CXC
+  // ──────────────────────────────────────────────────────────────
+  var scorePago = window.crmCalcularScorePago(c);
+  if (scorePago && scorePago.total !== null) {
+    var sp = scorePago.total;
+    var spColor = sp >= 90 ? '#16a34a' : sp >= 75 ? '#22c55e' : sp >= 55 ? '#3b82f6' : sp >= 35 ? '#f59e0b' : '#dc2626';
+    var spBg = sp >= 90 ? 'rgba(22,163,74,.12)' : sp >= 75 ? 'rgba(34,197,94,.12)' : sp >= 55 ? 'rgba(59,130,246,.12)' : sp >= 35 ? 'rgba(245,158,11,.12)' : 'rgba(220,38,38,.12)';
+    var spIcon = sp >= 90 ? '⭐' : sp >= 75 ? '✓' : sp >= 55 ? '~' : sp >= 35 ? '⚠' : '🚨';
+    var m = scorePago.metricas;
+
+    html += '<div style="background:' + spBg + ';border:1.5px solid ' + spColor + ';border-radius:12px;padding:18px 22px;margin-bottom:18px;">';
+    html += '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:14px;margin-bottom:14px;">';
+    html += '<div><div style="font-family:Barlow Condensed,sans-serif;font-weight:900;font-size:1rem;color:' + spColor + ';text-transform:uppercase;letter-spacing:1.5px;">💰 Comportamiento de Pago</div>';
+    html += '<div style="font-size:.74rem;color:rgba(255,255,255,.55);margin-top:2px;">Análisis CXC del cliente · ' + m.facturas + ' facturas registradas</div></div>';
+    html += '<div style="display:flex;align-items:center;gap:14px;">';
+    html += '<div style="background:' + spColor + ';color:#fff;padding:9px 18px;border-radius:14px;font-family:Barlow Condensed,sans-serif;font-weight:900;font-size:1.6rem;">' + spIcon + ' ' + sp + '/100</div>';
+    html += '<div style="font-size:.78rem;font-weight:800;color:' + spColor + ';">' + scorePago.categoria + '</div>';
+    html += '</div></div>';
+
+    html += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;">';
+    html += '<div style="background:rgba(0,0,0,.18);border-radius:8px;padding:9px 12px;"><div style="font-size:.58rem;color:rgba(255,255,255,.5);text-transform:uppercase;letter-spacing:.8px;">A TIEMPO</div><div style="font-family:Barlow Condensed,sans-serif;font-weight:900;font-size:1.2rem;color:#86efac;">' + m.pctATiempo + '%</div><div style="font-size:.6rem;color:rgba(255,255,255,.4);">' + m.pagadasATiempo + '/' + (m.pagadasATiempo + m.pagadasTarde) + '</div></div>';
+    html += '<div style="background:rgba(0,0,0,.18);border-radius:8px;padding:9px 12px;"><div style="font-size:.58rem;color:rgba(255,255,255,.5);text-transform:uppercase;letter-spacing:.8px;">RETRASO PROM</div><div style="font-family:Barlow Condensed,sans-serif;font-weight:900;font-size:1.2rem;color:' + (m.diasRetrasoPromedio === 0 ? '#86efac' : m.diasRetrasoPromedio <= 7 ? '#fcd34d' : '#fca5a5') + ';">' + m.diasRetrasoPromedio + ' días</div><div style="font-size:.6rem;color:rgba(255,255,255,.4);">vs vencimiento</div></div>';
+    html += '<div style="background:rgba(0,0,0,.18);border-radius:8px;padding:9px 12px;"><div style="font-size:.58rem;color:rgba(255,255,255,.5);text-transform:uppercase;letter-spacing:.8px;">SALDO PEND.</div><div style="font-family:Barlow Condensed,sans-serif;font-weight:900;font-size:1.2rem;color:' + (m.saldoPendiente === 0 ? '#86efac' : '#fcd34d') + ';">$ ' + m.saldoPendiente.toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g,',') + '</div><div style="font-size:.6rem;color:rgba(255,255,255,.4);">' + m.pctSaldoPendiente + '% del facturado</div></div>';
+    html += '<div style="background:rgba(0,0,0,.18);border-radius:8px;padding:9px 12px;"><div style="font-size:.58rem;color:rgba(255,255,255,.5);text-transform:uppercase;letter-spacing:.8px;">VENCIDAS</div><div style="font-family:Barlow Condensed,sans-serif;font-weight:900;font-size:1.2rem;color:' + (m.vencidas === 0 ? '#86efac' : '#fca5a5') + ';">' + m.vencidas + '</div><div style="font-size:.6rem;color:rgba(255,255,255,.4);">por cobrar</div></div>';
+    html += '<div style="background:rgba(0,0,0,.18);border-radius:8px;padding:9px 12px;"><div style="font-size:.58rem;color:rgba(255,255,255,.5);text-transform:uppercase;letter-spacing:.8px;">SIN PAGAR</div><div style="font-family:Barlow Condensed,sans-serif;font-weight:900;font-size:1.2rem;color:' + (m.sinPagar === 0 ? '#86efac' : '#fdba74') + ';">' + m.sinPagar + '</div><div style="font-size:.6rem;color:rgba(255,255,255,.4);">total facturado: $' + m.totalFacturado.toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g,',') + '</div></div>';
+    html += '</div></div>';
+  }
+
+  // ──────────────────────────────────────────────────────────────
+  // BLOQUE TENDENCIA + PREDICCIÓN
+  // ──────────────────────────────────────────────────────────────
+  var tend = c.tendencia;
+  var pred = window.crmPredecirProximaCompra(c);
+  if (tend || pred) {
+    html += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px;margin-bottom:18px;">';
+    if (tend) {
+      var tendColor = tend.dir === 'up' ? '#16a34a' : tend.dir === 'down' ? '#dc2626' : '#94a3b8';
+      var tendBg = tend.dir === 'up' ? 'rgba(22,163,74,.1)' : tend.dir === 'down' ? 'rgba(220,38,38,.1)' : 'rgba(148,163,184,.08)';
+      var tendIcon = tend.dir === 'up' ? '📈' : tend.dir === 'down' ? '📉' : '➡️';
+      var tendTexto = tend.dir === 'up' ? 'CRECIENDO' : tend.dir === 'down' ? 'CAYENDO' : 'ESTABLE';
+      html += '<div style="background:' + tendBg + ';border:1.5px solid ' + tendColor + ';border-radius:12px;padding:14px 18px;">';
+      html += '<div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;"><span style="font-size:1.5rem;">' + tendIcon + '</span><div>';
+      html += '<div style="font-family:Barlow Condensed,sans-serif;font-weight:900;font-size:.85rem;color:' + tendColor + ';text-transform:uppercase;letter-spacing:1px;">TENDENCIA · ' + tendTexto + '</div>';
+      html += '<div style="font-size:.7rem;color:rgba(255,255,255,.55);">Mes actual vs mes anterior</div></div></div>';
+      html += '<div style="display:flex;justify-content:space-between;gap:14px;flex-wrap:wrap;font-size:.78rem;">';
+      html += '<div><div style="color:rgba(255,255,255,.4);font-size:.6rem;text-transform:uppercase;">Mes actual</div><div style="font-family:Barlow Condensed,sans-serif;font-weight:900;color:#fff;font-size:1.2rem;">$ ' + tend.actual.toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g,',') + '</div></div>';
+      html += '<div><div style="color:rgba(255,255,255,.4);font-size:.6rem;text-transform:uppercase;">Mes anterior</div><div style="font-family:Barlow Condensed,sans-serif;font-weight:900;color:rgba(255,255,255,.65);font-size:1.2rem;">$ ' + tend.anterior.toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g,',') + '</div></div>';
+      html += '<div><div style="color:rgba(255,255,255,.4);font-size:.6rem;text-transform:uppercase;">Variación</div><div style="font-family:Barlow Condensed,sans-serif;font-weight:900;color:' + tendColor + ';font-size:1.2rem;">' + (tend.pct >= 0 ? '+' : '') + tend.pct.toFixed(0) + '%</div></div>';
+      html += '</div></div>';
+    }
+    if (pred) {
+      var predColor = pred.estado === 'ATRASADO' ? '#dc2626' : pred.estado === 'PROXIMO' ? '#f59e0b' : '#16a34a';
+      var predBg = pred.estado === 'ATRASADO' ? 'rgba(220,38,38,.1)' : pred.estado === 'PROXIMO' ? 'rgba(245,158,11,.1)' : 'rgba(22,163,74,.1)';
+      html += '<div style="background:' + predBg + ';border:1.5px solid ' + predColor + ';border-radius:12px;padding:14px 18px;">';
+      html += '<div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;"><span style="font-size:1.5rem;">🔮</span><div>';
+      html += '<div style="font-family:Barlow Condensed,sans-serif;font-weight:900;font-size:.85rem;color:' + predColor + ';text-transform:uppercase;letter-spacing:1px;">PREDICCIÓN · ' + pred.estado + '</div>';
+      html += '<div style="font-size:.7rem;color:rgba(255,255,255,.55);">Confianza: ' + pred.confianza + '</div></div></div>';
+      html += '<div style="font-size:.78rem;color:rgba(255,255,255,.85);line-height:1.5;">' + pred.mensaje + '</div>';
+      html += '</div>';
+    }
+    html += '</div>';
+  }
+
   // Gráfico mensual del cliente — últimos 12 meses
   var hoy = new Date();
   var ventasClienteMes = [];
@@ -18574,7 +18682,7 @@ window.crmRenderCliente = function() {
     var totalProdsMonto = topProds.reduce(function(s,p){ return s + p.monto; }, 0);
     topProds.forEach(function(p, i){
       var pct = totalProdsMonto > 0 ? (p.monto / totalProdsMonto * 100) : 0;
-      var diasU = p.ultimaCompra ? Math.floor((new Date() - new Date(p.ultimaCompra)) / (1000*60*60*24)) : null;
+      var diasU = window.crmDiasDesde(p.ultimaCompra);
       var bg = i%2===0 ? 'rgba(255,255,255,.02)' : 'rgba(255,255,255,.04)';
       html += '<tr style="background:' + bg + ';border-bottom:1px solid rgba(255,255,255,.04);">' +
         '<td style="padding:9px 12px;font-family:monospace;font-weight:900;color:#fbbf24;">' + p.ref + '</td>' +
@@ -18596,7 +18704,7 @@ window.crmRenderCliente = function() {
     html += '<thead><tr style="background:rgba(0,0,0,.25);color:rgba(255,255,255,.7);"><th style="padding:8px 12px;text-align:left;font-size:.65rem;letter-spacing:.5px;">SUCURSAL</th><th style="padding:8px 12px;text-align:right;font-size:.65rem;letter-spacing:.5px;">VENTAS</th><th style="padding:8px 12px;text-align:right;font-size:.65rem;letter-spacing:.5px;">UNIDADES</th><th style="padding:8px 12px;text-align:center;font-size:.65rem;letter-spacing:.5px;">ÚLTIMA</th></tr></thead><tbody>';
     var sucArr = sucKeys.map(function(k){ return { nombre:k, ...c.sucursales[k] }; }).sort(function(a,b){ return b.total - a.total; });
     sucArr.forEach(function(s, i){
-      var diasS = s.ultimaCompra ? Math.floor((new Date() - new Date(s.ultimaCompra)) / (1000*60*60*24)) : null;
+      var diasS = window.crmDiasDesde(s.ultimaCompra);
       var bg = i%2===0 ? 'rgba(255,255,255,.02)' : 'rgba(255,255,255,.04)';
       html += '<tr style="background:' + bg + ';border-bottom:1px solid rgba(255,255,255,.04);">' +
         '<td style="padding:9px 12px;font-weight:700;color:#e0e7ff;">' + s.nombre + '</td>' +
@@ -18913,8 +19021,8 @@ window.crmRenderComparar = function() {
     { lbl: 'Marcas distintas', fn: function(c){ return Object.keys(c.marcas||{}).length; } },
     { lbl: 'Sucursales', fn: function(c){ return Object.keys(c.sucursales||{}).length; } },
     { lbl: 'Tendencia mes vs mes', fn: function(c){ var i = c.tendencia.dir==='up'?'↑':c.tendencia.dir==='down'?'↓':'—'; var col = c.tendencia.dir==='up'?'#22c55e':c.tendencia.dir==='down'?'#dc2626':'rgba(255,255,255,.4)'; return '<span style="color:'+col+';font-weight:800;">' + i + ' ' + Math.abs(c.tendencia.pct).toFixed(0) + '%</span>'; } },
-    { lbl: 'Última compra', fn: function(c){ if (!c.ultimaCompra) return '—'; var d = Math.floor((new Date()-new Date(c.ultimaCompra))/(1000*60*60*24)); return d === 0 ? 'Hoy' : 'hace ' + d + ' días'; } },
-    { lbl: 'Cliente desde', fn: function(c){ if (!c.primeraCompra) return '—'; var d = Math.floor((new Date()-new Date(c.primeraCompra))/(1000*60*60*24)); return 'hace ' + d + ' días'; } }
+    { lbl: 'Última compra', fn: function(c){ var d = window.crmDiasDesde(c.ultimaCompra); if (d === null) return '—'; return d === 0 ? 'Hoy' : 'hace ' + d + ' días'; } },
+    { lbl: 'Cliente desde', fn: function(c){ var d = window.crmDiasDesde(c.primeraCompra); if (d === null) return '—'; return 'hace ' + d + ' días'; } }
   ];
 
   filas.forEach(function(f, i){
@@ -20363,8 +20471,12 @@ window.invCalcularVentasPorSucursal = function(clienteId, refFarmers) {
 
   var ventaMensualTotal = 0;
   if (prod.primeraCompra && prod.ultimaCompra) {
-    var meses = Math.max(1, Math.ceil((new Date(prod.ultimaCompra) - new Date(prod.primeraCompra)) / (1000*60*60*24*30)));
-    ventaMensualTotal = (prod.qty || 0) / meses;
+    var fp = window.crmParseFecha(prod.primeraCompra);
+    var fu = window.crmParseFecha(prod.ultimaCompra);
+    if (fp && fu) {
+      var meses = Math.max(1, Math.ceil((fu - fp) / (1000*60*60*24*30)));
+      ventaMensualTotal = (prod.qty || 0) / meses;
+    }
   }
 
   // Distribuir entre sucursales del cliente proporcionalmente a su volumen total
