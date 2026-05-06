@@ -17,7 +17,7 @@
 <meta http-equiv="Expires" content="0">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.05.05.22">
+<meta name="farmers-version" content="2026.05.05.26">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -25030,7 +25030,10 @@ function _doConfirmImport(ajustarStock) {
           <div style="width:38px;height:38px;background:linear-gradient(135deg,#1B1F6B,#2d35a0);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:1.1rem;flex-shrink:0;">📖</div>
           <div>
             <div style="font-family:'Barlow Condensed',sans-serif;font-weight:900;font-size:1.4rem;color:#fff;letter-spacing:2px;text-transform:uppercase;line-height:1;">CATÁLOGO DE PRODUCTOS</div>
-            <div id="ref-search-count" style="font-size:.6rem;color:rgba(255,255,255,.35);margin-top:2px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;"></div>
+            <div style="display:flex;align-items:center;gap:10px;margin-top:2px;">
+              <div id="ref-search-count" style="font-size:.6rem;color:rgba(255,255,255,.35);font-weight:700;letter-spacing:.8px;text-transform:uppercase;"></div>
+              <div id="ref-img-progress" style="display:none;font-size:.6rem;color:rgba(124,58,237,.9);font-weight:700;letter-spacing:.8px;text-transform:uppercase;background:rgba(124,58,237,.15);padding:2px 8px;border-radius:4px;border:1px solid rgba(124,58,237,.4);"></div>
+            </div>
           </div>
         </div>
         <button onclick="closeRefSearch()"
@@ -25540,16 +25543,164 @@ function openSearch() {
   // IMPORTANTE: NO guardar las imágenes en localStorage. Viven en window._prodImgs
   // (memoria de la sesión) y se rehidratan desde Firebase en cada login.
   // Guardarlas en localStorage saturaba la cuota y rompía el sistema (issue 27/04/2026).
-  if (window.fbGetImages && (!window._prodImgs || Object.keys(window._prodImgs).length === 0)) {
-    window.fbGetImages().then(function(imgs) {
+  //
+  // Sistema robusto con auto-diagnóstico:
+  // 1. Si window._prodImgs ya existe y tiene imágenes → no hacer nada
+  // 2. Si no existe o está vacío → cargar desde Firebase
+  // 3. Si la carga falla o devuelve vacío → mostrar banner de diagnóstico al usuario
+  // 4. Banner tiene botón "Reintentar" que vuelve a llamar fbGetImages con feedback
+  function _imagenesAutoDiagnostico(motivo, detalles) {
+    // Mostrar banner solo si el catálogo está abierto
+    var grid = document.querySelector('.cat-grid');
+    if (!grid) return;
+    // Evitar duplicados
+    if (document.getElementById('img-diag-banner')) return;
+
+    var banner = document.createElement('div');
+    banner.id = 'img-diag-banner';
+    banner.style.cssText = 'position:sticky;top:0;z-index:50;background:linear-gradient(90deg,#fef3c7,#fde68a);border:1.5px solid #f59e0b;border-radius:10px;padding:10px 14px;margin:10px 14px;display:flex;align-items:center;justify-content:space-between;gap:12px;box-shadow:0 4px 12px rgba(245,158,11,.15);';
+    banner.innerHTML =
+      '<div style="display:flex;align-items:center;gap:10px;flex:1;">' +
+        '<span style="font-size:1.3rem;">🖼</span>' +
+        '<div>' +
+          '<div style="font-weight:900;color:#92400e;font-size:.85rem;">Imágenes no disponibles</div>' +
+          '<div style="font-size:.72rem;color:#78350f;margin-top:1px;">' + (detalles || motivo) + '</div>' +
+        '</div>' +
+      '</div>' +
+      '<div style="display:flex;gap:6px;">' +
+        '<button id="img-diag-retry" style="background:#f59e0b;color:#fff;border:none;border-radius:8px;padding:8px 14px;font-weight:800;cursor:pointer;font-size:.75rem;">🔄 Reintentar</button>' +
+        '<button id="img-diag-dismiss" style="background:transparent;color:#78350f;border:1.5px solid #d97706;border-radius:8px;padding:8px 12px;font-weight:700;cursor:pointer;font-size:.72rem;">✕</button>' +
+      '</div>';
+
+    var refSearchEl = document.getElementById('ref-search-modal') || document.querySelector('.cat-grid');
+    if (refSearchEl && refSearchEl.parentNode) {
+      refSearchEl.parentNode.insertBefore(banner, refSearchEl);
+    }
+
+    document.getElementById('img-diag-retry').onclick = function() {
+      banner.remove();
+      _cargarImagenesConFeedback();
+    };
+    document.getElementById('img-diag-dismiss').onclick = function() {
+      banner.remove();
+    };
+  }
+
+  function _cargarImagenesConFeedback() {
+    if (!window.fbGetImages) {
+      _imagenesAutoDiagnostico('Sin Firebase', 'Función fbGetImages no inicializada — cierra sesión y vuelve a entrar');
+      return;
+    }
+
+    // Toast de progreso
+    var toast = document.getElementById('img-load-toast');
+    if (!toast) {
+      toast = document.createElement('div');
+      toast.id = 'img-load-toast';
+      toast.style.cssText = 'position:fixed;top:20px;right:20px;background:#1B1F6B;color:#fff;padding:12px 16px;border-radius:10px;font-family:Barlow,sans-serif;font-weight:700;z-index:99999;box-shadow:0 8px 24px rgba(0,0,0,.3);min-width:240px;font-size:.78rem;';
+      document.body.appendChild(toast);
+    }
+    toast.innerHTML = '🔄 Cargando imágenes desde Firebase...';
+
+    var inicioMs = Date.now();
+    window.fbGetImages(function(loaded, total) {
+      toast.innerHTML = '🔄 Descargando imágenes... ' + loaded + '/' + total;
+    }).then(function(imgs) {
+      var tomoMs = Date.now() - inicioMs;
       if (imgs && Object.keys(imgs).length > 0) {
         window._prodImgs = imgs;
-        // NO localStorage.setItem aquí — las imágenes viven solo en memoria + Firebase
+        var n = Object.keys(imgs).length;
+        toast.style.background = '#16a34a';
+        toast.innerHTML = '✅ ' + n + ' imágenes cargadas (' + (tomoMs/1000).toFixed(1) + 's)';
+        if (typeof doRefSearch === 'function') doRefSearch();
+        setTimeout(function(){ if (toast.parentNode) toast.parentNode.removeChild(toast); }, 2500);
+      } else {
+        toast.style.background = '#dc2626';
+        toast.innerHTML = '⚠ No se encontraron imágenes en Firebase';
+        setTimeout(function(){ if (toast.parentNode) toast.parentNode.removeChild(toast); }, 4000);
+        _imagenesAutoDiagnostico('Sin imágenes en Firebase', 'Las colecciones "img" y "data/images_N" están vacías — verifica que las imágenes se hayan subido');
+      }
+    }).catch(function(err) {
+      console.error('[catálogo imgs]', err);
+      toast.style.background = '#dc2626';
+      toast.innerHTML = '❌ Error: ' + (err.message || 'desconocido').substring(0, 50);
+      setTimeout(function(){ if (toast.parentNode) toast.parentNode.removeChild(toast); }, 5000);
+      _imagenesAutoDiagnostico('Error de Firebase', err.message || 'Error de conexión — verifica tu internet');
+    });
+  }
+
+  // Helper: actualizar el contador de progreso de imágenes en el header del catálogo
+  function _actualizarContadorImagenes(loaded, total, finalizado) {
+    var prog = document.getElementById('ref-img-progress');
+    if (!prog) return;
+    if (finalizado === 'ok') {
+      // Mostrar resultado verde por 2 segundos y luego ocultar
+      prog.style.background = 'rgba(34,197,94,.18)';
+      prog.style.borderColor = 'rgba(34,197,94,.45)';
+      prog.style.color = 'rgba(134,239,172,.95)';
+      prog.textContent = '✓ ' + total + ' imágenes';
+      setTimeout(function(){
+        if (prog) prog.style.display = 'none';
+      }, 2200);
+    } else if (finalizado === 'error') {
+      prog.style.background = 'rgba(220,38,38,.18)';
+      prog.style.borderColor = 'rgba(220,38,38,.45)';
+      prog.style.color = 'rgba(252,165,165,.95)';
+      prog.textContent = '⚠ Imágenes no cargadas';
+      // Queda visible (no auto-oculta) para que el usuario sepa
+    } else {
+      // En progreso
+      prog.style.display = 'inline-block';
+      prog.style.background = 'rgba(124,58,237,.15)';
+      prog.style.borderColor = 'rgba(124,58,237,.4)';
+      prog.style.color = 'rgba(196,181,253,.95)';
+      if (total > 0) {
+        prog.textContent = '🖼 ' + loaded + ' / ' + total;
+      } else {
+        prog.textContent = '🖼 Cargando imágenes...';
+      }
+    }
+  }
+
+  if (window.fbGetImages && (!window._prodImgs || Object.keys(window._prodImgs).length === 0)) {
+    // Mostrar contador inicial en el header
+    _actualizarContadorImagenes(0, 0, null);
+
+    // Carga con feedback de progreso al header
+    window.fbGetImages(function(loaded, total) {
+      _actualizarContadorImagenes(loaded, total, null);
+    }).then(function(imgs) {
+      if (imgs && Object.keys(imgs).length > 0) {
+        window._prodImgs = imgs;
+        var n = Object.keys(imgs).length;
+        _actualizarContadorImagenes(n, n, 'ok');
         doRefSearch(); // refrescar con imágenes
+      } else {
+        _actualizarContadorImagenes(0, 0, 'error');
+        // Diagnóstico automático: si no hay imágenes, mostrar banner
+        setTimeout(function(){
+          if (!window._prodImgs || Object.keys(window._prodImgs).length === 0) {
+            _imagenesAutoDiagnostico('Imágenes no cargadas', 'Firebase devolvió vacío — clic en "Reintentar" para cargarlas manualmente');
+          }
+        }, 1500);
       }
     }).catch(function(e) {
       console.warn('Error cargando imágenes:', e);
+      _actualizarContadorImagenes(0, 0, 'error');
+      setTimeout(function(){
+        _imagenesAutoDiagnostico('Error de carga', (e.message || 'Sin conexión') + ' — clic en "Reintentar"');
+      }, 800);
     });
+  } else if (window._prodImgs && Object.keys(window._prodImgs).length > 0) {
+    // Ya hay imágenes en memoria — mostrar resumen verde brevemente
+    var nExist = Object.keys(window._prodImgs).length;
+    _actualizarContadorImagenes(nExist, nExist, 'ok');
+  } else if (!window.fbGetImages) {
+    // Firebase no inicializado
+    _actualizarContadorImagenes(0, 0, 'error');
+    setTimeout(function(){
+      _imagenesAutoDiagnostico('Firebase no listo', 'La conexión a Firebase aún no se inicializó — espera unos segundos y reintenta');
+    }, 1500);
   }
 
   // ── SINCRONIZAR inventario Firebase → PRODUCTS antes de mostrar catálogo ──
@@ -29063,6 +29214,10 @@ window.ptAbrirAuditoriaIntegral = async function() {
   var existingOv = document.getElementById('auditoria-overlay');
   if (existingOv) existingOv.remove();
 
+  // Flag de cancelación que la función puede consultar
+  var cancelado = false;
+  window._auditoriaCancelada = false;
+
   var ov = document.createElement('div');
   ov.id = 'auditoria-overlay';
   ov.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.85);backdrop-filter:blur(8px);z-index:99998;display:flex;align-items:flex-start;justify-content:center;padding:20px;overflow-y:auto;';
@@ -29074,13 +29229,17 @@ window.ptAbrirAuditoriaIntegral = async function() {
           '<div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;font-size:1.4rem;letter-spacing:1.5px;text-transform:uppercase;">🔍 Auditoría Integral del Sistema</div>' +
           '<div style="font-size:.78rem;opacity:.92;margin-top:3px;">Verificación completa de integridad: local vs Firebase, salud, fichas, imágenes</div>' +
         '</div>' +
-        '<button onclick="document.getElementById(\'auditoria-overlay\').remove()" style="background:rgba(255,255,255,.2);border:none;color:#fff;width:36px;height:36px;border-radius:50%;cursor:pointer;font-size:1.2rem;font-weight:900;">×</button>' +
+        '<button onclick="window._auditoriaCancelada=true;document.getElementById(\'auditoria-overlay\').remove()" style="background:rgba(255,255,255,.2);border:none;color:#fff;width:36px;height:36px;border-radius:50%;cursor:pointer;font-size:1.2rem;font-weight:900;">×</button>' +
       '</div>' +
       '<div id="auditoria-body" style="padding:24px;max-height:calc(100vh - 140px);overflow-y:auto;">' +
         '<div style="text-align:center;padding:40px;color:#1B1F6B;">' +
           '<div style="display:inline-block;width:50px;height:50px;border:5px solid #e5e7eb;border-top-color:#7c3aed;border-radius:50%;animation:spin 1s linear infinite;"></div>' +
           '<div style="margin-top:18px;font-weight:700;font-size:.95rem;">Ejecutando auditoría integral...</div>' +
-          '<div style="margin-top:6px;font-size:.78rem;color:#6b7280;">Comparando local vs Firebase, verificando integridad...</div>' +
+          '<div id="auditoria-step" style="margin-top:6px;font-size:.78rem;color:#6b7280;">Iniciando...</div>' +
+          '<div id="auditoria-progress" style="margin-top:14px;width:280px;height:6px;background:#e5e7eb;border-radius:3px;margin-left:auto;margin-right:auto;overflow:hidden;">' +
+            '<div id="auditoria-progress-bar" style="width:0%;height:100%;background:linear-gradient(90deg,#7c3aed,#a855f7);transition:width .3s;"></div>' +
+          '</div>' +
+          '<button onclick="window._auditoriaCancelada=true;document.getElementById(\'auditoria-overlay\').remove()" style="margin-top:20px;background:#fee2e2;color:#991b1b;border:1.5px solid #fca5a5;border-radius:8px;padding:7px 18px;font-weight:700;cursor:pointer;font-size:.78rem;">✕ Cancelar auditoría</button>' +
         '</div>' +
       '</div>' +
     '</div>';
@@ -29093,6 +29252,43 @@ window.ptAbrirAuditoriaIntegral = async function() {
     document.head.appendChild(st);
   }
 
+  // Helpers de UI: actualizar paso actual y barra de progreso
+  function _setStep(texto, pctProgreso) {
+    var stepEl = document.getElementById('auditoria-step');
+    var barEl = document.getElementById('auditoria-progress-bar');
+    if (stepEl) stepEl.textContent = texto;
+    if (barEl && typeof pctProgreso === 'number') barEl.style.width = pctProgreso + '%';
+  }
+
+  // Wrapper con TIMEOUT: cada llamada a Firebase tiene 10 seg máximo
+  // Si tarda más, devuelve null y la auditoría continúa con el resto
+  function _conTimeout(promesa, ms, etiqueta) {
+    return new Promise(function(resolve){
+      var resuelto = false;
+      var timer = setTimeout(function(){
+        if (!resuelto) {
+          resuelto = true;
+          console.warn('[Auditoría] Timeout en ' + etiqueta + ' (' + ms + 'ms)');
+          resolve({ _timeout: true });
+        }
+      }, ms);
+      Promise.resolve(promesa).then(function(v){
+        if (!resuelto) {
+          resuelto = true;
+          clearTimeout(timer);
+          resolve(v);
+        }
+      }).catch(function(e){
+        if (!resuelto) {
+          resuelto = true;
+          clearTimeout(timer);
+          console.warn('[Auditoría] Error en ' + etiqueta + ':', e);
+          resolve({ _error: e.message || 'error' });
+        }
+      });
+    });
+  }
+
   // ── Ejecutar todas las verificaciones ──
   var resultados = {
     fuentes: [],
@@ -29102,7 +29298,8 @@ window.ptAbrirAuditoriaIntegral = async function() {
     sinImagen: [],
     sinPrecio: [],
     sinMarca: [],
-    sinDescripcion: []
+    sinDescripcion: [],
+    timeouts: []  // qué fuentes hicieron timeout
   };
 
   function localCount(key) {
@@ -29138,15 +29335,18 @@ window.ptAbrirAuditoriaIntegral = async function() {
     return 1;
   }
 
-  async function fbCount(fnName) {
+  async function fbCount(fnName, etiqueta) {
     try {
-      if (typeof window[fnName] !== 'function') return -1;
-      var data = await window[fnName]();
+      if (typeof window[fnName] !== 'function') return { count: -1, timeout: false };
+      var data = await _conTimeout(window[fnName](), 10000, etiqueta);
+      // Detectar timeout o error explícito
+      if (data && data._timeout) return { count: -1, timeout: true };
+      if (data && data._error) return { count: -1, timeout: false };
       if (data && typeof data === 'object' && 'data' in data && 'exists' in data) {
-        return fbInnerCount(data.data);
+        return { count: fbInnerCount(data.data), timeout: false };
       }
-      return fbInnerCount(data);
-    } catch(e) { return -1; }
+      return { count: fbInnerCount(data), timeout: false };
+    } catch(e) { return { count: -1, timeout: false }; }
   }
 
   // === 1) Sincronización Local vs Firebase ===
@@ -29169,11 +29369,24 @@ window.ptAbrirAuditoriaIntegral = async function() {
   ];
 
   for (var i = 0; i < fuentes.length; i++) {
+    if (window._auditoriaCancelada) {
+      console.log('[Auditoría] Cancelada por usuario');
+      return;
+    }
     var f = fuentes[i];
+    var pctProgreso = Math.round((i / fuentes.length) * 70); // hasta 70% (resto es para otras secciones)
+    _setStep('Verificando ' + f.nombre + '... (' + (i+1) + '/' + fuentes.length + ')', pctProgreso);
+
     var lc = localCount(f.local);
-    var fc = await fbCount(f.fb);
+    var resultadoFb = await fbCount(f.fb, f.nombre);
+    var fc = resultadoFb.count;
+
     var estado = '';
-    if (lc === 0 && fc === 0) estado = 'vacío';
+    if (resultadoFb.timeout) {
+      estado = 'timeout';
+      resultados.timeouts.push(f.nombre);
+    }
+    else if (lc === 0 && fc === 0) estado = 'vacío';
     else if (fc === -1) estado = 'fb-no-disponible';
     else if (lc === fc) estado = 'sincronizado';
     else if (lc > fc) estado = 'local-mayor';
@@ -29181,7 +29394,10 @@ window.ptAbrirAuditoriaIntegral = async function() {
     resultados.fuentes.push({ nombre: f.nombre, local: lc, fb: fc, estado: estado, critico: f.critico });
   }
 
+  if (window._auditoriaCancelada) return;
+
   // === 2) Salud localStorage ===
+  _setStep('Verificando salud del localStorage...', 75);
   var totalLs = JSON.stringify(localStorage).length;
   var totalLsMB = (totalLs / 1024 / 1024).toFixed(2);
   var pctLs = ((totalLs / 1024 / 1024 / 5) * 100).toFixed(0);
@@ -29198,20 +29414,31 @@ window.ptAbrirAuditoriaIntegral = async function() {
   resultados.salud.clavesPesadas = clavesPesadas.slice(0, 5);
 
   // === 3) Imágenes vs Productos ===
+  _setStep('Cargando imágenes desde Firebase...', 85);
+  if (window._auditoriaCancelada) return;
   try {
     if (window.fbGetImages) {
-      var imgs = await window.fbGetImages();
-      var imgRefs = imgs ? Object.keys(imgs) : [];
-      var prodRefs = (typeof PRODUCTS !== 'undefined') ? new Set(PRODUCTS.map(function(p){ return p.r; })) : new Set();
-      resultados.huerfanas = imgRefs.filter(function(r){ return !prodRefs.has(r); });
-      resultados.totalImgs = imgRefs.length;
-      resultados.totalProds = prodRefs.size;
-      var imgRefsSet = new Set(imgRefs);
-      resultados.sinImagen = (typeof PRODUCTS !== 'undefined') ? PRODUCTS.filter(function(p){ return !imgRefsSet.has(p.r); }).map(function(p){ return p.r; }) : [];
+      var imgsResult = await _conTimeout(window.fbGetImages(), 15000, 'fbGetImages');
+      if (imgsResult && imgsResult._timeout) {
+        resultados.timeouts.push('IMÁGENES');
+        resultados.totalImgs = -1;
+      } else {
+        var imgs = imgsResult;
+        var imgRefs = imgs ? Object.keys(imgs) : [];
+        var prodRefs = (typeof PRODUCTS !== 'undefined') ? new Set(PRODUCTS.map(function(p){ return p.r; })) : new Set();
+        resultados.huerfanas = imgRefs.filter(function(r){ return !prodRefs.has(r); });
+        resultados.totalImgs = imgRefs.length;
+        resultados.totalProds = prodRefs.size;
+        var imgRefsSet = new Set(imgRefs);
+        resultados.sinImagen = (typeof PRODUCTS !== 'undefined') ? PRODUCTS.filter(function(p){ return !imgRefsSet.has(p.r); }).map(function(p){ return p.r; }) : [];
+      }
     }
   } catch(eImg) { console.warn('Auditoría imágenes:', eImg); }
 
+  if (window._auditoriaCancelada) return;
+
   // === 4) Integridad de productos ===
+  _setStep('Verificando integridad de productos...', 95);
   if (typeof PRODUCTS !== 'undefined') {
     PRODUCTS.forEach(function(p){
       if (!p) return;
@@ -29220,6 +29447,9 @@ window.ptAbrirAuditoriaIntegral = async function() {
       if (!p.u || parseFloat(p.u) <= 0) resultados.sinPrecio.push(p.r);
     });
   }
+
+  if (window._auditoriaCancelada) return;
+  _setStep('Compilando resultados...', 100);
 
   // === 5) Pintar resultados ===
   var problemas = 0;
@@ -29280,6 +29510,7 @@ window.ptAbrirAuditoriaIntegral = async function() {
     var rowBg = '';
     if (r.estado === 'sincronizado') estadoBadge = badge('✅ Sincronizado', '#16a34a');
     else if (r.estado === 'vacío') estadoBadge = badge('— vacío', '#9ca3af');
+    else if (r.estado === 'timeout') { estadoBadge = badge('⏱ Timeout (10s)', '#dc2626'); rowBg = 'background:#fee2e2;'; }
     else if (r.estado === 'fb-no-disponible') { estadoBadge = badge('⚠ FB no disponible', '#ca8a04'); rowBg = 'background:#fef3c7;'; }
     else if (r.estado === 'firebase-mayor') { estadoBadge = badge('📥 Firebase tiene más', '#0891b2'); rowBg = 'background:#dbeafe;'; }
     else if (r.estado === 'local-mayor') { estadoBadge = badge('📤 Local tiene más', '#ea580c'); rowBg = 'background:#fed7aa;'; }
@@ -32562,6 +32793,76 @@ window.ptMarcarVerificado = function(refFarmers) {
 };
 
 // ══════════════════════════════════════════════════════════════════
+// RECARGAR IMÁGENES — Diagnóstico + rehidratación desde Firebase
+// ══════════════════════════════════════════════════════════════════
+// Las imágenes viven solo en window._prodImgs (memoria) y se rehidratan
+// desde Firebase en cada login. Si no se ven en el catálogo, este botón
+// hace una recarga manual con feedback claro.
+window.ptRecargarImagenes = async function() {
+  // Diagnóstico inicial
+  var imgsActuales = window._prodImgs ? Object.keys(window._prodImgs).length : 0;
+  var msg = '🖼 DIAGNÓSTICO DE IMÁGENES\n\n' +
+    '• En memoria actualmente: ' + imgsActuales + ' imágenes\n' +
+    '• Productos en catálogo: ' + (typeof PRODUCTS !== 'undefined' ? PRODUCTS.length : 0) + '\n\n';
+
+  if (!window.fbGetImages) {
+    alert(msg + '❌ La función fbGetImages no está disponible.\n\nPosibles causas:\n• Firebase no se inicializó\n• Pérdida de conexión\n\nIntenta cerrar sesión y volver a entrar.');
+    return;
+  }
+
+  if (!confirm(msg + '¿Quieres recargar las imágenes desde Firebase ahora?\n\n(Esto puede tardar 5-30 segundos según la cantidad)')) {
+    return;
+  }
+
+  // Toast de progreso
+  var toast = document.createElement('div');
+  toast.id = 'img-reload-toast';
+  toast.style.cssText = 'position:fixed;top:20px;right:20px;background:#1B1F6B;color:#fff;padding:14px 20px;border-radius:10px;font-family:Barlow,sans-serif;font-weight:700;z-index:99999;box-shadow:0 8px 24px rgba(0,0,0,.3);min-width:280px;';
+  toast.innerHTML = '<div style="font-size:.85rem;margin-bottom:6px;">🔄 Recargando imágenes...</div><div id="img-reload-progress" style="font-size:.72rem;opacity:.85;">Conectando a Firebase...</div>';
+  document.body.appendChild(toast);
+
+  try {
+    var imgs = await window.fbGetImages(function(loaded, total) {
+      var prog = document.getElementById('img-reload-progress');
+      if (prog) prog.textContent = 'Descargando: ' + loaded + ' / ' + total;
+    });
+
+    if (imgs && Object.keys(imgs).length > 0) {
+      window._prodImgs = imgs;
+      var nImgs = Object.keys(imgs).length;
+
+      toast.innerHTML = '<div style="font-size:.85rem;margin-bottom:4px;">✅ Imágenes recargadas</div><div style="font-size:.72rem;opacity:.85;">' + nImgs + ' imágenes en memoria</div>';
+      toast.style.background = '#16a34a';
+
+      // Refrescar catálogo si está abierto
+      if (typeof doRefSearch === 'function' && document.querySelector('.cat-grid')) {
+        try { doRefSearch(); } catch(e){}
+      }
+      if (typeof ptRender === 'function') {
+        try { ptRender(); } catch(e){}
+      }
+
+      setTimeout(function(){
+        if (toast.parentNode) toast.parentNode.removeChild(toast);
+      }, 3000);
+    } else {
+      toast.innerHTML = '<div style="font-size:.85rem;margin-bottom:4px;">⚠ No se encontraron imágenes</div><div style="font-size:.72rem;opacity:.85;">Firebase no devolvió imágenes</div>';
+      toast.style.background = '#dc2626';
+      setTimeout(function(){
+        if (toast.parentNode) toast.parentNode.removeChild(toast);
+      }, 5000);
+    }
+  } catch(err) {
+    console.error('[ptRecargarImagenes]', err);
+    toast.innerHTML = '<div style="font-size:.85rem;margin-bottom:4px;">❌ Error</div><div style="font-size:.72rem;opacity:.85;">' + (err.message || 'Error desconocido').substring(0, 80) + '</div>';
+    toast.style.background = '#dc2626';
+    setTimeout(function(){
+      if (toast.parentNode) toast.parentNode.removeChild(toast);
+    }, 6000);
+  }
+};
+
+// ══════════════════════════════════════════════════════════════════
 // CATÁLOGO SIMPLE — Descarga e importación rápida de datos del catálogo
 // ══════════════════════════════════════════════════════════════════
 // Exporta una hoja única con los campos esenciales para que Omar pueda
@@ -32608,7 +32909,7 @@ window.ptDescargarCatalogoSimple = function() {
       'MARCA': p.br || '',
       'DESCRIPCION': p.d || '',
       'CODIGO_BARRA': p.b || '',
-      'CODIGO': pt.codigoInterno || pt.codInterno || '',
+      'CODIGO': p.c || '',
       'DEPOSITO': deposito,
       'EMPAQUE': pt.empaque || (medidas.empaque || 'UNIDAD'),
       'MEDIDA': parseInt(p.m) || 0,
@@ -32787,10 +33088,10 @@ window.ptImportarCatalogoSimple = function() {
             camposCambiados.push('cód. barra');
           }
 
-          // CODIGO interno
-          if (row.CODIGO !== '' && String(row.CODIGO) !== String(ptData[ref].codigoInterno||'')) {
-            ptData[ref].codigoInterno = String(row.CODIGO).trim();
-            camposCambiados.push('código interno');
+          // CODIGO interno (campo p.c — el que se ve en la ficha del catálogo)
+          if (row.CODIGO !== '' && row.CODIGO !== null && String(row.CODIGO).trim() !== String(prod.c||'').trim()) {
+            prod.c = String(row.CODIGO).trim();
+            camposCambiados.push('código');
           }
 
           // EMPAQUE
