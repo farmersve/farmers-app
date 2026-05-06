@@ -17,7 +17,7 @@
 <meta http-equiv="Expires" content="0">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.05.05.07">
+<meta name="farmers-version" content="2026.05.05.08">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -42815,7 +42815,7 @@ window.msAbrirEtiquetas = function() {
 
   var ov=document.createElement('div');
   ov.id='ms-etiquetas-overlay';
-  ov.style.cssText='position:fixed;inset:0;z-index:99200;background:rgba(0,0,0,.7);display:flex;align-items:center;justify-content:center;';
+  ov.style.cssText='position:fixed;inset:0;z-index:99700;background:rgba(0,0,0,.7);display:flex;align-items:center;justify-content:center;';
 
   var box=document.createElement('div');
   box.style.cssText='background:white;border-radius:16px;padding:28px 32px;max-width:560px;width:92%;max-height:90vh;overflow-y:auto;';
@@ -43208,9 +43208,11 @@ window.msAbrirEtiquetas = function() {
     var chk = document.createElement('input');
     chk.type = 'checkbox';
     chk.id   = 'chk-etiq-'+idKey;
-    chk.checked = !esDesp;
+    // Por defecto: pendientes marcadas, despachadas también marcadas (para reimpresión)
+    chk.checked = true;
     chk.style.cssText = 'width:15px;height:15px;accent-color:#7c3aed;cursor:pointer;flex-shrink:0;';
-    if(esDesp){ chk.disabled=true; card.style.opacity='.5'; }
+    // Despachadas se ven con opacidad reducida pero SIGUEN siendo seleccionables (reimpresión)
+    if(esDesp){ card.style.opacity='.7'; }
     (function(ck, cd){
       ck.onchange = function(){ cd.style.opacity = ck.checked ? '1' : '.45'; _actualizarContadorSel(); };
     })(chk, card);
@@ -47436,7 +47438,8 @@ function cxcNotifFactura(facId) {
     +'<div class="summary-box">'
       +'<div class="info-label" style="margin-bottom:10px;">RESUMEN DE CUENTA</div>'
       +'<div class="summary-row"><span class="k">Facturas pendientes</span><span class="v">1</span></div>'
-      +'<div class="summary-row"><span class="k">Total facturado</span><span class="v">$ '+cxcFmt(monto)+'</span></div>'
+      +'<div class="summary-row"><span class="k">Total facturado</span><span class="v">$ '+cxcFmt((fac.montoOriginal != null ? fac.montoOriginal : monto))+'</span></div>'
+      +(fac.totalNC && fac.totalNC > 0 ? '<div class="summary-row"><span class="k">Notas de crédito</span><span class="v" style="color:#c91d1d;">−$ '+cxcFmt(fac.totalNC)+'</span></div>' : '')
       +'<div class="summary-row"><span class="k">Abonos recibidos</span><span class="v green">$ '+cxcFmt(pagado)+'</span></div>'
     +'</div>'
   +'</div>'
@@ -47547,6 +47550,8 @@ function cxcNotifCliente(id,nombreEnc){
   });
 
   var total=facs.reduce(function(s,f){return s+(f.saldo||0);},0);
+  var totalMontoOriginal=facs.reduce(function(s,f){return s+(f.montoOriginal != null ? parseFloat(f.montoOriginal) : (f.monto||0));},0);
+  var totalNC=facs.reduce(function(s,f){return s+(parseFloat(f.totalNC)||0);},0);
   var totalMonto=facs.reduce(function(s,f){return s+(f.monto||0);},0);
   var totalPagado=totalMonto-total;
   var hoy=new Date().toLocaleDateString('es-VE',{day:'2-digit',month:'long',year:'numeric'});
@@ -47590,13 +47595,15 @@ function cxcNotifCliente(id,nombreEnc){
     var dias=cxcDias(f);
     var diasTxt=dias===null?'—':dias<0?'Vencida hace '+Math.abs(dias)+'d':dias===0?'Vence hoy':'Vence en '+dias+'d';
     var diasCol=est==='VENCIDA'?'#c91d1d':est==='POR_VENCER'?'#92400e':'#065f46';
+    var montoMostrar = f.montoOriginal != null ? parseFloat(f.montoOriginal) : (f.monto||0);
+    var ncTxt = f.totalNC && f.totalNC > 0 ? ' <span style="color:#c91d1d;font-size:9px;">(NC -$'+cxcFmt(f.totalNC)+')</span>' : '';
     return '<tr class="data">'
       +'<td class="mono">'+f.numpedido+'</td>'
       +'<td>'+cxcFecha(f.fechaEmision)+'</td>'
       +'<td>'+cxcFecha(f.fechaVencimiento)+'</td>'
       +'<td class="status" style="color:'+diasCol+';">'+diasTxt+'</td>'
-      +'<td class="r">$ '+cxcFmt(f.monto)+'</td>'
-      +'<td class="abono">$ '+cxcFmt(f.monto-f.saldo)+'</td>'
+      +'<td class="r">$ '+cxcFmt(montoMostrar)+ncTxt+'</td>'
+      +'<td class="abono">$ '+cxcFmt((f.monto||0)-(f.saldo||0))+'</td>'
       +'<td class="saldo">$ '+cxcFmt(f.saldo)+'</td>'
       +'</tr>';
   }).join('');
@@ -47782,7 +47789,8 @@ function cxcNotifCliente(id,nombreEnc){
       +'<div class="summary-box">'
         +'<div class="info-label" style="margin-bottom:10px;">RESUMEN DE CUENTA</div>'
         +'<div class="summary-row"><span class="k">Facturas pendientes</span><span class="v">'+facs.length+'</span></div>'
-        +'<div class="summary-row"><span class="k">Total facturado</span><span class="v">$ '+cxcFmt(totalMonto)+'</span></div>'
+        +'<div class="summary-row"><span class="k">Total facturado</span><span class="v">$ '+cxcFmt(totalMontoOriginal)+'</span></div>'
+        +(totalNC > 0 ? '<div class="summary-row"><span class="k">Notas de crédito</span><span class="v" style="color:#c91d1d;">−$ '+cxcFmt(totalNC)+'</span></div>' : '')
         +'<div class="summary-row"><span class="k">Abonos recibidos</span><span class="v green">$ '+cxcFmt(totalPagado)+'</span></div>'
       +'</div>'
     +'</div>'
@@ -58115,12 +58123,33 @@ function ncConfirmar(saleId, cxcFacId, tasa, moneda, itemsOrig) {
     if (!nc.cxcFacId || nc.cxcFacId === '') nc.cxcFacId = facs[facIdx].id || '';
     if (!nc.numpedido || nc.numpedido === '') nc.numpedido = facs[facIdx].numpedido || '';
     var facAntes = facs[facIdx].saldo || 0;
-    // NC solo reduce el SALDO (pendiente de cobro), nunca el MONTO (monto facturado original)
+    // ──────────────────────────────────────────────────────────
+    // CORRECCIÓN CONTABLE: NC reduce el SALDO Y registra el descuento NC.
+    // El estado de cuenta usa fac.monto - fac.saldo para calcular "abonos",
+    // por eso restamos también fac.monto para que el cliente NO vea la NC
+    // como un abono recibido (lo cual sería incorrecto contablemente).
+    // Mantenemos fac.montoOriginal con el valor previo a cualquier NC para auditoría.
+    // ──────────────────────────────────────────────────────────
+    if (facs[facIdx].montoOriginal == null) {
+      facs[facIdx].montoOriginal = parseFloat(facs[facIdx].monto) || 0;
+    }
     facs[facIdx].saldo = Math.max(0, facAntes - total);
+    facs[facIdx].monto = Math.max(0, (parseFloat(facs[facIdx].monto) || 0) - total);
+    // Acumular total de NC aplicadas a esta factura (para mostrar en estado de cuenta)
+    facs[facIdx].totalNC = (parseFloat(facs[facIdx].totalNC) || 0) + total;
+    // Lista de NCs aplicadas (auditoría)
+    if (!Array.isArray(facs[facIdx].notasCredito)) facs[facIdx].notasCredito = [];
+    facs[facIdx].notasCredito.push({
+      numero: numero,
+      fecha: ncFechaISO,
+      tipo: tipo,
+      total: total,
+      motivo: nc.motivo
+    });
     facs[facIdx].notas = ((facs[facIdx].notas||'') + ' | NC ' + numero + ': -$' + total.toFixed(2) + ' (' + nc.motivo + ')').trim();
     cxcSaveFacs(facs);
     if (typeof cxcUpdateBadge === 'function') cxcUpdateBadge();
-    console.log('[NC] Factura', facs[facIdx].numpedido, '— saldo', facAntes.toFixed(2), '→', facs[facIdx].saldo.toFixed(2));
+    console.log('[NC] Factura', facs[facIdx].numpedido, '— monto', facs[facIdx].montoOriginal.toFixed(2), '→', facs[facIdx].monto.toFixed(2), '· saldo', facAntes.toFixed(2), '→', facs[facIdx].saldo.toFixed(2));
   } else {
     console.warn('[NC] No se encontró factura CXC. cxcFacId:', cxcFacId, 'numpedido:', nc.numpedido, 'cliente:', nc.cliente);
     showToast('⚠️ NC emitida pero no se encontró factura CXC vinculada. Usa "Reconciliar NC" para corregir.', 'warning');
