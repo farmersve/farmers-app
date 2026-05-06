@@ -17,7 +17,7 @@
 <meta http-equiv="Expires" content="0">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.05.05.08">
+<meta name="farmers-version" content="2026.05.05.13">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -5368,11 +5368,19 @@ function syncInventoryToProducts(){
   PRODUCTS.forEach(p=>{ if(inv[p.r]!==undefined) p.ex=inv[p.r]; });
 
   // ── MIGRACIÓN: reconstruir comprometido desde pedidos guardados si está vacío ──
+  // (Solo se ejecuta si el comprometido está completamente vacío y hay pedidos activos)
   (function migrateComprometido(){
     var comp = getComprometido();
-    if(Object.keys(comp).length > 0) return; // ya tiene datos
+    if(Object.keys(comp).length > 0) return; // ya tiene datos, no migrar
     var pedidos = getMsPedidos();
-    var activos = pedidos.filter(function(p){ return p.estado==='RESERVADO'||p.estado==='PARCIAL'; });
+    // Solo pedidos VÁLIDOS: estado activo + tiene items + no está formalizado/despachado
+    var activos = pedidos.filter(function(p){
+      var est = String(p.estado||'').toUpperCase();
+      var esActivo = (est === 'RESERVADO' || est === 'PARCIAL');
+      var tieneItems = Array.isArray(p.items) && p.items.length > 0;
+      var noEstaDespachado = est !== 'DESPACHADO' && est !== 'CANCELADO';
+      return esActivo && tieneItems && noEstaDespachado;
+    });
     if(!activos.length) return;
     activos.forEach(function(ped){
       (ped.items||[]).forEach(function(item){
@@ -5388,9 +5396,20 @@ function syncInventoryToProducts(){
     });
     if(Object.keys(comp).length > 0){
       saveComprometido(comp);
-      console.log('[Farmers] Comprometido migrado desde',activos.length,'pedido(s)');
+      console.log('[Farmers] Comprometido migrado desde',activos.length,'pedido(s) activo(s)');
     }
   })();
+
+  // ── AUTO-LIMPIEZA: ejecutar limpieza huérfano automáticamente en cada sync ──
+  // Esto previene el comprometido fantasma de acumularse
+  try {
+    if (typeof window.msLimpiarComprometidoHuerfano === 'function') {
+      var resultado = window.msLimpiarComprometidoHuerfano();
+      if (resultado && (resultado.refsLimpiadas > 0 || resultado.refsEliminadas > 0)) {
+        console.log('[Farmers] Auto-limpieza:',resultado.udsLiberadas,'uds liberadas en',(resultado.refsLimpiadas + resultado.refsEliminadas),'refs');
+      }
+    }
+  } catch(e) { /* silencioso para no bloquear sync */ }
 
   // Actualizar disponible = real - comprometido en cada producto
   if(typeof getComprometido==='function'){
@@ -26887,6 +26906,15 @@ function catAbrirComprometidoDetallado() {
   var existing = document.getElementById('cat-comp-overlay');
   if (existing) { existing.remove(); return; }
 
+  // ── AUTO-LIMPIEZA DE COMPROMETIDO HUÉRFANO ──
+  // Antes de mostrar nada, eliminar fantasmas de pedidos despachados/cancelados/inexistentes
+  var limpieza = null;
+  try {
+    if (typeof window.msLimpiarComprometidoHuerfano === 'function') {
+      limpieza = window.msLimpiarComprometidoHuerfano();
+    }
+  } catch(e) { console.warn('[catComp] limpieza falló', e); }
+
   var comp = (typeof getComprometido === 'function') ? getComprometido() : {};
   var inv  = (typeof getInventory === 'function') ? getInventory() : {};
   var msPedidos = (typeof getMsPedidos === 'function') ? getMsPedidos() : [];
@@ -27088,11 +27116,27 @@ function catAbrirComprometidoDetallado() {
       '<button onclick="document.getElementById(\'cat-comp-overlay\').remove()" style="background:rgba(255,255,255,.18);border:none;color:#fff;width:36px;height:36px;border-radius:8px;cursor:pointer;font-size:1.1rem;font-weight:900;">✕</button>' +
     '</div>' +
 
+    // Banner de limpieza automática (si se liberó algo)
+    (limpieza && limpieza.refsLimpiadas > 0 ? (
+      '<div style="background:linear-gradient(90deg,rgba(22,163,74,.15),rgba(22,163,74,.05));border-bottom:1.5px solid rgba(22,163,74,.3);padding:10px 24px;display:flex;align-items:center;gap:10px;flex-shrink:0;">' +
+        '<span style="font-size:1.1rem;">🧹</span>' +
+        '<div style="font-size:.78rem;color:#15803d;">' +
+          '<strong>Limpieza automática:</strong> Se liberaron <strong>' + limpieza.udsLiberadas + ' unidades</strong> en <strong>' + limpieza.refsLimpiadas + ' referencias</strong> de pedidos ya despachados/inexistentes (' + Object.keys(limpieza.pedidosHuerfanos).length + ' pedidos fantasma)' +
+        '</div>' +
+      '</div>'
+    ) : '') +
+
+    // Tabs
+    '<div style="background:#fff;border-bottom:2px solid #e8eaf6;padding:0 24px;display:flex;gap:0;flex-shrink:0;">' +
+      '<button id="cat-comp-tab-cliente" data-tab="cliente" style="background:none;border:none;border-bottom:3px solid #d97706;color:#92400e;padding:12px 18px;cursor:pointer;font-weight:900;font-size:.78rem;font-family:Barlow Condensed,sans-serif;text-transform:uppercase;letter-spacing:1.2px;">👥 POR CLIENTE</button>' +
+      '<button id="cat-comp-tab-ref" data-tab="ref" style="background:none;border:none;border-bottom:3px solid transparent;color:#94a3b8;padding:12px 18px;cursor:pointer;font-weight:900;font-size:.78rem;font-family:Barlow Condensed,sans-serif;text-transform:uppercase;letter-spacing:1.2px;">📦 POR REFERENCIA</button>' +
+    '</div>' +
+
     // Stats
     '<div id="cat-comp-stats" style="padding:14px 24px;background:#fafbfd;border-bottom:1px solid #e8eaf6;display:flex;gap:10px;flex-wrap:wrap;flex-shrink:0;"></div>' +
 
-    // Filtros
-    '<div style="padding:12px 24px;background:#fff;border-bottom:1px solid #e8eaf6;display:flex;gap:10px;flex-wrap:wrap;align-items:center;flex-shrink:0;">' +
+    // Filtros (solo visible en tab REF)
+    '<div id="cat-comp-filters" style="padding:12px 24px;background:#fff;border-bottom:1px solid #e8eaf6;display:none;gap:10px;flex-wrap:wrap;align-items:center;flex-shrink:0;">' +
       '<input id="cat-comp-search" type="text" placeholder="🔍 Buscar por REF, descripción, código de barra, pedido o cliente..." style="flex:1;min-width:280px;padding:8px 12px;border:1.5px solid #e0e4f0;border-radius:8px;font-size:.78rem;outline:none;font-family:inherit;">' +
       '<select id="cat-comp-marca" style="padding:8px 12px;border:1.5px solid #e0e4f0;border-radius:8px;font-size:.74rem;background:white;cursor:pointer;font-weight:600;color:#475569;font-family:inherit;">' +
         '<option value="TODAS">Todas las marcas</option>' +
@@ -27113,8 +27157,8 @@ function catAbrirComprometidoDetallado() {
       '<label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:.72rem;font-weight:700;color:#a16207;background:#fef9c3;padding:7px 11px;border-radius:8px;border:1.5px solid #fde047;"><input type="checkbox" id="cat-comp-huerf" style="cursor:pointer;">👻 Solo huérfanos</label>' +
     '</div>' +
 
-    // Tabla
-    '<div style="flex:1;overflow:auto;">' +
+    // Tabla POR REFERENCIA (oculta por defecto)
+    '<div id="cat-comp-view-ref" style="flex:1;overflow:auto;display:none;">' +
       '<table style="width:100%;border-collapse:collapse;font-size:.78rem;">' +
         '<thead style="position:sticky;top:0;z-index:1;">' +
           '<tr style="background:#1B1F6B;color:#fff;">' +
@@ -27132,10 +27176,14 @@ function catAbrirComprometidoDetallado() {
       '</table>' +
     '</div>' +
 
+    // Vista POR CLIENTE (default)
+    '<div id="cat-comp-view-cliente" style="flex:1;overflow:auto;padding:14px 24px;background:#fafbfd;"></div>' +
+
     // Footer
     '<div style="padding:12px 24px;background:#fafbfd;border-top:1px solid #e8eaf6;display:flex;justify-content:space-between;align-items:center;flex-shrink:0;flex-wrap:wrap;gap:8px;">' +
       '<div style="font-size:.7rem;color:#64748b;">💡 <strong>Stock insuficiente</strong>: comprometido > stock real. <strong>Huérfano</strong>: el pedido ya no existe pero la reserva sigue.</div>' +
       '<div style="display:flex;gap:8px;">' +
+        '<button id="cat-comp-sincerar" style="background:rgba(217,119,6,.1);border:1.5px solid rgba(217,119,6,.4);color:#92400e;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:800;font-size:.72rem;font-family:inherit;text-transform:uppercase;letter-spacing:.4px;">🧹 Sincerar Comprometido</button>' +
         '<button id="cat-comp-export" style="background:rgba(34,197,94,.1);border:1.5px solid rgba(34,197,94,.4);color:#15803d;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:800;font-size:.72rem;font-family:inherit;text-transform:uppercase;letter-spacing:.4px;">📊 Exportar Excel</button>' +
         '<button onclick="document.getElementById(\'cat-comp-overlay\').remove(); if(typeof libAbrirPanelAuditoria===\'function\') libAbrirPanelAuditoria();" style="background:linear-gradient(135deg,#dc2626,#991b1b);color:#fff;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:800;font-size:.72rem;font-family:inherit;text-transform:uppercase;letter-spacing:.4px;">🔓 Ir a Sincerar Inventario</button>' +
       '</div>' +
@@ -27196,7 +27244,207 @@ function catAbrirComprometidoDetallado() {
     XLSX.writeFile(wb, 'Comprometido_Detallado_' + fechaArch + '.xlsx');
   };
 
-  renderTabla();
+  // ── Botón "🧹 Sincerar Comprometido" ──
+  var btnSincerar = document.getElementById('cat-comp-sincerar');
+  if (btnSincerar) btnSincerar.onclick = function(){
+    if (typeof window.msLimpiarComprometidoHuerfano !== 'function') {
+      alert('Función de sincerar no disponible. Recarga la página.');
+      return;
+    }
+    // Preview primero
+    var preview = window.msLimpiarComprometidoHuerfano({ dryRun: true, verbose: true });
+    if (preview.refsLimpiadas === 0 && preview.refsEliminadas === 0 && preview.udsLiberadas === 0) {
+      if (typeof showToast === 'function') showToast('✅ El comprometido está limpio. Nada que sincerar.', 'success');
+      else alert('✅ El comprometido está limpio. Nada que sincerar.');
+      return;
+    }
+    // Construir mensaje detallado
+    var pedidosCount = Object.keys(preview.pedidosHuerfanos).length;
+    var motivos = {};
+    preview.detalles.forEach(function(d){
+      var m = d.motivo.split(':')[0].split('(')[0].trim();
+      motivos[m] = (motivos[m] || 0) + 1;
+    });
+    var motivosTxt = Object.keys(motivos).map(function(m){ return '• ' + m + ': ' + motivos[m]; }).join('\n');
+
+    var msg = '🧹 SINCERAR COMPROMETIDO\n\n' +
+      'Se detectaron problemas en el inventario comprometido:\n\n' +
+      '• ' + preview.refsLimpiadas + ' referencias con datos huérfanos\n' +
+      '• ' + preview.refsEliminadas + ' referencias completamente vacías\n' +
+      '• ' + preview.udsLiberadas + ' unidades a liberar\n' +
+      '• ' + pedidosCount + ' pedidos fantasma\n\n' +
+      'Motivos detectados:\n' + motivosTxt + '\n\n' +
+      '¿Aplicar la sincerización?\n\n' +
+      'Esta acción es segura: solo limpia entradas inválidas, no afecta pedidos activos.';
+
+    if (!confirm(msg)) return;
+
+    // Aplicar
+    var resultado = window.msLimpiarComprometidoHuerfano({ dryRun: false, verbose: true });
+    if (typeof showToast === 'function') {
+      showToast('✅ Liberadas ' + resultado.udsLiberadas + ' uds en ' + (resultado.refsLimpiadas + resultado.refsEliminadas) + ' refs', 'success');
+    }
+    // Recargar la vista del comprometido
+    document.getElementById('cat-comp-overlay').remove();
+    setTimeout(function(){ catAbrirComprometidoDetallado(); }, 200);
+  };
+
+  // ──────────────────────────────────────────────────────────────
+  // VISTA POR CLIENTE — Agrupa el comprometido por cliente con drill-down
+  // ──────────────────────────────────────────────────────────────
+  function renderVistaCliente() {
+    var cont = document.getElementById('cat-comp-view-cliente');
+    if (!cont) return;
+
+    // Agrupar todas las refs comprometidas por cliente
+    var clienteAgg = {}; // cliente → {nombre, rif, refs, totalUds, pedidos:set, problematicos, huerfanos}
+    rows.forEach(function(r){
+      r.pedidos.forEach(function(p){
+        var key = (p.cliente || '—').trim();
+        if (!clienteAgg[key]) {
+          clienteAgg[key] = {
+            nombre: key,
+            rif: '',
+            totalUds: 0,
+            refs: {},  // ref → { qty, desc, marca, stockReal, problematico, huerfano, pedidos:[] }
+            pedidos: {},
+            problematicos: 0,
+            huerfanos: 0
+          };
+        }
+        var ag = clienteAgg[key];
+        ag.totalUds += (p.qty || 0);
+        if (!ag.refs[r.ref]) {
+          ag.refs[r.ref] = { ref: r.ref, desc: r.desc, marca: r.marca, stockReal: r.stockReal, problematico: r.problematico, huerfano: false, qty: 0, pedidos: [] };
+        }
+        ag.refs[r.ref].qty += (p.qty || 0);
+        ag.refs[r.ref].pedidos.push({ numP: p.numP, qty: p.qty, fecha: p.fecha, esHuerfano: p.esHuerfano });
+        ag.pedidos[p.numP] = true;
+        if (r.problematico) ag.problematicos++;
+        if (p.esHuerfano) { ag.huerfanos++; ag.refs[r.ref].huerfano = true; }
+      });
+    });
+
+    var listaClientes = Object.values(clienteAgg).sort(function(a,b){
+      // Problemáticos primero, luego huérfanos, luego por uds
+      if (a.problematicos > 0 && b.problematicos === 0) return -1;
+      if (a.problematicos === 0 && b.problematicos > 0) return 1;
+      if (a.huerfanos > 0 && b.huerfanos === 0) return -1;
+      if (a.huerfanos === 0 && b.huerfanos > 0) return 1;
+      return b.totalUds - a.totalUds;
+    });
+
+    if (listaClientes.length === 0) {
+      cont.innerHTML = '<div style="text-align:center;color:#64748b;padding:40px 20px;font-size:.9rem;">✓ No hay mercancía comprometida actualmente.</div>';
+      return;
+    }
+
+    cont.innerHTML = listaClientes.map(function(cl, idx){
+      var nRefs = Object.keys(cl.refs).length;
+      var nPedidos = Object.keys(cl.pedidos).length;
+      var alerta = '';
+      var borderColor = '#e8eaf6';
+      if (cl.problematicos > 0) {
+        alerta = '<span style="background:#fee2e2;color:#dc2626;border-radius:6px;padding:3px 10px;font-size:.65rem;font-weight:800;">⚠ ' + cl.problematicos + ' SIN STOCK</span>';
+        borderColor = '#fca5a5';
+      } else if (cl.huerfanos > 0) {
+        alerta = '<span style="background:#fef3c7;color:#a16207;border-radius:6px;padding:3px 10px;font-size:.65rem;font-weight:800;">👻 ' + cl.huerfanos + ' HUÉRFANOS</span>';
+        borderColor = '#fde047';
+      }
+
+      // Detalle de refs (oculto por defecto, expandible)
+      var refsHTML = Object.values(cl.refs).sort(function(a,b){ return b.qty - a.qty; }).map(function(rf){
+        var statusBg = '#f0f4ff', statusFg = '#1B1F6B', statusTxt = '✓';
+        if (rf.problematico) { statusBg='#fee2e2'; statusFg='#dc2626'; statusTxt='⚠'; }
+        else if (rf.huerfano) { statusBg='#fef3c7'; statusFg='#b45309'; statusTxt='👻'; }
+        var pedListHTML = rf.pedidos.map(function(pe){
+          return '<span style="background:' + (pe.esHuerfano?'#fef3c7':'#eef2ff') + ';color:' + (pe.esHuerfano?'#92400e':'#3730a3') + ';padding:2px 8px;border-radius:5px;font-family:monospace;font-size:.65rem;font-weight:700;margin-right:4px;display:inline-block;">' + pe.numP + ' · ' + pe.qty + 'u</span>';
+        }).join('');
+        return '<tr style="border-bottom:1px solid #f1f5f9;">' +
+          '<td style="padding:8px 12px;font-family:monospace;font-weight:700;color:#1B1F6B;font-size:.78rem;">' + rf.ref + '</td>' +
+          '<td style="padding:8px 12px;font-size:.74rem;color:#475569;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + (rf.desc || '—') + '</td>' +
+          '<td style="padding:8px 12px;text-align:center;font-size:.74rem;color:#64748b;">' + (rf.marca || '—') + '</td>' +
+          '<td style="padding:8px 12px;text-align:center;font-weight:700;color:#0f172a;font-size:.82rem;">' + rf.stockReal + '</td>' +
+          '<td style="padding:8px 12px;text-align:center;font-weight:900;color:#b45309;font-size:.9rem;background:#fef3c7;">' + rf.qty + '</td>' +
+          '<td style="padding:8px 12px;text-align:center;"><span style="background:' + statusBg + ';color:' + statusFg + ';border-radius:5px;padding:2px 7px;font-size:.7rem;font-weight:800;">' + statusTxt + '</span></td>' +
+          '<td style="padding:8px 12px;font-size:.7rem;">' + pedListHTML + '</td>' +
+        '</tr>';
+      }).join('');
+
+      return '<div style="background:#fff;border:1.5px solid ' + borderColor + ';border-radius:12px;margin-bottom:10px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.04);">' +
+        '<div onclick="(function(i){var d=document.getElementById(\'cl-detail-\'+i);var a=document.getElementById(\'cl-arrow-\'+i);if(!d)return;var open=d.style.display!==\'none\';d.style.display=open?\'none\':\'block\';if(a)a.textContent=open?\'▶\':\'▼\';})(' + idx + ')" style="padding:14px 18px;display:flex;justify-content:space-between;align-items:center;cursor:pointer;background:linear-gradient(90deg,#fafbfd,#fff);transition:background .15s;" onmouseover="this.style.background=\'#f0f4ff\'" onmouseout="this.style.background=\'linear-gradient(90deg,#fafbfd,#fff)\'">' +
+          '<div style="display:flex;align-items:center;gap:14px;flex:1;min-width:0;">' +
+            '<span id="cl-arrow-' + idx + '" style="color:#94a3b8;font-size:.7rem;flex-shrink:0;">▶</span>' +
+            '<div style="flex:1;min-width:0;">' +
+              '<div style="font-family:Barlow Condensed,sans-serif;font-weight:900;font-size:1.05rem;color:#1B1F6B;text-transform:uppercase;letter-spacing:.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + cl.nombre + '</div>' +
+              '<div style="font-size:.7rem;color:#64748b;margin-top:1px;">' + nRefs + ' referencias · ' + nPedidos + ' pedido' + (nPedidos!==1?'s':'') + '</div>' +
+            '</div>' +
+          '</div>' +
+          '<div style="display:flex;align-items:center;gap:14px;flex-shrink:0;">' +
+            (alerta ? '<div>' + alerta + '</div>' : '') +
+            '<div style="text-align:right;">' +
+              '<div style="font-family:Barlow Condensed,sans-serif;font-weight:900;font-size:1.6rem;color:#b45309;line-height:1;">' + cl.totalUds + '</div>' +
+              '<div style="font-size:.6rem;color:#94a3b8;letter-spacing:1px;text-transform:uppercase;font-weight:800;">UDS COMP.</div>' +
+            '</div>' +
+          '</div>' +
+        '</div>' +
+        '<div id="cl-detail-' + idx + '" style="display:none;border-top:1px solid #e8eaf6;background:#fafbfd;">' +
+          '<div style="overflow:auto;">' +
+            '<table style="width:100%;border-collapse:collapse;">' +
+              '<thead><tr style="background:#f1f5f9;">' +
+                '<th style="padding:8px 12px;text-align:left;font-size:.62rem;letter-spacing:.5px;font-family:Barlow Condensed,sans-serif;color:#475569;font-weight:800;">REF</th>' +
+                '<th style="padding:8px 12px;text-align:left;font-size:.62rem;letter-spacing:.5px;font-family:Barlow Condensed,sans-serif;color:#475569;font-weight:800;">DESCRIPCIÓN</th>' +
+                '<th style="padding:8px 12px;text-align:center;font-size:.62rem;letter-spacing:.5px;font-family:Barlow Condensed,sans-serif;color:#475569;font-weight:800;">MARCA</th>' +
+                '<th style="padding:8px 12px;text-align:center;font-size:.62rem;letter-spacing:.5px;font-family:Barlow Condensed,sans-serif;color:#475569;font-weight:800;">STOCK</th>' +
+                '<th style="padding:8px 12px;text-align:center;font-size:.62rem;letter-spacing:.5px;font-family:Barlow Condensed,sans-serif;color:#b45309;font-weight:800;background:#fef3c7;">COMP.</th>' +
+                '<th style="padding:8px 12px;text-align:center;font-size:.62rem;letter-spacing:.5px;font-family:Barlow Condensed,sans-serif;color:#475569;font-weight:800;">EST.</th>' +
+                '<th style="padding:8px 12px;text-align:left;font-size:.62rem;letter-spacing:.5px;font-family:Barlow Condensed,sans-serif;color:#475569;font-weight:800;">PEDIDOS</th>' +
+              '</tr></thead>' +
+              '<tbody>' + refsHTML + '</tbody>' +
+            '</table>' +
+          '</div>' +
+        '</div>' +
+      '</div>';
+    }).join('');
+  }
+
+  // Handlers de tabs
+  function setTab(tab) {
+    var btnCl = document.getElementById('cat-comp-tab-cliente');
+    var btnRef = document.getElementById('cat-comp-tab-ref');
+    var viewCl = document.getElementById('cat-comp-view-cliente');
+    var viewRef = document.getElementById('cat-comp-view-ref');
+    var filters = document.getElementById('cat-comp-filters');
+    if (!btnCl || !btnRef || !viewCl || !viewRef) return;
+
+    if (tab === 'cliente') {
+      btnCl.style.borderBottomColor = '#d97706';
+      btnCl.style.color = '#92400e';
+      btnRef.style.borderBottomColor = 'transparent';
+      btnRef.style.color = '#94a3b8';
+      viewCl.style.display = 'block';
+      viewRef.style.display = 'none';
+      if (filters) filters.style.display = 'none';
+      renderVistaCliente();
+    } else {
+      btnRef.style.borderBottomColor = '#d97706';
+      btnRef.style.color = '#92400e';
+      btnCl.style.borderBottomColor = 'transparent';
+      btnCl.style.color = '#94a3b8';
+      viewCl.style.display = 'none';
+      viewRef.style.display = 'block';
+      if (filters) filters.style.display = 'flex';
+      renderTabla();
+    }
+  }
+
+  var tabClBtn = document.getElementById('cat-comp-tab-cliente');
+  var tabRefBtn = document.getElementById('cat-comp-tab-ref');
+  if (tabClBtn) tabClBtn.onclick = function(){ setTab('cliente'); };
+  if (tabRefBtn) tabRefBtn.onclick = function(){ setTab('ref'); };
+
+  // Vista por cliente por defecto
+  setTab('cliente');
 }
 window.catAbrirComprometidoDetallado = catAbrirComprometidoDetallado;
 
@@ -28393,21 +28641,49 @@ function doRefSearch() {
             '<option value="comprometido">Comprometido</option>' +
           '</select>' +
           '<button onclick="ptNuevoProducto()" style="background:#1B1F6B;color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:700;font-size:.8rem;white-space:nowrap;">+ Nuevo Producto</button>' +
-          '<button onclick="ptResetOrdenada()" style="background:linear-gradient(135deg,#92400e,#b45309);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:700;font-size:.8rem;white-space:nowrap;">📦 Actualizar Ordenada</button>' +
-          '<button onclick="ptPublicarOrdenadaAlPortal()" style="background:linear-gradient(135deg,#1B1F6B,#4f46e5);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:700;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;" title="Diagnostica qué Ordenada ve tu admin vs el portal del cliente">🔍 Auditar Ordenada</button>' +
-          '<button onclick="ptImportarPedido()" style="background:linear-gradient(135deg,#059669,#065f46);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:700;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;">📦 Importar Pedido Proveedor</button>' +
-          '<button onclick="ptImportarMedidas()" style="background:linear-gradient(135deg,#1d4ed8,#1e40af);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:700;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;" title="Importar largo, ancho, alto y peso desde Excel">📐 Importar Medidas</button>' +
-          '<button onclick="ptImportarDatosMaestro()" style="background:linear-gradient(135deg,#7c3aed,#6d28d9);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:700;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;" title="Importar y actualizar todos los campos desde Excel">📥 Importar Datos</button>' +
-          '<button onclick="ptImportarConIA()" style="background:linear-gradient(135deg,#dc2626,#b91c1c);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:700;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;" title="Usar IA para interpretar catálogo del proveedor (PDF o Excel)">🤖 IA Catálogo</button>' +
-          '<button onclick="ptAplicarRefAlFinalMasivo()" style="background:linear-gradient(135deg,#78350f,#a16207);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:700;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;" title="Aplica REF interna al final de TODAS las descripciones del catálogo (necesario para Valery)">✏️ REF al final</button>' +
-          '<button onclick="trasladoAbrirModalCrear()" style="background:linear-gradient(135deg,#0891b2,#0e7490);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:900;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;box-shadow:0 4px 14px rgba(8,145,178,.4);" title="Trasladar mercancía entre depósitos NE ↔ AN">📦 Trasladar</button>' +
-          '<button onclick="trasladoAbrirHistorial()" style="background:linear-gradient(135deg,#0369a1,#075985);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:700;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;" title="Ver traslados pendientes y completados">📋 Traslados</button>' +
-          '<button onclick="ptAbrirDiagnosticoInventario()" style="background:linear-gradient(135deg,#7e22ce,#581c87);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:700;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;" title="Ver pedidos reservados, diagnosticar inventario y liberar comprometido huérfano">🔧 Diagnóstico Inventario</button>' +
-          '<button id="pt-btn-sync-portal" onclick="ptSincronizarPortal()" style="background:linear-gradient(135deg,#dc2626,#7f1d1d);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:900;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;box-shadow:0 4px 14px rgba(220,38,38,.4);" title="Fuerza la sincronización inmediata de inventario, comprometido y ordenada al portal del cliente">🔄 Sincronizar Portal</button>' +
-          '<button id="pt-btn-rescatar-huerfanas" onclick="ptAbrirRescateHuerfanas()" style="background:linear-gradient(135deg,#16a34a,#15803d);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:900;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;box-shadow:0 4px 14px rgba(22,163,74,.4);" title="Reconstruir productos cuyas imágenes están en Firebase pero la ficha se perdió">🖼️ Rescatar Huérfanas</button>' +
-          '<button id="pt-btn-sincerar" onclick="libAbrirPanelAuditoria()" style="background:linear-gradient(135deg,#dc2626,#991b1b);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:900;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;box-shadow:0 4px 14px rgba(220,38,38,.4);" title="Liberar inventario comprometido cuando no coincide con stock real (sincerar inventario)">🔓 Sincerar Inventario</button>' +
-          '<button id="pt-btn-limpiar-ord" onclick="ptLimpiarOrdenadaFantasma()" style="background:linear-gradient(135deg,#0891b2,#155e75);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:900;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;box-shadow:0 4px 14px rgba(8,145,178,.4);" title="Resetear cantidades ORDENADA fantasma — refs cuya OC ya fue recibida o no existe">🧹 Limpiar Ordenada</button>' +
-          '<button id="pt-btn-auditoria" onclick="ptAbrirAuditoriaIntegral()" style="background:linear-gradient(135deg,#7c3aed,#5b21b6);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:900;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;box-shadow:0 4px 14px rgba(124,58,237,.4);" title="Auditoría visual completa del sistema (local vs Firebase, integridad, salud)">🔍 Auditoría Integral</button>' +
+
+          // ── GRUPO IMPORTAR (dropdown) ──
+          '<div style="position:relative;display:inline-block;">' +
+            '<button onclick="ptToggleMenu(\'pt-menu-importar\')" id="pt-btn-importar" style="background:linear-gradient(135deg,#7c3aed,#6d28d9);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:700;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;" title="Opciones de importación">📥 Importar ▾</button>' +
+            '<div id="pt-menu-importar" style="display:none;position:absolute;top:calc(100% + 4px);right:0;background:white;border:1.5px solid #e0e4f0;border-radius:10px;box-shadow:0 8px 24px rgba(26,32,80,.15);padding:6px;z-index:100;min-width:240px;">' +
+              '<button onclick="ptCloseMenus();ptImportarConIA()" style="display:block;width:100%;text-align:left;background:none;border:none;padding:9px 12px;cursor:pointer;font-size:.78rem;font-weight:700;color:#1a2050;border-radius:6px;" onmouseover="this.style.background=\'#f0f4ff\'" onmouseout="this.style.background=\'none\'">🤖 Catálogo con IA</button>' +
+              '<button onclick="ptCloseMenus();ptImportarDatosMaestro()" style="display:block;width:100%;text-align:left;background:none;border:none;padding:9px 12px;cursor:pointer;font-size:.78rem;font-weight:700;color:#1a2050;border-radius:6px;" onmouseover="this.style.background=\'#f0f4ff\'" onmouseout="this.style.background=\'none\'">📥 Datos desde Excel</button>' +
+              '<button onclick="ptCloseMenus();ptImportarMedidas()" style="display:block;width:100%;text-align:left;background:none;border:none;padding:9px 12px;cursor:pointer;font-size:.78rem;font-weight:700;color:#1a2050;border-radius:6px;" onmouseover="this.style.background=\'#f0f4ff\'" onmouseout="this.style.background=\'none\'">📐 Medidas (largo, ancho, alto, peso)</button>' +
+              '<button onclick="ptCloseMenus();ptImportarPedido()" style="display:block;width:100%;text-align:left;background:none;border:none;padding:9px 12px;cursor:pointer;font-size:.78rem;font-weight:700;color:#1a2050;border-radius:6px;" onmouseover="this.style.background=\'#f0f4ff\'" onmouseout="this.style.background=\'none\'">📦 Pedido del proveedor</button>' +
+            '</div>' +
+          '</div>' +
+
+          // ── GRUPO LOGÍSTICA (dropdown) ──
+          '<div style="position:relative;display:inline-block;">' +
+            '<button onclick="ptToggleMenu(\'pt-menu-logistica\')" id="pt-btn-logistica" style="background:linear-gradient(135deg,#0891b2,#0e7490);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:700;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;" title="Traslados y ordenada">🚛 Logística ▾</button>' +
+            '<div id="pt-menu-logistica" style="display:none;position:absolute;top:calc(100% + 4px);right:0;background:white;border:1.5px solid #e0e4f0;border-radius:10px;box-shadow:0 8px 24px rgba(26,32,80,.15);padding:6px;z-index:100;min-width:240px;">' +
+              '<button onclick="ptCloseMenus();trasladoAbrirModalCrear()" style="display:block;width:100%;text-align:left;background:none;border:none;padding:9px 12px;cursor:pointer;font-size:.78rem;font-weight:700;color:#1a2050;border-radius:6px;" onmouseover="this.style.background=\'#f0f4ff\'" onmouseout="this.style.background=\'none\'">📦 Trasladar entre depósitos (NE↔AN)</button>' +
+              '<button onclick="ptCloseMenus();trasladoAbrirHistorial()" style="display:block;width:100%;text-align:left;background:none;border:none;padding:9px 12px;cursor:pointer;font-size:.78rem;font-weight:700;color:#1a2050;border-radius:6px;" onmouseover="this.style.background=\'#f0f4ff\'" onmouseout="this.style.background=\'none\'">📋 Historial de traslados</button>' +
+              '<button onclick="ptCloseMenus();ptResetOrdenada()" style="display:block;width:100%;text-align:left;background:none;border:none;padding:9px 12px;cursor:pointer;font-size:.78rem;font-weight:700;color:#1a2050;border-radius:6px;" onmouseover="this.style.background=\'#f0f4ff\'" onmouseout="this.style.background=\'none\'">📦 Actualizar Ordenada (desde OCs)</button>' +
+            '</div>' +
+          '</div>' +
+
+          // ── GRUPO SINCRONIZACIÓN (dropdown) ──
+          '<div style="position:relative;display:inline-block;">' +
+            '<button onclick="ptToggleMenu(\'pt-menu-sync\')" id="pt-btn-sync" style="background:linear-gradient(135deg,#1B1F6B,#4f46e5);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:700;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;" title="Sincronizar con portal y exterior">🔄 Sincronizar ▾</button>' +
+            '<div id="pt-menu-sync" style="display:none;position:absolute;top:calc(100% + 4px);right:0;background:white;border:1.5px solid #e0e4f0;border-radius:10px;box-shadow:0 8px 24px rgba(26,32,80,.15);padding:6px;z-index:100;min-width:260px;">' +
+              '<button onclick="ptCloseMenus();ptSincronizarPortal()" style="display:block;width:100%;text-align:left;background:none;border:none;padding:9px 12px;cursor:pointer;font-size:.78rem;font-weight:700;color:#1a2050;border-radius:6px;" onmouseover="this.style.background=\'#f0f4ff\'" onmouseout="this.style.background=\'none\'">🔄 Sincronizar al portal del cliente</button>' +
+              '<button onclick="ptCloseMenus();ptPublicarOrdenadaAlPortal()" style="display:block;width:100%;text-align:left;background:none;border:none;padding:9px 12px;cursor:pointer;font-size:.78rem;font-weight:700;color:#1a2050;border-radius:6px;" onmouseover="this.style.background=\'#f0f4ff\'" onmouseout="this.style.background=\'none\'">🔍 Auditar Ordenada (admin vs portal)</button>' +
+              '<button onclick="ptCloseMenus();ptAplicarRefAlFinalMasivo()" style="display:block;width:100%;text-align:left;background:none;border:none;padding:9px 12px;cursor:pointer;font-size:.78rem;font-weight:700;color:#1a2050;border-radius:6px;" onmouseover="this.style.background=\'#f0f4ff\'" onmouseout="this.style.background=\'none\'">✏️ REF al final (para Valery)</button>' +
+            '</div>' +
+          '</div>' +
+
+          // ── GRUPO MANTENIMIENTO (dropdown — todas las herramientas técnicas) ──
+          '<div style="position:relative;display:inline-block;">' +
+            '<button onclick="ptToggleMenu(\'pt-menu-mant\')" id="pt-btn-mant" style="background:linear-gradient(135deg,#dc2626,#991b1b);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:900;font-size:.8rem;white-space:nowrap;display:flex;align-items:center;gap:6px;box-shadow:0 4px 14px rgba(220,38,38,.4);" title="Herramientas de diagnóstico y reparación">🔧 Mantenimiento ▾</button>' +
+            '<div id="pt-menu-mant" style="display:none;position:absolute;top:calc(100% + 4px);right:0;background:white;border:1.5px solid #e0e4f0;border-radius:10px;box-shadow:0 8px 24px rgba(26,32,80,.15);padding:6px;z-index:100;min-width:280px;">' +
+              '<button onclick="ptCloseMenus();libAbrirPanelAuditoria()" style="display:block;width:100%;text-align:left;background:none;border:none;padding:9px 12px;cursor:pointer;font-size:.78rem;font-weight:700;color:#dc2626;border-radius:6px;" onmouseover="this.style.background=\'#fef2f2\'" onmouseout="this.style.background=\'none\'">🔓 Sincerar Inventario</button>' +
+              '<button onclick="ptCloseMenus();ptAbrirDiagnosticoInventario()" style="display:block;width:100%;text-align:left;background:none;border:none;padding:9px 12px;cursor:pointer;font-size:.78rem;font-weight:700;color:#1a2050;border-radius:6px;" onmouseover="this.style.background=\'#f0f4ff\'" onmouseout="this.style.background=\'none\'">🔧 Diagnóstico de inventario</button>' +
+              '<button onclick="ptCloseMenus();ptAbrirAuditoriaIntegral()" style="display:block;width:100%;text-align:left;background:none;border:none;padding:9px 12px;cursor:pointer;font-size:.78rem;font-weight:700;color:#1a2050;border-radius:6px;" onmouseover="this.style.background=\'#f0f4ff\'" onmouseout="this.style.background=\'none\'">🔍 Auditoría integral del sistema</button>' +
+              '<button onclick="ptCloseMenus();ptLimpiarOrdenadaFantasma()" style="display:block;width:100%;text-align:left;background:none;border:none;padding:9px 12px;cursor:pointer;font-size:.78rem;font-weight:700;color:#1a2050;border-radius:6px;" onmouseover="this.style.background=\'#f0f4ff\'" onmouseout="this.style.background=\'none\'">🧹 Limpiar Ordenada fantasma</button>' +
+              '<button onclick="ptCloseMenus();ptAbrirRescateHuerfanas()" style="display:block;width:100%;text-align:left;background:none;border:none;padding:9px 12px;cursor:pointer;font-size:.78rem;font-weight:700;color:#1a2050;border-radius:6px;" onmouseover="this.style.background=\'#f0f4ff\'" onmouseout="this.style.background=\'none\'">🖼️ Rescatar imágenes huérfanas</button>' +
+            '</div>' +
+          '</div>' +
         '</div>' +
         '<div id="pt-stats" style="padding:8px 20px;background:#fff;border-bottom:1px solid #eef0f8;display:flex;gap:16px;font-size:.72rem;color:#5a6080;flex-wrap:wrap;"></div>' +
         '<div style="overflow-y:auto;max-height:calc(100vh - 260px);">' +
@@ -30175,7 +30451,8 @@ function ptRender() {
       var d = (ptData[p.r] || {}).dept || '';
       if (d !== dept) return false;
     }
-    var exActual = inv[p.r] !== undefined ? (inv[p.r]||0) : (p.ex||0);
+    // Coherencia: misma fuente que el resto del render
+    var exActual = (parseInt(p.exNE)||0) + (parseInt(p.exAN)||0);
     var comp = (comprometidas[p.r] || []).reduce(function(s,c){ return s+c.qty; }, 0);
     if (stockF === 'in'         && exActual <= 0) return false;
     if (stockF === 'out'        && exActual > 0)  return false;
@@ -30191,7 +30468,8 @@ function ptRender() {
   // Stats
   var totalComp = 0, totalDisp = 0, totalActual = 0;
   filtered.forEach(function(p) {
-    var ex   = inv[p.r] !== undefined ? (inv[p.r]||0) : (p.ex||0);
+    // Coherencia: usar SIEMPRE exNE+exAN como fuente única (igual que el render de filas)
+    var ex   = (parseInt(p.exNE)||0) + (parseInt(p.exAN)||0);
     var comp = (comprometidas[p.r]||[]).reduce(function(s,c){ return s+c.qty; },0);
     totalActual  += ex;
     totalComp    += comp;
@@ -30206,12 +30484,24 @@ function ptRender() {
 
   tbody.innerHTML = filtered.map(function(p, i) {
     var pd       = ptData[p.r] || {};
-    var exActual = inv[p.r] !== undefined ? (inv[p.r]||0) : (p.ex||0);
+    // ── COHERENCIA TOTAL/DISPONIBLE: ambas usan la MISMA fuente ──
+    // Antes había drift: TOTAL usaba p.exNE+p.exAN pero DISPONIBLE usaba inv[p.r]
+    // Ahora TOTAL = exNE + exAN (multi-depósito) Y DISPONIBLE = TOTAL - comprometido
+    var stockNE  = parseInt(p.exNE)||0;
+    var stockAN  = parseInt(p.exAN)||0;
+    var exActual = stockNE + stockAN;  // ← antes: inv[p.r] !== undefined ? inv[p.r] : p.ex
     var exOrden  = pd.exOrdenada || 0;
     var compList = comprometidas[p.r] || [];
     var compTotal= compList.reduce(function(s,c){ return s+c.qty; }, 0);
     var dispTotal= Math.max(0, exActual - compTotal);
     var bg       = i%2===0 ? '#fff' : '#f8f9ff';
+
+    // ── DETECTAR DRIFT: si inv[p.r] difiere de exNE+exAN, registrar ──
+    var invStored = inv[p.r];
+    var hayDrift = invStored !== undefined && invStored !== exActual;
+    if (hayDrift && i < 5) {  // log solo primeros 5 para no spamear
+      console.warn('[ptRender] DRIFT detectado en', p.r, ': inv=' + invStored, 'vs exNE+exAN=' + exActual);
+    }
 
     // Colores de existencia
     var exColor  = exActual > 0 ? '#16a34a' : '#dc2626';
@@ -30282,10 +30572,8 @@ function ptRender() {
     row += '<td style="padding:8px 12px;text-align:right;font-size:.75rem;color:#64748b;">' + (p.bv > 0 ? '$'+p.bv.toFixed(2) : '—') + '</td>';
     row += '<td style="padding:8px 12px;text-align:right;font-size:.75rem;color:#64748b;">' + (p.t > 0 ? '$'+p.t.toFixed(2) : '—') + '</td>';
 
-    // ── Multi-Depósito: stock por depósito ──
-    var stockNE = parseInt(p.exNE)||0;
-    var stockAN = parseInt(p.exAN)||0;
-    var stockTotal = stockNE + stockAN;
+    // ── Multi-Depósito: stock por depósito (variables ya definidas arriba) ──
+    var stockTotal = exActual;  // = stockNE + stockAN
     var neBg = stockNE > 0 ? '#dbeafe' : '#f1f5f9';
     var neColor = stockNE > 0 ? '#1e40af' : '#94a3b8';
     var anBg = stockAN > 0 ? '#dcfce7' : '#f1f5f9';
@@ -31296,6 +31584,35 @@ function ptMaestroConfirmar() {
 window.ptMaestroConfirmar = ptMaestroConfirmar;
 
 window.ptRender = ptRender;
+
+// ─────────────────────────────────────────────────────────────────
+// Helpers de menús dropdown del módulo Inventario PT
+// ─────────────────────────────────────────────────────────────────
+window.ptCloseMenus = function() {
+  ['pt-menu-importar','pt-menu-logistica','pt-menu-sync','pt-menu-mant'].forEach(function(id){
+    var m = document.getElementById(id);
+    if (m) m.style.display = 'none';
+  });
+};
+
+window.ptToggleMenu = function(menuId) {
+  var menu = document.getElementById(menuId);
+  if (!menu) return;
+  var isOpen = menu.style.display !== 'none';
+  // Cerrar todos los menús primero
+  window.ptCloseMenus();
+  // Abrir el que se pidió (si no estaba ya abierto)
+  if (!isOpen) menu.style.display = 'block';
+};
+
+// Cerrar menús al hacer click fuera
+document.addEventListener('click', function(e){
+  var clickedBtn = e.target.closest('#pt-btn-importar, #pt-btn-logistica, #pt-btn-sync, #pt-btn-mant');
+  var clickedMenu = e.target.closest('#pt-menu-importar, #pt-menu-logistica, #pt-menu-sync, #pt-menu-mant');
+  if (!clickedBtn && !clickedMenu) {
+    if (typeof window.ptCloseMenus === 'function') window.ptCloseMenus();
+  }
+});
 
 // ── Ficha de Producto (modal) ────────────────────────────────────────────────
 function ptNuevoProducto() {
@@ -40292,6 +40609,198 @@ window.msLiberarComprometido = function(numP, sel, data) {
     pedidos[idx].fechaDespacho = new Date().toLocaleDateString('es-VE',{day:'2-digit',month:'2-digit',year:'numeric'});
     saveMsPedidos(pedidos);
   }
+};
+
+// ─────────────────────────────────────────────────────────────────
+// AUTO-LIMPIEZA DE COMPROMETIDO HUÉRFANO
+// ─────────────────────────────────────────────────────────────────
+// Detecta y libera entries en comp[].pedidos cuyo pedido:
+//   - Ya no existe en farmers_ms_pedidos
+//   - O está en estado DESPACHADO/CANCELADO (entonces no debería seguir comprometido)
+// Esto resuelve el bug donde un pedido despachado deja "fantasmas" en el comprometido.
+// Devuelve: { refsLimpiadas: N, udsLiberadas: M, pedidosHuerfanos: [...] }
+// ─────────────────────────────────────────────────────────────────
+window.msLimpiarComprometidoHuerfano = function(opts) {
+  opts = opts || {};
+  var dryRun = !!opts.dryRun;
+  var verbose = !!opts.verbose;
+  var comp = getComprometido();
+  var pedidos = (typeof getMsPedidos === 'function') ? getMsPedidos() : [];
+
+  // Mapa rápido: numP → estado del pedido
+  var pedMap = {};
+  pedidos.forEach(function(p){ pedMap[p.numP] = String(p.estado || '').toUpperCase(); });
+
+  var refsLimpiadas = 0;
+  var refsEliminadas = 0;  // Eliminadas completamente (ya sin nada)
+  var udsLiberadas = 0;
+  var pedidosHuerfanos = {};
+  var detalles = [];
+
+  Object.keys(comp).forEach(function(ref){
+    var entry = comp[ref];
+    if (!entry) return;
+
+    // ── CASO 1: comp[ref] sin estructura válida (qty <= 0 o no existe) ──
+    if (!entry.qty || entry.qty <= 0) {
+      udsLiberadas += 0;  // ya estaba en 0
+      refsEliminadas++;
+      detalles.push({ ref: ref, motivo: 'qty=0 (entrada vacía sin propósito)', qty: 0 });
+      if (!dryRun) delete comp[ref];
+      return;
+    }
+
+    // ── CASO 2: comp[ref].pedidos no existe o está vacío pero qty > 0 ──
+    // Esto es un huérfano completo — qty colgado sin trazabilidad
+    if (!Array.isArray(entry.pedidos) || entry.pedidos.length === 0) {
+      udsLiberadas += entry.qty;
+      refsEliminadas++;
+      detalles.push({ ref: ref, motivo: 'sin lista de pedidos (qty=' + entry.qty + ' sin trazabilidad)', qty: entry.qty });
+      if (!dryRun) delete comp[ref];
+      return;
+    }
+
+    // ── CASO 3: tiene pedidos[], evaluar cada uno ──
+    var pedidosValidos = [];
+    var qtyAnterior = entry.qty || 0;
+    var qtyLiberadaRef = 0;
+    var qtySumaPedidos = 0;  // suma real de los pedidos válidos
+
+    entry.pedidos.forEach(function(pe){
+      var estado = pedMap[pe.numP];
+      var qtyPe = parseInt(pe.qty || 0) || 0;
+      // Huérfano si:
+      //   - no existe el pedido en farmers_ms_pedidos
+      //   - O el pedido está despachado/cancelado
+      //   - O el pe.qty <= 0 (entrada vacía)
+      var esHuerfano = !estado || estado === 'DESPACHADO' || estado === 'CANCELADO' || qtyPe <= 0;
+      if (esHuerfano) {
+        qtyLiberadaRef += qtyPe;
+        if (qtyPe > 0) {
+          pedidosHuerfanos[pe.numP] = (pedidosHuerfanos[pe.numP] || 0) + qtyPe;
+          var motivo = !estado ? 'pedido no existe' : (qtyPe <= 0 ? 'qty del pedido <= 0' : 'estado: ' + estado);
+          detalles.push({ ref: ref, numP: pe.numP, qty: qtyPe, motivo: motivo });
+        }
+      } else {
+        pedidosValidos.push(pe);
+        qtySumaPedidos += qtyPe;
+      }
+    });
+
+    // ── CASO 4: detectar inconsistencia entre entry.qty y suma real ──
+    // Si entry.qty > suma de pedidos válidos, hay un "extra" colgado
+    var inconsistencia = qtyAnterior - qtySumaPedidos - qtyLiberadaRef;
+    if (inconsistencia > 0 && pedidosValidos.length > 0) {
+      udsLiberadas += inconsistencia;
+      detalles.push({ ref: ref, motivo: 'inconsistencia: qty=' + qtyAnterior + ' pero pedidos suman ' + qtySumaPedidos + ' (+' + qtyLiberadaRef + ' huérfanos), exceso: ' + inconsistencia });
+    }
+
+    if (qtyLiberadaRef > 0 || inconsistencia > 0) {
+      refsLimpiadas++;
+      udsLiberadas += qtyLiberadaRef;
+      if (!dryRun) {
+        // Recalcular qty desde la suma real de pedidos válidos
+        entry.qty = qtySumaPedidos;
+        entry.pedidos = pedidosValidos;
+        if (entry.qty <= 0 || pedidosValidos.length === 0) {
+          delete comp[ref];
+          refsEliminadas++;
+        }
+      }
+    }
+  });
+
+  if (!dryRun && (refsLimpiadas > 0 || refsEliminadas > 0)) {
+    saveComprometido(comp);
+    if (window.fbTriggerPortalSnapshot) window.fbTriggerPortalSnapshot('comp-huerfano-limpieza');
+  }
+
+  if (verbose) {
+    console.log('[msLimpiarComprometidoHuerfano] refs limpiadas:', refsLimpiadas, '· eliminadas:', refsEliminadas, '· uds liberadas:', udsLiberadas);
+    if (detalles.length > 0) console.table(detalles);
+  }
+
+  return {
+    refsLimpiadas: refsLimpiadas,
+    refsEliminadas: refsEliminadas,
+    udsLiberadas: udsLiberadas,
+    pedidosHuerfanos: pedidosHuerfanos,
+    detalles: detalles,
+    dryRun: dryRun
+  };
+};
+
+// Atajo de consola para ejecutar manualmente
+window.farmersSincerarComprometido = function() {
+  console.log('[farmersSincerarComprometido] ejecutando análisis...');
+  var preview = window.msLimpiarComprometidoHuerfano({ dryRun: true, verbose: true });
+  if (preview.refsLimpiadas === 0 && preview.refsEliminadas === 0) {
+    console.log('✅ El comprometido está limpio. Nada que sincerar.');
+    return preview;
+  }
+  console.log('🧹 Aplicando limpieza...');
+  return window.msLimpiarComprometidoHuerfano({ dryRun: false, verbose: true });
+};
+
+// ─────────────────────────────────────────────────────────────────
+// SINCERAR DRIFT: inv[p.r] vs exNE+exAN
+// ─────────────────────────────────────────────────────────────────
+// Detecta y corrige cuando el inventario consolidado (farmers_inventory)
+// no coincide con la suma de los depósitos (p.exNE + p.exAN).
+// La fuente de verdad es exNE+exAN (multi-depósito).
+// ─────────────────────────────────────────────────────────────────
+window.farmersSincerarDriftInventario = function(opts) {
+  opts = opts || {};
+  var dryRun = !!opts.dryRun;
+  var inv = (typeof getInventory === 'function') ? getInventory() : {};
+  var driftDetectado = [];
+  var corregidos = 0;
+
+  if (typeof PRODUCTS === 'undefined' || !PRODUCTS.length) {
+    console.warn('[Drift] PRODUCTS no disponible');
+    return { driftDetectado: [], corregidos: 0 };
+  }
+
+  PRODUCTS.forEach(function(p){
+    var ne = parseInt(p.exNE)||0;
+    var an = parseInt(p.exAN)||0;
+    var sumaReal = ne + an;
+    var invStored = inv[p.r];
+
+    // Si inv no existe o difiere, hay drift
+    if (invStored === undefined || parseInt(invStored) !== sumaReal) {
+      driftDetectado.push({
+        ref: p.r,
+        desc: (p.d || '').substring(0,30),
+        invStored: invStored !== undefined ? invStored : '(undefined)',
+        exNE: ne,
+        exAN: an,
+        sumaReal: sumaReal,
+        diferencia: sumaReal - (invStored || 0)
+      });
+      if (!dryRun) {
+        inv[p.r] = sumaReal;
+        // También sincronizar p.ex para coherencia total
+        p.ex = sumaReal;
+        corregidos++;
+      }
+    }
+  });
+
+  if (!dryRun && corregidos > 0) {
+    if (typeof saveInventory === 'function') saveInventory(inv);
+    if (window.fbTriggerPortalSnapshot) window.fbTriggerPortalSnapshot('drift-inventario-sincerado');
+    console.log('[Drift] Sincerados', corregidos, 'productos');
+  }
+
+  if (driftDetectado.length > 0) {
+    console.log('[Drift] Detectados', driftDetectado.length, 'productos con drift');
+    console.table(driftDetectado);
+  } else {
+    console.log('✅ No hay drift entre inv[] y exNE+exAN');
+  }
+
+  return { driftDetectado: driftDetectado, corregidos: corregidos, dryRun: dryRun };
 };
 
 // ── Cancelar pedido (liberar todo) ───────────────────────────
