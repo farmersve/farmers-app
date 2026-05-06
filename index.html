@@ -17,7 +17,7 @@
 <meta http-equiv="Expires" content="0">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.05.05.26">
+<meta name="farmers-version" content="2026.05.05.27">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -4936,7 +4936,9 @@ function updateSummary() {
     }
     
     // CALCULAR VOLUMEN POR UNIDAD
-    var volPorBulto = (l && a && h) ? (l * a * h / 28316.85) : volDirecto;
+    // REGLA UNIFICADA: volDirecto (OC del proveedor) es SIEMPRE la fuente de verdad.
+    // L×A×H solo se usa como fallback si NO hay volDirecto.
+    var volPorBulto = volDirecto > 0 ? volDirecto : ((l && a && h) ? (l * a * h / 28316.85) : 0);
     if (volPorBulto > 0) {
       var volPorUnidad = volPorBulto / empaque;
       totalVol += volPorUnidad * qty; // qty × volumen_por_unidad
@@ -5994,7 +5996,9 @@ function showOrderModal() {
     const empaque = getEmpaqueReal(p.r); // CORREGIDO: usar empaque real
     
     // CALCULAR VOLUMEN POR UNIDAD
-    const volPorBulto = (l && a && h) ? (l * a * h / 28316.85) : volDirecto;
+    // REGLA UNIFICADA: volDirecto (OC del proveedor) es SIEMPRE la fuente de verdad.
+    // L×A×H solo se usa como fallback si NO hay volDirecto.
+    const volPorBulto = volDirecto > 0 ? volDirecto : ((l && a && h) ? (l * a * h / 28316.85) : 0);
     if (volPorBulto > 0) {
       const volPorUnidad = volPorBulto / empaque;
       grandFt3 += volPorUnidad * qty; // qty × volumen_por_unidad
@@ -6066,7 +6070,8 @@ function showOrderModal() {
             const l = parseFloat(med.largo)||0, a = parseFloat(med.ancho)||0, h = parseFloat(med.alto)||0;
             const peso = parseFloat(med.peso)||0;
             const volDirOrd = parseFloat((ptDataOrder[p.r]&&ptDataOrder[p.r].medidas&&ptDataOrder[p.r].medidas.volDirecto)||0);
-            const volUnit = (l && a && h) ? (l*a*h/28316.85) : volDirOrd;
+            // REGLA UNIFICADA: volDirecto (OC) primero, L×A×H solo como fallback
+            const volUnit = volDirOrd > 0 ? volDirOrd : ((l && a && h) ? (l*a*h/28316.85) : 0);
             const volTotal = volUnit * ord;
             const pesoTotal = peso * ord;
             if (!volUnit && !peso) return '<span style="color:#cbd5e1;">—</span>';
@@ -28505,8 +28510,11 @@ function doRefSearch() {
           var _m = (_ptDataCat[p.r] && _ptDataCat[p.r].medidas) ? _ptDataCat[p.r].medidas : {};
           var _l = parseFloat(_m.largo)||0, _a = parseFloat(_m.ancho)||0, _h = parseFloat(_m.alto)||0;
           var _vd = parseFloat(_m.volDirecto)||0;
-          var _v = (_l && _a && _h) ? (_l * _a * _h) / 28316.85 : _vd;
-          var _dimStr = (_l && _a && _h) ? (_l + '×' + _a + '×' + _h + ' cm') : (_vd ? 'VOL. DIRECTO' : '');
+          // REGLA UNIFICADA: volDirecto (OC del proveedor) es SIEMPRE la fuente de verdad.
+          // L×A×H solo se usa como fallback si NO hay volDirecto.
+          var _v = _vd > 0 ? _vd : ((_l && _a && _h) ? (_l * _a * _h) / 28316.85 : 0);
+          // El subtítulo prioriza mostrar la fuente real del dato
+          var _dimStr = _vd > 0 ? '📦 OC PROVEEDOR' : ((_l && _a && _h) ? (_l + '×' + _a + '×' + _h + ' cm') : '');
           // Calcular volumen por unidad
           var _empaque = getEmpaqueReal(p.r); // CORREGIDO: usar empaque real
           var _empaqueIncorrecto = parseFloat(p.e)||1;
