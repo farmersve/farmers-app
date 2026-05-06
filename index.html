@@ -17,7 +17,7 @@
 <meta http-equiv="Expires" content="0">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.05.05.19">
+<meta name="farmers-version" content="2026.05.05.22">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -28671,6 +28671,9 @@ function doRefSearch() {
               '<button onclick="ptCloseMenus();ptImportarDatosMaestro()" style="display:block;width:100%;text-align:left;background:none;border:none;padding:9px 12px;cursor:pointer;font-size:.78rem;font-weight:700;color:#1a2050;border-radius:6px;" onmouseover="this.style.background=\'#f0f4ff\'" onmouseout="this.style.background=\'none\'">📥 Datos desde Excel</button>' +
               '<button onclick="ptCloseMenus();ptImportarMedidas()" style="display:block;width:100%;text-align:left;background:none;border:none;padding:9px 12px;cursor:pointer;font-size:.78rem;font-weight:700;color:#1a2050;border-radius:6px;" onmouseover="this.style.background=\'#f0f4ff\'" onmouseout="this.style.background=\'none\'">📐 Medidas (largo, ancho, alto, peso)</button>' +
               '<button onclick="ptCloseMenus();ptImportarPedido()" style="display:block;width:100%;text-align:left;background:none;border:none;padding:9px 12px;cursor:pointer;font-size:.78rem;font-weight:700;color:#1a2050;border-radius:6px;" onmouseover="this.style.background=\'#f0f4ff\'" onmouseout="this.style.background=\'none\'">📦 Pedido del proveedor</button>' +
+              '<div style="height:1px;background:#e0e4f0;margin:4px 6px;"></div>' +
+              '<button onclick="ptCloseMenus();ptDescargarCatalogoSimple()" style="display:block;width:100%;text-align:left;background:none;border:none;padding:9px 12px;cursor:pointer;font-size:.78rem;font-weight:700;color:#15803d;border-radius:6px;" onmouseover="this.style.background=\'#dcfce7\'" onmouseout="this.style.background=\'none\'">📊 Descargar catálogo simple (Excel)</button>' +
+              '<button onclick="ptCloseMenus();ptImportarCatalogoSimple()" style="display:block;width:100%;text-align:left;background:none;border:none;padding:9px 12px;cursor:pointer;font-size:.78rem;font-weight:700;color:#15803d;border-radius:6px;" onmouseover="this.style.background=\'#dcfce7\'" onmouseout="this.style.background=\'none\'">📤 Importar catálogo simple (Excel)</button>' +
             '</div>' +
           '</div>' +
 
@@ -28703,6 +28706,7 @@ function doRefSearch() {
               '<button onclick="ptCloseMenus();ptAbrirAuditoriaIntegral()" style="display:block;width:100%;text-align:left;background:none;border:none;padding:9px 12px;cursor:pointer;font-size:.78rem;font-weight:700;color:#1a2050;border-radius:6px;" onmouseover="this.style.background=\'#f0f4ff\'" onmouseout="this.style.background=\'none\'">🔍 Auditoría integral del sistema</button>' +
               '<button onclick="ptCloseMenus();ptLimpiarOrdenadaFantasma()" style="display:block;width:100%;text-align:left;background:none;border:none;padding:9px 12px;cursor:pointer;font-size:.78rem;font-weight:700;color:#1a2050;border-radius:6px;" onmouseover="this.style.background=\'#f0f4ff\'" onmouseout="this.style.background=\'none\'">🧹 Limpiar Ordenada fantasma</button>' +
               '<button onclick="ptCloseMenus();ptAbrirAuditoriaCubicaje()" style="display:block;width:100%;text-align:left;background:none;border:none;padding:9px 12px;cursor:pointer;font-size:.78rem;font-weight:700;color:#7c3aed;border-radius:6px;" onmouseover="this.style.background=\'#f3e8ff\'" onmouseout="this.style.background=\'none\'">📐 Auditar cubicaje (OC vs catálogo)</button>' +
+              '<button onclick="ptCloseMenus();ptAbrirAuditoriaSimilitud()" style="display:block;width:100%;text-align:left;background:none;border:none;padding:9px 12px;cursor:pointer;font-size:.78rem;font-weight:700;color:#a16207;border-radius:6px;" onmouseover="this.style.background=\'#fef3c7\'" onmouseout="this.style.background=\'none\'">🎯 Detectar outliers de cubicaje (productos similares)</button>' +
               '<button onclick="ptCloseMenus();ptAbrirRescateHuerfanas()" style="display:block;width:100%;text-align:left;background:none;border:none;padding:9px 12px;cursor:pointer;font-size:.78rem;font-weight:700;color:#1a2050;border-radius:6px;" onmouseover="this.style.background=\'#f0f4ff\'" onmouseout="this.style.background=\'none\'">🖼️ Rescatar imágenes huérfanas</button>' +
             '</div>' +
           '</div>' +
@@ -32227,6 +32231,697 @@ window.ptReconciliarCubicaje = function(refFarmers, silencioso) {
     if (ov) { ov.remove(); setTimeout(function(){ window.ptAbrirAuditoriaCubicaje(); }, 200); }
   }
   return true;
+};
+
+// ══════════════════════════════════════════════════════════════════
+// AUDITORÍA POR SIMILITUD — Detección de OUTLIERS de cubicaje
+// ══════════════════════════════════════════════════════════════════
+// Agrupa productos con palabras clave similares en la descripción +
+// misma marca. Detecta el outlier: producto cuyo vol/unidad se desvía
+// más de 50% del promedio del grupo. Muestra 3 fuentes lado a lado:
+//   📋 Catálogo (lo guardado actualmente)
+//   📦 OC del proveedor (si existe)
+//   📐 Reconstruido desde dimensiones físicas
+// Permite marcar como "verificado físicamente" con fecha y nota.
+window.ptAbrirAuditoriaSimilitud = function() {
+  if (typeof PRODUCTS === 'undefined' || !PRODUCTS.length) {
+    alert('No hay productos en catálogo para auditar.');
+    return;
+  }
+
+  var ptData = {};
+  try { ptData = JSON.parse(localStorage.getItem('farmers_pt_data') || '{}'); } catch(e) {}
+
+  // Datos OC más reciente por ref (reuso lógica)
+  var ocs = (typeof getOrdenesCompraDB === 'function') ? getOrdenesCompraDB() : [];
+  var ocDataPorRef = {};
+  ocs.forEach(function(oc){
+    if (!Array.isArray(oc.items)) return;
+    var fechaOC = oc.fechaEmision || oc.fecha || '';
+    oc.items.forEach(function(it){
+      if (!it.refFarmers) return;
+      var udsTot = parseInt(it.unidades) || 0;
+      var bultos = parseInt(it.bultos) || 0;
+      var udsPorBulto = parseInt(it.unidadesPorBulto) || (bultos > 0 ? Math.round(udsTot / bultos) : 0);
+      var volPorBulto = parseFloat(it.volDirecto) || 0;
+      if (udsPorBulto <= 0) return;
+      var existente = ocDataPorRef[it.refFarmers];
+      if (existente && existente.fechaOC >= fechaOC) return;
+      ocDataPorRef[it.refFarmers] = {
+        ocNumero: oc.numero || '',
+        udsPorBulto: udsPorBulto,
+        volPorBulto: volPorBulto,
+        volPorUnidad: udsPorBulto > 0 ? volPorBulto / udsPorBulto : 0
+      };
+    });
+  });
+
+  // Función para extraer palabras clave significativas (ignora preposiciones, números, etc)
+  function extraerKeywords(desc) {
+    if (!desc) return [];
+    var stopwords = ['de','del','la','el','los','las','y','o','u','con','sin','para','por','a','en','un','una','unos','unas','al','que','se','su','sus','x','pza','pzas','pcs','set','und','uds','unidades','cm','mm','ml','kg','g','lt','lts'];
+    return String(desc).toLowerCase()
+      .replace(/[áàäâ]/g,'a').replace(/[éèëê]/g,'e').replace(/[íìïî]/g,'i').replace(/[óòöô]/g,'o').replace(/[úùüû]/g,'u')
+      .replace(/[^a-z0-9\s]/g,' ')
+      .split(/\s+/)
+      .filter(function(w){ return w.length >= 3 && stopwords.indexOf(w) < 0 && !/^\d+$/.test(w); });
+  }
+
+  // Función para detectar grupo (clave canónica de las 2 primeras keywords)
+  function obtenerGrupoKey(p) {
+    var kws = extraerKeywords(p.d);
+    if (kws.length === 0) return null;
+    // Tomamos las 2 palabras más distintivas (las más largas, suelen ser sustantivos)
+    var ordenadas = kws.slice().sort(function(a,b){ return b.length - a.length; });
+    var top2 = ordenadas.slice(0, 2).sort();
+    return (p.br || 'SINMARCA') + '::' + top2.join('-');
+  }
+
+  // Construir grupos
+  var grupos = {};
+  PRODUCTS.forEach(function(p){
+    var key = obtenerGrupoKey(p);
+    if (!key) return;
+    var pt = ptData[p.r] || {};
+    var medidas = pt.medidas || {};
+    var udsB = parseInt(p.m) || 0;
+    var volB = parseFloat(medidas.volDirecto) || 0;
+    if (!volB && medidas.largo && medidas.ancho && medidas.alto) {
+      volB = (parseFloat(medidas.largo) * parseFloat(medidas.ancho) * parseFloat(medidas.alto)) / 28316.85;
+    }
+    var volU = udsB > 0 ? volB / udsB : 0;
+    if (volU <= 0) return; // sólo productos con datos válidos
+    if (!grupos[key]) grupos[key] = [];
+    grupos[key].push({
+      ref: p.r, desc: p.d || '', marca: p.br || '',
+      udsBulto: udsB, volBulto: volB, volUnidad: volU,
+      ocData: ocDataPorRef[p.r] || null,
+      verificado: !!(medidas._verificadoFisicamente),
+      fechaVerif: medidas._fechaVerificacion || '',
+      notaVerif: medidas._notaVerificacion || '',
+      largo: parseFloat(medidas.largo) || 0,
+      ancho: parseFloat(medidas.ancho) || 0,
+      alto: parseFloat(medidas.alto) || 0
+    });
+  });
+
+  // Filtrar: sólo grupos con 2+ miembros (donde hay con qué comparar)
+  var gruposComparables = Object.keys(grupos).filter(function(k){ return grupos[k].length >= 2; });
+
+  // Para cada grupo, calcular promedio y desviación, marcar outliers
+  var resultados = [];
+  gruposComparables.forEach(function(k){
+    var miembros = grupos[k];
+    var volsU = miembros.map(function(m){ return m.volUnidad; });
+    var promedio = volsU.reduce(function(a,b){ return a+b; }, 0) / volsU.length;
+    miembros.forEach(function(m){
+      var diffPct = promedio > 0 ? Math.abs((m.volUnidad - promedio) / promedio) * 100 : 0;
+      var clasif = '🟢 CONSISTENTE';
+      if (diffPct > 50)      clasif = '🔴 OUTLIER GRAVE';
+      else if (diffPct > 25) clasif = '🟡 SOSPECHOSO';
+      m.diffPct = diffPct;
+      m.promedioGrupo = promedio;
+      m.clasif = clasif;
+      m.grupoKey = k;
+      m.miembrosGrupo = miembros.length;
+    });
+    resultados.push({
+      key: k,
+      grupo: k.split('::')[1] + ' (' + k.split('::')[0] + ')',
+      miembros: miembros,
+      promedio: promedio
+    });
+  });
+
+  // Ordenar grupos: el que tenga outliers graves arriba, luego A→Z (regla del sistema)
+  resultados.sort(function(a, b){
+    var aGrave = a.miembros.some(function(m){ return m.clasif.indexOf('🔴') >= 0; });
+    var bGrave = b.miembros.some(function(m){ return m.clasif.indexOf('🔴') >= 0; });
+    if (aGrave && !bGrave) return -1;
+    if (!aGrave && bGrave) return 1;
+    var aSosp = a.miembros.some(function(m){ return m.clasif.indexOf('🟡') >= 0; });
+    var bSosp = b.miembros.some(function(m){ return m.clasif.indexOf('🟡') >= 0; });
+    if (aSosp && !bSosp) return -1;
+    if (!aSosp && bSosp) return 1;
+    // Mismo nivel: alfanumérico A→Z
+    return String(a.grupo||'').localeCompare(String(b.grupo||''), 'es', { numeric: true, sensitivity: 'base' });
+  });
+
+  // Stats
+  var totalOutliers = 0, totalSospechosos = 0, totalConsistentes = 0, totalVerificados = 0;
+  resultados.forEach(function(g){
+    g.miembros.forEach(function(m){
+      if (m.clasif.indexOf('🔴') >= 0) totalOutliers++;
+      else if (m.clasif.indexOf('🟡') >= 0) totalSospechosos++;
+      else totalConsistentes++;
+      if (m.verificado) totalVerificados++;
+    });
+  });
+
+  // ── Render del modal ──
+  var existente = document.getElementById('cub-sim-overlay');
+  if (existente) existente.remove();
+
+  var ov = document.createElement('div');
+  ov.id = 'cub-sim-overlay';
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:99996;display:flex;align-items:center;justify-content:center;padding:20px;font-family:Barlow,sans-serif;';
+
+  var box = document.createElement('div');
+  box.style.cssText = 'background:#fff;border-radius:14px;width:min(1500px,98vw);max-height:94vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 24px 60px rgba(0,0,0,.4);';
+
+  var fmt = function(v, dec){ return (v != null && !isNaN(v) && v > 0) ? Number(v).toFixed(dec || 4) : '—'; };
+  var fmtPct = function(v){ return (v != null) ? v.toFixed(1) + '%' : '—'; };
+
+  var gruposHTML = resultados.map(function(g, gi){
+    // Ordenar miembros: outliers primero, luego A→Z
+    g.miembros.sort(function(a, b){
+      var pa = a.clasif.indexOf('🔴') >= 0 ? 1 : a.clasif.indexOf('🟡') >= 0 ? 2 : 3;
+      var pb = b.clasif.indexOf('🔴') >= 0 ? 1 : b.clasif.indexOf('🟡') >= 0 ? 2 : 3;
+      if (pa !== pb) return pa - pb;
+      return String(a.ref||'').localeCompare(String(b.ref||''), 'es', { numeric: true, sensitivity: 'base' });
+    });
+
+    var miembrosHTML = g.miembros.map(function(m){
+      var bg = '#fff';
+      var clBg = '#dcfce7', clColor = '#15803d';
+      if (m.clasif.indexOf('🔴') >= 0) { clBg = '#fee2e2'; clColor = '#dc2626'; }
+      else if (m.clasif.indexOf('🟡') >= 0) { clBg = '#fef3c7'; clColor = '#a16207'; }
+
+      var ocHTML = m.ocData
+        ? '<div style="font-size:.7rem;"><strong>' + (m.ocData.udsPorBulto||'—') + '</strong> u/blt · <strong>' + fmt(m.ocData.volPorBulto, 4) + '</strong> ft³/blt · <strong style="color:#7c3aed;">' + fmt(m.ocData.volPorUnidad, 4) + '</strong> ft³/u</div>'
+        : '<span style="color:#94a3b8;font-size:.7rem;">sin OC</span>';
+
+      var dimsHTML = (m.largo > 0 && m.ancho > 0 && m.alto > 0)
+        ? '<div style="font-size:.7rem;color:#475569;">' + m.largo + '×' + m.ancho + '×' + m.alto + ' cm = <strong>' + fmt((m.largo * m.ancho * m.alto) / 28316.85, 4) + '</strong> ft³</div>'
+        : '<span style="color:#94a3b8;font-size:.7rem;">sin dims</span>';
+
+      var verifBadge = m.verificado
+        ? '<span style="background:#dcfce7;color:#15803d;font-size:.6rem;padding:2px 6px;border-radius:4px;font-weight:800;" title="Verificado físicamente: ' + (m.fechaVerif ? new Date(m.fechaVerif).toLocaleDateString('es-VE') : '') + (m.notaVerif ? ' · ' + m.notaVerif : '') + '">✅ VERIFICADO</span>'
+        : '<button onclick="window.ptMarcarVerificado(\'' + m.ref + '\')" style="background:rgba(34,197,94,.1);border:1.5px dashed rgba(34,197,94,.4);color:#15803d;border-radius:5px;padding:3px 8px;cursor:pointer;font-weight:700;font-size:.6rem;">Marcar verificado</button>';
+
+      return '<tr style="background:' + bg + ';border-bottom:1px solid #f1f5f9;">' +
+        '<td style="padding:7px 9px;font-family:monospace;font-weight:800;color:#1B1F6B;font-size:.74rem;">' + m.ref + '</td>' +
+        '<td style="padding:7px 9px;font-size:.7rem;color:#475569;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + m.desc + '">' + (m.desc || '—').substring(0, 42) + '</td>' +
+        '<td style="padding:7px 9px;text-align:center;background:' + clBg + ';color:' + clColor + ';font-weight:800;font-size:.65rem;white-space:nowrap;">' + m.clasif + '</td>' +
+        '<td style="padding:7px 9px;text-align:center;font-size:.7rem;color:#0891b2;font-weight:700;">' + (m.udsBulto||'—') + '</td>' +
+        '<td style="padding:7px 9px;text-align:center;font-size:.7rem;color:#0891b2;">' + fmt(m.volBulto, 4) + '</td>' +
+        '<td style="padding:7px 9px;text-align:center;font-size:.74rem;color:#0891b2;font-weight:900;">' + fmt(m.volUnidad, 4) + '</td>' +
+        '<td style="padding:7px 9px;text-align:center;font-size:.7rem;color:#a16207;font-weight:800;">' + fmt(m.promedioGrupo, 4) + '</td>' +
+        '<td style="padding:7px 9px;text-align:center;font-size:.72rem;font-weight:900;color:' + clColor + ';">' + fmtPct(m.diffPct) + '</td>' +
+        '<td style="padding:7px 9px;">' + ocHTML + '</td>' +
+        '<td style="padding:7px 9px;">' + dimsHTML + '</td>' +
+        '<td style="padding:7px 9px;text-align:center;">' + verifBadge + '</td>' +
+      '</tr>';
+    }).join('');
+
+    var grupoColor = g.miembros.some(function(m){ return m.clasif.indexOf('🔴') >= 0; }) ? '#dc2626' : g.miembros.some(function(m){ return m.clasif.indexOf('🟡') >= 0; }) ? '#a16207' : '#15803d';
+
+    return '<div style="margin-bottom:14px;border:1.5px solid #e8eaf6;border-radius:10px;overflow:hidden;background:#fff;">' +
+      '<div style="padding:10px 14px;background:linear-gradient(90deg,' + grupoColor + '15,' + grupoColor + '08);border-bottom:1.5px solid ' + grupoColor + '30;display:flex;justify-content:space-between;align-items:center;">' +
+        '<div style="font-family:Barlow Condensed,sans-serif;font-weight:900;font-size:.95rem;color:' + grupoColor + ';text-transform:uppercase;letter-spacing:.5px;">📐 Grupo: ' + g.grupo + ' · ' + g.miembros.length + ' productos</div>' +
+        '<div style="font-size:.7rem;color:#475569;">Promedio vol/unidad: <strong>' + fmt(g.promedio, 4) + ' ft³</strong></div>' +
+      '</div>' +
+      '<div style="overflow:auto;">' +
+        '<table style="width:100%;border-collapse:collapse;font-size:.72rem;">' +
+          '<thead><tr style="background:#f8fafc;border-bottom:2px solid #e8eaf6;">' +
+            '<th style="padding:8px;text-align:left;font-size:.62rem;font-family:Barlow Condensed,sans-serif;color:#475569;">REF</th>' +
+            '<th style="padding:8px;text-align:left;font-size:.62rem;font-family:Barlow Condensed,sans-serif;color:#475569;">DESCRIPCIÓN</th>' +
+            '<th style="padding:8px;text-align:center;font-size:.62rem;font-family:Barlow Condensed,sans-serif;color:#475569;">CLASIF.</th>' +
+            '<th style="padding:8px;text-align:center;font-size:.62rem;font-family:Barlow Condensed,sans-serif;color:#0891b2;">📋 CAT Uds/Blt</th>' +
+            '<th style="padding:8px;text-align:center;font-size:.62rem;font-family:Barlow Condensed,sans-serif;color:#0891b2;">📋 CAT Vol/Blt</th>' +
+            '<th style="padding:8px;text-align:center;font-size:.62rem;font-family:Barlow Condensed,sans-serif;color:#0891b2;">📋 CAT Vol/Ud</th>' +
+            '<th style="padding:8px;text-align:center;font-size:.62rem;font-family:Barlow Condensed,sans-serif;color:#a16207;">🎯 PROM grupo</th>' +
+            '<th style="padding:8px;text-align:center;font-size:.62rem;font-family:Barlow Condensed,sans-serif;color:#dc2626;">DIFF</th>' +
+            '<th style="padding:8px;text-align:left;font-size:.62rem;font-family:Barlow Condensed,sans-serif;color:#7c3aed;">📦 OC PROVEEDOR</th>' +
+            '<th style="padding:8px;text-align:left;font-size:.62rem;font-family:Barlow Condensed,sans-serif;color:#475569;">📐 RECONSTRUIDO L×A×H</th>' +
+            '<th style="padding:8px;text-align:center;font-size:.62rem;font-family:Barlow Condensed,sans-serif;color:#15803d;">VERIFICADO</th>' +
+          '</tr></thead>' +
+          '<tbody>' + miembrosHTML + '</tbody>' +
+        '</table>' +
+      '</div>' +
+    '</div>';
+  }).join('');
+
+  box.innerHTML =
+    '<div style="background:linear-gradient(135deg,#a16207,#d97706);padding:14px 20px;color:#fff;display:flex;justify-content:space-between;align-items:center;flex-shrink:0;">' +
+      '<div>' +
+        '<div style="font-size:.62rem;font-weight:800;letter-spacing:2.5px;text-transform:uppercase;opacity:.7;">AUDITORÍA</div>' +
+        '<div style="font-family:Barlow Condensed,sans-serif;font-size:1.4rem;font-weight:900;letter-spacing:.5px;text-transform:uppercase;margin-top:1px;">📐 Cubicaje · Detección de Outliers por Similitud</div>' +
+      '</div>' +
+      '<button onclick="document.getElementById(\'cub-sim-overlay\').remove()" style="background:rgba(255,255,255,.18);border:none;color:#fff;width:34px;height:34px;border-radius:8px;cursor:pointer;font-size:1.05rem;font-weight:900;">✕</button>' +
+    '</div>' +
+    '<div style="padding:10px 20px;background:#fafbfd;border-bottom:1px solid #e8eaf6;display:flex;gap:7px;flex-wrap:wrap;flex-shrink:0;">' +
+      '<div style="background:#fee2e2;color:#dc2626;padding:6px 11px;border-radius:7px;font-weight:800;font-size:.74rem;">🔴 ' + totalOutliers + ' outliers graves</div>' +
+      '<div style="background:#fef3c7;color:#a16207;padding:6px 11px;border-radius:7px;font-weight:800;font-size:.74rem;">🟡 ' + totalSospechosos + ' sospechosos</div>' +
+      '<div style="background:#dcfce7;color:#15803d;padding:6px 11px;border-radius:7px;font-weight:800;font-size:.74rem;">🟢 ' + totalConsistentes + ' consistentes</div>' +
+      '<div style="background:#dbeafe;color:#1e40af;padding:6px 11px;border-radius:7px;font-weight:800;font-size:.74rem;">✅ ' + totalVerificados + ' verificados</div>' +
+      '<div style="background:#f1f5f9;color:#475569;padding:6px 11px;border-radius:7px;font-weight:800;font-size:.74rem;">📊 ' + resultados.length + ' grupos comparables</div>' +
+    '</div>' +
+    '<div style="padding:10px 20px;background:#fef9c3;border-bottom:1px solid #fde68a;font-size:.72rem;color:#78350f;flex-shrink:0;line-height:1.5;">' +
+      '<strong>💡 Cómo funciona:</strong> Agrupo productos por palabras clave del nombre + misma marca, luego calculo el promedio de vol/unidad y marco como <strong style="color:#dc2626;">outlier</strong> el que se desvía >50%. ' +
+      '<strong>Verifica físicamente</strong> midiendo la caja real para decidir cuál fuente confiar. Marca como ✅ verificado cuando lo confirmes.' +
+    '</div>' +
+    '<div style="flex:1;overflow:auto;padding:14px 20px;background:#fafbfd;">' + (gruposHTML || '<div style="text-align:center;color:#94a3b8;padding:40px;">No hay grupos comparables (productos similares con datos válidos).</div>') + '</div>' +
+    '<div style="padding:10px 20px;background:#fafbfd;border-top:1px solid #e8eaf6;display:flex;justify-content:space-between;align-items:center;flex-shrink:0;flex-wrap:wrap;gap:8px;">' +
+      '<div style="font-size:.7rem;color:#64748b;">📌 Marca productos como <strong>verificado</strong> después de medir físicamente la caja real.</div>' +
+      '<div style="display:flex;gap:8px;">' +
+        '<button id="cub-sim-export" style="background:rgba(34,197,94,.15);border:1.5px solid rgba(34,197,94,.4);color:#15803d;border-radius:8px;padding:8px 14px;cursor:pointer;font-weight:800;font-size:.7rem;text-transform:uppercase;letter-spacing:.4px;">📊 Exportar Excel</button>' +
+      '</div>' +
+    '</div>';
+
+  ov.appendChild(box);
+  document.body.appendChild(ov);
+
+  var btnExp = document.getElementById('cub-sim-export');
+  if (btnExp) btnExp.onclick = function(){
+    if (typeof XLSX === 'undefined') { alert('XLSX no disponible'); return; }
+    var rows = [];
+    resultados.forEach(function(g){
+      g.miembros.forEach(function(m){
+        rows.push({
+          'GRUPO': g.grupo,
+          'MIEMBROS_GRUPO': g.miembros.length,
+          'REF': m.ref,
+          'DESCRIPCION': m.desc,
+          'MARCA': m.marca,
+          'CLASIFICACION': m.clasif,
+          'CAT_UDS_X_BULTO': m.udsBulto,
+          'CAT_VOL_X_BULTO_FT3': m.volBulto,
+          'CAT_VOL_X_UNIDAD_FT3': m.volUnidad,
+          'PROMEDIO_GRUPO_VOL_X_UD': m.promedioGrupo,
+          'DIFF_PCT_VS_PROMEDIO': m.diffPct,
+          'OC_UDS_X_BULTO': m.ocData ? m.ocData.udsPorBulto : '',
+          'OC_VOL_X_BULTO_FT3': m.ocData ? m.ocData.volPorBulto : '',
+          'OC_VOL_X_UNIDAD_FT3': m.ocData ? m.ocData.volPorUnidad : '',
+          'DIMS_LARGO_CM': m.largo,
+          'DIMS_ANCHO_CM': m.ancho,
+          'DIMS_ALTO_CM': m.alto,
+          'DIMS_VOL_RECONSTRUIDO_FT3': m.largo > 0 && m.ancho > 0 && m.alto > 0 ? (m.largo * m.ancho * m.alto) / 28316.85 : '',
+          'VERIFICADO': m.verificado ? 'SI' : 'NO',
+          'FECHA_VERIFICACION': m.fechaVerif || '',
+          'NOTA_VERIFICACION': m.notaVerif || ''
+        });
+      });
+    });
+    var ws = XLSX.utils.json_to_sheet(rows);
+    var wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Auditoria_Similitud');
+    var fechaArch = new Date().toISOString().slice(0,10).replace(/-/g,'');
+    XLSX.writeFile(wb, 'Auditoria_Cubicaje_Similitud_' + fechaArch + '.xlsx');
+  };
+};
+
+// ── Marcar producto como "verificado físicamente" ──
+window.ptMarcarVerificado = function(refFarmers) {
+  var nota = prompt(
+    '✅ MARCAR ' + refFarmers + ' COMO VERIFICADO FÍSICAMENTE\n\n' +
+    'Esto confirma que mediste físicamente la caja y los datos del catálogo son correctos.\n\n' +
+    'Nota opcional (medidas que tomaste, observaciones):'
+  );
+  if (nota === null) return; // cancelado
+
+  var ptData = {};
+  try { ptData = JSON.parse(localStorage.getItem('farmers_pt_data') || '{}'); } catch(e) {}
+
+  if (!ptData[refFarmers]) ptData[refFarmers] = {};
+  if (!ptData[refFarmers].medidas) ptData[refFarmers].medidas = {};
+
+  ptData[refFarmers].medidas._verificadoFisicamente = true;
+  ptData[refFarmers].medidas._fechaVerificacion = new Date().toISOString();
+  ptData[refFarmers].medidas._notaVerificacion = (nota || '').trim();
+
+  try { localStorage.setItem('farmers_pt_data', JSON.stringify(ptData)); } catch(e){}
+  if (typeof ptSaveData === 'function') ptSaveData(ptData);
+  if (window.fbTriggerPortalSnapshot) window.fbTriggerPortalSnapshot('producto-verificado-fisicamente');
+
+  if (typeof showToast === 'function') showToast('✅ ' + refFarmers + ' marcado como verificado', 'success');
+
+  // Refrescar la vista si está abierta
+  var ov = document.getElementById('cub-sim-overlay');
+  if (ov) { ov.remove(); setTimeout(function(){ window.ptAbrirAuditoriaSimilitud(); }, 200); }
+};
+
+// ══════════════════════════════════════════════════════════════════
+// CATÁLOGO SIMPLE — Descarga e importación rápida de datos del catálogo
+// ══════════════════════════════════════════════════════════════════
+// Exporta una hoja única con los campos esenciales para que Omar pueda
+// editar masivamente fuera del sistema y reimportar.
+// Columnas: REFERENCIA · STOCK_NE · STOCK_AN · STOCK_TOTAL · MARCA · DESCRIPCION ·
+//           CODIGO_BARRA · CODIGO · DEPOSITO · EMPAQUE · MEDIDA · VOL_FT3_POR_BULTO ·
+//           USD · BCV · TF
+window.ptDescargarCatalogoSimple = function() {
+  if (typeof XLSX === 'undefined') { alert('Librería XLSX no disponible'); return; }
+  if (typeof PRODUCTS === 'undefined' || !PRODUCTS.length) { alert('No hay productos en catálogo'); return; }
+
+  var ptData = {};
+  try { ptData = JSON.parse(localStorage.getItem('farmers_pt_data') || '{}'); } catch(e) {}
+
+  // Construir filas — orden A→Z por REF (regla del sistema)
+  var productosOrdenados = PRODUCTS.slice().sort(function(a, b){
+    return String(a.r||'').localeCompare(String(b.r||''), 'es', { numeric: true, sensitivity: 'base' });
+  });
+
+  var filas = productosOrdenados.map(function(p){
+    var pt = ptData[p.r] || {};
+    var medidas = pt.medidas || {};
+    var stockNE = parseInt(p.exNE) || 0;
+    var stockAN = parseInt(p.exAN) || 0;
+    var stockTotal = stockNE + stockAN;
+    // Determinar dónde está el stock principal
+    var deposito = '';
+    if (stockNE > 0 && stockAN > 0) deposito = 'NE+AN';
+    else if (stockNE > 0) deposito = 'NE';
+    else if (stockAN > 0) deposito = 'AN';
+    else deposito = '—';
+
+    var volPorBulto = parseFloat(medidas.volDirecto) || 0;
+    if (!volPorBulto && medidas.largo && medidas.ancho && medidas.alto) {
+      volPorBulto = (parseFloat(medidas.largo) * parseFloat(medidas.ancho) * parseFloat(medidas.alto)) / 28316.85;
+      volPorBulto = parseFloat(volPorBulto.toFixed(4));
+    }
+
+    return {
+      'REFERENCIA': p.r || '',
+      'STOCK_NE': stockNE,
+      'STOCK_AN': stockAN,
+      'STOCK_TOTAL': stockTotal,
+      'MARCA': p.br || '',
+      'DESCRIPCION': p.d || '',
+      'CODIGO_BARRA': p.b || '',
+      'CODIGO': pt.codigoInterno || pt.codInterno || '',
+      'DEPOSITO': deposito,
+      'EMPAQUE': pt.empaque || (medidas.empaque || 'UNIDAD'),
+      'MEDIDA': parseInt(p.m) || 0,
+      'VOL_FT3_POR_BULTO': volPorBulto || 0,
+      'USD': parseFloat(p.u) || 0,
+      'BCV': parseFloat(p.bv) || 0,
+      'TF': parseFloat(p.t) || 0
+    };
+  });
+
+  // Crear hoja
+  var ws = XLSX.utils.json_to_sheet(filas);
+
+  // Configurar anchos de columna (más cómodos para edición)
+  ws['!cols'] = [
+    { wch: 12 },  // REFERENCIA
+    { wch: 10 },  // STOCK_NE
+    { wch: 10 },  // STOCK_AN
+    { wch: 12 },  // STOCK_TOTAL
+    { wch: 13 },  // MARCA
+    { wch: 50 },  // DESCRIPCION
+    { wch: 18 },  // CODIGO_BARRA
+    { wch: 14 },  // CODIGO
+    { wch: 8 },   // DEPOSITO
+    { wch: 12 },  // EMPAQUE
+    { wch: 8 },   // MEDIDA
+    { wch: 18 },  // VOL_FT3_POR_BULTO
+    { wch: 9 },   // USD
+    { wch: 9 },   // BCV
+    { wch: 9 }    // TF
+  ];
+
+  var wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Catalogo');
+
+  var fechaArch = new Date().toISOString().slice(0,10).replace(/-/g,'');
+  XLSX.writeFile(wb, 'FARMERS_Catalogo_' + fechaArch + '.xlsx');
+
+  if (typeof showToast === 'function') {
+    showToast('📊 Catálogo descargado · ' + filas.length + ' productos', 'success');
+  }
+};
+
+// ── Reimportar Excel del catálogo simple ──
+// Permite editar el Excel descargado y subirlo de vuelta para actualizar:
+//   - Datos del catálogo: DESCRIPCION, CODIGO_BARRA, CODIGO, EMPAQUE, MEDIDA, VOL_FT3_POR_BULTO, USD, BCV, TF
+//   - Inventario: STOCK_NE, STOCK_AN, STOCK_TOTAL (con lógica de prioridad y validación de comprometido)
+// NO toca: DEPOSITO (calculado), MARCA, REFERENCIA
+window.ptImportarCatalogoSimple = function() {
+  // Crear input file invisible
+  var input = document.createElement('input');
+  input.type = 'file';
+  input.accept = '.xlsx,.xls';
+  input.style.display = 'none';
+  document.body.appendChild(input);
+
+  input.onchange = function(e) {
+    var file = e.target.files[0];
+    if (!file) { document.body.removeChild(input); return; }
+
+    var reader = new FileReader();
+    reader.onload = function(ev) {
+      try {
+        var data = new Uint8Array(ev.target.result);
+        var wb = XLSX.read(data, { type: 'array' });
+        var ws = wb.Sheets[wb.SheetNames[0]];
+        var rows = XLSX.utils.sheet_to_json(ws, { defval: '' });
+
+        if (!rows.length) { alert('El archivo está vacío'); return; }
+
+        // Validar columnas mínimas
+        var primeraFila = rows[0];
+        if (!('REFERENCIA' in primeraFila)) {
+          alert('❌ El archivo no tiene la columna REFERENCIA.\n\nDescarga primero el formato correcto desde "📥 Descargar catálogo simple".');
+          return;
+        }
+
+        // Procesar cambios
+        var ptData = {};
+        try { ptData = JSON.parse(localStorage.getItem('farmers_pt_data') || '{}'); } catch(e) {}
+        var comp = (typeof getComprometido === 'function') ? getComprometido() : {};
+
+        var actualizados = 0;
+        var noEncontrados = [];
+        var cambios = [];
+        var alertasComp = []; // refs donde el nuevo stock < comprometido
+
+        rows.forEach(function(row){
+          var ref = String(row.REFERENCIA || '').trim().toUpperCase();
+          if (!ref) return;
+
+          var prod = PRODUCTS.find(function(p){ return p.r === ref; });
+          if (!prod) { noEncontrados.push(ref); return; }
+
+          if (!ptData[ref]) ptData[ref] = {};
+          if (!ptData[ref].medidas) ptData[ref].medidas = {};
+
+          var camposCambiados = [];
+
+          // ═══════════════════════════════════════════════════════════
+          // STOCK — Lógica inteligente con prioridad: NE/AN > TOTAL
+          // ═══════════════════════════════════════════════════════════
+          var stockNEActual = parseInt(prod.exNE) || 0;
+          var stockANActual = parseInt(prod.exAN) || 0;
+          var stockTotalActual = stockNEActual + stockANActual;
+
+          var stockNEExcel = ('STOCK_NE' in row) ? row.STOCK_NE : '';
+          var stockANExcel = ('STOCK_AN' in row) ? row.STOCK_AN : '';
+          var stockTotalExcel = ('STOCK_TOTAL' in row) ? row.STOCK_TOTAL : '';
+
+          var nNE = (stockNEExcel === '' || stockNEExcel === null) ? null : parseInt(stockNEExcel);
+          var nAN = (stockANExcel === '' || stockANExcel === null) ? null : parseInt(stockANExcel);
+          var nTotal = (stockTotalExcel === '' || stockTotalExcel === null) ? null : parseInt(stockTotalExcel);
+
+          // Detectar qué cambió en el Excel respecto a lo guardado
+          var cambioNE = (nNE !== null && !isNaN(nNE) && nNE >= 0 && nNE !== stockNEActual);
+          var cambioAN = (nAN !== null && !isNaN(nAN) && nAN >= 0 && nAN !== stockANActual);
+          var cambioTotal = (nTotal !== null && !isNaN(nTotal) && nTotal >= 0 && nTotal !== stockTotalActual);
+
+          var nuevoNE = stockNEActual;
+          var nuevoAN = stockANActual;
+          var stockSeModifico = false;
+
+          // PRIORIDAD: si cambió NE o AN explícitamente, usar esos valores
+          if (cambioNE || cambioAN) {
+            nuevoNE = cambioNE ? nNE : stockNEActual;
+            nuevoAN = cambioAN ? nAN : stockANActual;
+            stockSeModifico = true;
+          }
+          // Si solo cambió TOTAL (no NE ni AN), distribuir manteniendo proporción actual
+          else if (cambioTotal) {
+            if (stockTotalActual === 0) {
+              // Sin proporción previa: todo a NE (depósito principal en Margarita)
+              nuevoNE = nTotal;
+              nuevoAN = 0;
+            } else {
+              // Mantener proporción NE/AN actual
+              var ratioNE = stockNEActual / stockTotalActual;
+              nuevoNE = Math.round(nTotal * ratioNE);
+              nuevoAN = nTotal - nuevoNE;
+            }
+            stockSeModifico = true;
+          }
+
+          if (stockSeModifico) {
+            // Validar contra comprometido — el stock total nuevo NO debe ser menor que el comprometido
+            var nuevoTotal = nuevoNE + nuevoAN;
+            var compQty = (comp[ref] && comp[ref].qty) ? parseInt(comp[ref].qty) || 0 : 0;
+            if (compQty > 0 && nuevoTotal < compQty) {
+              alertasComp.push({
+                ref: ref,
+                stockNuevo: nuevoTotal,
+                comprometido: compQty
+              });
+              // No bloqueamos, solo advertimos. Aplica igual.
+            }
+
+            prod.exNE = nuevoNE;
+            prod.exAN = nuevoAN;
+            prod.ex = nuevoTotal; // mantener consistencia con el resto del sistema
+            camposCambiados.push('stock (NE:' + stockNEActual + '→' + nuevoNE + ', AN:' + stockANActual + '→' + nuevoAN + ')');
+          }
+
+          // ═══════════════════════════════════════════════════════════
+          // CAMPOS DE CATÁLOGO
+          // ═══════════════════════════════════════════════════════════
+          // DESCRIPCION
+          if (row.DESCRIPCION && String(row.DESCRIPCION).trim() !== prod.d) {
+            prod.d = String(row.DESCRIPCION).trim();
+            camposCambiados.push('descripción');
+          }
+
+          // CODIGO_BARRA
+          if (row.CODIGO_BARRA !== '' && String(row.CODIGO_BARRA) !== String(prod.b||'')) {
+            prod.b = String(row.CODIGO_BARRA).trim();
+            camposCambiados.push('cód. barra');
+          }
+
+          // CODIGO interno
+          if (row.CODIGO !== '' && String(row.CODIGO) !== String(ptData[ref].codigoInterno||'')) {
+            ptData[ref].codigoInterno = String(row.CODIGO).trim();
+            camposCambiados.push('código interno');
+          }
+
+          // EMPAQUE
+          if (row.EMPAQUE && String(row.EMPAQUE).trim() !== (ptData[ref].empaque||'')) {
+            ptData[ref].empaque = String(row.EMPAQUE).trim();
+            camposCambiados.push('empaque');
+          }
+
+          // MEDIDA (uds/bulto)
+          var nuevaMedida = parseInt(row.MEDIDA);
+          if (!isNaN(nuevaMedida) && nuevaMedida !== (parseInt(prod.m) || 0)) {
+            prod.m = nuevaMedida;
+            camposCambiados.push('medida');
+          }
+
+          // VOL_FT3_POR_BULTO
+          var nuevoVol = parseFloat(row.VOL_FT3_POR_BULTO);
+          if (!isNaN(nuevoVol) && nuevoVol > 0 && Math.abs(nuevoVol - (parseFloat(ptData[ref].medidas.volDirecto) || 0)) > 0.0001) {
+            ptData[ref].medidas.volDirecto = nuevoVol;
+            ptData[ref].medidas._fuenteVol = 'Excel catálogo simple ' + new Date().toISOString().slice(0,10);
+            camposCambiados.push('volumen');
+          }
+
+          // PRECIOS
+          var nuevoUSD = parseFloat(row.USD);
+          if (!isNaN(nuevoUSD) && nuevoUSD >= 0 && Math.abs(nuevoUSD - (parseFloat(prod.u)||0)) > 0.001) {
+            prod.u = nuevoUSD;
+            camposCambiados.push('USD');
+          }
+          var nuevoBCV = parseFloat(row.BCV);
+          if (!isNaN(nuevoBCV) && nuevoBCV >= 0 && Math.abs(nuevoBCV - (parseFloat(prod.bv)||0)) > 0.001) {
+            prod.bv = nuevoBCV;
+            camposCambiados.push('BCV');
+          }
+          var nuevoTF = parseFloat(row.TF);
+          if (!isNaN(nuevoTF) && nuevoTF >= 0 && Math.abs(nuevoTF - (parseFloat(prod.t)||0)) > 0.001) {
+            prod.t = nuevoTF;
+            camposCambiados.push('TF');
+          }
+
+          if (camposCambiados.length > 0) {
+            actualizados++;
+            cambios.push({ ref: ref, campos: camposCambiados.join(', ') });
+          }
+        });
+
+        if (actualizados === 0) {
+          alert('ℹ No se detectaron cambios en el archivo respecto al catálogo actual.');
+          document.body.removeChild(input);
+          return;
+        }
+
+        // Confirmar antes de aplicar
+        var msg = '📥 IMPORTAR CAMBIOS DEL EXCEL\n\n' +
+          '✅ ' + actualizados + ' productos con cambios\n' +
+          (noEncontrados.length > 0 ? '⚠ ' + noEncontrados.length + ' refs no encontradas: ' + noEncontrados.slice(0,5).join(', ') + (noEncontrados.length > 5 ? '...' : '') + '\n' : '') +
+          (alertasComp.length > 0 ? '\n⚠⚠ ALERTA: ' + alertasComp.length + ' productos quedarán con STOCK < COMPROMETIDO:\n' +
+            alertasComp.slice(0, 3).map(function(a){ return '  • ' + a.ref + ': stock=' + a.stockNuevo + ' vs comp=' + a.comprometido; }).join('\n') +
+            (alertasComp.length > 3 ? '\n  ... y ' + (alertasComp.length - 3) + ' más' : '') +
+            '\n(Esto puede generar problemas en despachos pendientes. Considera liberar comprometido primero.)\n' : '') +
+          '\nPrimeros cambios:\n' +
+          cambios.slice(0, 5).map(function(c){ return '  • ' + c.ref + ': ' + c.campos; }).join('\n') +
+          (cambios.length > 5 ? '\n  ... y ' + (cambios.length - 5) + ' más' : '') +
+          '\n\n¿Aplicar estos cambios al catálogo y al inventario?';
+
+        if (!confirm(msg)) {
+          document.body.removeChild(input);
+          return;
+        }
+
+        // Confirmación adicional si hay alertas de comprometido
+        if (alertasComp.length > 0) {
+          if (!confirm(
+            '⚠⚠ CONFIRMACIÓN ADICIONAL\n\n' +
+            'Hay ' + alertasComp.length + ' productos donde el stock nuevo será MENOR que el comprometido.\n\n' +
+            'Esto significa que tienes pedidos pendientes que reservaron unidades, pero según tu Excel ya no hay tantas en stock.\n\n' +
+            'Si continúas, los despachos de esos pedidos podrían fallar.\n\n' +
+            '¿Realmente quieres aplicar estos cambios?'
+          )) {
+            document.body.removeChild(input);
+            return;
+          }
+        }
+
+        // ═══════════════════════════════════════════════════════════
+        // PERSISTIR CAMBIOS
+        // ═══════════════════════════════════════════════════════════
+        try { localStorage.setItem('farmers_pt_data', JSON.stringify(ptData)); } catch(e){}
+        if (typeof ptSaveData === 'function') ptSaveData(ptData);
+        if (typeof saveProducts === 'function') saveProducts(PRODUCTS);
+
+        // Actualizar también farmers_inventory para mantener coherencia con drift
+        if (typeof getInventory === 'function' && typeof saveInventory === 'function') {
+          var inv = getInventory();
+          PRODUCTS.forEach(function(p){
+            inv[p.r] = (parseInt(p.exNE)||0) + (parseInt(p.exAN)||0);
+          });
+          saveInventory(inv);
+        }
+
+        if (window.fbTriggerPortalSnapshot) window.fbTriggerPortalSnapshot('catalogo-simple-importado');
+
+        alert('✅ Importación completada\n\n' +
+          actualizados + ' productos actualizados\n' +
+          (noEncontrados.length > 0 ? noEncontrados.length + ' refs no encontradas (revisa la consola)' : 'Todos los productos del Excel fueron procesados') +
+          (alertasComp.length > 0 ? '\n\n⚠ ' + alertasComp.length + ' productos quedaron con stock < comprometido — revisa monitor de pedidos.' : ''));
+
+        if (noEncontrados.length > 0) {
+          console.log('[ptImportarCatalogoSimple] Refs no encontradas:', noEncontrados);
+        }
+        if (alertasComp.length > 0) {
+          console.warn('[ptImportarCatalogoSimple] Productos con stock < comprometido:');
+          console.table(alertasComp);
+        }
+        console.log('[ptImportarCatalogoSimple] Cambios aplicados:', cambios);
+
+        // Refrescar UI
+        if (typeof ptRender === 'function') ptRender();
+        if (typeof doRefSearch === 'function' && document.querySelector('.cat-grid')) try { doRefSearch(); } catch(e){}
+
+      } catch(err) {
+        console.error('[ptImportarCatalogoSimple]', err);
+        alert('❌ Error al procesar el archivo: ' + err.message);
+      } finally {
+        document.body.removeChild(input);
+      }
+    };
+    reader.readAsArrayBuffer(file);
+  };
+
+  input.click();
 };
 
 // ══════════════════════════════════════════════════════════════════
