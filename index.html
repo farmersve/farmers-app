@@ -17,7 +17,7 @@
 <meta http-equiv="Expires" content="0">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.05.05.27">
+<meta name="farmers-version" content="2026.05.05.29">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -28314,6 +28314,18 @@ function doRefSearch() {
     var pTF  = p.t  ? '$ ' + p.t.toFixed(2)  : (p.u ? '$ ' + p.u.toFixed(2) : '—');
     var capital    = (p.u && stock) ? stock * p.u : 0;
     var capitalStr = capital > 0 ? '$ ' + capital.toFixed(2) : '—';
+
+    // ── DESCUENTOS — Verificar si tiene oferta activa y vigente ──
+    var _desc = (typeof window.getDescuentoProducto === 'function') ? window.getDescuentoProducto(p.r) : null;
+    var _hasDesc = _desc && _desc.porcentaje > 0;
+    var _descPct = _hasDesc ? _desc.porcentaje : 0;
+    // Calcular precios con descuento aplicado
+    var pUSDdesc = '—', pBCVdesc = '—', pTFdesc = '—';
+    if (_hasDesc && p.u)  pUSDdesc = '$ ' + (p.u  * (1 - _descPct/100)).toFixed(2);
+    if (_hasDesc && p.bv) pBCVdesc = '$ ' + (p.bv * (1 - _descPct/100)).toFixed(2);
+    else if (_hasDesc && p.u) pBCVdesc = pUSDdesc;
+    if (_hasDesc && p.t)  pTFdesc  = '$ ' + (p.t  * (1 - _descPct/100)).toFixed(2);
+    else if (_hasDesc && p.u) pTFdesc = pUSDdesc;
     // Modo cliente: mostrar el precio de la moneda seleccionada
     // 'NONE' (Sin Precio) aplica SOLO al descargar — en pantalla forzamos USD para que nunca falten precios
     var _catM = (document.getElementById('cat-moneda-select') || {value:'USD'}).value;
@@ -28559,30 +28571,71 @@ function doRefSearch() {
           '</div>';
         })() +
 
-        // ── Precios ──
+        // ── Precios (con descuento si aplica) ──
         (!_catClientMode ?
-          '<div style="background:linear-gradient(135deg,#f0f4ff,#e8f0fe);border-radius:8px;padding:7px 10px;margin-bottom:6px;">' +
-            '<div style="font-size:.52rem;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:#5c6bc0;margin-bottom:5px;">PRECIOS (REF USD)</div>' +
-            '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:5px;">' +
-              '<div style="text-align:center;background:white;border-radius:6px;padding:4px 6px;border:1px solid #c5cae9;">' +
-                '<div style="font-size:.52rem;color:#94a3b8;font-weight:700;">USD</div>' +
-                '<div style="font-weight:900;color:#1a2050;font-size:.88rem;">' + pUSD + '</div>' +
+          (_hasDesc ?
+            // CON DESCUENTO ACTIVO — Modo admin
+            '<div style="background:linear-gradient(135deg,#fef2f2,#fee2e2);border-radius:8px;padding:7px 10px;margin-bottom:6px;border:1.5px solid #fca5a5;position:relative;">' +
+              '<div style="position:absolute;top:-9px;left:8px;background:linear-gradient(135deg,#dc2626,#991b1b);color:#fff;padding:2px 8px;border-radius:4px;font-size:.55rem;font-weight:900;letter-spacing:.8px;text-transform:uppercase;box-shadow:0 2px 6px rgba(220,38,38,.4);">🔥 OFERTA -' + _descPct + '%</div>' +
+              '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:5px;margin-top:3px;">' +
+                '<div style="font-size:.52rem;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:#dc2626;">PRECIOS (REF USD)</div>' +
+                '<div style="font-size:.55rem;color:#94a3b8;font-weight:700;font-style:italic;">' + (_desc.fuente === 'campaña' ? '🎁 ' + (_desc.campañaNombre || 'Campaña') : '🎯 Individual') + '</div>' +
               '</div>' +
-              '<div style="text-align:center;background:white;border-radius:6px;padding:4px 6px;border:1px solid #c5cae9;">' +
-                '<div style="font-size:.52rem;color:#94a3b8;font-weight:700;">BCV</div>' +
-                '<div style="font-weight:900;color:#1a2050;font-size:.88rem;">' + pBCV + '</div>' +
+              '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:5px;">' +
+                '<div style="text-align:center;background:white;border-radius:6px;padding:4px 6px;border:1.5px solid #fca5a5;">' +
+                  '<div style="font-size:.52rem;color:#94a3b8;font-weight:700;">USD</div>' +
+                  '<div style="font-size:.6rem;color:#94a3b8;font-weight:700;text-decoration:line-through;line-height:1;">' + pUSD + '</div>' +
+                  '<div style="font-weight:900;color:#dc2626;font-size:.92rem;line-height:1.1;">' + pUSDdesc + '</div>' +
+                '</div>' +
+                '<div style="text-align:center;background:white;border-radius:6px;padding:4px 6px;border:1.5px solid #fca5a5;">' +
+                  '<div style="font-size:.52rem;color:#94a3b8;font-weight:700;">BCV</div>' +
+                  '<div style="font-size:.6rem;color:#94a3b8;font-weight:700;text-decoration:line-through;line-height:1;">' + pBCV + '</div>' +
+                  '<div style="font-weight:900;color:#dc2626;font-size:.92rem;line-height:1.1;">' + pBCVdesc + '</div>' +
+                '</div>' +
+                '<div style="text-align:center;background:white;border-radius:6px;padding:4px 6px;border:1.5px solid #fca5a5;">' +
+                  '<div style="font-size:.52rem;color:#94a3b8;font-weight:700;">TF</div>' +
+                  '<div style="font-size:.6rem;color:#94a3b8;font-weight:700;text-decoration:line-through;line-height:1;">' + pTF + '</div>' +
+                  '<div style="font-weight:900;color:#dc2626;font-size:.92rem;line-height:1.1;">' + pTFdesc + '</div>' +
+                '</div>' +
               '</div>' +
-              '<div style="text-align:center;background:white;border-radius:6px;padding:4px 6px;border:1px solid #c5cae9;">' +
-                '<div style="font-size:.52rem;color:#94a3b8;font-weight:700;">TF</div>' +
-                '<div style="font-weight:900;color:#1a2050;font-size:.88rem;">' + pTF + '</div>' +
+            '</div>'
+          :
+            // SIN DESCUENTO — Modo admin (look original)
+            '<div style="background:linear-gradient(135deg,#f0f4ff,#e8f0fe);border-radius:8px;padding:7px 10px;margin-bottom:6px;">' +
+              '<div style="font-size:.52rem;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:#5c6bc0;margin-bottom:5px;">PRECIOS (REF USD)</div>' +
+              '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:5px;">' +
+                '<div style="text-align:center;background:white;border-radius:6px;padding:4px 6px;border:1px solid #c5cae9;">' +
+                  '<div style="font-size:.52rem;color:#94a3b8;font-weight:700;">USD</div>' +
+                  '<div style="font-weight:900;color:#1a2050;font-size:.88rem;">' + pUSD + '</div>' +
+                '</div>' +
+                '<div style="text-align:center;background:white;border-radius:6px;padding:4px 6px;border:1px solid #c5cae9;">' +
+                  '<div style="font-size:.52rem;color:#94a3b8;font-weight:700;">BCV</div>' +
+                  '<div style="font-weight:900;color:#1a2050;font-size:.88rem;">' + pBCV + '</div>' +
+                '</div>' +
+                '<div style="text-align:center;background:white;border-radius:6px;padding:4px 6px;border:1px solid #c5cae9;">' +
+                  '<div style="font-size:.52rem;color:#94a3b8;font-weight:700;">TF</div>' +
+                  '<div style="font-weight:900;color:#1a2050;font-size:.88rem;">' + pTF + '</div>' +
+                '</div>' +
               '</div>' +
-            '</div>' +
-          '</div>'
+            '</div>'
+          )
         :
-          '<div style="background:linear-gradient(135deg,#1a2050,#252b7a);border-radius:8px;padding:8px 12px;margin-bottom:6px;display:flex;align-items:center;justify-content:space-between;">' +
-            '<div style="font-size:.6rem;color:rgba(255,255,255,.6);font-weight:700;text-transform:uppercase;letter-spacing:1px;">Precio ' + monedaLabel + '</div>' +
-            '<div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;font-size:1.25rem;color:white;">' + precioMostrar + '</div>' +
-          '</div>'
+          // ── Modo cliente (vista única con moneda seleccionada) ──
+          (_hasDesc ?
+            '<div style="background:linear-gradient(135deg,#dc2626,#991b1b);border-radius:8px;padding:8px 12px;margin-bottom:6px;display:flex;align-items:center;justify-content:space-between;position:relative;border:2px solid #fca5a5;">' +
+              '<div style="position:absolute;top:-9px;left:8px;background:#fff;color:#dc2626;padding:2px 8px;border-radius:4px;font-size:.55rem;font-weight:900;letter-spacing:.8px;text-transform:uppercase;box-shadow:0 2px 6px rgba(0,0,0,.2);">🔥 -' + _descPct + '% OFERTA</div>' +
+              '<div style="font-size:.6rem;color:rgba(255,255,255,.7);font-weight:700;text-transform:uppercase;letter-spacing:1px;">Precio ' + monedaLabel + '</div>' +
+              '<div style="text-align:right;">' +
+                '<div style="font-size:.7rem;color:rgba(255,255,255,.55);font-weight:700;text-decoration:line-through;line-height:1;">' + precioMostrar + '</div>' +
+                '<div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;font-size:1.3rem;color:#fff;line-height:1.1;">' + (_catM === 'BCV' ? pBCVdesc : _catM === 'TF' ? pTFdesc : pUSDdesc) + '</div>' +
+              '</div>' +
+            '</div>'
+          :
+            '<div style="background:linear-gradient(135deg,#1a2050,#252b7a);border-radius:8px;padding:8px 12px;margin-bottom:6px;display:flex;align-items:center;justify-content:space-between;">' +
+              '<div style="font-size:.6rem;color:rgba(255,255,255,.6);font-weight:700;text-transform:uppercase;letter-spacing:1px;">Precio ' + monedaLabel + '</div>' +
+              '<div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;font-size:1.25rem;color:white;">' + precioMostrar + '</div>' +
+            '</div>'
+          )
         ) +
 
         // ── Capital en inventario ──
@@ -28821,6 +28874,7 @@ function doRefSearch() {
             '<option value="comprometido">Comprometido</option>' +
           '</select>' +
           '<button onclick="ptNuevoProducto()" style="background:#1B1F6B;color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:700;font-size:.8rem;white-space:nowrap;">+ Nuevo Producto</button>' +
+          '<button onclick="descAbrirGestion()" style="background:linear-gradient(135deg,#dc2626,#991b1b);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:800;font-size:.8rem;white-space:nowrap;box-shadow:0 4px 12px rgba(220,38,38,.3);" title="Gestionar descuentos y campañas de oferta">💸 Descuentos</button>' +
 
           // ── GRUPO IMPORTAR (dropdown) ──
           '<div style="position:relative;display:inline-block;">' +
@@ -32871,6 +32925,655 @@ window.ptRecargarImagenes = async function() {
 };
 
 // ══════════════════════════════════════════════════════════════════
+// SISTEMA DE DESCUENTOS Y CAMPAÑAS DE OFERTAS
+// ══════════════════════════════════════════════════════════════════
+// Estructura en localStorage: 'farmers_descuentos'
+// {
+//   campañas: [
+//     { id, nombre, activa, fechaInicio, fechaFin, porcentaje, productos:[refs], notas, creado }
+//   ],
+//   individuales: {
+//     'EXC441': { porcentaje, fechaInicio, fechaFin, activa, notas, creado }
+//   }
+// }
+//
+// REGLAS DE PRECEDENCIA (cuando un producto puede tener múltiples descuentos):
+// 1. Si hay descuento INDIVIDUAL activo y vigente → ese gana
+// 2. Si NO hay individual, busca la primera CAMPAÑA activa y vigente que lo incluya
+// 3. Si no hay nada → precio normal
+//
+// "Vigente" = hoy >= fechaInicio Y hoy <= fechaFin (ambas obligatorias)
+// "Activa" = el flag activa === true (permite suspender sin borrar)
+// ══════════════════════════════════════════════════════════════════
+
+window.DESC_KEY = 'farmers_descuentos';
+
+window.getDescuentos = function() {
+  try {
+    var raw = localStorage.getItem(window.DESC_KEY);
+    if (!raw) return { campañas: [], individuales: {} };
+    var data = JSON.parse(raw);
+    if (!data.campañas) data.campañas = [];
+    if (!data.individuales) data.individuales = {};
+    return data;
+  } catch(e) {
+    return { campañas: [], individuales: {} };
+  }
+};
+
+window.saveDescuentos = function(data) {
+  try {
+    localStorage.setItem(window.DESC_KEY, JSON.stringify(data));
+    if (window.fbTriggerPortalSnapshot) window.fbTriggerPortalSnapshot('descuentos-actualizados');
+    return true;
+  } catch(e) {
+    console.error('saveDescuentos:', e);
+    return false;
+  }
+};
+
+// Verifica si un descuento (campaña o individual) está vigente HOY
+window._descuentoVigente = function(item) {
+  if (!item || !item.activa) return false;
+  var hoy = new Date().toISOString().slice(0, 10);
+  if (item.fechaInicio && hoy < item.fechaInicio) return false;
+  if (item.fechaFin && hoy > item.fechaFin) return false;
+  return true;
+};
+
+// Obtiene el descuento aplicable a un producto (con regla de precedencia)
+// Devuelve: { porcentaje, fuente: 'individual'|'campaña', campañaNombre?, descuentoId } o null
+window.getDescuentoProducto = function(refFarmers) {
+  if (!refFarmers) return null;
+  var d = window.getDescuentos();
+
+  // 1. Individual tiene prioridad
+  if (d.individuales && d.individuales[refFarmers] && window._descuentoVigente(d.individuales[refFarmers])) {
+    return {
+      porcentaje: parseFloat(d.individuales[refFarmers].porcentaje) || 0,
+      fuente: 'individual',
+      descuentoId: refFarmers,
+      notas: d.individuales[refFarmers].notas || ''
+    };
+  }
+
+  // 2. Campañas (la primera activa vigente que incluya este producto)
+  if (d.campañas && d.campañas.length) {
+    for (var i = 0; i < d.campañas.length; i++) {
+      var c = d.campañas[i];
+      if (!window._descuentoVigente(c)) continue;
+      if (Array.isArray(c.productos) && c.productos.indexOf(refFarmers) >= 0) {
+        return {
+          porcentaje: parseFloat(c.porcentaje) || 0,
+          fuente: 'campaña',
+          descuentoId: c.id,
+          campañaNombre: c.nombre,
+          fechaFin: c.fechaFin
+        };
+      }
+    }
+  }
+
+  return null;
+};
+
+// Calcula precio final aplicando descuento si corresponde.
+// p: producto del catálogo (PRODUCTS), moneda: 'USD' | 'BCV' | 'TF'
+// Devuelve: { precioOriginal, precioFinal, descuento|null, ahorro }
+window.getPrecioFinal = function(p, moneda) {
+  if (!p) return { precioOriginal: 0, precioFinal: 0, descuento: null, ahorro: 0 };
+  moneda = moneda || 'USD';
+  var precioOriginal = 0;
+  if (moneda === 'USD') precioOriginal = parseFloat(p.u) || 0;
+  else if (moneda === 'BCV') precioOriginal = parseFloat(p.bv) || 0;
+  else if (moneda === 'TF') precioOriginal = parseFloat(p.t) || 0;
+
+  var desc = window.getDescuentoProducto(p.r);
+  if (!desc || desc.porcentaje <= 0) {
+    return { precioOriginal: precioOriginal, precioFinal: precioOriginal, descuento: null, ahorro: 0 };
+  }
+
+  var ahorro = precioOriginal * (desc.porcentaje / 100);
+  var precioFinal = precioOriginal - ahorro;
+  return {
+    precioOriginal: precioOriginal,
+    precioFinal: parseFloat(precioFinal.toFixed(4)),
+    descuento: desc,
+    ahorro: parseFloat(ahorro.toFixed(4))
+  };
+};
+
+// Helper rápido: devuelve solo el precio final (para usos compactos)
+window.getPrecioConDescuento = function(p, moneda) {
+  return window.getPrecioFinal(p, moneda).precioFinal;
+};
+
+// ── ID generator para campañas ──
+function _descGenId() {
+  return 'camp_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 6);
+}
+
+// ══════════════════════════════════════════════════════════════════
+// MÓDULO DE GESTIÓN DE DESCUENTOS — Modal principal
+// ══════════════════════════════════════════════════════════════════
+window.descAbrirGestion = function() {
+  var existente = document.getElementById('desc-overlay');
+  if (existente) existente.remove();
+
+  var ov = document.createElement('div');
+  ov.id = 'desc-overlay';
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.85);backdrop-filter:blur(8px);z-index:99996;display:flex;align-items:center;justify-content:center;padding:20px;font-family:Barlow,sans-serif;';
+
+  var box = document.createElement('div');
+  box.style.cssText = 'background:#fff;border-radius:14px;width:min(1300px,98vw);max-height:94vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 24px 60px rgba(0,0,0,.4);';
+  box.id = 'desc-box';
+
+  box.innerHTML = _descRenderContenido();
+  ov.appendChild(box);
+  document.body.appendChild(ov);
+
+  _descBindEventos();
+};
+
+function _descRenderContenido() {
+  var d = window.getDescuentos();
+  var hoy = new Date().toISOString().slice(0, 10);
+
+  // Contar campañas activas/vigentes
+  var campAct = d.campañas.filter(function(c){ return window._descuentoVigente(c); });
+  var indActSet = Object.keys(d.individuales || {}).filter(function(k){ return window._descuentoVigente(d.individuales[k]); });
+
+  // Tab activa
+  var tab = window._descTab || 'campañas';
+
+  return '' +
+    '<div style="background:linear-gradient(135deg,#dc2626,#991b1b);padding:14px 22px;color:#fff;display:flex;justify-content:space-between;align-items:center;flex-shrink:0;">' +
+      '<div>' +
+        '<div style="font-size:.62rem;font-weight:800;letter-spacing:2.5px;text-transform:uppercase;opacity:.8;">PROMOCIONES</div>' +
+        '<div style="font-family:Barlow Condensed,sans-serif;font-size:1.4rem;font-weight:900;letter-spacing:.5px;text-transform:uppercase;margin-top:1px;">💸 Descuentos & Ofertas</div>' +
+      '</div>' +
+      '<button onclick="document.getElementById(\'desc-overlay\').remove()" style="background:rgba(255,255,255,.18);border:none;color:#fff;width:34px;height:34px;border-radius:8px;cursor:pointer;font-size:1.05rem;font-weight:900;">✕</button>' +
+    '</div>' +
+
+    // Stats bar
+    '<div style="padding:10px 22px;background:#fafbfd;border-bottom:1px solid #e8eaf6;display:flex;gap:10px;flex-wrap:wrap;flex-shrink:0;">' +
+      '<div style="background:#fee2e2;color:#dc2626;padding:7px 13px;border-radius:7px;font-weight:800;font-size:.78rem;">🔥 ' + campAct.length + ' campañas activas</div>' +
+      '<div style="background:#fef3c7;color:#a16207;padding:7px 13px;border-radius:7px;font-weight:800;font-size:.78rem;">🎯 ' + indActSet.length + ' descuentos individuales</div>' +
+      '<div style="background:#dbeafe;color:#1e40af;padding:7px 13px;border-radius:7px;font-weight:800;font-size:.78rem;">📅 Hoy: ' + hoy + '</div>' +
+    '</div>' +
+
+    // Tabs
+    '<div style="display:flex;gap:0;border-bottom:2px solid #e8eaf6;background:#fff;flex-shrink:0;">' +
+      '<button onclick="window._descTab=\'campañas\';_descRefrescar()" style="flex:1;padding:14px;background:' + (tab==='campañas'?'#dc2626':'#fff') + ';color:' + (tab==='campañas'?'#fff':'#475569') + ';border:none;font-weight:800;cursor:pointer;font-size:.82rem;font-family:Barlow Condensed,sans-serif;letter-spacing:1px;text-transform:uppercase;">🎁 Campañas (' + d.campañas.length + ')</button>' +
+      '<button onclick="window._descTab=\'individuales\';_descRefrescar()" style="flex:1;padding:14px;background:' + (tab==='individuales'?'#dc2626':'#fff') + ';color:' + (tab==='individuales'?'#fff':'#475569') + ';border:none;font-weight:800;cursor:pointer;font-size:.82rem;font-family:Barlow Condensed,sans-serif;letter-spacing:1px;text-transform:uppercase;">🎯 Individuales (' + Object.keys(d.individuales||{}).length + ')</button>' +
+    '</div>' +
+
+    // Body según tab
+    '<div id="desc-body" style="flex:1;overflow:auto;padding:18px 22px;background:#fafbfd;">' +
+      (tab === 'campañas' ? _descRenderCampañas(d) : _descRenderIndividuales(d)) +
+    '</div>';
+}
+
+function _descRenderCampañas(d) {
+  var sortedCamps = (d.campañas || []).slice().sort(function(a,b){
+    // Vigentes primero, luego A→Z
+    var va = window._descuentoVigente(a) ? 1 : 0;
+    var vb = window._descuentoVigente(b) ? 1 : 0;
+    if (va !== vb) return vb - va;
+    return String(a.nombre||'').localeCompare(String(b.nombre||''), 'es', { numeric: true, sensitivity: 'base' });
+  });
+
+  var html = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">' +
+    '<div style="font-family:Barlow Condensed,sans-serif;font-size:1.1rem;font-weight:900;color:#1B1F6B;letter-spacing:.5px;text-transform:uppercase;">Campañas de descuento</div>' +
+    '<button onclick="window.descNuevaCampaña()" style="background:linear-gradient(135deg,#dc2626,#991b1b);color:#fff;border:none;border-radius:8px;padding:9px 18px;font-weight:800;cursor:pointer;font-size:.78rem;letter-spacing:.4px;">+ Nueva campaña</button>' +
+  '</div>';
+
+  if (!sortedCamps.length) {
+    html += '<div style="text-align:center;padding:50px 20px;color:#94a3b8;font-size:.85rem;">No hay campañas creadas. Click "+ Nueva campaña" para empezar.</div>';
+    return html;
+  }
+
+  html += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(380px,1fr));gap:14px;">';
+  sortedCamps.forEach(function(c){
+    var vigente = window._descuentoVigente(c);
+    var bg = vigente ? 'linear-gradient(135deg,#fef2f2,#fee2e2)' : '#f8fafc';
+    var bdr = vigente ? '#fca5a5' : '#e2e8f0';
+    var statusBadge = vigente
+      ? '<span style="background:#16a34a;color:#fff;padding:3px 8px;border-radius:5px;font-size:.62rem;font-weight:800;">🔥 ACTIVA</span>'
+      : (c.activa
+        ? '<span style="background:#fbbf24;color:#78350f;padding:3px 8px;border-radius:5px;font-size:.62rem;font-weight:800;">⏰ FUERA DE FECHA</span>'
+        : '<span style="background:#94a3b8;color:#fff;padding:3px 8px;border-radius:5px;font-size:.62rem;font-weight:800;">⏸ PAUSADA</span>');
+
+    html += '<div style="background:' + bg + ';border:1.5px solid ' + bdr + ';border-radius:12px;padding:14px 16px;">' +
+      '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px;">' +
+        '<div style="flex:1;">' +
+          '<div style="font-family:Barlow Condensed,sans-serif;font-size:1.05rem;font-weight:900;color:#1B1F6B;line-height:1.2;">' + (c.nombre || '(sin nombre)') + '</div>' +
+          '<div style="font-size:.7rem;color:#64748b;margin-top:2px;">' + (c.notas || '') + '</div>' +
+        '</div>' +
+        statusBadge +
+      '</div>' +
+      '<div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;">' +
+        '<div style="background:#fff;border-radius:6px;padding:5px 10px;border:1.5px solid #fca5a5;">' +
+          '<div style="font-size:.55rem;color:#94a3b8;font-weight:700;text-transform:uppercase;">Descuento</div>' +
+          '<div style="font-family:Barlow Condensed,sans-serif;font-size:1.4rem;font-weight:900;color:#dc2626;line-height:1;">-' + (c.porcentaje||0) + '%</div>' +
+        '</div>' +
+        '<div style="background:#fff;border-radius:6px;padding:5px 10px;border:1px solid #e2e8f0;flex:1;">' +
+          '<div style="font-size:.55rem;color:#94a3b8;font-weight:700;text-transform:uppercase;">Vigencia</div>' +
+          '<div style="font-size:.72rem;font-weight:700;color:#1B1F6B;">' + (c.fechaInicio||'?') + ' → ' + (c.fechaFin||'?') + '</div>' +
+        '</div>' +
+        '<div style="background:#fff;border-radius:6px;padding:5px 10px;border:1px solid #e2e8f0;">' +
+          '<div style="font-size:.55rem;color:#94a3b8;font-weight:700;text-transform:uppercase;">Productos</div>' +
+          '<div style="font-family:Barlow Condensed,sans-serif;font-size:1.2rem;font-weight:900;color:#1B1F6B;line-height:1;">' + ((c.productos||[]).length) + '</div>' +
+        '</div>' +
+      '</div>' +
+      '<div style="display:flex;gap:6px;">' +
+        '<button onclick="window.descEditarCampaña(\'' + c.id + '\')" style="flex:1;background:#1B1F6B;color:#fff;border:none;border-radius:6px;padding:7px;cursor:pointer;font-weight:800;font-size:.7rem;">✏️ Editar</button>' +
+        '<button onclick="window.descToggleCampaña(\'' + c.id + '\')" style="flex:1;background:' + (c.activa ? '#fbbf24' : '#16a34a') + ';color:#fff;border:none;border-radius:6px;padding:7px;cursor:pointer;font-weight:800;font-size:.7rem;">' + (c.activa ? '⏸ Pausar' : '▶️ Activar') + '</button>' +
+        '<button onclick="window.descEliminarCampaña(\'' + c.id + '\')" style="background:#dc2626;color:#fff;border:none;border-radius:6px;padding:7px 10px;cursor:pointer;font-weight:800;font-size:.7rem;">🗑</button>' +
+      '</div>' +
+    '</div>';
+  });
+  html += '</div>';
+  return html;
+}
+
+function _descRenderIndividuales(d) {
+  var inds = d.individuales || {};
+  var refs = Object.keys(inds).sort(function(a,b){
+    return String(a).localeCompare(String(b), 'es', { numeric: true, sensitivity: 'base' });
+  });
+
+  var html = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">' +
+    '<div style="font-family:Barlow Condensed,sans-serif;font-size:1.1rem;font-weight:900;color:#1B1F6B;letter-spacing:.5px;text-transform:uppercase;">Descuentos individuales</div>' +
+    '<button onclick="window.descNuevoIndividual()" style="background:linear-gradient(135deg,#dc2626,#991b1b);color:#fff;border:none;border-radius:8px;padding:9px 18px;font-weight:800;cursor:pointer;font-size:.78rem;letter-spacing:.4px;">+ Nuevo descuento</button>' +
+  '</div>';
+
+  if (!refs.length) {
+    html += '<div style="text-align:center;padding:50px 20px;color:#94a3b8;font-size:.85rem;">No hay descuentos individuales. Click "+ Nuevo descuento" para empezar.</div>';
+    return html;
+  }
+
+  html += '<div style="background:#fff;border:1.5px solid #e2e8f0;border-radius:10px;overflow:hidden;">' +
+    '<table style="width:100%;border-collapse:collapse;font-size:.78rem;">' +
+    '<thead style="background:#1B1F6B;color:#fff;"><tr>' +
+      '<th style="padding:9px 12px;text-align:left;font-family:Barlow Condensed,sans-serif;font-size:.7rem;letter-spacing:1px;">REF</th>' +
+      '<th style="padding:9px 12px;text-align:left;font-family:Barlow Condensed,sans-serif;font-size:.7rem;letter-spacing:1px;">Descripción</th>' +
+      '<th style="padding:9px 12px;text-align:center;font-family:Barlow Condensed,sans-serif;font-size:.7rem;letter-spacing:1px;">Descuento</th>' +
+      '<th style="padding:9px 12px;text-align:center;font-family:Barlow Condensed,sans-serif;font-size:.7rem;letter-spacing:1px;">Vigencia</th>' +
+      '<th style="padding:9px 12px;text-align:center;font-family:Barlow Condensed,sans-serif;font-size:.7rem;letter-spacing:1px;">Estado</th>' +
+      '<th style="padding:9px 12px;text-align:center;font-family:Barlow Condensed,sans-serif;font-size:.7rem;letter-spacing:1px;">Acciones</th>' +
+    '</tr></thead><tbody>';
+  refs.forEach(function(ref, i){
+    var ind = inds[ref];
+    var prod = (typeof PRODUCTS !== 'undefined') ? PRODUCTS.find(function(p){ return p.r === ref; }) : null;
+    var desc = prod ? (prod.d || '—') : '(no encontrado)';
+    var vigente = window._descuentoVigente(ind);
+    var bg = i % 2 === 0 ? '#fff' : '#f8fafc';
+    var statusBadge = vigente
+      ? '<span style="background:#dcfce7;color:#15803d;padding:3px 8px;border-radius:5px;font-size:.6rem;font-weight:800;">🔥 ACTIVO</span>'
+      : (ind.activa
+        ? '<span style="background:#fef3c7;color:#a16207;padding:3px 8px;border-radius:5px;font-size:.6rem;font-weight:800;">⏰ FUERA FECHA</span>'
+        : '<span style="background:#f1f5f9;color:#475569;padding:3px 8px;border-radius:5px;font-size:.6rem;font-weight:800;">⏸ PAUSADO</span>');
+    html += '<tr style="background:' + bg + ';border-bottom:1px solid #f1f5f9;">' +
+      '<td style="padding:8px 12px;font-family:monospace;font-weight:800;color:#1B1F6B;">' + ref + '</td>' +
+      '<td style="padding:8px 12px;color:#475569;">' + (desc.length > 40 ? desc.substring(0,40)+'…' : desc) + '</td>' +
+      '<td style="padding:8px 12px;text-align:center;font-family:Barlow Condensed,sans-serif;font-weight:900;font-size:1rem;color:#dc2626;">-' + (ind.porcentaje||0) + '%</td>' +
+      '<td style="padding:8px 12px;text-align:center;font-size:.7rem;color:#64748b;">' + (ind.fechaInicio||'?') + '<br>→ ' + (ind.fechaFin||'?') + '</td>' +
+      '<td style="padding:8px 12px;text-align:center;">' + statusBadge + '</td>' +
+      '<td style="padding:8px 12px;text-align:center;">' +
+        '<button onclick="window.descEditarIndividual(\'' + ref + '\')" style="background:#1B1F6B;color:#fff;border:none;border-radius:5px;padding:5px 9px;font-weight:800;font-size:.65rem;cursor:pointer;margin-right:4px;">✏️</button>' +
+        '<button onclick="window.descEliminarIndividual(\'' + ref + '\')" style="background:#dc2626;color:#fff;border:none;border-radius:5px;padding:5px 9px;font-weight:800;font-size:.65rem;cursor:pointer;">🗑</button>' +
+      '</td>' +
+    '</tr>';
+  });
+  html += '</tbody></table></div>';
+  return html;
+}
+
+window._descRefrescar = function() {
+  var box = document.getElementById('desc-box');
+  if (box) box.innerHTML = _descRenderContenido();
+};
+
+function _descBindEventos() {
+  // Eventos se manejan vía onclick directos en el HTML
+}
+
+// ── Crear / Editar campaña ──
+window.descNuevaCampaña = function() { _descMostrarFormCampaña(null); };
+window.descEditarCampaña = function(id) {
+  var d = window.getDescuentos();
+  var c = d.campañas.find(function(x){ return x.id === id; });
+  if (!c) return alert('Campaña no encontrada');
+  _descMostrarFormCampaña(c);
+};
+
+function _descMostrarFormCampaña(camp) {
+  var esNueva = !camp;
+  var c = camp || {
+    id: _descGenId(),
+    nombre: '',
+    activa: true,
+    fechaInicio: new Date().toISOString().slice(0,10),
+    fechaFin: '',
+    porcentaje: 20,
+    productos: [],
+    notas: ''
+  };
+
+  var existente = document.getElementById('desc-form-overlay');
+  if (existente) existente.remove();
+
+  var ov = document.createElement('div');
+  ov.id = 'desc-form-overlay';
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.85);backdrop-filter:blur(8px);z-index:99997;display:flex;align-items:center;justify-content:center;padding:20px;font-family:Barlow,sans-serif;';
+
+  // Construir lista de productos disponibles ordenada A→Z
+  var prods = (typeof PRODUCTS !== 'undefined') ? PRODUCTS.slice().sort(function(a,b){
+    return String(a.r||'').localeCompare(String(b.r||''), 'es', { numeric: true, sensitivity: 'base' });
+  }) : [];
+
+  // Marcar los que están seleccionados
+  var seleccionados = new Set(c.productos || []);
+
+  var prodsHTML = prods.map(function(p){
+    var checked = seleccionados.has(p.r) ? 'checked' : '';
+    var marca = p.br ? '<span style="background:#e0e7ff;color:#3730a3;padding:1px 5px;border-radius:3px;font-size:.55rem;font-weight:700;">' + p.br + '</span>' : '';
+    return '<label data-prodref="' + p.r + '" data-pdesc="' + (p.d||'').toLowerCase() + '" data-pmarca="' + (p.br||'').toLowerCase() + '" style="display:flex;align-items:center;gap:8px;padding:6px 10px;border-bottom:1px solid #f1f5f9;cursor:pointer;font-size:.74rem;" onmouseover="this.style.background=\'#f8fafc\'" onmouseout="this.style.background=\'transparent\'">' +
+      '<input type="checkbox" name="desc-prod-check" value="' + p.r + '" ' + checked + ' style="cursor:pointer;width:16px;height:16px;">' +
+      '<span style="font-family:monospace;font-weight:800;color:#1B1F6B;min-width:70px;">' + p.r + '</span>' +
+      '<span style="flex:1;color:#475569;">' + (p.d || '—').substring(0, 50) + '</span>' +
+      marca +
+    '</label>';
+  }).join('');
+
+  ov.innerHTML =
+    '<div style="background:#fff;border-radius:14px;width:min(900px,95vw);max-height:92vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 24px 60px rgba(0,0,0,.4);">' +
+      '<div style="background:linear-gradient(135deg,#dc2626,#991b1b);padding:14px 22px;color:#fff;display:flex;justify-content:space-between;align-items:center;">' +
+        '<div style="font-family:Barlow Condensed,sans-serif;font-size:1.2rem;font-weight:900;letter-spacing:.5px;text-transform:uppercase;">' + (esNueva ? '➕ Nueva campaña' : '✏️ Editar campaña') + '</div>' +
+        '<button onclick="document.getElementById(\'desc-form-overlay\').remove()" style="background:rgba(255,255,255,.18);border:none;color:#fff;width:30px;height:30px;border-radius:6px;cursor:pointer;font-size:.95rem;font-weight:900;">✕</button>' +
+      '</div>' +
+      '<div style="padding:18px 22px;flex:1;overflow:auto;">' +
+        '<input type="hidden" id="desc-camp-id" value="' + c.id + '">' +
+        '<div style="display:grid;grid-template-columns:2fr 1fr;gap:12px;margin-bottom:12px;">' +
+          '<div>' +
+            '<label style="font-size:.62rem;font-weight:800;color:#1B1F6B;text-transform:uppercase;letter-spacing:1px;">Nombre de la campaña *</label>' +
+            '<input type="text" id="desc-camp-nombre" value="' + (c.nombre||'').replace(/"/g,'&quot;') + '" placeholder="Ej: Liquidación junio" style="width:100%;padding:9px 12px;border:1.5px solid #e2e8f0;border-radius:7px;font-size:.85rem;margin-top:3px;box-sizing:border-box;font-weight:700;">' +
+          '</div>' +
+          '<div>' +
+            '<label style="font-size:.62rem;font-weight:800;color:#1B1F6B;text-transform:uppercase;letter-spacing:1px;">Descuento %  *</label>' +
+            '<input type="number" id="desc-camp-pct" value="' + (c.porcentaje||0) + '" min="1" max="99" placeholder="20" style="width:100%;padding:9px 12px;border:1.5px solid #fca5a5;border-radius:7px;font-size:1rem;margin-top:3px;box-sizing:border-box;font-weight:900;color:#dc2626;text-align:center;">' +
+          '</div>' +
+        '</div>' +
+        '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px;">' +
+          '<div>' +
+            '<label style="font-size:.62rem;font-weight:800;color:#1B1F6B;text-transform:uppercase;letter-spacing:1px;">Fecha inicio *</label>' +
+            '<input type="date" id="desc-camp-inicio" value="' + (c.fechaInicio||'') + '" style="width:100%;padding:9px 12px;border:1.5px solid #e2e8f0;border-radius:7px;font-size:.85rem;margin-top:3px;box-sizing:border-box;">' +
+          '</div>' +
+          '<div>' +
+            '<label style="font-size:.62rem;font-weight:800;color:#1B1F6B;text-transform:uppercase;letter-spacing:1px;">Fecha fin *</label>' +
+            '<input type="date" id="desc-camp-fin" value="' + (c.fechaFin||'') + '" style="width:100%;padding:9px 12px;border:1.5px solid #e2e8f0;border-radius:7px;font-size:.85rem;margin-top:3px;box-sizing:border-box;">' +
+          '</div>' +
+        '</div>' +
+        '<div style="margin-bottom:12px;">' +
+          '<label style="font-size:.62rem;font-weight:800;color:#1B1F6B;text-transform:uppercase;letter-spacing:1px;">Notas (opcional)</label>' +
+          '<input type="text" id="desc-camp-notas" value="' + (c.notas||'').replace(/"/g,'&quot;') + '" placeholder="Ej: Liquidación de stock viejo" style="width:100%;padding:8px 12px;border:1.5px solid #e2e8f0;border-radius:7px;font-size:.78rem;margin-top:3px;box-sizing:border-box;">' +
+        '</div>' +
+        '<div style="margin-top:14px;">' +
+          '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">' +
+            '<label style="font-size:.62rem;font-weight:800;color:#1B1F6B;text-transform:uppercase;letter-spacing:1px;">Productos seleccionados (<span id="desc-camp-prod-count">' + seleccionados.size + '</span>)</label>' +
+            '<div style="display:flex;gap:5px;">' +
+              '<button onclick="document.querySelectorAll(\'input[name=desc-prod-check]:not([style*=display\\\\:none])\').forEach(function(c){c.checked=true});_descActualizarCount();" style="background:#16a34a;color:#fff;border:none;border-radius:5px;padding:4px 10px;font-size:.65rem;font-weight:800;cursor:pointer;">✓ Marcar todos visibles</button>' +
+              '<button onclick="document.querySelectorAll(\'input[name=desc-prod-check]\').forEach(function(c){c.checked=false});_descActualizarCount();" style="background:#94a3b8;color:#fff;border:none;border-radius:5px;padding:4px 10px;font-size:.65rem;font-weight:800;cursor:pointer;">✕ Limpiar</button>' +
+            '</div>' +
+          '</div>' +
+          '<input type="text" id="desc-camp-buscar" placeholder="🔍 Buscar por REF, descripción o marca..." oninput="_descFiltrarProductos()" style="width:100%;padding:8px 12px;border:1.5px solid #e2e8f0;border-radius:7px;font-size:.78rem;margin-bottom:6px;box-sizing:border-box;">' +
+          '<div id="desc-camp-prods-list" style="border:1.5px solid #e2e8f0;border-radius:8px;max-height:280px;overflow-y:auto;background:#fff;">' +
+            prodsHTML +
+          '</div>' +
+        '</div>' +
+      '</div>' +
+      '<div style="padding:14px 22px;border-top:1.5px solid #e2e8f0;display:flex;justify-content:space-between;gap:10px;background:#fafbfd;">' +
+        (esNueva ? '<div></div>' : '<button onclick="window.descEliminarCampaña(\'' + c.id + '\');" style="background:#fee2e2;color:#dc2626;border:1.5px solid #fca5a5;border-radius:7px;padding:9px 16px;font-weight:800;cursor:pointer;font-size:.78rem;">🗑 Eliminar campaña</button>') +
+        '<div style="display:flex;gap:8px;">' +
+          '<button onclick="document.getElementById(\'desc-form-overlay\').remove()" style="background:#fff;color:#475569;border:1.5px solid #e2e8f0;border-radius:7px;padding:9px 16px;font-weight:800;cursor:pointer;font-size:.78rem;">Cancelar</button>' +
+          '<button onclick="window._descGuardarCampaña()" style="background:linear-gradient(135deg,#16a34a,#15803d);color:#fff;border:none;border-radius:7px;padding:9px 22px;font-weight:800;cursor:pointer;font-size:.82rem;letter-spacing:.4px;">💾 Guardar campaña</button>' +
+        '</div>' +
+      '</div>' +
+    '</div>';
+
+  document.body.appendChild(ov);
+
+  // Bind contador
+  document.querySelectorAll('input[name="desc-prod-check"]').forEach(function(chk){
+    chk.addEventListener('change', _descActualizarCount);
+  });
+}
+
+window._descActualizarCount = function() {
+  var n = document.querySelectorAll('input[name="desc-prod-check"]:checked').length;
+  var el = document.getElementById('desc-camp-prod-count');
+  if (el) el.textContent = n;
+};
+
+window._descFiltrarProductos = function() {
+  var q = (document.getElementById('desc-camp-buscar').value || '').toLowerCase().trim();
+  document.querySelectorAll('#desc-camp-prods-list label').forEach(function(lbl){
+    if (!q) { lbl.style.display = 'flex'; return; }
+    var ref = (lbl.getAttribute('data-prodref') || '').toLowerCase();
+    var desc = lbl.getAttribute('data-pdesc') || '';
+    var marca = lbl.getAttribute('data-pmarca') || '';
+    var match = ref.indexOf(q) >= 0 || desc.indexOf(q) >= 0 || marca.indexOf(q) >= 0;
+    lbl.style.display = match ? 'flex' : 'none';
+  });
+};
+
+window._descGuardarCampaña = function() {
+  var id = document.getElementById('desc-camp-id').value;
+  var nombre = document.getElementById('desc-camp-nombre').value.trim();
+  var pct = parseFloat(document.getElementById('desc-camp-pct').value) || 0;
+  var inicio = document.getElementById('desc-camp-inicio').value;
+  var fin = document.getElementById('desc-camp-fin').value;
+  var notas = document.getElementById('desc-camp-notas').value.trim();
+
+  if (!nombre) return alert('El nombre de la campaña es obligatorio');
+  if (pct < 1 || pct > 99) return alert('El descuento debe ser entre 1% y 99%');
+  if (!inicio || !fin) return alert('Las fechas de inicio y fin son obligatorias');
+  if (inicio > fin) return alert('La fecha de inicio no puede ser posterior a la fecha fin');
+
+  var productos = Array.from(document.querySelectorAll('input[name="desc-prod-check"]:checked')).map(function(c){ return c.value; });
+  if (!productos.length) {
+    if (!confirm('No seleccionaste ningún producto. ¿Guardar igualmente la campaña vacía?')) return;
+  }
+
+  var d = window.getDescuentos();
+  var existente = d.campañas.find(function(c){ return c.id === id; });
+  if (existente) {
+    existente.nombre = nombre;
+    existente.porcentaje = pct;
+    existente.fechaInicio = inicio;
+    existente.fechaFin = fin;
+    existente.notas = notas;
+    existente.productos = productos;
+    existente.modificado = new Date().toISOString();
+  } else {
+    d.campañas.push({
+      id: id,
+      nombre: nombre,
+      activa: true,
+      fechaInicio: inicio,
+      fechaFin: fin,
+      porcentaje: pct,
+      productos: productos,
+      notas: notas,
+      creado: new Date().toISOString()
+    });
+  }
+
+  window.saveDescuentos(d);
+
+  document.getElementById('desc-form-overlay').remove();
+  if (typeof showToast === 'function') showToast('💸 Campaña guardada — ' + productos.length + ' productos', 'success');
+  _descRefrescar();
+
+  // Refrescar catálogo si está abierto
+  if (typeof doRefSearch === 'function' && document.querySelector('.cat-grid')) {
+    try { doRefSearch(); } catch(e){}
+  }
+};
+
+window.descToggleCampaña = function(id) {
+  var d = window.getDescuentos();
+  var c = d.campañas.find(function(x){ return x.id === id; });
+  if (!c) return;
+  c.activa = !c.activa;
+  window.saveDescuentos(d);
+  if (typeof showToast === 'function') showToast('💸 Campaña ' + (c.activa ? 'activada' : 'pausada'), 'success');
+  _descRefrescar();
+  if (typeof doRefSearch === 'function' && document.querySelector('.cat-grid')) {
+    try { doRefSearch(); } catch(e){}
+  }
+};
+
+window.descEliminarCampaña = function(id) {
+  if (!confirm('¿Eliminar permanentemente esta campaña?\n\nEsta acción no se puede deshacer.')) return;
+  var d = window.getDescuentos();
+  d.campañas = d.campañas.filter(function(c){ return c.id !== id; });
+  window.saveDescuentos(d);
+  var fov = document.getElementById('desc-form-overlay');
+  if (fov) fov.remove();
+  if (typeof showToast === 'function') showToast('🗑 Campaña eliminada', 'success');
+  _descRefrescar();
+  if (typeof doRefSearch === 'function' && document.querySelector('.cat-grid')) {
+    try { doRefSearch(); } catch(e){}
+  }
+};
+
+// ── Descuentos individuales ──
+window.descNuevoIndividual = function() { _descMostrarFormIndividual(null); };
+window.descEditarIndividual = function(ref) {
+  var d = window.getDescuentos();
+  var ind = d.individuales[ref];
+  if (!ind) return alert('Descuento no encontrado');
+  _descMostrarFormIndividual(ref);
+};
+
+function _descMostrarFormIndividual(refExistente) {
+  var d = window.getDescuentos();
+  var ind = refExistente ? d.individuales[refExistente] : {
+    porcentaje: 15,
+    fechaInicio: new Date().toISOString().slice(0,10),
+    fechaFin: '',
+    activa: true,
+    notas: ''
+  };
+
+  var existente = document.getElementById('desc-ind-overlay');
+  if (existente) existente.remove();
+
+  var ov = document.createElement('div');
+  ov.id = 'desc-ind-overlay';
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.85);backdrop-filter:blur(8px);z-index:99997;display:flex;align-items:center;justify-content:center;padding:20px;font-family:Barlow,sans-serif;';
+
+  var prodsOptions = '';
+  if (refExistente) {
+    var prod = (typeof PRODUCTS !== 'undefined') ? PRODUCTS.find(function(p){ return p.r === refExistente; }) : null;
+    prodsOptions = '<option value="' + refExistente + '" selected>' + refExistente + ' — ' + (prod ? prod.d : '—') + '</option>';
+  } else {
+    var prods = (typeof PRODUCTS !== 'undefined') ? PRODUCTS.slice().sort(function(a,b){
+      return String(a.r||'').localeCompare(String(b.r||''), 'es', { numeric: true, sensitivity: 'base' });
+    }) : [];
+    prodsOptions = '<option value="">— Seleccionar producto —</option>' + prods.map(function(p){
+      return '<option value="' + p.r + '">' + p.r + ' — ' + (p.d||'—').substring(0,55) + '</option>';
+    }).join('');
+  }
+
+  ov.innerHTML =
+    '<div style="background:#fff;border-radius:14px;width:min(560px,95vw);max-height:92vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 24px 60px rgba(0,0,0,.4);">' +
+      '<div style="background:linear-gradient(135deg,#dc2626,#991b1b);padding:14px 22px;color:#fff;display:flex;justify-content:space-between;align-items:center;">' +
+        '<div style="font-family:Barlow Condensed,sans-serif;font-size:1.2rem;font-weight:900;letter-spacing:.5px;text-transform:uppercase;">' + (refExistente ? '✏️ Editar descuento' : '➕ Nuevo descuento individual') + '</div>' +
+        '<button onclick="document.getElementById(\'desc-ind-overlay\').remove()" style="background:rgba(255,255,255,.18);border:none;color:#fff;width:30px;height:30px;border-radius:6px;cursor:pointer;font-size:.95rem;font-weight:900;">✕</button>' +
+      '</div>' +
+      '<div style="padding:18px 22px;flex:1;overflow:auto;">' +
+        '<div style="margin-bottom:12px;">' +
+          '<label style="font-size:.62rem;font-weight:800;color:#1B1F6B;text-transform:uppercase;letter-spacing:1px;">Producto *</label>' +
+          '<select id="desc-ind-ref" ' + (refExistente ? 'disabled' : '') + ' style="width:100%;padding:9px 12px;border:1.5px solid #e2e8f0;border-radius:7px;font-size:.85rem;margin-top:3px;box-sizing:border-box;font-weight:700;">' +
+            prodsOptions +
+          '</select>' +
+        '</div>' +
+        '<div style="margin-bottom:12px;">' +
+          '<label style="font-size:.62rem;font-weight:800;color:#1B1F6B;text-transform:uppercase;letter-spacing:1px;">Descuento % *</label>' +
+          '<input type="number" id="desc-ind-pct" value="' + (ind.porcentaje||15) + '" min="1" max="99" style="width:100%;padding:11px 12px;border:1.5px solid #fca5a5;border-radius:7px;font-size:1.5rem;margin-top:3px;box-sizing:border-box;font-weight:900;color:#dc2626;text-align:center;font-family:Barlow Condensed,sans-serif;">' +
+        '</div>' +
+        '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px;">' +
+          '<div>' +
+            '<label style="font-size:.62rem;font-weight:800;color:#1B1F6B;text-transform:uppercase;letter-spacing:1px;">Fecha inicio *</label>' +
+            '<input type="date" id="desc-ind-inicio" value="' + (ind.fechaInicio||'') + '" style="width:100%;padding:9px 12px;border:1.5px solid #e2e8f0;border-radius:7px;font-size:.85rem;margin-top:3px;box-sizing:border-box;">' +
+          '</div>' +
+          '<div>' +
+            '<label style="font-size:.62rem;font-weight:800;color:#1B1F6B;text-transform:uppercase;letter-spacing:1px;">Fecha fin *</label>' +
+            '<input type="date" id="desc-ind-fin" value="' + (ind.fechaFin||'') + '" style="width:100%;padding:9px 12px;border:1.5px solid #e2e8f0;border-radius:7px;font-size:.85rem;margin-top:3px;box-sizing:border-box;">' +
+          '</div>' +
+        '</div>' +
+        '<div style="margin-bottom:12px;">' +
+          '<label style="font-size:.62rem;font-weight:800;color:#1B1F6B;text-transform:uppercase;letter-spacing:1px;">Notas (opcional)</label>' +
+          '<input type="text" id="desc-ind-notas" value="' + (ind.notas||'').replace(/"/g,'&quot;') + '" placeholder="Ej: Última caja, mover ya" style="width:100%;padding:8px 12px;border:1.5px solid #e2e8f0;border-radius:7px;font-size:.78rem;margin-top:3px;box-sizing:border-box;">' +
+        '</div>' +
+      '</div>' +
+      '<div style="padding:14px 22px;border-top:1.5px solid #e2e8f0;display:flex;justify-content:flex-end;gap:8px;background:#fafbfd;">' +
+        '<button onclick="document.getElementById(\'desc-ind-overlay\').remove()" style="background:#fff;color:#475569;border:1.5px solid #e2e8f0;border-radius:7px;padding:9px 16px;font-weight:800;cursor:pointer;font-size:.78rem;">Cancelar</button>' +
+        '<button onclick="window._descGuardarIndividual()" style="background:linear-gradient(135deg,#16a34a,#15803d);color:#fff;border:none;border-radius:7px;padding:9px 22px;font-weight:800;cursor:pointer;font-size:.82rem;letter-spacing:.4px;">💾 Guardar descuento</button>' +
+      '</div>' +
+    '</div>';
+
+  document.body.appendChild(ov);
+}
+
+window._descGuardarIndividual = function() {
+  var ref = document.getElementById('desc-ind-ref').value;
+  var pct = parseFloat(document.getElementById('desc-ind-pct').value) || 0;
+  var inicio = document.getElementById('desc-ind-inicio').value;
+  var fin = document.getElementById('desc-ind-fin').value;
+  var notas = document.getElementById('desc-ind-notas').value.trim();
+
+  if (!ref) return alert('Selecciona un producto');
+  if (pct < 1 || pct > 99) return alert('El descuento debe ser entre 1% y 99%');
+  if (!inicio || !fin) return alert('Las fechas de inicio y fin son obligatorias');
+  if (inicio > fin) return alert('La fecha de inicio no puede ser posterior a la fecha fin');
+
+  var d = window.getDescuentos();
+  d.individuales[ref] = {
+    porcentaje: pct,
+    fechaInicio: inicio,
+    fechaFin: fin,
+    activa: true,
+    notas: notas,
+    modificado: new Date().toISOString()
+  };
+  if (!d.individuales[ref].creado) d.individuales[ref].creado = new Date().toISOString();
+  window.saveDescuentos(d);
+
+  document.getElementById('desc-ind-overlay').remove();
+  if (typeof showToast === 'function') showToast('💸 Descuento individual guardado', 'success');
+  _descRefrescar();
+  if (typeof doRefSearch === 'function' && document.querySelector('.cat-grid')) {
+    try { doRefSearch(); } catch(e){}
+  }
+};
+
+window.descEliminarIndividual = function(ref) {
+  if (!confirm('¿Eliminar el descuento individual de ' + ref + '?')) return;
+  var d = window.getDescuentos();
+  delete d.individuales[ref];
+  window.saveDescuentos(d);
+  if (typeof showToast === 'function') showToast('🗑 Descuento eliminado', 'success');
+  _descRefrescar();
+  if (typeof doRefSearch === 'function' && document.querySelector('.cat-grid')) {
+    try { doRefSearch(); } catch(e){}
+  }
+};
+
+// ══════════════════════════════════════════════════════════════════
 // CATÁLOGO SIMPLE — Descarga e importación rápida de datos del catálogo
 // ══════════════════════════════════════════════════════════════════
 // Exporta una hoja única con los campos esenciales para que Omar pueda
@@ -32919,7 +33622,7 @@ window.ptDescargarCatalogoSimple = function() {
       'CODIGO_BARRA': p.b || '',
       'CODIGO': p.c || '',
       'DEPOSITO': deposito,
-      'EMPAQUE': pt.empaque || (medidas.empaque || 'UNIDAD'),
+      'EMPAQUE': p.e || '',
       'MEDIDA': parseInt(p.m) || 0,
       'VOL_FT3_POR_BULTO': volPorBulto || 0,
       'USD': parseFloat(p.u) || 0,
@@ -33102,9 +33805,9 @@ window.ptImportarCatalogoSimple = function() {
             camposCambiados.push('código');
           }
 
-          // EMPAQUE
-          if (row.EMPAQUE && String(row.EMPAQUE).trim() !== (ptData[ref].empaque||'')) {
-            ptData[ref].empaque = String(row.EMPAQUE).trim();
+          // EMPAQUE (campo p.e — el que se ve en la ficha del catálogo)
+          if (row.EMPAQUE !== '' && row.EMPAQUE !== null && String(row.EMPAQUE).trim() !== String(prod.e||'').trim()) {
+            prod.e = String(row.EMPAQUE).trim();
             camposCambiados.push('empaque');
           }
 
