@@ -17,7 +17,7 @@
 <meta http-equiv="Expires" content="0">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.05.05.29">
+<meta name="farmers-version" content="2026.05.05.33">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -27853,7 +27853,8 @@ function _catDownloadPDFWithImgs(_prodImgsLocal) {
     var capStr = (!_catClientMode && capMarca > 0) ? '<span class="cap-marca">💰 Capital: $ ' + capMarca.toFixed(2) + '</span>' : '';
     var bColor = brandColors[br] || '#475569';
 
-    var cards = prods.map(function(p) {
+    // Función que construye una card individual
+    function buildCard(p) {
       var _stockReal = parseInt((inv[p.r] !== undefined) ? inv[p.r] : (p.ex || 0)) || 0;
       var _compCat   = (typeof getComprometido==='function' ? getComprometido() : {})[p.r];
       var _compQtyCat= _compCat ? (_compCat.qty||0) : 0;
@@ -27934,8 +27935,10 @@ function _catDownloadPDFWithImgs(_prodImgsLocal) {
       var _pd=_ptDataPDF[p.r]||{}; var _med=_pd.medidas||{};
       var _fl=parseFloat(_med.largo)||0,_fa=parseFloat(_med.ancho)||0,_fh=parseFloat(_med.alto)||0;
       var _fvd=parseFloat(_med.volDirecto)||0;
-      var _fv=(_fl&&_fa&&_fh)?(_fl*_fa*_fh)/28316.85:_fvd;
-      var _fdim=(_fl&&_fa&&_fh)?_fl+'×'+_fa+'×'+_fh+' cm':(_fvd?'DATO PROV.':'');
+      // REGLA UNIFICADA: volDirecto (OC del proveedor) es SIEMPRE la fuente de verdad.
+      // L×A×H solo se usa como fallback si NO hay volDirecto.
+      var _fv=_fvd > 0 ? _fvd : ((_fl&&_fa&&_fh)?(_fl*_fa*_fh)/28316.85:0);
+      var _fdim=_fvd > 0 ? '📦 DATO PROV.' : ((_fl&&_fa&&_fh)?_fl+'×'+_fa+'×'+_fh+' cm':'');
       var volHTML = _fv
         ? '<div class="vol-row"><span class="vol-label">📐 VOL. FT³/BULTO'+(_fdim?' — '+_fdim:'')+'</span><span class="vol-val">'+_fv.toFixed(4)+' ft³</span></div>'
         : '<div class="vol-row" style="opacity:.3;"><span class="vol-label">📐 VOL. FT³/BULTO</span><span class="vol-val">—</span></div>';
@@ -27994,15 +27997,31 @@ function _catDownloadPDFWithImgs(_prodImgsLocal) {
           capitalHTML +
         '</div>' +
       '</div>';
-    }).join('');
+    } // end buildCard
 
-    return '<div class="marca-section">' +
-      '<div class="marca-header" style="background:' + bColor + ';">' +
-        '<span class="marca-name">' + br + '</span>' +
-        '<span class="marca-meta">' + prods.length + ' referencias ' + capStr + '</span>' +
-      '</div>' +
-      '<div class="cards-grid">' + cards + '</div>' +
-    '</div>';
+    // Determinar productos por página:
+    // Vertical: 2 cols × 3 filas = 6 productos (óptimo para orientación principal)
+    // Horizontal: 4 cols × 2 filas = 8 productos (si cambias orientación, verás 6 + 2 huecos)
+    // Usamos 6 como base para que vertical (orientación más usada) quede perfecta
+    var PROD_POR_PAGINA = 6;
+    var chunks = [];
+    for (var iC = 0; iC < prods.length; iC += PROD_POR_PAGINA) {
+      chunks.push(prods.slice(iC, iC + PROD_POR_PAGINA));
+    }
+    var totalChunks = chunks.length;
+
+    // Construir HTML de cada chunk con su propio header (se ve uno por página impresa)
+    return chunks.map(function(chunkProds, idxChunk){
+      var cards = chunkProds.map(buildCard).join('');
+      var chunkLabel = totalChunks > 1 ? ' <span style="opacity:.55;font-size:.65rem;">· pág. ' + (idxChunk+1) + ' de ' + totalChunks + '</span>' : '';
+      return '<div class="marca-section" data-marca="' + br + '" data-chunk="' + idxChunk + '">' +
+        '<div class="marca-header" style="background:' + bColor + ';">' +
+          '<span class="marca-name">' + br + chunkLabel + '</span>' +
+          '<span class="marca-meta">' + prods.length + ' referencias</span>' +
+        '</div>' +
+        '<div class="cards-grid">' + cards + '</div>' +
+      '</div>';
+    }).join('');
   }).join('');
 
   var capTotalStr = (!_catSinPrecio && !_catClientMode && capTotal > 0) ? ' &nbsp;·&nbsp; 💰 Capital total: <strong style=\"color:#6ee7b7;\">$ ' + capTotal.toFixed(2) + '</strong>' : '';
@@ -28020,57 +28039,67 @@ function _catDownloadPDFWithImgs(_prodImgsLocal) {
       '.cover .sub{font-size:.82rem;color:rgba(255,255,255,.6);line-height:2;}' +
       '.cover .sub strong{color:rgba(255,255,255,.9);}' +
       '.body{padding:0 8px 4px;}' +
-      '.marca-section{margin-bottom:4px;}' +
-      '.marca-header{padding:6px 12px;display:flex;align-items:center;justify-content:space-between;border-radius:8px 8px 0 0;}' +
+      // ═══ Cada marca-section va en su propia página de impresión ═══
+      // Cuando una marca tiene >12 productos, se divide en chunks (ver JS),
+      // cada chunk repite el header completo en su propia página.
+      '.marca-section{margin-bottom:4px;break-inside:avoid;page-break-inside:avoid;}' +
+      '.marca-section + .marca-section{break-before:page;page-break-before:always;}' +
+      // El header de la marca debe ir ATADO al primer card de su grid
+      '.marca-header{padding:8px 14px;display:flex;align-items:center;justify-content:space-between;border-radius:8px 8px 0 0;break-after:avoid;page-break-after:avoid;}' +
       '.marca-name{font-family:"Barlow Condensed",sans-serif;font-weight:900;font-size:1.1rem;color:white;letter-spacing:2px;}' +
       '.marca-meta{font-size:.72rem;color:rgba(255,255,255,.75);font-weight:600;display:flex;align-items:center;gap:12px;}' +
       '.cap-marca{background:rgba(255,255,255,.15);border-radius:6px;padding:2px 8px;font-size:.65rem;}' +
-      // ── GRID 4 columnas, centrado, uniforme ──
-      '.cards-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:4px;padding:4px;border-radius:0 0 8px 8px;background:#e8ecf8;}' +
-      // Tarjeta: flex-column altura uniforme
-      '.card{background:white;border-radius:10px;overflow:hidden;border:1px solid #dde3f0;display:flex;flex-direction:column;box-shadow:0 1px 4px rgba(26,32,80,.08);}' +
-      // Imagen: 140px — 2x del original 72px, siempre la misma altura
-      '.card-img{width:100%;height:110px;object-fit:contain;display:block;flex-shrink:0;background:white;}' +
-      '.card-img-empty{width:100%;height:110px;display:flex;align-items:center;justify-content:center;font-size:2.5rem;color:rgba(0,0,0,.12);background:#f4f6fb;flex-shrink:0;}' +
-      // Barra REF: sin overflow, REF completa siempre visible
-      '.card-ref-bar{display:flex;align-items:center;justify-content:space-between;gap:6px;padding:7px 10px;flex-shrink:0;}' +
-      '.card-ref{font-family:"Barlow Condensed",sans-serif;font-weight:900;font-size:1.05rem;color:white;letter-spacing:1.5px;line-height:1;white-space:nowrap;}' +
-      '.card-marca{font-size:.48rem;color:rgba(255,255,255,.5);font-weight:700;text-transform:uppercase;letter-spacing:1px;margin-top:2px;}' +
-      '.stock-pill{border-radius:20px;padding:3px 9px;font-size:.6rem;font-weight:800;white-space:nowrap;flex-shrink:0;text-transform:uppercase;}' +
-      // Cuerpo flex-column, gap uniforme
-      '.card-body{padding:5px 8px;flex:1;display:flex;flex-direction:column;gap:3px;}' +
-      // Descripción: altura fija 2 líneas
-      '.prod-desc{font-weight:700;color:#1a2050;font-size:.7rem;line-height:1.25;height:1.75em;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;flex-shrink:0;}' +
-      // Meta grid 2 columnas
-      '.meta-grid{display:grid;grid-template-columns:1fr 1fr;gap:4px;flex-shrink:0;}' +
-      '.meta-cell{background:#f5f7fb;border-radius:4px;padding:3px 6px;border:1px solid #e4e9f4;}' +
-      '.meta-label{color:#94a3b8;font-size:.5rem;font-weight:800;text-transform:uppercase;letter-spacing:.6px;margin-bottom:1px;}' +
+      // ── GRID 2 columnas (vertical) — cards GRANDES con prioridad a la imagen ──
+      // Vertical: 2×3 = 6 productos por página
+      // Horizontal: 4×2 = 8 productos por página
+      '.cards-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;padding:8px;border-radius:0 0 8px 8px;background:#e8ecf8;}' +
+      // Tarjeta: ALTURA FIJA 320px → 3 filas caben perfectamente en A4 vertical
+      // (Cálculo: 285mm útil - header marca - padding - gaps - footer = ~979px / 3 = 326px max)
+      '.card{background:white;border-radius:12px;overflow:hidden;border:1px solid #dde3f0;display:flex;flex-direction:column;box-shadow:0 2px 6px rgba(26,32,80,.08);height:320px;}' +
+      // Imagen: 180px en vertical (deja espacio para datos y precios en card 320px)
+      '.card-img{width:100%;height:180px;object-fit:contain;display:block;flex-shrink:0;background:white;padding:6px;}' +
+      '.card-img-empty{width:100%;height:180px;display:flex;align-items:center;justify-content:center;font-size:3rem;color:rgba(0,0,0,.12);background:#f4f6fb;flex-shrink:0;}' +
+      // Barra REF: compacta pero legible
+      '.card-ref-bar{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 12px;flex-shrink:0;}' +
+      '.card-ref{font-family:"Barlow Condensed",sans-serif;font-weight:900;font-size:1.15rem;color:white;letter-spacing:1.5px;line-height:1;white-space:nowrap;}' +
+      '.card-marca{font-size:.5rem;color:rgba(255,255,255,.5);font-weight:700;text-transform:uppercase;letter-spacing:1.1px;margin-top:2px;}' +
+      '.stock-pill{border-radius:20px;padding:3px 10px;font-size:.62rem;font-weight:800;white-space:nowrap;flex-shrink:0;text-transform:uppercase;}' +
+      // Cuerpo: flex con gap controlado, llena el espacio restante
+      '.card-body{padding:5px 9px;flex:1;display:flex;flex-direction:column;gap:3px;min-height:0;}' +
+      // Descripción: 2 líneas (cabe sin overflow en card de 320px)
+      '.prod-desc{font-weight:700;color:#1a2050;font-size:.78rem;line-height:1.25;height:1.95em;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;flex-shrink:0;padding:0 2px;}' +
+      // Meta grid 2 columnas — compacto
+      '.meta-grid{display:grid;grid-template-columns:1fr 1fr;gap:3px;flex-shrink:0;}' +
+      '.meta-cell{background:#f5f7fb;border-radius:5px;padding:3px 7px;border:1px solid #e4e9f4;}' +
+      '.meta-label{color:#94a3b8;font-size:.52rem;font-weight:800;text-transform:uppercase;letter-spacing:.6px;margin-bottom:1px;}' +
       '.meta-val{font-weight:800;color:#1a2050;font-size:.76rem;line-height:1.1;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;}' +
       // Vol ft³
-      '.vol-row{background:#eff6ff;border-radius:4px;padding:3px 6px;border:1px solid #bfdbfe;display:flex;align-items:center;justify-content:space-between;flex-shrink:0;}' +
-      '.vol-label{color:#1d4ed8;font-size:.52rem;font-weight:700;text-transform:uppercase;letter-spacing:.4px;}' +
-      '.vol-val{font-family:"Barlow Condensed",sans-serif;font-weight:900;font-size:.82rem;color:#1d4ed8;}' +
-      // Precios — siempre al pie
-      '.precios-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:3px;background:#f0f4ff;border-radius:5px;padding:4px;margin-top:auto;flex-shrink:0;}' +
+      '.vol-row{background:#eff6ff;border-radius:5px;padding:3px 7px;border:1px solid #bfdbfe;display:flex;align-items:center;justify-content:space-between;flex-shrink:0;}' +
+      '.vol-label{color:#1d4ed8;font-size:.55rem;font-weight:700;text-transform:uppercase;letter-spacing:.4px;}' +
+      '.vol-val{font-family:"Barlow Condensed",sans-serif;font-weight:900;font-size:.85rem;color:#1d4ed8;}' +
+      // Precios — siempre al pie (margin-top:auto los ancla abajo)
+      '.precios-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:3px;background:#f0f4ff;border-radius:6px;padding:4px;margin-top:auto;flex-shrink:0;}' +
       '.precio-cell{background:white;border-radius:5px;padding:4px 5px;text-align:center;border:1px solid #c5cae9;}' +
-      '.pcel-label{font-size:.5rem;color:#8892b0;font-weight:700;margin-bottom:1px;text-transform:uppercase;}' +
-      '.pcel-val{font-family:"Barlow Condensed",sans-serif;font-weight:900;font-size:.85rem;color:#1a2050;}' +
-      '.precio-cliente{background:linear-gradient(135deg,#1a2050,#252b7a);border-radius:6px;padding:6px 10px;display:flex;align-items:center;justify-content:space-between;margin-top:auto;flex-shrink:0;}' +
-      '.precio-cliente .pcel-label{color:rgba(255,255,255,.6);font-size:.52rem;font-weight:700;text-transform:uppercase;letter-spacing:.6px;}' +
-      '.pcel-val-big{font-family:"Barlow Condensed",sans-serif;font-weight:900;font-size:1.05rem;color:white;}' +
-      '.capital-row{background:linear-gradient(135deg,#065f46,#047857);border-radius:5px;padding:5px 9px;display:flex;align-items:center;gap:6px;font-size:.6rem;color:white;font-weight:700;flex-shrink:0;}' +
-      '.capital-row strong{font-family:"Barlow Condensed",sans-serif;font-size:.82rem;margin-left:auto;}' +
-      '.cap-det{opacity:.65;font-size:.54rem;font-weight:500;}' +
+      '.pcel-label{font-size:.52rem;color:#8892b0;font-weight:700;margin-bottom:1px;text-transform:uppercase;}' +
+      '.pcel-val{font-family:"Barlow Condensed",sans-serif;font-weight:900;font-size:.92rem;color:#1a2050;}' +
+      '.precio-cliente{background:linear-gradient(135deg,#1a2050,#252b7a);border-radius:7px;padding:6px 11px;display:flex;align-items:center;justify-content:space-between;margin-top:auto;flex-shrink:0;}' +
+      '.precio-cliente .pcel-label{color:rgba(255,255,255,.6);font-size:.55rem;font-weight:700;text-transform:uppercase;letter-spacing:.6px;}' +
+      '.pcel-val-big{font-family:"Barlow Condensed",sans-serif;font-weight:900;font-size:1.15rem;color:white;}' +
+      '.capital-row{background:linear-gradient(135deg,#065f46,#047857);border-radius:5px;padding:5px 10px;display:flex;align-items:center;gap:6px;font-size:.62rem;color:white;font-weight:700;flex-shrink:0;}' +
+      '.capital-row strong{font-family:"Barlow Condensed",sans-serif;font-size:.88rem;margin-left:auto;}' +
+      '.cap-det{opacity:.65;font-size:.56rem;font-weight:500;}' +
       '.footer{text-align:center;padding:8px;font-size:.62rem;color:#94a3b8;border-top:1px solid #e8ecf8;background:white;margin-top:4px;page-break-before:avoid;break-before:avoid;}' +
+      // ═══ @page con tamaño y márgenes (regex JS de orientación lo modifica) ═══
+      '@page{size:A4 ' + _pdfOrientation + ';margin:6mm 8mm;}' +
+      // Pie de página con paginación (areas @bottom)
+      '@page{ @bottom-right { content: "Pág. " counter(page) " de " counter(pages); font-family: Barlow,sans-serif; font-size: 8pt; color: #94a3b8; } @bottom-left { content: "Farmers C.A. · Catálogo confidencial"; font-family: Barlow,sans-serif; font-size: 8pt; color: #94a3b8; } }' +
       '* { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; color-adjust: exact !important; }' +
-      '@page{size:A4 ' + _pdfOrientation + ';margin:5mm 6mm;}' +
       '@media print{' +
         '#printbar{display:none !important;}' +
         'body{background:white !important;margin:0 !important;}' +
         '.cover{padding:6px 12px;margin-bottom:4px;background:linear-gradient(135deg,#0e1240,#1a2050,#252b6b) !important;}' +
-        '.cards-grid{gap:4px !important;padding:4px !important;}' +
-        '.marca-section{margin-bottom:4px !important;}' +
-        '.card{break-inside:avoid !important;box-shadow:none !important;}' +
+        // ⚠ NO modificar .cards-grid padding ni .card height — ya están calculados para A4
+        '.card{break-inside:avoid !important;page-break-inside:avoid !important;box-shadow:none !important;}' +
         '.precios-grid{background:#f0f4ff !important;}' +
         '.precio-cliente{background:linear-gradient(135deg,#1a2050,#252b7a) !important;}' +
         '.capital-row{background:linear-gradient(135deg,#065f46,#047857) !important;}' +
@@ -28141,7 +28170,7 @@ function _catDownloadPDFWithImgs(_prodImgsLocal) {
     '<scr'+'ipt>' +
 // assignImages ya no necesario — src base64 directo
 
-    'function catSetOrientPDF(o){var s=document.querySelector("style");if(s){s.textContent=s.textContent.replace(/@page\\{[^}]+\\}/,"@page{size:A4 "+o+";margin:6mm 8mm;}");}document.querySelectorAll(".cards-grid").forEach(function(g){g.style.gridTemplateColumns=o==="landscape"?"repeat(4,1fr)":"repeat(3,1fr)";});var bl=document.getElementById("btnOrL"),bp=document.getElementById("btnOrP");if(bl){bl.style.background=o==="landscape"?"#f47b3e":"rgba(255,255,255,.12)";bl.style.color="white";}if(bp){bp.style.background=o==="portrait"?"#f47b3e":"rgba(255,255,255,.12)";bp.style.color=o==="portrait"?"white":"rgba(255,255,255,.6)";}}' +
+    'function catSetOrientPDF(o){var s=document.querySelector("style");if(s){s.textContent=s.textContent.replace(/@page\\{size:[^}]+\\}/,"@page{size:A4 "+o+";margin:6mm 8mm;}");}var cols=o==="landscape"?"repeat(4,1fr)":"repeat(2,1fr)";document.querySelectorAll(".cards-grid").forEach(function(g){g.style.gridTemplateColumns=cols;});var cardH=o==="landscape"?"280px":"320px";var imgH=o==="landscape"?"150px":"180px";document.querySelectorAll(".card").forEach(function(c){c.style.height=cardH;});document.querySelectorAll(".card-img,.card-img-empty").forEach(function(im){im.style.height=imgH;});var bl=document.getElementById("btnOrL"),bp=document.getElementById("btnOrP");if(bl){bl.style.background=o==="landscape"?"#f47b3e":"rgba(255,255,255,.12)";bl.style.color="white";}if(bp){bp.style.background=o==="portrait"?"#f47b3e":"rgba(255,255,255,.12)";bp.style.color=o==="portrait"?"white":"rgba(255,255,255,.6)";}}' +
       'function showPrintBar(){' +
         'var bar=document.createElement("div");' +
         'bar.id="printbar";' +
@@ -35399,14 +35428,18 @@ function ptAbrirFicha(ref) {
               '<div style="background:#f0f9ff;border:1.5px solid #bae6fd;border-radius:8px;padding:8px 12px;">' +
                 '<div style="font-size:.58rem;font-weight:700;color:#0369a1;text-transform:uppercase;letter-spacing:.6px;margin-bottom:3px;">📦 Vol. ft³ por Bulto</div>' +
                 '<div id="ptf-volumen-display" style="font-family:Barlow Condensed,sans-serif;font-weight:900;font-size:1.1rem;color:#0369a1;">' +
-                  (function(){ var l=parseFloat(medidas.largo)||0, a=parseFloat(medidas.ancho)||0, h=parseFloat(medidas.alto)||0; return (l&&a&&h) ? (l*a*h/28316.85).toFixed(4)+' ft³' : '—'; })() +
+                  // REGLA UNIFICADA: volDirecto (OC) primero, L×A×H solo como fallback
+                  (function(){ var vd=parseFloat(medidas.volDirecto)||0, l=parseFloat(medidas.largo)||0, a=parseFloat(medidas.ancho)||0, h=parseFloat(medidas.alto)||0; if(vd>0) return vd.toFixed(4)+' ft³'; return (l&&a&&h) ? (l*a*h/28316.85).toFixed(4)+' ft³' : '—'; })() +
                 '</div>' +
-                '<div style="font-size:.58rem;color:#64748b;">largo × ancho × alto ÷ 1,000,000</div>' +
+                '<div style="font-size:.58rem;color:#64748b;">' +
+                  (function(){ var vd=parseFloat(medidas.volDirecto)||0; return vd>0 ? '📦 dato OC proveedor' : 'largo × ancho × alto ÷ 28316.85'; })() +
+                '</div>' +
               '</div>' +
               '<div style="background:#f0fdf4;border:1.5px solid #86efac;border-radius:8px;padding:8px 12px;">' +
                 '<div style="font-size:.58rem;font-weight:700;color:#16a34a;text-transform:uppercase;letter-spacing:.6px;margin-bottom:3px;">📦 ft³ Total (stock)</div>' +
                 '<div id="ptf-cbm-display" style="font-family:Barlow Condensed,sans-serif;font-weight:900;font-size:1.1rem;color:#16a34a;">' +
-                  (function(){ var l=parseFloat(medidas.largo)||0, a=parseFloat(medidas.ancho)||0, h=parseFloat(medidas.alto)||0, ex=(inv[ref]||prod&&prod.ex||0); return (l&&a&&h&&ex>0) ? (l*a*h/28316.85*ex).toFixed(3)+' ft³' : '—'; })() +
+                  // REGLA UNIFICADA: volDirecto primero
+                  (function(){ var vd=parseFloat(medidas.volDirecto)||0, l=parseFloat(medidas.largo)||0, a=parseFloat(medidas.ancho)||0, h=parseFloat(medidas.alto)||0, ex=(inv[ref]||prod&&prod.ex||0); if(ex<=0) return '—'; var v = vd>0 ? vd : ((l&&a&&h)?(l*a*h/28316.85):0); return v>0 ? (v*ex).toFixed(3)+' ft³' : '—'; })() +
                 '</div>' +
                 '<div style="font-size:.58rem;color:#64748b;">volumen × existencia actual</div>' +
               '</div>' +
