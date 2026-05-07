@@ -17,7 +17,7 @@
 <meta http-equiv="Expires" content="0">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.05.05.39">
+<meta name="farmers-version" content="2026.05.05.42">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -3863,6 +3863,131 @@ window.crearTraslado = function(origen, destino, items, transportista, guia, obs
   return traslado;
 };
 
+// ═══════════════════════════════════════════════════════════════════
+// CONGELAMIENTO DEL DEPÓSITO AN (Anzoátegui)
+// ═══════════════════════════════════════════════════════════════════
+// Cuando AN está congelado:
+//   - Toda operación de inventario va a NE
+//   - Catálogo, PDF, Excel solo muestran NE
+//   - Pestaña Ajuste de Inventario oculta columnas AN
+//   - Importación Excel ignora STOCK_AN
+//   - exAN de productos se mantiene INTACTO (datos dormidos)
+// Reversible: ejecutar farmersDescongelarAN() o usar el botón
+// ═══════════════════════════════════════════════════════════════════
+
+window.AN_CONGELADO_KEY = 'farmers_an_congelado';
+
+window.estaCongeladoAN = function() {
+  try {
+    return localStorage.getItem(window.AN_CONGELADO_KEY) === '1';
+  } catch(e) { return false; }
+};
+
+window.farmersCongelarAN = function() {
+  try {
+    localStorage.setItem(window.AN_CONGELADO_KEY, '1');
+    // Forzar selectores a NE
+    if (typeof _catDepoMode !== 'undefined') _catDepoMode = 'NE';
+    if (typeof _catDepoModeExport !== 'undefined') _catDepoModeExport = 'NE';
+    console.log('🥶 Depósito AN CONGELADO. Todo el inventario se canaliza por NE.');
+    console.log('   Los valores de exAN se mantienen guardados intactos.');
+    if (typeof showToast === 'function') showToast('🥶 Depósito AN congelado — todo va por NE', 'success');
+    if (typeof renderInvTable === 'function') renderInvTable();
+    if (typeof ptRender === 'function') ptRender();
+    if (typeof doRefSearch === 'function') doRefSearch();
+    if (typeof actualizarBotonCongelarAN === 'function') actualizarBotonCongelarAN();
+    return true;
+  } catch(e) { console.error('farmersCongelarAN:', e); return false; }
+};
+
+window.farmersDescongelarAN = function() {
+  if (!confirm('¿Reactivar el depósito AN?\n\nDespués de reactivar:\n- Volverán a aparecer las columnas AN\n- Los valores guardados en exAN volverán a estar visibles\n- Las operaciones podrán dirigirse a AN nuevamente')) return false;
+  try {
+    localStorage.removeItem(window.AN_CONGELADO_KEY);
+    if (typeof _catDepoMode !== 'undefined') _catDepoMode = 'AMBOS';
+    if (typeof _catDepoModeExport !== 'undefined') _catDepoModeExport = 'AMBOS';
+    console.log('☕ Depósito AN REACTIVADO. Los datos de exAN están de vuelta.');
+    if (typeof showToast === 'function') showToast('☕ Depósito AN reactivado', 'success');
+    if (typeof renderInvTable === 'function') renderInvTable();
+    if (typeof ptRender === 'function') ptRender();
+    if (typeof doRefSearch === 'function') doRefSearch();
+    if (typeof actualizarBotonCongelarAN === 'function') actualizarBotonCongelarAN();
+    return true;
+  } catch(e) { console.error('farmersDescongelarAN:', e); return false; }
+};
+
+// Helper para refrescar el botón visual
+window.actualizarBotonCongelarAN = function() {
+  var btn = document.getElementById('btn-congelar-an');
+  var banner = document.getElementById('banner-an-congelado');
+  var congelado = window.estaCongeladoAN();
+
+  if (banner) {
+    banner.style.display = congelado ? 'flex' : 'none';
+  }
+
+  if (!btn) return;
+  if (congelado) {
+    btn.innerHTML = '☕ Descongelar AN';
+    btn.style.background = 'linear-gradient(135deg,#0891b2,#0e7490)';
+    btn.title = 'Reactivar depósito Anzoátegui';
+    btn.onclick = function(){ window.farmersDescongelarAN(); };
+  } else {
+    btn.innerHTML = '🥶 Congelar AN';
+    btn.style.background = 'linear-gradient(135deg,#1e40af,#1e3a8a)';
+    btn.title = 'Congelar depósito Anzoátegui — centraliza todo en NE';
+    btn.onclick = function(){
+      if (confirm('¿Congelar el depósito AN?\n\nDespués de congelar:\n- Toda operación se canalizará por NE (Margarita)\n- Las columnas AN se ocultarán\n- Los valores guardados en exAN se mantienen intactos\n- Reversible en cualquier momento')) {
+        window.farmersCongelarAN();
+      }
+    };
+  }
+};
+
+// Aplicar al cargar: si AN está congelado, forzar selectores a NE
+(function aplicarCongelamientoAlCargar(){
+  if (window.estaCongeladoAN()) {
+    // Esperar a que las variables del catálogo estén disponibles
+    setTimeout(function(){
+      if (typeof _catDepoMode !== 'undefined') _catDepoMode = 'NE';
+      if (typeof _catDepoModeExport !== 'undefined') _catDepoModeExport = 'NE';
+    }, 500);
+  }
+})();
+
+
+// ═══ Sincronizar PRODUCTS → inv (storage legacy) ═══
+// Esta función FALTABA en el sistema pero estaba siendo llamada desde varios lados.
+// Toma la verdad de PRODUCTS (exNE + exAN) y la propaga a farmers_inv local + Firebase.
+// Llamarla siempre que se modifiquen exNE/exAN de un producto (traslados, edición, import).
+window.syncProductsToInventory = function() {
+  if (!Array.isArray(PRODUCTS) || PRODUCTS.length === 0) return;
+  var inv = {};
+  try { inv = JSON.parse(localStorage.getItem('farmers_inv') || '{}'); } catch(e){ inv = {}; }
+  var cambios = 0;
+  PRODUCTS.forEach(function(p) {
+    if (!p || !p.r) return;
+    var ne = parseInt(p.exNE)||0;
+    var an = parseInt(p.exAN)||0;
+    var totalReal = ne + an;
+    // También recalcular p.ex para mantener coherencia interna
+    if (p.ex !== totalReal) {
+      p.ex = totalReal;
+    }
+    if (inv[p.r] !== totalReal) {
+      inv[p.r] = totalReal;
+      cambios++;
+    }
+  });
+  if (cambios > 0) {
+    try { localStorage.setItem('farmers_inv', JSON.stringify(inv)); } catch(e){}
+    if (window.fbSaveInventory) window.fbSaveInventory(inv);
+    if (window.fbTriggerPortalSnapshot) window.fbTriggerPortalSnapshot('syncProductsToInventory');
+    console.log('[syncProductsToInventory] ' + cambios + ' refs sincronizadas a inv');
+  }
+  return cambios;
+};
+
 // Confirmar recepción de un traslado (suma al destino)
 window.confirmarRecepcionTraslado = function(trasladoId, itemsRecibidos) {
   var traslados = window.getTraslados();
@@ -5365,9 +5490,61 @@ function saveSales(s){
   if(window.fbTriggerPortalSnapshot) window.fbTriggerPortalSnapshot('saveSales');
 }
 
-function syncInventoryToProducts(){
+// ═══ syncInventoryToProducts ═══
+// Sincroniza inv legacy → PRODUCTS.exNE/exAN/ex
+// El parámetro `fuenteFirebase` indica que los datos vienen de loadFromFirebase
+// (no son ajustes locales del usuario).
+//
+// Comportamiento por modo:
+//   A) Modo "ajuste local" (DEFAULT, fuenteFirebase=false):
+//      - inv tiene la verdad reciente (usuario lo acaba de modificar)
+//      - Aplica el delta a NE (depósito principal)
+//   B) Modo "carga desde Firebase" (fuenteFirebase=true):
+//      - PRODUCTS.exNE/exAN viene fresco de Firebase y es la verdad
+//      - inv legacy puede estar obsoleto → se actualiza para coincidir
+//
+// Esto resuelve el bug raíz: cuando importas Excel, exNE/exAN se actualizan
+// y suben a Firebase. Al sincronizar, modo B hace que inv se realinee con NE/AN
+// en lugar de pisar NE/AN con un inv viejo.
+function syncInventoryToProducts(fuenteFirebase){
   const inv=getInventory();
-  PRODUCTS.forEach(p=>{ if(inv[p.r]!==undefined) p.ex=inv[p.r]; });
+  PRODUCTS.forEach(p=>{
+    if (!p || !p.r) return;
+    var tieneNE = (p.exNE !== undefined && p.exNE !== null && p.exNE !== '');
+    var tieneAN = (p.exAN !== undefined && p.exAN !== null && p.exAN !== '');
+    var ne = parseInt(p.exNE)||0;
+    var an = parseInt(p.exAN)||0;
+    var totalDeposites = ne + an;
+
+    if (tieneNE || tieneAN) {
+      var invVal = (inv[p.r] !== undefined) ? parseInt(inv[p.r])||0 : null;
+
+      if (fuenteFirebase) {
+        // Modo B: PRODUCTS de Firebase manda. inv se realinea.
+        p.ex = totalDeposites;
+        if (invVal !== totalDeposites) {
+          inv[p.r] = totalDeposites;
+        }
+      } else {
+        // Modo A: ajuste local, inv tiene la verdad reciente
+        if (invVal === null || invVal === totalDeposites) {
+          p.ex = totalDeposites;
+        } else {
+          // Aplicar delta a NE
+          var delta = invVal - totalDeposites;
+          p.exNE = Math.max(0, ne + delta);
+          p.ex = (parseInt(p.exNE)||0) + an;
+        }
+      }
+    } else if (inv[p.r] !== undefined) {
+      // Sin NE/AN definidos: inicializar desde inv legacy (migración)
+      var v = parseInt(inv[p.r])||0;
+      p.ex = v;
+      p.exNE = v;
+      p.exAN = 0;
+    }
+  });
+  try { localStorage.setItem('farmers_inv', JSON.stringify(inv)); } catch(e){}
 
   // ── MIGRACIÓN: reconstruir comprometido desde pedidos guardados si está vacío ──
   // (Solo se ejecuta si el comprometido está completamente vacío y hay pedidos activos)
@@ -7986,6 +8163,87 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
   //   3. Si están sincronizados o no
   //   4. Forzar una resincronización al instante
   // ══════════════════════════════════════════════════════════════════════════
+  // ══════════════════════════════════════════════════════════════════════════
+  // farmersFixStock() — Auditar y reparar drift entre exNE/exAN, p.ex y farmers_inv
+  // Útil cuando ves productos con stock distinto entre catálogo, inventario y depósitos
+  // ══════════════════════════════════════════════════════════════════════════
+  window.farmersFixStock = async function(opts) {
+    opts = opts || {};
+    var aplicar = opts.aplicar !== false; // por defecto aplica fixes
+    console.log('🔧 AUDITORÍA Y REPARACIÓN DE STOCK');
+    console.log('═══════════════════════════════════════════════════');
+
+    if (!Array.isArray(PRODUCTS) || PRODUCTS.length === 0) {
+      console.warn('PRODUCTS está vacío');
+      return;
+    }
+
+    var inv = {};
+    try { inv = JSON.parse(localStorage.getItem('farmers_inv') || '{}'); } catch(e){}
+
+    var driftDetectado = [];
+    var sumaArreglada = 0;
+    var invArreglado = 0;
+
+    PRODUCTS.forEach(function(p){
+      if (!p || !p.r) return;
+      var ne = parseInt(p.exNE)||0;
+      var an = parseInt(p.exAN)||0;
+      var totalDeposites = ne + an;
+      var pEx = parseInt(p.ex)||0;
+      var invVal = parseInt(inv[p.r])||0;
+
+      // Caso 1: p.ex no coincide con NE+AN (suma rota)
+      if (pEx !== totalDeposites) {
+        driftDetectado.push({ ref: p.r, tipo: 'ex≠NE+AN', ne: ne, an: an, ex_actual: pEx, ex_correcto: totalDeposites });
+        if (aplicar) {
+          p.ex = totalDeposites;
+          sumaArreglada++;
+        }
+      }
+      // Caso 2: inv legacy no coincide con NE+AN
+      if (invVal !== totalDeposites) {
+        driftDetectado.push({ ref: p.r, tipo: 'inv≠NE+AN', ne: ne, an: an, inv_actual: invVal, inv_correcto: totalDeposites });
+        if (aplicar) {
+          inv[p.r] = totalDeposites;
+          invArreglado++;
+        }
+      }
+    });
+
+    console.log('📊 Drift detectado en ' + driftDetectado.length + ' casos');
+    if (driftDetectado.length > 0) {
+      console.table(driftDetectado.slice(0, 50));
+      if (driftDetectado.length > 50) console.log('... (' + (driftDetectado.length - 50) + ' más)');
+    }
+
+    if (aplicar && (sumaArreglada > 0 || invArreglado > 0)) {
+      console.log('✅ Aplicando fixes...');
+      console.log('  - p.ex recalculado: ' + sumaArreglada);
+      console.log('  - inv legacy actualizado: ' + invArreglado);
+      try { localStorage.setItem('farmers_inv', JSON.stringify(inv)); } catch(e){}
+      if (typeof saveProducts === 'function') saveProducts(PRODUCTS);
+      if (window.fbSaveInventory) {
+        try { await window.fbSaveInventory(inv); console.log('  ✓ inv subido a Firebase'); }
+        catch(e){ console.warn('  ✗ error subiendo inv:', e); }
+      }
+      if (window.fbSaveProducts) {
+        try { await window.fbSaveProducts(PRODUCTS); console.log('  ✓ PRODUCTS subidos a Firebase'); }
+        catch(e){ console.warn('  ✗ error subiendo PRODUCTS:', e); }
+      }
+      if (window.fbTriggerPortalSnapshot) window.fbTriggerPortalSnapshot('farmersFixStock');
+      console.log('✅ Sincronización completada');
+      if (typeof renderTable === 'function') renderTable();
+      if (typeof showToast === 'function') showToast('🔧 ' + (sumaArreglada + invArreglado) + ' inconsistencias reparadas', 'success');
+    } else if (driftDetectado.length === 0) {
+      console.log('✅ Stock perfectamente sincronizado — nada que reparar');
+    } else if (!aplicar) {
+      console.log('ℹ Modo solo auditoría (no aplicó). Para aplicar: farmersFixStock()');
+    }
+    console.log('═══════════════════════════════════════════════════');
+    return { driftDetectado: driftDetectado.length, sumaArreglada: sumaArreglada, invArreglado: invArreglado };
+  };
+
   window.farmersDiag = async function() {
     console.log('═══════════════════════════════════════════════════');
     console.log('🔍 DIAGNÓSTICO COMPLETO FARMERS PORTAL');
@@ -8430,8 +8688,29 @@ async function loadFromFirebase() {
       var inv = await window.fbGetInventory();
       if (inv) {
         localStorage.setItem('farmers_inv', JSON.stringify(inv));
-        syncInventoryToProducts();
+        // ═══ Modo Firebase: PRODUCTS.exNE/exAN ya viene fresco, inv legacy debe alinearse ═══
+        // (Antes esto pisaba NE/AN con valores viejos de inv — el bug raíz)
+        syncInventoryToProducts(true);
         if (typeof renderTable === 'function') renderTable();
+
+        // ═══ AUDITOR DE DRIFT (silencioso) ═══
+        // Detecta inconsistencias entre exNE+exAN y inv legacy. Solo reporta en consola.
+        // Si encuentra drift, sugiere ejecutar farmersFixStock() para reparar.
+        try {
+          var driftCount = 0;
+          PRODUCTS.forEach(function(p){
+            if (!p || !p.r) return;
+            var ne = parseInt(p.exNE)||0;
+            var an = parseInt(p.exAN)||0;
+            var totalDep = ne + an;
+            var pEx = parseInt(p.ex)||0;
+            if (pEx !== totalDep) driftCount++;
+          });
+          if (driftCount > 0) {
+            console.warn('[Auditor stock] ⚠ Detectadas ' + driftCount + ' inconsistencias entre exNE+exAN y p.ex');
+            console.warn('[Auditor stock] Ejecuta farmersFixStock() para reparar automáticamente');
+          }
+        } catch(e) { console.warn('[Auditor stock]', e); }
       }
     }
     if (window.fbGetSales) {
@@ -29191,6 +29470,11 @@ function doRefSearch() {
       '</div>' +
       // PANEL PRODUCTOS TERMINADOS
       '<div id="inv-panel-productos" style="display:none;">' +
+        // Banner de aviso AN congelado (solo visible cuando aplica)
+        '<div id="banner-an-congelado" style="display:none;background:linear-gradient(90deg,#dbeafe,#e0e7ff);border-bottom:2px solid #3b82f6;padding:8px 20px;color:#1e3a8a;font-size:.78rem;font-weight:700;display:flex;align-items:center;gap:10px;">' +
+          '<span style="font-size:1.1rem;">🥶</span>' +
+          '<span><strong>Depósito AN congelado</strong> — Todo el inventario se está canalizando por NE (Margarita). Los datos guardados en exAN se mantienen intactos.</span>' +
+        '</div>' +
         '<div style="padding:14px 20px;background:#f8f9ff;border-bottom:1px solid #e8eaf6;display:flex;gap:10px;align-items:center;flex-wrap:wrap;">' +
           '<input id="pt-search" type="text" placeholder="Buscar por referencia, nombre, marca, código de barras..." oninput="ptRender()" style="flex:1;min-width:200px;padding:8px 12px;border:1.5px solid #e0e4f0;border-radius:8px;font-size:.82rem;outline:none;">' +
           '<select id="pt-filter-brand" onchange="ptRender()" style="padding:8px 12px;border:1.5px solid #e0e4f0;border-radius:8px;font-size:.82rem;background:white;cursor:pointer;">' +
@@ -29213,6 +29497,7 @@ function doRefSearch() {
           '</select>' +
           '<button onclick="ptNuevoProducto()" style="background:#1B1F6B;color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:700;font-size:.8rem;white-space:nowrap;">+ Nuevo Producto</button>' +
           '<button onclick="descAbrirGestion()" style="background:linear-gradient(135deg,#dc2626,#991b1b);color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:800;font-size:.8rem;white-space:nowrap;box-shadow:0 4px 12px rgba(220,38,38,.3);" title="Gestionar descuentos y campañas de oferta">💸 Descuentos</button>' +
+          '<button id="btn-congelar-an" style="color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:800;font-size:.8rem;white-space:nowrap;background:linear-gradient(135deg,#1e40af,#1e3a8a);" title="Congelar/Descongelar depósito AN">🥶 Congelar AN</button>' +
 
           // ── GRUPO IMPORTAR (dropdown) ──
           '<div style="position:relative;display:inline-block;">' +
@@ -31077,6 +31362,11 @@ function ptDisponible(ref, exActual, comprometidas) {
 function ptRender() {
   var tbody = document.getElementById('pt-tbody');
   if (!tbody) return;
+
+  // Actualizar visual del botón Congelar/Descongelar AN
+  if (typeof window.actualizarBotonCongelarAN === 'function') {
+    setTimeout(function(){ window.actualizarBotonCongelarAN(); }, 0);
+  }
 
   var inv          = typeof getInventory === 'function' ? getInventory() : {};
   var ptData       = ptGetData();
@@ -33963,11 +34253,17 @@ window.ptDescargarCatalogoSimple = function() {
       else if (descInfo.fuente === 'individual') ofertaLabel = 'Individual';
     }
 
+    // Si AN está congelado: el Excel muestra 0 en STOCK_AN para evitar que el usuario
+    // edite ese valor (el valor real de exAN sigue guardado en PRODUCTS, intacto)
+    var anCongeladoExp = (typeof window.estaCongeladoAN === 'function') && window.estaCongeladoAN();
+    var stockAN_Excel = anCongeladoExp ? 0 : stockAN;
+    var stockTotal_Excel = anCongeladoExp ? stockNE : stockTotal;
+
     return {
       'REFERENCIA': p.r || '',
       'STOCK_NE': stockNE,
-      'STOCK_AN': stockAN,
-      'STOCK_TOTAL': stockTotal,
+      'STOCK_AN': stockAN_Excel,
+      'STOCK_TOTAL': stockTotal_Excel,
       'MARCA': p.br || '',
       'DESCRIPCION': p.d || '',
       'CODIGO_BARRA': p.b || '',
@@ -34085,8 +34381,12 @@ window.ptImportarCatalogoSimple = function() {
           var stockANActual = parseInt(prod.exAN) || 0;
           var stockTotalActual = stockNEActual + stockANActual;
 
+          // ═══ Si AN está congelado: ignorar la columna STOCK_AN ═══
+          // (Los valores de exAN se preservan intactos)
+          var anCongeladoImp = (typeof window.estaCongeladoAN === 'function') && window.estaCongeladoAN();
+
           var stockNEExcel = ('STOCK_NE' in row) ? row.STOCK_NE : '';
-          var stockANExcel = ('STOCK_AN' in row) ? row.STOCK_AN : '';
+          var stockANExcel = anCongeladoImp ? '' : (('STOCK_AN' in row) ? row.STOCK_AN : '');
           var stockTotalExcel = ('STOCK_TOTAL' in row) ? row.STOCK_TOTAL : '';
 
           var nNE = (stockNEExcel === '' || stockNEExcel === null) ? null : parseInt(stockNEExcel);
@@ -34109,8 +34409,14 @@ window.ptImportarCatalogoSimple = function() {
             stockSeModifico = true;
           }
           // Si solo cambió TOTAL (no NE ni AN), distribuir manteniendo proporción actual
+          // (Si AN está congelado: TODO el cambio va a NE)
           else if (cambioTotal) {
-            if (stockTotalActual === 0) {
+            if (anCongeladoImp) {
+              // AN congelado: el delta del total se aplica a NE, exAN intacto
+              nuevoNE = nTotal - stockANActual;
+              if (nuevoNE < 0) nuevoNE = nTotal; // si nuevo total es menor que AN, NE absorbe
+              nuevoAN = stockANActual; // intacto
+            } else if (stockTotalActual === 0) {
               // Sin proporción previa: todo a NE (depósito principal en Margarita)
               nuevoNE = nTotal;
               nuevoAN = 0;
@@ -34246,19 +34552,29 @@ window.ptImportarCatalogoSimple = function() {
         }
 
         // ═══════════════════════════════════════════════════════════
-        // PERSISTIR CAMBIOS
+        // PERSISTIR CAMBIOS — incluyendo Firebase
         // ═══════════════════════════════════════════════════════════
         try { localStorage.setItem('farmers_pt_data', JSON.stringify(ptData)); } catch(e){}
         if (typeof ptSaveData === 'function') ptSaveData(ptData);
         if (typeof saveProducts === 'function') saveProducts(PRODUCTS);
 
-        // Actualizar también farmers_inventory para mantener coherencia con drift
+        // ═══ FUNDAMENTAL: actualizar farmers_inv local Y Firebase ═══
+        // Antes solo se guardaba local — por eso al sincronizar "volvían los valores viejos".
+        // Ahora forzamos que farmers_inv en Firebase también refleje los nuevos exNE+exAN.
         if (typeof getInventory === 'function' && typeof saveInventory === 'function') {
-          var inv = getInventory();
+          var inv = {};
+          try { inv = JSON.parse(localStorage.getItem('farmers_inv') || '{}'); } catch(e){}
           PRODUCTS.forEach(function(p){
+            if (!p || !p.r) return;
             inv[p.r] = (parseInt(p.exNE)||0) + (parseInt(p.exAN)||0);
           });
+          // saveInventory ya escribe a Firebase (window.fbSaveInventory)
           saveInventory(inv);
+        }
+
+        // Forzar también que PRODUCTS suba a Firebase para que exNE/exAN queden sincronizados allí
+        if (window.fbSaveProducts && Array.isArray(PRODUCTS)) {
+          window.fbSaveProducts(PRODUCTS).catch(function(e){ console.warn('[ImportSimple] fbSaveProducts:', e); });
         }
 
         if (window.fbTriggerPortalSnapshot) window.fbTriggerPortalSnapshot('catalogo-simple-importado');
