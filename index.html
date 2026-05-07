@@ -17,7 +17,7 @@
 <meta http-equiv="Expires" content="0">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.05.05.38">
+<meta name="farmers-version" content="2026.05.05.39">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -25115,10 +25115,10 @@ function _doConfirmImport(ajustarStock) {
           <button id="rsf-OUT"   onclick="setRefStock('OUT')"   style="border-radius:20px;padding:5px 12px;font-size:.72rem;font-weight:700;cursor:pointer;border:1.5px solid rgba(255,255,255,.2);background:rgba(220,38,38,.3);color:white;">✗ Agotados</button>
           <button id="rsf-ORD"   onclick="setRefStock('ORD')"   style="border-radius:20px;padding:5px 12px;font-size:.72rem;font-weight:700;cursor:pointer;border:1.5px solid rgba(255,255,255,.2);background:rgba(180,83,9,.3);color:#fde68a;">📦 Con Ordenada</button>
         </div>
-        <!-- Moneda para modo cliente -->
+        <!-- Moneda para modo cliente — sincronizado con el panel "Mostrar/Ocultar" -->
         <div id="cat-moneda-sel" style="display:none;gap:6px;align-items:center;">
           <span style="font-size:.65rem;color:rgba(255,255,255,.45);font-weight:700;letter-spacing:1px;text-transform:uppercase;white-space:nowrap;">Moneda:</span>
-          <select id="cat-moneda-select" onchange="doRefSearch()"
+          <select id="cat-moneda-select" onchange="catSyncMonedaPanel(this.value);doRefSearch()"
             style="background:rgba(255,255,255,.15);border:1.5px solid rgba(255,255,255,.3);color:white;border-radius:8px;padding:5px 10px;font-size:.78rem;font-weight:700;outline:none;cursor:pointer;">
             <option value="USD">USD $</option>
             <option value="BCV">BCV (Bs. al emitir)</option>
@@ -25504,8 +25504,42 @@ var _catDepoModeExport = 'AMBOS';   // afecta PDF y Excel (selector aparte en mo
 
 // ═══ Modo de Precio del catálogo ═══
 // Valores: 'TODOS' (USD+BCV+TF) | 'USD' | 'BCV' | 'TF' | 'NONE' (sin precio)
-// Afecta cards en pantalla. Para PDF se respeta el selector cat-moneda-select existente.
+// Fuente única de verdad — sincronizado con el selector mini "cat-moneda-select" en cabecera
 var _catModoPrecio = 'TODOS';
+
+// Sincronizar selector mini → panel "Mostrar/Ocultar"
+// Se llama cuando el usuario cambia el selector mini en la cabecera
+window.catSyncMonedaPanel = function(value){
+  // Mapear el valor del mini a un valor válido del panel
+  var nuevoModo = value;
+  if (value !== 'USD' && value !== 'BCV' && value !== 'TF' && value !== 'NONE') {
+    nuevoModo = 'TODOS';
+  }
+  _catModoPrecio = nuevoModo;
+
+  // Refrescar visualmente las cards del panel "Mostrar/Ocultar" (si está abierto)
+  var configs = {
+    TODOS: ['#7c3aed','#f5f3ff'],
+    USD:   ['#16a34a','#dcfce7'],
+    BCV:   ['#2563eb','#dbeafe'],
+    TF:    ['#d97706','#fef3c7'],
+    NONE:  ['#64748b','#f1f5f9']
+  };
+  ['TODOS','USD','BCV','TF','NONE'].forEach(function(v){
+    var c = document.getElementById('precio-card-' + v);
+    if (!c) return;
+    if (v === nuevoModo) {
+      c.style.borderColor = configs[v][0];
+      c.style.background  = configs[v][1];
+    } else {
+      c.style.borderColor = '#e2e8f0';
+      c.style.background  = 'white';
+    }
+  });
+
+  // Actualizar el badge de vista si existe
+  if (typeof catActualizarBadgeVista === 'function') catActualizarBadgeVista();
+};
 
 window.catToggleExclComp = function(){
   _catExclComp = !_catExclComp;
@@ -26963,6 +26997,16 @@ function catAbrirPanelVista() {
       + '<div style="font-size:.68rem;color:#64748b;">' + sub + '</div>';
     card.onclick = function() {
       _catModoPrecio = value;
+      // ═══ Sincronizar selector mini en cabecera ═══
+      var miniSel = document.getElementById('cat-moneda-select');
+      if (miniSel) {
+        if (value === 'NONE') miniSel.value = 'NONE';
+        else if (value === 'TODOS') {
+          // En 'TODOS' no forzar el mini — deja lo que el usuario tenga ahí (ej. BCV)
+        } else {
+          miniSel.value = value;  // USD, BCV o TF
+        }
+      }
       // Refrescar visualmente las cards de precio
       var configs = {
         TODOS: ['#7c3aed','#f5f3ff'],
@@ -27801,22 +27845,21 @@ function _catDownloadPDFWithImgs(_prodImgsLocal) {
     }
   }
 
-  // Moneda: en modo cliente toma lo seleccionado; en modo interno respeta el _catModoPrecio del panel Mostrar/Ocultar
-  var _selMonedaVal = (document.getElementById('cat-moneda-select') || {value:'USD'}).value;
+  // ═══ Moneda en PDF — UNA SOLA fuente de verdad: el panel "Mostrar/Ocultar" (_catModoPrecio) ═══
+  // El selector mini "cat-moneda-select" está sincronizado con el panel (cambio en uno → cambia el otro)
+  // Modo cliente y modo admin respetan _catModoPrecio por igual
   var _catM;
-  if (_catClientMode) {
-    _catM = _selMonedaVal;
-  } else if (_selMonedaVal === 'NONE') {
-    // Si el selector legacy de moneda dice NONE, respeta
-    _catM = 'NONE';
-  } else if (typeof _catModoPrecio !== 'undefined' && _catModoPrecio === 'NONE') {
-    // Nuevo: si el panel Mostrar/Ocultar tiene 'Sin Precio', el PDF también
+  if (typeof _catModoPrecio !== 'undefined' && _catModoPrecio === 'NONE') {
     _catM = 'NONE';
   } else if (typeof _catModoPrecio !== 'undefined' && (_catModoPrecio === 'USD' || _catModoPrecio === 'BCV' || _catModoPrecio === 'TF')) {
-    // Nuevo: si el panel tiene un tipo de precio específico, el PDF lo respeta
     _catM = _catModoPrecio;
+  } else if (_catClientMode) {
+    // Modo cliente con TODOS → respetar el selector mini de la cabecera (BCV por defecto)
+    var _selMonedaVal = (document.getElementById('cat-moneda-select') || {value:'USD'}).value;
+    _catM = (_selMonedaVal === 'NONE') ? 'NONE' : _selMonedaVal;
   } else {
-    _catM = 'USD';
+    // Admin con TODOS → muestra los 3 precios en grid
+    _catM = 'TODOS';
   }
   // Modo 'Sin Precio' — oculta todos los precios en el PDF.
   var _catSinPrecio = (_catM === 'NONE');
@@ -28616,10 +28659,15 @@ function doRefSearch() {
     else if (_hasDesc && p.u) pBCVdesc = pUSDdesc;
     if (_hasDesc && p.t)  pTFdesc  = '$ ' + (p.t  * (1 - _descPct/100)).toFixed(2);
     else if (_hasDesc && p.u) pTFdesc = pUSDdesc;
-    // Modo cliente: mostrar el precio de la moneda seleccionada
+    // Modo cliente — moneda activa: panel manda, sino selector mini, sino USD
     // 'NONE' (Sin Precio) aplica SOLO al descargar — en pantalla forzamos USD para que nunca falten precios
-    var _catM = (document.getElementById('cat-moneda-select') || {value:'USD'}).value;
-    if (_catM === 'NONE') _catM = 'USD';
+    var _catM;
+    if (typeof _catModoPrecio !== 'undefined' && (_catModoPrecio === 'USD' || _catModoPrecio === 'BCV' || _catModoPrecio === 'TF')) {
+      _catM = _catModoPrecio;
+    } else {
+      _catM = (document.getElementById('cat-moneda-select') || {value:'USD'}).value;
+      if (_catM === 'NONE') _catM = 'USD';
+    }
     var precioMostrar = _catM === 'BCV' ? pBCV : _catM === 'TF' ? pTF : pUSD;
     var monedaLabel   = _catM === 'BCV' ? 'BCV' : _catM === 'TF' ? 'TF' : 'USD';
 
