@@ -17,7 +17,7 @@
 <meta http-equiv="Expires" content="0">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.05.05.35">
+<meta name="farmers-version" content="2026.05.05.37">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -27903,6 +27903,18 @@ function _catDownloadPDFWithImgs(_prodImgsLocal) {
         }
       }
 
+      // ═══ DESCUENTOS (catálogo PDF) — sobrio: precio tachado + precio nuevo ═══
+      var _descPDF = (typeof window.getDescuentoProducto === 'function') ? window.getDescuentoProducto(p.r) : null;
+      var _hasDescPDF = _descPDF && _descPDF.porcentaje > 0;
+      var _descPctPDF = _hasDescPDF ? _descPDF.porcentaje : 0;
+      // Precios con descuento (formato string)
+      var pUSDdescPDF = pUSD, pBCVdescPDF = pBCV, pTFdescPDF = pTF;
+      if (_hasDescPDF && p.u)  pUSDdescPDF = '$ ' + (p.u  * (1 - _descPctPDF/100)).toFixed(2);
+      if (_hasDescPDF && p.bv) pBCVdescPDF = '$ ' + (p.bv * (1 - _descPctPDF/100)).toFixed(2);
+      else if (_hasDescPDF && p.u) pBCVdescPDF = pUSDdescPDF;
+      if (_hasDescPDF && p.t)  pTFdescPDF  = '$ ' + (p.t  * (1 - _descPctPDF/100)).toFixed(2);
+      else if (_hasDescPDF && p.u) pTFdescPDF = pUSDdescPDF;
+
       var preciosHTML;
       // ═══ Aplicar _catModoPrecio (USD/BCV/TF/NONE/TODOS) en pantalla ═══
       // Solo aplica fuera de modo cliente (en modo cliente ya manda la moneda del cliente)
@@ -27911,21 +27923,48 @@ function _catDownloadPDFWithImgs(_prodImgsLocal) {
         preciosHTML = '';
       } else if (!_catClientMode) {
         if (_catModoPrecio === 'USD') {
-          preciosHTML = '<div class="precio-cliente"><span class="pcel-label">PRECIO USD</span><span class="pcel-val-big">' + pUSD + '</span></div>';
+          if (_hasDescPDF) {
+            preciosHTML = '<div class="precio-cliente precio-cliente-oferta"><span class="pcel-label">PRECIO USD <span class="pcel-pct">-' + _descPctPDF + '%</span></span><span class="pcel-vals"><span class="pcel-old">' + pUSD + '</span><span class="pcel-val-big">' + pUSDdescPDF + '</span></span></div>';
+          } else {
+            preciosHTML = '<div class="precio-cliente"><span class="pcel-label">PRECIO USD</span><span class="pcel-val-big">' + pUSD + '</span></div>';
+          }
         } else if (_catModoPrecio === 'BCV') {
-          preciosHTML = '<div class="precio-cliente"><span class="pcel-label">PRECIO BCV</span><span class="pcel-val-big">' + pBCV + '</span></div>';
+          if (_hasDescPDF) {
+            preciosHTML = '<div class="precio-cliente precio-cliente-oferta"><span class="pcel-label">PRECIO BCV <span class="pcel-pct">-' + _descPctPDF + '%</span></span><span class="pcel-vals"><span class="pcel-old">' + pBCV + '</span><span class="pcel-val-big">' + pBCVdescPDF + '</span></span></div>';
+          } else {
+            preciosHTML = '<div class="precio-cliente"><span class="pcel-label">PRECIO BCV</span><span class="pcel-val-big">' + pBCV + '</span></div>';
+          }
         } else if (_catModoPrecio === 'TF') {
-          preciosHTML = '<div class="precio-cliente"><span class="pcel-label">PRECIO TF</span><span class="pcel-val-big">' + pTF + '</span></div>';
+          if (_hasDescPDF) {
+            preciosHTML = '<div class="precio-cliente precio-cliente-oferta"><span class="pcel-label">PRECIO TF <span class="pcel-pct">-' + _descPctPDF + '%</span></span><span class="pcel-vals"><span class="pcel-old">' + pTF + '</span><span class="pcel-val-big">' + pTFdescPDF + '</span></span></div>';
+          } else {
+            preciosHTML = '<div class="precio-cliente"><span class="pcel-label">PRECIO TF</span><span class="pcel-val-big">' + pTF + '</span></div>';
+          }
         } else {
-          // 'TODOS' — comportamiento actual
-          preciosHTML = '<div class="precios-grid">' +
-              '<div class="precio-cell"><div class="pcel-label">USD</div><div class="pcel-val">' + pUSD + '</div></div>' +
-              '<div class="precio-cell"><div class="pcel-label">BCV</div><div class="pcel-val">' + pBCV + '</div></div>' +
-              '<div class="precio-cell"><div class="pcel-label">TF</div><div class="pcel-val">' + pTF + '</div></div>' +
-            '</div>';
+          // 'TODOS' — con descuento muestra precio tachado encima del nuevo
+          if (_hasDescPDF) {
+            preciosHTML = '<div class="precios-grid precios-grid-oferta">' +
+                '<div class="precio-cell precio-cell-oferta"><div class="pcel-label">USD <span class="pcel-pct-mini">-' + _descPctPDF + '%</span></div><div class="pcel-old-mini">' + pUSD + '</div><div class="pcel-val">' + pUSDdescPDF + '</div></div>' +
+                '<div class="precio-cell precio-cell-oferta"><div class="pcel-label">BCV</div><div class="pcel-old-mini">' + pBCV + '</div><div class="pcel-val">' + pBCVdescPDF + '</div></div>' +
+                '<div class="precio-cell precio-cell-oferta"><div class="pcel-label">TF</div><div class="pcel-old-mini">' + pTF + '</div><div class="pcel-val">' + pTFdescPDF + '</div></div>' +
+              '</div>';
+          } else {
+            preciosHTML = '<div class="precios-grid">' +
+                '<div class="precio-cell"><div class="pcel-label">USD</div><div class="pcel-val">' + pUSD + '</div></div>' +
+                '<div class="precio-cell"><div class="pcel-label">BCV</div><div class="pcel-val">' + pBCV + '</div></div>' +
+                '<div class="precio-cell"><div class="pcel-label">TF</div><div class="pcel-val">' + pTF + '</div></div>' +
+              '</div>';
+          }
         }
       } else {
-        preciosHTML = '<div class="precio-cliente"><span class="pcel-label">PRECIO ' + monLabel + '</span><span class="pcel-val-big">' + getPrecioStr(p) + '</span></div>';
+        // Modo cliente — un solo precio, con tachado si hay descuento
+        if (_hasDescPDF) {
+          var precioOldStr = monLabel === 'BCV' ? pBCV : monLabel === 'TF' ? pTF : pUSD;
+          var precioNewStr = monLabel === 'BCV' ? pBCVdescPDF : monLabel === 'TF' ? pTFdescPDF : pUSDdescPDF;
+          preciosHTML = '<div class="precio-cliente precio-cliente-oferta"><span class="pcel-label">PRECIO ' + monLabel + ' <span class="pcel-pct">-' + _descPctPDF + '%</span></span><span class="pcel-vals"><span class="pcel-old">' + precioOldStr + '</span><span class="pcel-val-big">' + precioNewStr + '</span></span></div>';
+        } else {
+          preciosHTML = '<div class="precio-cliente"><span class="pcel-label">PRECIO ' + monLabel + '</span><span class="pcel-val-big">' + getPrecioStr(p) + '</span></div>';
+        }
       }
 
       var capitalHTML = (!_catSinPrecio && _catModoPrecio !== 'NONE' && !_catClientMode && capital > 0)
@@ -27999,10 +28038,8 @@ function _catDownloadPDFWithImgs(_prodImgsLocal) {
       '</div>';
     } // end buildCard
 
-    // Determinar productos por página:
-    // Vertical: 2 cols × 3 filas = 6 productos (óptimo para orientación principal)
-    // Horizontal: 4 cols × 2 filas = 8 productos (si cambias orientación, verás 6 + 2 huecos)
-    // Usamos 6 como base para que vertical (orientación más usada) quede perfecta
+    // Chunks de 6 productos (vertical = página perfecta).
+    // Marcamos las cards con data-marca para que el JS pueda re-chunkear si cambia a horizontal.
     var PROD_POR_PAGINA = 6;
     var chunks = [];
     for (var iC = 0; iC < prods.length; iC += PROD_POR_PAGINA) {
@@ -28013,8 +28050,8 @@ function _catDownloadPDFWithImgs(_prodImgsLocal) {
     // Construir HTML de cada chunk con su propio header (se ve uno por página impresa)
     return chunks.map(function(chunkProds, idxChunk){
       var cards = chunkProds.map(buildCard).join('');
-      var chunkLabel = totalChunks > 1 ? ' <span style="opacity:.55;font-size:.65rem;">· pág. ' + (idxChunk+1) + ' de ' + totalChunks + '</span>' : '';
-      return '<div class="marca-section" data-marca="' + br + '" data-chunk="' + idxChunk + '">' +
+      var chunkLabel = totalChunks > 1 ? ' <span class="marca-chunk-label" style="opacity:.55;font-size:.65rem;">· pág. ' + (idxChunk+1) + ' de ' + totalChunks + '</span>' : '';
+      return '<div class="marca-section" data-marca="' + br + '" data-chunk="' + idxChunk + '" data-total-prods="' + prods.length + '">' +
         '<div class="marca-header" style="background:' + bColor + ';">' +
           '<span class="marca-name">' + br + chunkLabel + '</span>' +
           '<span class="marca-meta">' + prods.length + ' referencias</span>' +
@@ -28085,6 +28122,19 @@ function _catDownloadPDFWithImgs(_prodImgsLocal) {
       '.precio-cliente{background:linear-gradient(135deg,#1a2050,#252b7a);border-radius:6px;padding:5px 10px;display:flex;align-items:center;justify-content:space-between;margin-top:auto;flex-shrink:0;}' +
       '.precio-cliente .pcel-label{color:rgba(255,255,255,.6);font-size:.5rem;font-weight:700;text-transform:uppercase;letter-spacing:.6px;}' +
       '.pcel-val-big{font-family:"Barlow Condensed",sans-serif;font-weight:900;font-size:1rem;color:white;}' +
+      // ═══ DESCUENTOS — estilo SOBRIO sin badges grandes ═══
+      // Caso 1: precio único (USD solo, BCV solo, TF solo, modo cliente)
+      '.precio-cliente-oferta{padding:4px 9px;}' +
+      '.precio-cliente-oferta .pcel-pct{display:inline-block;background:rgba(255,255,255,.18);color:#fef3c7;border-radius:3px;padding:0 4px;margin-left:4px;font-size:.5rem;font-weight:800;letter-spacing:.4px;}' +
+      '.precio-cliente-oferta .pcel-vals{display:flex;flex-direction:column;align-items:flex-end;gap:0;line-height:1;}' +
+      '.precio-cliente-oferta .pcel-old{font-size:.6rem;color:rgba(255,255,255,.4);text-decoration:line-through;font-weight:700;line-height:1.1;}' +
+      '.precio-cliente-oferta .pcel-val-big{font-size:1rem;line-height:1.1;}' +
+      // Caso 2: grid 3 precios (USD/BCV/TF todos visibles) con descuento
+      '.precios-grid-oferta{background:#fff7ed;border:1px solid #fed7aa;}' +
+      '.precio-cell-oferta{padding:2px 4px;}' +
+      '.precio-cell-oferta .pcel-pct-mini{display:inline-block;background:#fed7aa;color:#9a3412;border-radius:2px;padding:0 3px;font-size:.42rem;font-weight:800;margin-left:2px;}' +
+      '.precio-cell-oferta .pcel-old-mini{font-size:.55rem;color:#94a3b8;text-decoration:line-through;font-weight:600;line-height:1;margin-bottom:1px;}' +
+      '.precio-cell-oferta .pcel-val{color:#dc2626;font-size:.85rem;}' +
       // Capital — UNA SOLA LÍNEA muy compacta
       '.capital-row{background:linear-gradient(135deg,#065f46,#047857);border-radius:4px;padding:3px 8px;display:flex;align-items:center;gap:5px;font-size:.55rem;color:white;font-weight:700;flex-shrink:0;}' +
       '.capital-row strong{font-family:"Barlow Condensed",sans-serif;font-size:.78rem;margin-left:auto;}' +
@@ -28092,8 +28142,8 @@ function _catDownloadPDFWithImgs(_prodImgsLocal) {
       '.footer{text-align:center;padding:8px;font-size:.62rem;color:#94a3b8;border-top:1px solid #e8ecf8;background:white;margin-top:4px;page-break-before:avoid;break-before:avoid;}' +
       // ═══ @page con tamaño y márgenes (regex JS de orientación lo modifica) ═══
       '@page{size:A4 ' + _pdfOrientation + ';margin:5mm 6mm;}' +
-      // Pie de página con paginación (areas @bottom — compactas)
-      '@page{ @bottom-right { content: "Pág. " counter(page) " de " counter(pages); font-family: Barlow,sans-serif; font-size: 7pt; color: #94a3b8; } @bottom-left { content: "Farmers C.A. · Catálogo confidencial"; font-family: Barlow,sans-serif; font-size: 7pt; color: #94a3b8; } }' +
+      // Pie de página con paginación (areas @bottom — compactas, no crean página extra)
+      '@page{ @bottom-right { content: "Pág. " counter(page) " de " counter(pages); font-family: Barlow,sans-serif; font-size: 7pt; color: #94a3b8; } @bottom-left { content: "Farmers C.A. · Catálogo · ' + hoy + ' · Confidencial"; font-family: Barlow,sans-serif; font-size: 7pt; color: #94a3b8; } }' +
       '* { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; color-adjust: exact !important; }' +
       '@media print{' +
         '#printbar{display:none !important;}' +
@@ -28102,6 +28152,7 @@ function _catDownloadPDFWithImgs(_prodImgsLocal) {
         // ⚠ NO modificar .cards-grid padding ni .card height — ya están calculados para A4
         '.card{break-inside:avoid !important;page-break-inside:avoid !important;box-shadow:none !important;}' +
         '.precios-grid{background:#f0f4ff !important;}' +
+        '.precios-grid-oferta{background:#fff7ed !important;border:1px solid #fed7aa !important;}' +
         '.precio-cliente{background:linear-gradient(135deg,#1a2050,#252b7a) !important;}' +
         '.capital-row{background:linear-gradient(135deg,#065f46,#047857) !important;}' +
         '.meta-cell{background:#f8f9ff !important;}' +
@@ -28124,6 +28175,16 @@ function _catDownloadPDFWithImgs(_prodImgsLocal) {
     '.cover-stat{border-left:3px solid rgba(244,123,62,.6);padding-left:16px;}' +
     '.cover-stat-val{font-family:"Barlow Condensed",sans-serif;font-weight:900;font-size:2rem;color:white;line-height:1;}' +
     '.cover-stat-lbl{font-size:.7rem;color:rgba(255,255,255,.5);font-weight:600;text-transform:uppercase;letter-spacing:1.5px;margin-top:3px;}' +
+    // ÍNDICE DE MARCAS en portada
+    '.cover-toc{margin-top:36px;border-top:1px solid rgba(255,255,255,.12);padding-top:20px;max-width:680px;}' +
+    '.cover-toc-title{font-family:"Barlow Condensed",sans-serif;font-weight:900;font-size:.9rem;color:rgba(244,123,62,.85);letter-spacing:2.5px;text-transform:uppercase;margin-bottom:12px;}' +
+    '.toc-row{display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid rgba(255,255,255,.06);font-family:"Barlow",sans-serif;}' +
+    '.toc-row:last-child{border-bottom:none;}' +
+    '.toc-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0;box-shadow:0 0 6px currentColor;}' +
+    '.toc-name{font-family:"Barlow Condensed",sans-serif;font-weight:800;color:white;letter-spacing:1.5px;text-transform:uppercase;font-size:.95rem;min-width:130px;}' +
+    '.toc-dots{flex:1;border-bottom:1px dotted rgba(255,255,255,.2);height:1px;margin:0 4px;}' +
+    '.toc-count{font-size:.7rem;color:rgba(255,255,255,.45);font-weight:600;}' +
+    '.toc-page{font-family:"Barlow Condensed",sans-serif;font-weight:800;color:#f47b3e;font-size:.82rem;letter-spacing:.5px;min-width:80px;text-align:right;}' +
     '.cover-bottom{border-top:1px solid rgba(255,255,255,.08);padding:28px 72px;display:flex;align-items:center;justify-content:space-between;}' +
     '.cover-date{font-size:.8rem;color:rgba(255,255,255,.5);font-weight:600;letter-spacing:.5px;}' +
     '.cover-contact{text-align:right;}' +
@@ -28159,6 +28220,32 @@ function _catDownloadPDFWithImgs(_prodImgsLocal) {
             (!_catSinPrecio && !_catClientMode && capTotal > 0 ? '<div class="cover-stat"><div class="cover-stat-val">$ ' + capTotal.toFixed(0) + '</div><div class="cover-stat-lbl">Capital USD</div></div>' : '') +
             '<div class="cover-stat"><div class="cover-stat-val">' + monedaFull + '</div><div class="cover-stat-lbl">Moneda</div></div>' +
           '</div>' +
+          // ── ÍNDICE DE MARCAS — número de páginas por marca ──
+          (function(){
+            var marcasOrdenadas = Object.keys(porMarca).sort(function(a,b){ return String(a||'').localeCompare(String(b||''), 'es', {numeric:true,sensitivity:'base'}); });
+            if (marcasOrdenadas.length < 2) return '';  // No mostrar índice si solo hay 1 marca
+            var paginaActual = 2;  // Empieza en la pág. 2 (después de portada)
+            var lineas = marcasOrdenadas.map(function(br){
+              var prodsBr = porMarca[br];
+              var paginas = Math.ceil(prodsBr.length / 6);
+              var color = brandColors[br] || '#475569';
+              var startPage = paginaActual;
+              paginaActual += paginas;
+              var endPage = paginaActual - 1;
+              var rangoStr = paginas === 1 ? ('pág. ' + startPage) : ('pág. ' + startPage + '–' + endPage);
+              return '<div class="toc-row">' +
+                '<div class="toc-dot" style="background:' + color + ';"></div>' +
+                '<div class="toc-name">' + br + '</div>' +
+                '<div class="toc-dots"></div>' +
+                '<div class="toc-count">' + prodsBr.length + ' refs</div>' +
+                '<div class="toc-page">' + rangoStr + '</div>' +
+              '</div>';
+            }).join('');
+            return '<div class="cover-toc">' +
+              '<div class="cover-toc-title">Índice de marcas</div>' +
+              lineas +
+            '</div>';
+          })() +
         '</div>' +
         '<div class="cover-bottom">' +
           '<div class="cover-date">📅 ' + hoy.charAt(0).toUpperCase() + hoy.slice(1) + '</div>' +
@@ -28167,11 +28254,46 @@ function _catDownloadPDFWithImgs(_prodImgsLocal) {
       '</div>';
     })() +
     '<div class="body">' + cardsHTML + '</div>' +
-    '<div class="footer">Farmers C.A. &nbsp;·&nbsp; Catálogo generado el ' + hoy + ' &nbsp;·&nbsp; Uso interno confidencial</div>' +
     '<scr'+'ipt>' +
 // assignImages ya no necesario — src base64 directo
 
-    'function catSetOrientPDF(o){var s=document.querySelector("style");if(s){s.textContent=s.textContent.replace(/@page\\{size:[^}]+\\}/,"@page{size:A4 "+o+";margin:5mm 6mm;}");}var cols=o==="landscape"?"repeat(4,1fr)":"repeat(2,1fr)";document.querySelectorAll(".cards-grid").forEach(function(g){g.style.gridTemplateColumns=cols;});var bl=document.getElementById("btnOrL"),bp=document.getElementById("btnOrP");if(bl){bl.style.background=o==="landscape"?"#f47b3e":"rgba(255,255,255,.12)";bl.style.color="white";}if(bp){bp.style.background=o==="portrait"?"#f47b3e":"rgba(255,255,255,.12)";bp.style.color=o==="portrait"?"white":"rgba(255,255,255,.6)";}}' +
+    'function catSetOrientPDF(o){' +
+      // 1. Cambiar @page tamaño
+      'var s=document.querySelector("style");' +
+      'if(s){s.textContent=s.textContent.replace(/@page\\{size:[^}]+\\}/,"@page{size:A4 "+o+";margin:5mm 6mm;}");}' +
+      // 2. Cambiar columnas del grid
+      'var cols=o==="landscape"?"repeat(4,1fr)":"repeat(2,1fr)";' +
+      'document.querySelectorAll(".cards-grid").forEach(function(g){g.style.gridTemplateColumns=cols;});' +
+      // 3. RE-CHUNKING DINÁMICO: agrupar todas las cards de una misma marca y redistribuirlas
+      // Vertical: 6 por chunk (2x3); Horizontal: 8 por chunk (4x2)
+      'var prodPorPagina=o==="landscape"?8:6;' +
+      'var marcas={};' +
+      // Agrupar cards por marca (usando data-marca)
+      'document.querySelectorAll(".marca-section").forEach(function(sec){' +
+        'var br=sec.dataset.marca;' +
+        'if(!marcas[br]){marcas[br]={cards:[],headerStyle:sec.querySelector(".marca-header").style.cssText,total:sec.dataset.totalProds||0,parentBefore:sec.previousSibling,parent:sec.parentNode};}' +
+        'sec.querySelectorAll(".cards-grid > .card").forEach(function(c){marcas[br].cards.push(c.outerHTML);});' +
+        // Eliminar la sección original (se reconstruye abajo)
+        'sec.remove();' +
+      '});' +
+      // Reconstruir cada marca con chunks del tamaño correcto
+      'Object.keys(marcas).forEach(function(br){' +
+        'var m=marcas[br];' +
+        'var totalChunks=Math.ceil(m.cards.length/prodPorPagina);' +
+        'var html="";' +
+        'for(var i=0;i<m.cards.length;i+=prodPorPagina){' +
+          'var chunkIdx=Math.floor(i/prodPorPagina);' +
+          'var chunkLabel=totalChunks>1?\' <span class="marca-chunk-label" style="opacity:.55;font-size:.65rem;">· pág. \'+(chunkIdx+1)+\' de \'+totalChunks+\'</span>\':"";' +
+          'html+=\'<div class="marca-section" data-marca="\'+br+\'" data-chunk="\'+chunkIdx+\'" data-total-prods="\'+m.total+\'"><div class="marca-header" style="\'+m.headerStyle+\'"><span class="marca-name">\'+br+chunkLabel+\'</span><span class="marca-meta">\'+m.total+\' referencias</span></div><div class="cards-grid" style="grid-template-columns:\'+cols+\';">\'+m.cards.slice(i,i+prodPorPagina).join("")+\'</div></div>\';' +
+        '}' +
+        // Insertar al final del body (mantiene orden alfabético porque iteramos en ese orden)
+        'm.parent.insertAdjacentHTML("beforeend",html);' +
+      '});' +
+      // 4. Estilo de los botones
+      'var bl=document.getElementById("btnOrL"),bp=document.getElementById("btnOrP");' +
+      'if(bl){bl.style.background=o==="landscape"?"#f47b3e":"rgba(255,255,255,.12)";bl.style.color="white";}' +
+      'if(bp){bp.style.background=o==="portrait"?"#f47b3e":"rgba(255,255,255,.12)";bp.style.color=o==="portrait"?"white":"rgba(255,255,255,.6)";}' +
+    '}' +
       'function showPrintBar(){' +
         'var bar=document.createElement("div");' +
         'bar.id="printbar";' +
@@ -33642,6 +33764,19 @@ window.ptDescargarCatalogoSimple = function() {
       volPorBulto = parseFloat(volPorBulto.toFixed(4));
     }
 
+    // ── DESCUENTOS — Solo lectura, no se reimporta ──
+    var descInfo = (typeof window.getDescuentoProducto === 'function') ? window.getDescuentoProducto(p.r) : null;
+    var descPct = (descInfo && descInfo.porcentaje > 0) ? descInfo.porcentaje : '';
+    var precioUSD = parseFloat(p.u) || 0;
+    var usdFinal = (descInfo && descInfo.porcentaje > 0 && precioUSD > 0)
+      ? parseFloat((precioUSD * (1 - descInfo.porcentaje/100)).toFixed(2))
+      : '';
+    var ofertaLabel = '';
+    if (descInfo) {
+      if (descInfo.fuente === 'campaña') ofertaLabel = descInfo.campañaNombre || 'Campaña';
+      else if (descInfo.fuente === 'individual') ofertaLabel = 'Individual';
+    }
+
     return {
       'REFERENCIA': p.r || '',
       'STOCK_NE': stockNE,
@@ -33655,9 +33790,13 @@ window.ptDescargarCatalogoSimple = function() {
       'EMPAQUE': p.e || '',
       'MEDIDA': parseInt(p.m) || 0,
       'VOL_FT3_POR_BULTO': volPorBulto || 0,
-      'USD': parseFloat(p.u) || 0,
+      'USD': precioUSD,
       'BCV': parseFloat(p.bv) || 0,
-      'TF': parseFloat(p.t) || 0
+      'TF': parseFloat(p.t) || 0,
+      // ── Columnas SOLO DE LECTURA — no se reimportan al sistema ──
+      'DESCUENTO_%': descPct,
+      'USD_FINAL': usdFinal,
+      'OFERTA': ofertaLabel
     };
   });
 
@@ -33680,7 +33819,10 @@ window.ptDescargarCatalogoSimple = function() {
     { wch: 18 },  // VOL_FT3_POR_BULTO
     { wch: 9 },   // USD
     { wch: 9 },   // BCV
-    { wch: 9 }    // TF
+    { wch: 9 },   // TF
+    { wch: 13 },  // DESCUENTO_% (solo lectura)
+    { wch: 11 },  // USD_FINAL (solo lectura)
+    { wch: 25 }   // OFERTA (solo lectura)
   ];
 
   var wb = XLSX.utils.book_new();
