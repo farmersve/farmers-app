@@ -17,7 +17,7 @@
 <meta http-equiv="Expires" content="0">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.05.05.43">
+<meta name="farmers-version" content="2026.05.05.44">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -33721,11 +33721,38 @@ function rvFmtFecha(s) {
 function rvParseDate(s) {
   if (!s) return null;
   try {
-    if (s instanceof Date) return s;
+    if (s instanceof Date) return isNaN(s.getTime()) ? null : s;
+    if (typeof s === 'number') { var dN = new Date(s); return isNaN(dN.getTime()) ? null : dN; }
     if (typeof s !== 'string') return null;
-    if (s.indexOf('T') > 0) return new Date(s);
-    if (s.indexOf('-') > 0 && s.length >= 10) return new Date(s.substring(0,10) + 'T12:00:00');
-    return null;
+    s = s.trim();
+    if (!s) return null;
+
+    // Formato ISO con T (2026-05-04T12:00:00...)
+    if (s.indexOf('T') > 0) {
+      var d1 = new Date(s);
+      return isNaN(d1.getTime()) ? null : d1;
+    }
+
+    // Formato ISO yyyy-mm-dd
+    if (/^\d{4}-\d{2}-\d{2}/.test(s)) {
+      var d2 = new Date(s.substring(0,10) + 'T12:00:00');
+      return isNaN(d2.getTime()) ? null : d2;
+    }
+
+    // Formato dd/mm/yyyy o dd-mm-yyyy (estándar Venezuela / HCL)
+    var m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/);
+    if (m) {
+      var dd = parseInt(m[1]);
+      var mm = parseInt(m[2]) - 1;
+      var yy = parseInt(m[3]);
+      if (yy < 100) yy += 2000;
+      var d3 = new Date(yy, mm, dd, 12, 0, 0);
+      return isNaN(d3.getTime()) ? null : d3;
+    }
+
+    // Último intento: parser nativo
+    var d4 = new Date(s);
+    return isNaN(d4.getTime()) ? null : d4;
   } catch(e) { return null; }
 }
 
@@ -33904,13 +33931,25 @@ window.rvAbrirModulo = function() {
   var existente = document.getElementById('rv-overlay');
   if (existente) existente.remove();
 
-  // Por defecto: este mes
+  // Por defecto: este mes — pero solo si hay facturas en ese rango
+  // (Si no hay facturas del mes actual, muestra TODO para no ver pantalla vacía)
   if (!window.RV.filtros.desde && !window.RV.filtros.hasta) {
     var hoy = new Date();
     var primerDia = new Date(hoy.getFullYear(), hoy.getMonth(), 1);
     var ultimoDia = new Date(hoy.getFullYear(), hoy.getMonth()+1, 0);
-    window.RV.filtros.desde = primerDia.toISOString().slice(0,10);
-    window.RV.filtros.hasta = ultimoDia.toISOString().slice(0,10);
+    var desdeStr = primerDia.toISOString().slice(0,10);
+    var hastaStr = ultimoDia.toISOString().slice(0,10);
+
+    // Probar primero "este mes"
+    window.RV.filtros.desde = desdeStr;
+    window.RV.filtros.hasta = hastaStr;
+    var prueba = window.rvCargarFacturasFiltradas();
+
+    // Si está vacío, abrir con TODO
+    if (prueba.length === 0) {
+      window.RV.filtros.desde = '';
+      window.RV.filtros.hasta = '';
+    }
   }
 
   var ov = document.createElement('div');
@@ -33957,7 +33996,23 @@ window.rvRender = function() {
     // ── Body con la vista activa ──
     '<div id="rv-body" style="flex:1;overflow:auto;padding:18px 22px;background:#fafbfd;">' +
       (facturas.length === 0
-        ? '<div style="text-align:center;padding:60px 20px;color:#94a3b8;font-size:.95rem;">📭 No hay facturas en el rango seleccionado.<br><span style="font-size:.78rem;">Ajusta los filtros o verifica que HCL tenga datos.</span></div>'
+        ? (function(){
+            // Diagnóstico: ¿HCL tiene facturas en general?
+            var todas = (typeof hclGetFacturas === 'function') ? hclGetFacturas() : [];
+            if (!Array.isArray(todas) || todas.length === 0) {
+              return '<div style="text-align:center;padding:60px 20px;color:#94a3b8;">' +
+                '<div style="font-size:2.5rem;margin-bottom:8px;">📭</div>' +
+                '<div style="font-size:1rem;font-weight:700;color:#475569;margin-bottom:4px;">HCL está vacío</div>' +
+                '<div style="font-size:.78rem;">El módulo Historial de Clientes no tiene facturas cargadas todavía.</div>' +
+              '</div>';
+            }
+            return '<div style="text-align:center;padding:60px 20px;color:#94a3b8;">' +
+              '<div style="font-size:2.5rem;margin-bottom:8px;">🔍</div>' +
+              '<div style="font-size:1rem;font-weight:700;color:#475569;margin-bottom:4px;">No hay facturas con los filtros actuales</div>' +
+              '<div style="font-size:.78rem;margin-bottom:14px;">HCL tiene <strong>' + todas.length + ' facturas</strong> en total, pero ninguna coincide con los filtros aplicados.</div>' +
+              '<button onclick="rvLimpiarFiltros()" style="background:#10b981;color:white;border:none;border-radius:6px;padding:8px 18px;font-weight:800;cursor:pointer;font-size:.78rem;">🗑 Limpiar filtros y ver todo</button>' +
+            '</div>';
+          })()
         : (tab === 'dashboard' ? rvRenderDashboard(kpi, facturas)
         :  tab === 'cliente'   ? rvRenderPorCliente(kpi)
         :  tab === 'producto'  ? rvRenderPorProducto(kpi)
