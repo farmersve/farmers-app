@@ -17,7 +17,7 @@
 <meta http-equiv="Expires" content="0">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.05.05.46">
+<meta name="farmers-version" content="2026.05.05.47">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -25381,7 +25381,8 @@ function _doConfirmImport(ajustarStock) {
       <div style="display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap;align-items:center;">
         <div style="position:relative;flex:1;min-width:220px;">
           <input type="text" id="ref-search-input"
-            placeholder="🔍  Referencia, código, descripción..."
+            placeholder="🔍  Referencia, código, descripción...   (múltiples: termo - vaso)"
+            title="Para buscar varios términos, sepáralos con guión. Ej: termo - vaso - jarra"
             style="width:100%;padding:10px 16px 10px 16px;border:1.5px solid rgba(255,255,255,.25);border-radius:10px;font-size:.9rem;outline:none;box-sizing:border-box;background:rgba(255,255,255,.1);color:white;"
             autocomplete="off">
         </div>
@@ -28792,22 +28793,38 @@ function _catDownloadPDFWithImgs(_prodImgsLocal) {
 }
 
 function doRefSearch() {
-  var q = (document.getElementById('ref-search-input').value || '').trim().toLowerCase();
+  var qRaw = (document.getElementById('ref-search-input').value || '').trim().toLowerCase();
   var countEl   = document.getElementById('ref-search-count');
   var resultsEl = document.getElementById('ref-search-results');
   var inv = {};
   try { inv = getInventory(); } catch(e) {}
+
+  // ═══ Soporte para múltiples términos separados por " - " ═══
+  // Ejemplo: "termo - vaso" → muestra todo lo que tenga "termo" O "vaso"
+  // Si no hay guión, busca el término completo (comportamiento original)
+  var qTerms = [];
+  if (qRaw) {
+    if (qRaw.indexOf('-') >= 0) {
+      // Dividir por guión y limpiar cada término
+      qTerms = qRaw.split('-').map(function(t){ return t.trim(); }).filter(function(t){ return t.length > 0; });
+    } else {
+      qTerms = [qRaw];
+    }
+  }
 
   // Filtro por marca
   var pool = _refBrandFilter === 'ALL'
     ? PRODUCTS.slice()
     : PRODUCTS.filter(function(p){ return p.br === _refBrandFilter; });
 
-  // Filtro por query
-  if (q) {
+  // Filtro por query — OR entre términos, OR entre campos
+  if (qTerms.length > 0) {
     pool = pool.filter(function(p) {
-      return [(p.r||''),(p.b||''),(p.c||''),(p.d||''),(p.e||''),String(p.m||'')]
-        .some(function(v){ return v.toLowerCase().indexOf(q) >= 0; });
+      var campos = [(p.r||''),(p.b||''),(p.c||''),(p.d||''),(p.e||''),String(p.m||'')];
+      // El producto pasa si AL MENOS UNO de los términos coincide en AL MENOS UN campo
+      return qTerms.some(function(term){
+        return campos.some(function(v){ return v.toLowerCase().indexOf(term) >= 0; });
+      });
     });
   }
 
@@ -28872,10 +28889,15 @@ function doRefSearch() {
   };
 
   function hl(text) {
-    if (!q || !text) return text || '';
-    var escaped = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    return String(text).replace(new RegExp('(' + escaped + ')', 'gi'),
-      '<mark style="background:#fef08a;border-radius:2px;padding:0 1px;">$1</mark>');
+    if (!qTerms.length || !text) return text || '';
+    var result = String(text);
+    qTerms.forEach(function(term){
+      if (!term) return;
+      var escaped = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      result = result.replace(new RegExp('(' + escaped + ')', 'gi'),
+        '<mark style="background:#fef08a;border-radius:2px;padding:0 1px;">$1</mark>');
+    });
+    return result;
   }
 
   // Get live inventory
