@@ -17,7 +17,7 @@
 <meta http-equiv="Expires" content="0">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.05.05.44">
+<meta name="farmers-version" content="2026.05.05.46">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -33777,7 +33777,7 @@ window.rvCargarFacturasFiltradas = function() {
 
     // Filtro fechas
     if (f.desde || f.hasta) {
-      var fd = rvParseDate(fa.fechaEmision || fa.fecha);
+      var fd = rvParseDate(fa.fechaEmision || fa.fecha || fa.fechaFactura);
       if (!fd) return false;
       if (f.desde) {
         var dd = rvParseDate(f.desde);
@@ -33791,7 +33791,7 @@ window.rvCargarFacturasFiltradas = function() {
 
     // Filtro cliente
     if (f.cliente) {
-      var cn = (fa.clienteNombre || fa.cliente || '').toLowerCase();
+      var cn = (fa.clienteNombre || fa.cliente || fa.razonSocial || '').toLowerCase();
       if (cn.indexOf(f.cliente.toLowerCase()) < 0) return false;
     }
 
@@ -33843,13 +33843,26 @@ window.rvCalcularKPIs = function(facturas) {
 
   facturas.forEach(function(fa){
     if (!fa) return;
-    var total = parseFloat(fa.total)||0;
-    var totalNC = parseFloat(fa.totalNC)||0;
+
+    // ── TOTAL: HCL usa f.totalFactura (no f.total) ──
+    // Calcular total como en HCL: f.totalFactura, fallback a sumar items
+    var items = fa.items || fa.lineas || [];
+    var total = parseFloat(fa.totalFactura) || parseFloat(fa.total) || parseFloat(fa.montoTotal) || 0;
+    if (total === 0 && items.length > 0) {
+      items.forEach(function(it){
+        if (!it) return;
+        var qty = parseInt(it.cantidad) || 0;
+        var totL = parseFloat(it.totalLinea) || (parseFloat(it.precioUnitario || it.precio || 0) * qty) || 0;
+        total += totL;
+      });
+    }
+
+    var totalNC = parseFloat(fa.totalNC) || 0;
     var neto = total - totalNC;
     kpi.facturado += total;
     kpi.facturadoNeto += neto;
 
-    var cli = fa.clienteNombre || fa.cliente || 'Sin cliente';
+    var cli = fa.clienteNombre || fa.cliente || fa.razonSocial || 'Sin cliente';
     var suc = fa.sucursal || '';
     kpi.clientesUnicos.add(cli);
     if (suc) kpi.sucursalesUnicas.add(cli + ' / ' + suc);
@@ -33859,20 +33872,21 @@ window.rvCalcularKPIs = function(facturas) {
     if (!kpi.porMoneda[mon]) kpi.porMoneda[mon] = 0;
     kpi.porMoneda[mon] += neto;
 
-    // Por día
-    var fd = rvParseDate(fa.fechaEmision || fa.fecha);
+    // Por día — usar fechaEmision o fecha o fechaFactura, parser robusto
+    var fd = rvParseDate(fa.fechaEmision || fa.fecha || fa.fechaFactura);
     if (fd) {
-      var dKey = fd.toISOString().slice(0,10);
+      var dKey = fd.getFullYear() + '-' + String(fd.getMonth()+1).padStart(2,'0') + '-' + String(fd.getDate()).padStart(2,'0');
       kpi.porDia[dKey] = (kpi.porDia[dKey]||0) + neto;
     }
 
     // Items
-    var items = fa.items || [];
     var unitsFa = 0;
     items.forEach(function(it){
-      var qty = parseFloat(it.cantidad || it.qty || it.cant || 0)||0;
-      var pUnit = parseFloat(it.precio || it.precioUnit || it.pUnit || 0)||0;
-      var subt = parseFloat(it.subtotal || it.total || 0) || (qty * pUnit);
+      if (!it) return;
+      // Campos reales de HCL: cantidad, precioUnitario, totalLinea
+      var qty = parseFloat(it.cantidad) || 0;
+      var pUnit = parseFloat(it.precioUnitario || it.precio || it.pUnit || 0) || 0;
+      var subt = parseFloat(it.totalLinea) || parseFloat(it.subtotal) || (qty * pUnit);
       unitsFa += qty;
 
       var ref = (it.ref || it.referencia || '').toUpperCase();
@@ -33888,7 +33902,7 @@ window.rvCalcularKPIs = function(facturas) {
         if (!kpi.topProductos[ref]) kpi.topProductos[ref] = { ref: ref, desc: desc, marca: marca, monto: 0, unidades: 0, facturas: new Set() };
         kpi.topProductos[ref].monto += subt;
         kpi.topProductos[ref].unidades += qty;
-        kpi.topProductos[ref].facturas.add(fa.numero || fa.numpedido || fa.id);
+        kpi.topProductos[ref].facturas.add(fa.nroFactura || fa.numero || fa.numpedido || fa.id);
       }
 
       // Top marcas
@@ -33924,6 +33938,72 @@ window.rvCalcularKPIs = function(facturas) {
   kpi.sucursalesUnicas = kpi.sucursalesUnicas.size;
   kpi.ticketPromedio = kpi.numFacturas > 0 ? kpi.facturadoNeto / kpi.numFacturas : 0;
   return kpi;
+};
+
+// ═══ DIAGNÓSTICO — ejecutar desde consola si los reportes parecen vacíos ═══
+window.rvDiag = function() {
+  var fac = (typeof hclGetFacturas === 'function') ? hclGetFacturas() : [];
+  console.log('═══ DIAGNÓSTICO REPORTES DE VENTAS ═══');
+  console.log('Total facturas en HCL:', fac.length);
+  if (fac.length === 0) {
+    console.log('⚠ HCL vacío. Verifica que el módulo Historial de Clientes tenga datos.');
+    return;
+  }
+  console.log('\nCampos de la primera factura:');
+  console.log(Object.keys(fac[0]).join(', '));
+  console.log('\nValores extraídos por el módulo:');
+  var f = fac[0];
+  var items = f.items || f.lineas || [];
+  var totalCalc = parseFloat(f.totalFactura) || parseFloat(f.total) || 0;
+  if (totalCalc === 0 && items.length > 0) {
+    items.forEach(function(it){
+      if (!it) return;
+      var q = parseInt(it.cantidad)||0;
+      var t = parseFloat(it.totalLinea) || (parseFloat(it.precioUnitario||0) * q) || 0;
+      totalCalc += t;
+    });
+  }
+  console.log({
+    nroFactura: f.nroFactura || '(no encontrado)',
+    fecha: f.fechaEmision || f.fecha || '(no encontrado)',
+    fecha_parseada: rvParseDate(f.fechaEmision || f.fecha),
+    cliente: f.clienteNombre || f.cliente || f.razonSocial || '(no encontrado)',
+    rif: f.rif || '(no encontrado)',
+    sucursal: f.sucursal || '(vacío)',
+    moneda: f.moneda || '(no encontrado)',
+    total_real: totalCalc,
+    cantidad_items: items.length
+  });
+  if (items.length > 0) {
+    console.log('\nPrimer item:');
+    var it = items[0];
+    console.log({
+      ref: it.ref || '(no encontrado)',
+      descripcion: it.descripcion || '(no encontrado)',
+      marca: it.marca || '(vacío)',
+      cantidad: parseInt(it.cantidad) || 0,
+      precioUnitario: parseFloat(it.precioUnitario) || 0,
+      totalLinea: parseFloat(it.totalLinea) || 0
+    });
+  }
+  // Probar filtro actual
+  var filtradas = window.rvCargarFacturasFiltradas();
+  console.log('\nFacturas con filtros actuales:', filtradas.length, '/', fac.length);
+  console.log('Filtros activos:', window.RV.filtros);
+
+  // Calcular KPIs y mostrar
+  var kpi = window.rvCalcularKPIs(filtradas);
+  console.log('\nKPIs calculados:');
+  console.log({
+    facturado: kpi.facturadoNeto,
+    numFacturas: kpi.numFacturas,
+    clientes: kpi.clientesUnicos,
+    sucursales: kpi.sucursalesUnicas,
+    unidades: kpi.unidadesTotal,
+    ticketPromedio: kpi.ticketPromedio
+  });
+  console.log('═══════════════════════════════════════');
+  return { totalFacturas: fac.length, filtradas: filtradas.length, kpi: kpi };
 };
 
 // ═══ Modal principal ═══
@@ -34023,7 +34103,7 @@ window.rvRender = function() {
 
     // ── Footer status ──
     '<div style="padding:8px 22px;background:#1B1F6B;color:rgba(255,255,255,.85);font-size:.7rem;display:flex;justify-content:space-between;align-items:center;flex-shrink:0;">' +
-      '<span>📊 ' + facturas.length + ' facturas · ' + rvFmtMoney(kpi.facturadoNeto) + ' facturado neto</span>' +
+      '<span>📊 ' + facturas.length + ' facturas · ' + rvFmtMoney(kpi.facturadoNeto) + ' facturado</span>' +
       '<span>📅 ' + (window.RV.filtros.desde || '—') + ' → ' + (window.RV.filtros.hasta || '—') + '</span>' +
     '</div>';
 };
@@ -34121,7 +34201,7 @@ function rvRenderDashboard(kpi, facturas) {
 
   // ── KPIs principales ──
   html += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:18px;">';
-  html += rvKPICard('💰', rvFmtMoney(kpi.facturadoNeto), 'Facturado Neto', '#10b981', '#dcfce7');
+  html += rvKPICard('💰', rvFmtMoney(kpi.facturadoNeto), 'Facturado', '#10b981', '#dcfce7');
   html += rvKPICard('📄', rvFmtNum(kpi.numFacturas), 'Facturas', '#3b82f6', '#dbeafe');
   html += rvKPICard('👥', rvFmtNum(kpi.clientesUnicos), 'Clientes', '#8b5cf6', '#ede9fe');
   html += rvKPICard('🏢', rvFmtNum(kpi.sucursalesUnicas), 'Sucursales', '#ec4899', '#fce7f3');
@@ -34349,37 +34429,41 @@ function rvRenderDetalle(facturas) {
   });
 
   var html = '<div style="background:#fff;border-radius:10px;overflow:hidden;border:1px solid #e2e8f0;">';
-  html += '<table style="width:100%;border-collapse:collapse;font-size:.76rem;">';
+  html += '<table style="width:100%;border-collapse:collapse;font-size:.78rem;">';
   html += '<thead style="background:#1B1F6B;color:#fff;"><tr>' +
     '<th style="padding:10px 12px;text-align:left;font-family:Barlow Condensed,sans-serif;font-size:.72rem;letter-spacing:1px;">N° FACTURA</th>' +
     '<th style="padding:10px 12px;text-align:left;font-family:Barlow Condensed,sans-serif;font-size:.72rem;letter-spacing:1px;">FECHA</th>' +
     '<th style="padding:10px 12px;text-align:left;font-family:Barlow Condensed,sans-serif;font-size:.72rem;letter-spacing:1px;">CLIENTE</th>' +
     '<th style="padding:10px 12px;text-align:left;font-family:Barlow Condensed,sans-serif;font-size:.72rem;letter-spacing:1px;">SUCURSAL</th>' +
-    '<th style="padding:10px 12px;text-align:center;font-family:Barlow Condensed,sans-serif;font-size:.72rem;letter-spacing:1px;">ITEMS</th>' +
+    '<th style="padding:10px 12px;text-align:left;font-family:Barlow Condensed,sans-serif;font-size:.72rem;letter-spacing:1px;">RIF</th>' +
+    '<th style="padding:10px 12px;text-align:center;font-family:Barlow Condensed,sans-serif;font-size:.72rem;letter-spacing:1px;">REFS</th>' +
     '<th style="padding:10px 12px;text-align:right;font-family:Barlow Condensed,sans-serif;font-size:.72rem;letter-spacing:1px;">UNIDADES</th>' +
     '<th style="padding:10px 12px;text-align:center;font-family:Barlow Condensed,sans-serif;font-size:.72rem;letter-spacing:1px;">MONEDA</th>' +
     '<th style="padding:10px 12px;text-align:right;font-family:Barlow Condensed,sans-serif;font-size:.72rem;letter-spacing:1px;">TOTAL</th>' +
-    '<th style="padding:10px 12px;text-align:right;font-family:Barlow Condensed,sans-serif;font-size:.72rem;letter-spacing:1px;">N. CRÉD.</th>' +
-    '<th style="padding:10px 12px;text-align:right;font-family:Barlow Condensed,sans-serif;font-size:.72rem;letter-spacing:1px;">NETO</th>' +
   '</tr></thead><tbody>';
   rows.forEach(function(fa, i){
     var bg = i % 2 === 0 ? '#fff' : '#f8fafc';
-    var items = fa.items || [];
-    var unidades = items.reduce(function(s,it){ return s + (parseFloat(it.cantidad||it.qty||it.cant||0)||0); }, 0);
-    var total = parseFloat(fa.total)||0;
-    var totalNC = parseFloat(fa.totalNC)||0;
-    var neto = total - totalNC;
+    var items = fa.items || fa.lineas || [];
+    var unidades = items.reduce(function(s,it){ return s + (parseFloat(it && it.cantidad)||0); }, 0);
+    var total = parseFloat(fa.totalFactura) || parseFloat(fa.total) || 0;
+    if (total === 0 && items.length > 0) {
+      items.forEach(function(it){
+        if (!it) return;
+        var qty = parseInt(it.cantidad)||0;
+        var totL = parseFloat(it.totalLinea) || (parseFloat(it.precioUnitario||it.precio||0) * qty) || 0;
+        total += totL;
+      });
+    }
     html += '<tr style="background:' + bg + ';border-bottom:1px solid #f1f5f9;">' +
-      '<td style="padding:8px 12px;font-family:monospace;font-weight:800;color:#1B1F6B;">' + (fa.numero || fa.numpedido || '—') + '</td>' +
-      '<td style="padding:8px 12px;font-size:.72rem;color:#64748b;">' + rvFmtFecha(fa.fechaEmision || fa.fecha) + '</td>' +
-      '<td style="padding:8px 12px;font-weight:700;color:#1B1F6B;">' + (fa.clienteNombre || fa.cliente || '—') + '</td>' +
+      '<td style="padding:8px 12px;font-family:monospace;font-weight:800;color:#1B1F6B;">' + (fa.nroFactura || fa.numero || fa.numpedido || '—') + '</td>' +
+      '<td style="padding:8px 12px;font-size:.72rem;color:#64748b;">' + rvFmtFecha(fa.fechaEmision || fa.fecha || fa.fechaFactura) + '</td>' +
+      '<td style="padding:8px 12px;font-weight:700;color:#1B1F6B;">' + (fa.clienteNombre || fa.cliente || fa.razonSocial || '—') + '</td>' +
       '<td style="padding:8px 12px;color:#475569;font-size:.72rem;">' + (fa.sucursal || '—') + '</td>' +
+      '<td style="padding:8px 12px;color:#64748b;font-size:.7rem;font-family:monospace;">' + (fa.rif || '—') + '</td>' +
       '<td style="padding:8px 12px;text-align:center;font-family:monospace;">' + items.length + '</td>' +
       '<td style="padding:8px 12px;text-align:right;font-family:monospace;">' + rvFmtNum(unidades) + '</td>' +
       '<td style="padding:8px 12px;text-align:center;"><span style="background:#e0e7ff;color:#3730a3;padding:2px 6px;border-radius:4px;font-size:.6rem;font-weight:800;">' + (fa.moneda||'USD') + '</span></td>' +
-      '<td style="padding:8px 12px;text-align:right;font-family:Barlow Condensed,sans-serif;font-weight:700;">' + rvFmtMoney(total) + '</td>' +
-      '<td style="padding:8px 12px;text-align:right;font-family:Barlow Condensed,sans-serif;color:' + (totalNC>0?'#dc2626':'#cbd5e1') + ';">' + (totalNC>0?'-'+rvFmtMoney(totalNC):'—') + '</td>' +
-      '<td style="padding:8px 12px;text-align:right;font-family:Barlow Condensed,sans-serif;font-weight:900;color:#10b981;">' + rvFmtMoney(neto) + '</td>' +
+      '<td style="padding:8px 12px;text-align:right;font-family:Barlow Condensed,sans-serif;font-weight:900;color:#10b981;font-size:.92rem;">' + rvFmtMoney(total) + '</td>' +
     '</tr>';
   });
   html += '</tbody></table></div>';
@@ -34403,7 +34487,7 @@ window.rvExportarExcel = function() {
     ['Generado:', new Date().toLocaleString('es-VE')],
     [''],
     ['MÉTRICA', 'VALOR'],
-    ['Facturado neto', kpi.facturadoNeto],
+    ['Facturado', kpi.facturadoNeto],
     ['Total facturas', kpi.numFacturas],
     ['Clientes únicos', kpi.clientesUnicos],
     ['Sucursales únicas', kpi.sucursalesUnicas],
@@ -34455,31 +34539,37 @@ window.rvExportarExcel = function() {
   XLSX.utils.book_append_sheet(wb, ws4, 'Por Sucursal');
 
   // Hoja 5: Detalle Facturas
-  var dataDet = [['N° Factura', 'Fecha', 'Cliente', 'Sucursal', 'Items', 'Unidades', 'Moneda', 'Total', 'Notas Crédito', 'Neto']];
+  var dataDet = [['N° Factura', 'Fecha', 'Cliente', 'RIF', 'Sucursal', 'Refs', 'Unidades', 'Moneda', 'Total']];
   facturas.slice().sort(function(a,b){
     var fa = rvParseDate(a.fechaEmision || a.fecha);
     var fb = rvParseDate(b.fechaEmision || b.fecha);
     return (fb ? fb.getTime() : 0) - (fa ? fa.getTime() : 0);
   }).forEach(function(fa){
-    var items = fa.items || [];
-    var unidades = items.reduce(function(s,it){ return s + (parseFloat(it.cantidad||it.qty||it.cant||0)||0); }, 0);
-    var total = parseFloat(fa.total)||0;
-    var totalNC = parseFloat(fa.totalNC)||0;
+    var items = fa.items || fa.lineas || [];
+    var unidades = items.reduce(function(s,it){ return s + (parseFloat(it && it.cantidad)||0); }, 0);
+    var total = parseFloat(fa.totalFactura) || parseFloat(fa.total) || 0;
+    if (total === 0 && items.length > 0) {
+      items.forEach(function(it){
+        if (!it) return;
+        var qty = parseInt(it.cantidad)||0;
+        var totL = parseFloat(it.totalLinea) || (parseFloat(it.precioUnitario||it.precio||0) * qty) || 0;
+        total += totL;
+      });
+    }
     dataDet.push([
-      fa.numero || fa.numpedido || '',
+      fa.nroFactura || fa.numero || fa.numpedido || '',
       fa.fechaEmision || fa.fecha || '',
-      fa.clienteNombre || fa.cliente || '',
+      fa.clienteNombre || fa.cliente || fa.razonSocial || '',
+      fa.rif || '',
       fa.sucursal || '',
       items.length,
       unidades,
       fa.moneda || 'USD',
-      total,
-      totalNC,
-      total - totalNC
+      total
     ]);
   });
   var ws5 = XLSX.utils.aoa_to_sheet(dataDet);
-  ws5['!cols'] = [{wch:15},{wch:12},{wch:30},{wch:20},{wch:7},{wch:10},{wch:8},{wch:13},{wch:13},{wch:13}];
+  ws5['!cols'] = [{wch:15},{wch:12},{wch:30},{wch:12},{wch:20},{wch:7},{wch:10},{wch:8},{wch:13}];
   XLSX.utils.book_append_sheet(wb, ws5, 'Detalle Facturas');
 
   var fechaStr = new Date().toISOString().slice(0,10);
@@ -34523,7 +34613,7 @@ window.rvExportarPDF = function() {
 
     '<h2>Resumen General</h2>' +
     '<div class="kpis">' +
-      '<div class="kpi"><div class="kpi-lbl">💰 Facturado Neto</div><div class="kpi-val">' + rvFmtMoney(kpi.facturadoNeto) + '</div></div>' +
+      '<div class="kpi"><div class="kpi-lbl">💰 Facturado</div><div class="kpi-val">' + rvFmtMoney(kpi.facturadoNeto) + '</div></div>' +
       '<div class="kpi"><div class="kpi-lbl">📄 Facturas</div><div class="kpi-val">' + rvFmtNum(kpi.numFacturas) + '</div></div>' +
       '<div class="kpi"><div class="kpi-lbl">👥 Clientes</div><div class="kpi-val">' + rvFmtNum(kpi.clientesUnicos) + '</div></div>' +
       '<div class="kpi"><div class="kpi-lbl">📦 Unidades</div><div class="kpi-val">' + rvFmtNum(kpi.unidadesTotal) + '</div></div>' +
