@@ -17,7 +17,7 @@
 <meta http-equiv="Expires" content="0">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.05.05.50">
+<meta name="farmers-version" content="2026.05.05.51">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -5491,50 +5491,32 @@ function saveSales(s){
 }
 
 // ═══ syncInventoryToProducts ═══
-// Sincroniza inv legacy → PRODUCTS.exNE/exAN/ex
-// El parámetro `fuenteFirebase` indica que los datos vienen de loadFromFirebase
-// (no son ajustes locales del usuario).
+// REGLA ÚNICA Y SIMPLE: exNE + exAN es SIEMPRE la verdad.
+// Esta función toma p.exNE/p.exAN y propaga a:
+//   - p.ex (recalcula como suma)
+//   - inv legacy (lo realinea)
 //
-// Comportamiento por modo:
-//   A) Modo "ajuste local" (DEFAULT, fuenteFirebase=false):
-//      - inv tiene la verdad reciente (usuario lo acaba de modificar)
-//      - Aplica el delta a NE (depósito principal)
-//   B) Modo "carga desde Firebase" (fuenteFirebase=true):
-//      - PRODUCTS.exNE/exAN viene fresco de Firebase y es la verdad
-//      - inv legacy puede estar obsoleto → se actualiza para coincidir
+// Si un producto NO tiene exNE/exAN definidos (productos antiguos), inicializa
+// desde inv legacy poniendo todo en NE.
 //
-// Esto resuelve el bug raíz: cuando importas Excel, exNE/exAN se actualizan
-// y suben a Firebase. Al sincronizar, modo B hace que inv se realinee con NE/AN
-// en lugar de pisar NE/AN con un inv viejo.
+// El parámetro `fuenteFirebase` ya NO se usa para cambiar comportamiento — se mantiene
+// solo por compatibilidad con código existente que la pasa.
 function syncInventoryToProducts(fuenteFirebase){
   const inv=getInventory();
   PRODUCTS.forEach(p=>{
     if (!p || !p.r) return;
     var tieneNE = (p.exNE !== undefined && p.exNE !== null && p.exNE !== '');
     var tieneAN = (p.exAN !== undefined && p.exAN !== null && p.exAN !== '');
-    var ne = parseInt(p.exNE)||0;
-    var an = parseInt(p.exAN)||0;
-    var totalDeposites = ne + an;
 
     if (tieneNE || tieneAN) {
-      var invVal = (inv[p.r] !== undefined) ? parseInt(inv[p.r])||0 : null;
-
-      if (fuenteFirebase) {
-        // Modo B: PRODUCTS de Firebase manda. inv se realinea.
-        p.ex = totalDeposites;
-        if (invVal !== totalDeposites) {
-          inv[p.r] = totalDeposites;
-        }
-      } else {
-        // Modo A: ajuste local, inv tiene la verdad reciente
-        if (invVal === null || invVal === totalDeposites) {
-          p.ex = totalDeposites;
-        } else {
-          // Aplicar delta a NE
-          var delta = invVal - totalDeposites;
-          p.exNE = Math.max(0, ne + delta);
-          p.ex = (parseInt(p.exNE)||0) + an;
-        }
+      // ═ exNE/exAN SIEMPRE ganan ═
+      var ne = parseInt(p.exNE)||0;
+      var an = parseInt(p.exAN)||0;
+      var totalReal = ne + an;
+      p.ex = totalReal;
+      // Realinear inv legacy si no coincide
+      if (inv[p.r] !== totalReal) {
+        inv[p.r] = totalReal;
       }
     } else if (inv[p.r] !== undefined) {
       // Sin NE/AN definidos: inicializar desde inv legacy (migración)
@@ -29723,17 +29705,77 @@ function invApplyRow(input){
   renderInvTable();
 }
 function invSaveAll(){
-  var inv=getInventory(), changed=0;
+  // ═══ Pestaña Ajuste de Inventario ═══
+  // El usuario edita el TOTAL del producto. Aplicamos el cambio a exNE (depósito
+  // principal Margarita) y mantenemos exAN intacto. exNE+exAN es la verdad.
+  // inv legacy se realinea automáticamente vía syncInventoryToProducts.
+  var inv = getInventory();
+  var changed = 0;
+  var refsModificadas = [];
+
   document.querySelectorAll('.inv-adj').forEach(function(input){
-    var val=(input.value||'').trim(); if(!val) return;
-    var ref=input.getAttribute('data-ref'), cur=inv[ref]!==undefined?inv[ref]:0;
-    var nv=val.startsWith('=')?parseInt(val.slice(1)):cur+(parseInt(val)||0);
-    nv=Math.max(0,isNaN(nv)?cur:nv);
-    if(nv!==cur){inv[ref]=nv;changed++;}
+    var val = (input.value || '').trim();
+    if (!val) return;
+    var ref = input.getAttribute('data-ref');
+    if (!ref) return;
+
+    // Buscar el producto real
+    var p = PRODUCTS.find(function(pp){ return pp && pp.r === ref; });
+    if (!p) return;
+
+    var ne = parseInt(p.exNE)||0;
+    var an = parseInt(p.exAN)||0;
+    var totalActual = ne + an;
+
+    // Calcular nuevo total según el input
+    //   "=N" → set absoluto
+    //   "+N" o "N" → suma al total actual
+    //   "-N" → resta
+    var nuevoTotal;
+    if (val.startsWith('=')) {
+      nuevoTotal = parseInt(val.slice(1)) || 0;
+    } else {
+      var delta = parseInt(val) || 0;
+      nuevoTotal = totalActual + delta;
+    }
+    nuevoTotal = Math.max(0, isNaN(nuevoTotal) ? totalActual : nuevoTotal);
+
+    // ═══ Aplicar cambio a exNE (preservando exAN) ═══
+    // El cambio del total se traslada al depósito NE (Margarita).
+    // exAN se mantiene intacto (datos del depósito Anzoátegui no se tocan).
+    var nuevoNE = Math.max(0, nuevoTotal - an);
+
+    // Detectar si hay cambio real (incluye corrección de drift)
+    var huboCambio = (nuevoNE !== ne) || (inv[ref] !== nuevoTotal);
+
+    if (huboCambio) {
+      p.exNE = nuevoNE;
+      p.ex = nuevoNE + an;
+      inv[ref] = p.ex;
+      changed++;
+      refsModificadas.push(ref);
+    }
   });
-  if(!changed){if(typeof showToast==='function') showToast('No hay cambios pendientes','info');return;}
-  saveInventory(inv); syncInventoryToProducts();
-  if(typeof showToast==='function') showToast('&#9989; '+changed+' productos actualizados','success');
+
+  if (!changed) {
+    if (typeof showToast === 'function') showToast('No hay cambios pendientes','info');
+    return;
+  }
+
+  // Persistir todo
+  saveInventory(inv);                                 // local + Firebase (vía fbSaveInventory)
+  if (typeof saveProducts === 'function') saveProducts(PRODUCTS);  // local
+  if (window.fbSaveProducts) {
+    window.fbSaveProducts(PRODUCTS).catch(function(e){
+      console.warn('[invSaveAll] fbSaveProducts:', e);
+    });
+  }
+  if (window.fbTriggerPortalSnapshot) window.fbTriggerPortalSnapshot('invSaveAll');
+
+  if (typeof showToast === 'function') {
+    showToast('✅ ' + changed + ' producto' + (changed>1?'s':'') + ' actualizado' + (changed>1?'s':'') + ' (NE)', 'success');
+  }
+  console.log('[invSaveAll] Refs modificadas:', refsModificadas);
   renderInvTable();
 }
 
