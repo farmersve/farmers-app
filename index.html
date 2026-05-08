@@ -17,7 +17,7 @@
 <meta http-equiv="Expires" content="0">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.05.05.42">
+<meta name="farmers-version" content="2026.05.05.43">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -33684,6 +33684,818 @@ function _descGenId() {
 // ══════════════════════════════════════════════════════════════════
 // MÓDULO DE GESTIÓN DE DESCUENTOS — Modal principal
 // ══════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════
+// REPORTES DE VENTAS — Módulo completo de análisis de facturas HCL
+// ══════════════════════════════════════════════════════════════════
+// Acceso: vtOpenModule(rvAbrirModulo)
+// Datos: lee de hclGetFacturas() (HCL = facturas históricas reales)
+// 5 vistas: Dashboard | Por Cliente | Por Producto | Por Sucursal | Detalle Facturas
+// Filtros: rango fechas, cliente, sucursal, marca, producto
+// Exporta: Excel (xlsx) y PDF (impresión)
+// ══════════════════════════════════════════════════════════════════
+
+window.RV = {
+  tab: 'dashboard',
+  filtros: {
+    desde: '',
+    hasta: '',
+    cliente: '',
+    sucursal: '',
+    marca: '',
+    producto: ''
+  },
+  ordenarPor: 'monto', // por defecto
+  ordenDesc: true
+};
+
+// Helpers de fecha
+function rvFmtFecha(s) {
+  if (!s) return '—';
+  try {
+    var d = (typeof s === 'string' && s.indexOf('T') > 0) ? new Date(s) : new Date(s + 'T12:00:00');
+    if (isNaN(d.getTime())) return s;
+    return String(d.getDate()).padStart(2,'0') + '/' + String(d.getMonth()+1).padStart(2,'0') + '/' + d.getFullYear();
+  } catch(e) { return s; }
+}
+
+function rvParseDate(s) {
+  if (!s) return null;
+  try {
+    if (s instanceof Date) return s;
+    if (typeof s !== 'string') return null;
+    if (s.indexOf('T') > 0) return new Date(s);
+    if (s.indexOf('-') > 0 && s.length >= 10) return new Date(s.substring(0,10) + 'T12:00:00');
+    return null;
+  } catch(e) { return null; }
+}
+
+function rvFmtMoney(n) {
+  if (!isFinite(n)) return '$ 0.00';
+  return '$ ' + parseFloat(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function rvFmtNum(n) {
+  if (!isFinite(n)) return '0';
+  return parseFloat(n).toLocaleString('en-US', { maximumFractionDigits: 0 });
+}
+
+// ═══ Cargar y filtrar facturas HCL ═══
+window.rvCargarFacturasFiltradas = function() {
+  var todas = (typeof hclGetFacturas === 'function') ? hclGetFacturas() : [];
+  if (!Array.isArray(todas)) todas = [];
+  var f = window.RV.filtros;
+
+  return todas.filter(function(fa){
+    if (!fa) return false;
+
+    // Filtro fechas
+    if (f.desde || f.hasta) {
+      var fd = rvParseDate(fa.fechaEmision || fa.fecha);
+      if (!fd) return false;
+      if (f.desde) {
+        var dd = rvParseDate(f.desde);
+        if (dd && fd < dd) return false;
+      }
+      if (f.hasta) {
+        var hd = rvParseDate(f.hasta);
+        if (hd) { hd.setHours(23,59,59); if (fd > hd) return false; }
+      }
+    }
+
+    // Filtro cliente
+    if (f.cliente) {
+      var cn = (fa.clienteNombre || fa.cliente || '').toLowerCase();
+      if (cn.indexOf(f.cliente.toLowerCase()) < 0) return false;
+    }
+
+    // Filtro sucursal
+    if (f.sucursal) {
+      var su = (fa.sucursal || '').toLowerCase();
+      if (su.indexOf(f.sucursal.toLowerCase()) < 0) return false;
+    }
+
+    // Filtro marca / producto: requiere mirar items
+    if (f.marca || f.producto) {
+      var items = fa.items || [];
+      var encontrado = items.some(function(it){
+        var ref = (it.ref || it.referencia || '').toLowerCase();
+        var desc = (it.descripcion || it.desc || it.nombre || '').toLowerCase();
+        var marca = (it.marca || '').toLowerCase();
+        // Resolver marca desde PRODUCTS si no viene en el item
+        if (!marca && typeof PRODUCTS !== 'undefined') {
+          var p = PRODUCTS.find(function(pp){ return (pp.r||'').toLowerCase() === ref; });
+          if (p) marca = (p.br || '').toLowerCase();
+        }
+        if (f.marca && marca !== f.marca.toLowerCase()) return false;
+        if (f.producto && ref.indexOf(f.producto.toLowerCase()) < 0 && desc.indexOf(f.producto.toLowerCase()) < 0) return false;
+        return true;
+      });
+      if (!encontrado) return false;
+    }
+
+    return true;
+  });
+};
+
+// ═══ Calcular KPIs ═══
+window.rvCalcularKPIs = function(facturas) {
+  var kpi = {
+    facturado: 0,
+    facturadoNeto: 0, // tras NC
+    numFacturas: facturas.length,
+    clientesUnicos: new Set(),
+    sucursalesUnicas: new Set(),
+    unidadesTotal: 0,
+    porMoneda: { USD: 0, BCV: 0, TF: 0 },
+    porDia: {},  // 'YYYY-MM-DD' → monto
+    topClientes: {}, // nombre → {monto, facturas, unidades}
+    topProductos: {}, // ref → {desc, monto, unidades, facturas, marca}
+    topSucursales: {}, // sucursal → {monto, facturas, unidades}
+    topMarcas: {}    // marca → {monto, unidades}
+  };
+
+  facturas.forEach(function(fa){
+    if (!fa) return;
+    var total = parseFloat(fa.total)||0;
+    var totalNC = parseFloat(fa.totalNC)||0;
+    var neto = total - totalNC;
+    kpi.facturado += total;
+    kpi.facturadoNeto += neto;
+
+    var cli = fa.clienteNombre || fa.cliente || 'Sin cliente';
+    var suc = fa.sucursal || '';
+    kpi.clientesUnicos.add(cli);
+    if (suc) kpi.sucursalesUnicas.add(cli + ' / ' + suc);
+
+    // Por moneda
+    var mon = fa.moneda || 'USD';
+    if (!kpi.porMoneda[mon]) kpi.porMoneda[mon] = 0;
+    kpi.porMoneda[mon] += neto;
+
+    // Por día
+    var fd = rvParseDate(fa.fechaEmision || fa.fecha);
+    if (fd) {
+      var dKey = fd.toISOString().slice(0,10);
+      kpi.porDia[dKey] = (kpi.porDia[dKey]||0) + neto;
+    }
+
+    // Items
+    var items = fa.items || [];
+    var unitsFa = 0;
+    items.forEach(function(it){
+      var qty = parseFloat(it.cantidad || it.qty || it.cant || 0)||0;
+      var pUnit = parseFloat(it.precio || it.precioUnit || it.pUnit || 0)||0;
+      var subt = parseFloat(it.subtotal || it.total || 0) || (qty * pUnit);
+      unitsFa += qty;
+
+      var ref = (it.ref || it.referencia || '').toUpperCase();
+      var desc = it.descripcion || it.desc || it.nombre || '';
+      var marca = it.marca || '';
+      if (!marca && ref && typeof PRODUCTS !== 'undefined') {
+        var p = PRODUCTS.find(function(pp){ return (pp.r||'').toUpperCase() === ref; });
+        if (p) marca = p.br || '';
+      }
+
+      // Top productos
+      if (ref) {
+        if (!kpi.topProductos[ref]) kpi.topProductos[ref] = { ref: ref, desc: desc, marca: marca, monto: 0, unidades: 0, facturas: new Set() };
+        kpi.topProductos[ref].monto += subt;
+        kpi.topProductos[ref].unidades += qty;
+        kpi.topProductos[ref].facturas.add(fa.numero || fa.numpedido || fa.id);
+      }
+
+      // Top marcas
+      if (marca) {
+        if (!kpi.topMarcas[marca]) kpi.topMarcas[marca] = { marca: marca, monto: 0, unidades: 0 };
+        kpi.topMarcas[marca].monto += subt;
+        kpi.topMarcas[marca].unidades += qty;
+      }
+    });
+
+    kpi.unidadesTotal += unitsFa;
+
+    // Top clientes
+    if (!kpi.topClientes[cli]) kpi.topClientes[cli] = { nombre: cli, monto: 0, facturas: 0, unidades: 0, ultimaCompra: null };
+    kpi.topClientes[cli].monto += neto;
+    kpi.topClientes[cli].facturas += 1;
+    kpi.topClientes[cli].unidades += unitsFa;
+    if (fd) {
+      if (!kpi.topClientes[cli].ultimaCompra || fd > kpi.topClientes[cli].ultimaCompra) {
+        kpi.topClientes[cli].ultimaCompra = fd;
+      }
+    }
+
+    // Top sucursales
+    var sucKey = cli + (suc ? ' — ' + suc : '');
+    if (!kpi.topSucursales[sucKey]) kpi.topSucursales[sucKey] = { nombre: sucKey, cliente: cli, sucursal: suc, monto: 0, facturas: 0, unidades: 0 };
+    kpi.topSucursales[sucKey].monto += neto;
+    kpi.topSucursales[sucKey].facturas += 1;
+    kpi.topSucursales[sucKey].unidades += unitsFa;
+  });
+
+  kpi.clientesUnicos = kpi.clientesUnicos.size;
+  kpi.sucursalesUnicas = kpi.sucursalesUnicas.size;
+  kpi.ticketPromedio = kpi.numFacturas > 0 ? kpi.facturadoNeto / kpi.numFacturas : 0;
+  return kpi;
+};
+
+// ═══ Modal principal ═══
+window.rvAbrirModulo = function() {
+  var existente = document.getElementById('rv-overlay');
+  if (existente) existente.remove();
+
+  // Por defecto: este mes
+  if (!window.RV.filtros.desde && !window.RV.filtros.hasta) {
+    var hoy = new Date();
+    var primerDia = new Date(hoy.getFullYear(), hoy.getMonth(), 1);
+    var ultimoDia = new Date(hoy.getFullYear(), hoy.getMonth()+1, 0);
+    window.RV.filtros.desde = primerDia.toISOString().slice(0,10);
+    window.RV.filtros.hasta = ultimoDia.toISOString().slice(0,10);
+  }
+
+  var ov = document.createElement('div');
+  ov.id = 'rv-overlay';
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.85);backdrop-filter:blur(8px);z-index:99996;display:flex;align-items:center;justify-content:center;padding:14px;font-family:Barlow,sans-serif;';
+  ov.innerHTML = '<div id="rv-box" style="background:#fff;border-radius:14px;width:min(1500px,99vw);max-height:96vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 24px 60px rgba(0,0,0,.4);"></div>';
+  document.body.appendChild(ov);
+  rvRender();
+};
+
+window.rvRender = function() {
+  var box = document.getElementById('rv-box');
+  if (!box) return;
+  var facturas = window.rvCargarFacturasFiltradas();
+  var kpi = window.rvCalcularKPIs(facturas);
+  var tab = window.RV.tab;
+
+  box.innerHTML =
+    // ── Header ──
+    '<div style="background:linear-gradient(135deg,#10b981,#059669);padding:14px 22px;color:#fff;display:flex;justify-content:space-between;align-items:center;flex-shrink:0;">' +
+      '<div>' +
+        '<div style="font-size:.62rem;font-weight:800;letter-spacing:2.5px;text-transform:uppercase;opacity:.85;">FARMERS · ANÁLISIS</div>' +
+        '<div style="font-family:Barlow Condensed,sans-serif;font-size:1.45rem;font-weight:900;letter-spacing:1px;text-transform:uppercase;margin-top:1px;">📊 Reportes de Ventas</div>' +
+      '</div>' +
+      '<div style="display:flex;gap:8px;">' +
+        '<button onclick="rvExportarExcel()" style="background:rgba(255,255,255,.18);color:#fff;border:none;border-radius:8px;padding:8px 14px;cursor:pointer;font-weight:800;font-size:.78rem;">📥 Excel</button>' +
+        '<button onclick="rvExportarPDF()" style="background:rgba(255,255,255,.18);color:#fff;border:none;border-radius:8px;padding:8px 14px;cursor:pointer;font-weight:800;font-size:.78rem;">🖨 PDF</button>' +
+        '<button onclick="document.getElementById(\'rv-overlay\').remove()" style="background:rgba(255,255,255,.18);border:none;color:#fff;width:34px;height:34px;border-radius:8px;cursor:pointer;font-size:1.05rem;font-weight:900;">✕</button>' +
+      '</div>' +
+    '</div>' +
+
+    // ── Barra de filtros ──
+    rvRenderFiltros() +
+
+    // ── Tabs ──
+    '<div style="display:flex;gap:0;border-bottom:2px solid #e8eaf6;background:#fff;flex-shrink:0;overflow-x:auto;">' +
+      rvBotonTab('dashboard',  '🏠 Dashboard',     tab) +
+      rvBotonTab('cliente',    '👥 Por Cliente',   tab) +
+      rvBotonTab('producto',   '📦 Por Producto',  tab) +
+      rvBotonTab('sucursal',   '🏢 Por Sucursal',  tab) +
+      rvBotonTab('detalle',    '📅 Detalle Facturas', tab) +
+    '</div>' +
+
+    // ── Body con la vista activa ──
+    '<div id="rv-body" style="flex:1;overflow:auto;padding:18px 22px;background:#fafbfd;">' +
+      (facturas.length === 0
+        ? '<div style="text-align:center;padding:60px 20px;color:#94a3b8;font-size:.95rem;">📭 No hay facturas en el rango seleccionado.<br><span style="font-size:.78rem;">Ajusta los filtros o verifica que HCL tenga datos.</span></div>'
+        : (tab === 'dashboard' ? rvRenderDashboard(kpi, facturas)
+        :  tab === 'cliente'   ? rvRenderPorCliente(kpi)
+        :  tab === 'producto'  ? rvRenderPorProducto(kpi)
+        :  tab === 'sucursal'  ? rvRenderPorSucursal(kpi)
+        :  rvRenderDetalle(facturas))
+      ) +
+    '</div>' +
+
+    // ── Footer status ──
+    '<div style="padding:8px 22px;background:#1B1F6B;color:rgba(255,255,255,.85);font-size:.7rem;display:flex;justify-content:space-between;align-items:center;flex-shrink:0;">' +
+      '<span>📊 ' + facturas.length + ' facturas · ' + rvFmtMoney(kpi.facturadoNeto) + ' facturado neto</span>' +
+      '<span>📅 ' + (window.RV.filtros.desde || '—') + ' → ' + (window.RV.filtros.hasta || '—') + '</span>' +
+    '</div>';
+};
+
+function rvBotonTab(id, label, activo) {
+  var act = (id === activo);
+  return '<button onclick="window.RV.tab=\'' + id + '\';rvRender();" style="flex:1;min-width:140px;padding:12px;background:' + (act?'#10b981':'#fff') + ';color:' + (act?'#fff':'#475569') + ';border:none;font-weight:800;cursor:pointer;font-size:.78rem;font-family:Barlow Condensed,sans-serif;letter-spacing:1px;text-transform:uppercase;transition:all .15s;">' + label + '</button>';
+}
+
+function rvRenderFiltros() {
+  var f = window.RV.filtros;
+  return '<div style="padding:12px 22px;background:#f0fdf4;border-bottom:1px solid #d1fae5;display:flex;gap:8px;flex-wrap:wrap;align-items:end;flex-shrink:0;">' +
+    // Presets rápidos
+    '<div style="display:flex;flex-direction:column;gap:3px;">' +
+      '<label style="font-size:.58rem;font-weight:800;color:#065f46;text-transform:uppercase;letter-spacing:1px;">⚡ Rápido</label>' +
+      '<div style="display:flex;gap:4px;">' +
+        '<button onclick="rvPreset(\'hoy\')" style="background:#fff;border:1.5px solid #d1fae5;color:#065f46;border-radius:5px;padding:5px 9px;font-size:.65rem;font-weight:700;cursor:pointer;">Hoy</button>' +
+        '<button onclick="rvPreset(\'semana\')" style="background:#fff;border:1.5px solid #d1fae5;color:#065f46;border-radius:5px;padding:5px 9px;font-size:.65rem;font-weight:700;cursor:pointer;">7 días</button>' +
+        '<button onclick="rvPreset(\'mes\')" style="background:#fff;border:1.5px solid #d1fae5;color:#065f46;border-radius:5px;padding:5px 9px;font-size:.65rem;font-weight:700;cursor:pointer;">Este mes</button>' +
+        '<button onclick="rvPreset(\'mesAnt\')" style="background:#fff;border:1.5px solid #d1fae5;color:#065f46;border-radius:5px;padding:5px 9px;font-size:.65rem;font-weight:700;cursor:pointer;">Mes ant.</button>' +
+        '<button onclick="rvPreset(\'trim\')" style="background:#fff;border:1.5px solid #d1fae5;color:#065f46;border-radius:5px;padding:5px 9px;font-size:.65rem;font-weight:700;cursor:pointer;">Trimestre</button>' +
+        '<button onclick="rvPreset(\'año\')" style="background:#fff;border:1.5px solid #d1fae5;color:#065f46;border-radius:5px;padding:5px 9px;font-size:.65rem;font-weight:700;cursor:pointer;">Año</button>' +
+        '<button onclick="rvPreset(\'todo\')" style="background:#fff;border:1.5px solid #d1fae5;color:#065f46;border-radius:5px;padding:5px 9px;font-size:.65rem;font-weight:700;cursor:pointer;">Todo</button>' +
+      '</div>' +
+    '</div>' +
+    '<div style="display:flex;flex-direction:column;gap:3px;">' +
+      '<label style="font-size:.58rem;font-weight:800;color:#065f46;text-transform:uppercase;letter-spacing:1px;">📅 Desde</label>' +
+      '<input type="date" value="' + (f.desde||'') + '" onchange="window.RV.filtros.desde=this.value;rvRender();" style="padding:6px 9px;border:1.5px solid #d1fae5;border-radius:6px;font-size:.78rem;">' +
+    '</div>' +
+    '<div style="display:flex;flex-direction:column;gap:3px;">' +
+      '<label style="font-size:.58rem;font-weight:800;color:#065f46;text-transform:uppercase;letter-spacing:1px;">📅 Hasta</label>' +
+      '<input type="date" value="' + (f.hasta||'') + '" onchange="window.RV.filtros.hasta=this.value;rvRender();" style="padding:6px 9px;border:1.5px solid #d1fae5;border-radius:6px;font-size:.78rem;">' +
+    '</div>' +
+    '<div style="display:flex;flex-direction:column;gap:3px;flex:1;min-width:130px;">' +
+      '<label style="font-size:.58rem;font-weight:800;color:#065f46;text-transform:uppercase;letter-spacing:1px;">👥 Cliente</label>' +
+      '<input type="text" value="' + (f.cliente||'') + '" placeholder="Buscar..." oninput="window.RV.filtros.cliente=this.value;clearTimeout(window._rvT);window._rvT=setTimeout(rvRender,300);" style="padding:6px 9px;border:1.5px solid #d1fae5;border-radius:6px;font-size:.78rem;">' +
+    '</div>' +
+    '<div style="display:flex;flex-direction:column;gap:3px;flex:1;min-width:120px;">' +
+      '<label style="font-size:.58rem;font-weight:800;color:#065f46;text-transform:uppercase;letter-spacing:1px;">🏢 Sucursal</label>' +
+      '<input type="text" value="' + (f.sucursal||'') + '" placeholder="Buscar..." oninput="window.RV.filtros.sucursal=this.value;clearTimeout(window._rvT);window._rvT=setTimeout(rvRender,300);" style="padding:6px 9px;border:1.5px solid #d1fae5;border-radius:6px;font-size:.78rem;">' +
+    '</div>' +
+    '<div style="display:flex;flex-direction:column;gap:3px;">' +
+      '<label style="font-size:.58rem;font-weight:800;color:#065f46;text-transform:uppercase;letter-spacing:1px;">🏷 Marca</label>' +
+      '<select onchange="window.RV.filtros.marca=this.value;rvRender();" style="padding:6px 9px;border:1.5px solid #d1fae5;border-radius:6px;font-size:.78rem;cursor:pointer;background:white;">' +
+        '<option value="">Todas</option>' +
+        '<option value="EXCALIBUR"' + (f.marca==='EXCALIBUR'?' selected':'') + '>EXCALIBUR</option>' +
+        '<option value="GENIAL"' + (f.marca==='GENIAL'?' selected':'') + '>GENIAL</option>' +
+        '<option value="LUMEN"' + (f.marca==='LUMEN'?' selected':'') + '>LUMEN</option>' +
+        '<option value="MATRIX"' + (f.marca==='MATRIX'?' selected':'') + '>MATRIX</option>' +
+        '<option value="MAXKILLER"' + (f.marca==='MAXKILLER'?' selected':'') + '>MAXKILLER</option>' +
+        '<option value="VARIOS"' + (f.marca==='VARIOS'?' selected':'') + '>VARIOS</option>' +
+      '</select>' +
+    '</div>' +
+    '<div style="display:flex;flex-direction:column;gap:3px;flex:1;min-width:120px;">' +
+      '<label style="font-size:.58rem;font-weight:800;color:#065f46;text-transform:uppercase;letter-spacing:1px;">📦 Producto</label>' +
+      '<input type="text" value="' + (f.producto||'') + '" placeholder="REF o desc..." oninput="window.RV.filtros.producto=this.value;clearTimeout(window._rvT);window._rvT=setTimeout(rvRender,300);" style="padding:6px 9px;border:1.5px solid #d1fae5;border-radius:6px;font-size:.78rem;">' +
+    '</div>' +
+    '<button onclick="rvLimpiarFiltros()" style="background:#fee2e2;color:#991b1b;border:1.5px solid #fca5a5;border-radius:6px;padding:7px 11px;font-size:.7rem;font-weight:800;cursor:pointer;">🗑 Limpiar</button>' +
+  '</div>';
+}
+
+window.rvPreset = function(p) {
+  var hoy = new Date();
+  var d, h;
+  if (p === 'hoy') { d = h = new Date(hoy); }
+  else if (p === 'semana') { d = new Date(hoy); d.setDate(d.getDate()-6); h = new Date(hoy); }
+  else if (p === 'mes') { d = new Date(hoy.getFullYear(), hoy.getMonth(), 1); h = new Date(hoy.getFullYear(), hoy.getMonth()+1, 0); }
+  else if (p === 'mesAnt') { d = new Date(hoy.getFullYear(), hoy.getMonth()-1, 1); h = new Date(hoy.getFullYear(), hoy.getMonth(), 0); }
+  else if (p === 'trim') { d = new Date(hoy); d.setMonth(d.getMonth()-2); d.setDate(1); h = new Date(hoy.getFullYear(), hoy.getMonth()+1, 0); }
+  else if (p === 'año') { d = new Date(hoy.getFullYear(), 0, 1); h = new Date(hoy.getFullYear(), 11, 31); }
+  else if (p === 'todo') { window.RV.filtros.desde=''; window.RV.filtros.hasta=''; rvRender(); return; }
+  window.RV.filtros.desde = d.toISOString().slice(0,10);
+  window.RV.filtros.hasta = h.toISOString().slice(0,10);
+  rvRender();
+};
+
+window.rvLimpiarFiltros = function() {
+  window.RV.filtros = { desde:'', hasta:'', cliente:'', sucursal:'', marca:'', producto:'' };
+  rvRender();
+};
+
+// ═══ TAB 1: DASHBOARD ═══
+function rvRenderDashboard(kpi, facturas) {
+  // Top 5 por categoría
+  var topClientes = Object.values(kpi.topClientes).sort(function(a,b){ return b.monto - a.monto; }).slice(0, 5);
+  var topProductos = Object.values(kpi.topProductos).sort(function(a,b){ return b.monto - a.monto; }).slice(0, 5);
+  var topSucursales = Object.values(kpi.topSucursales).sort(function(a,b){ return b.monto - a.monto; }).slice(0, 5);
+  var topMarcas = Object.values(kpi.topMarcas).sort(function(a,b){ return b.monto - a.monto; });
+
+  // Gráfico de evolución diaria — últimos 30 días o el rango
+  var diasSorted = Object.keys(kpi.porDia).sort();
+  var maxDia = Math.max.apply(null, diasSorted.map(function(d){ return kpi.porDia[d]; }).concat([1]));
+
+  var html = '';
+
+  // ── KPIs principales ──
+  html += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:18px;">';
+  html += rvKPICard('💰', rvFmtMoney(kpi.facturadoNeto), 'Facturado Neto', '#10b981', '#dcfce7');
+  html += rvKPICard('📄', rvFmtNum(kpi.numFacturas), 'Facturas', '#3b82f6', '#dbeafe');
+  html += rvKPICard('👥', rvFmtNum(kpi.clientesUnicos), 'Clientes', '#8b5cf6', '#ede9fe');
+  html += rvKPICard('🏢', rvFmtNum(kpi.sucursalesUnicas), 'Sucursales', '#ec4899', '#fce7f3');
+  html += rvKPICard('📦', rvFmtNum(kpi.unidadesTotal), 'Unidades', '#f59e0b', '#fef3c7');
+  html += rvKPICard('🎫', rvFmtMoney(kpi.ticketPromedio), 'Ticket Promedio', '#0891b2', '#cffafe');
+  html += '</div>';
+
+  // ── Evolución diaria ──
+  if (diasSorted.length > 0) {
+    html += '<div style="background:#fff;border-radius:10px;padding:16px;margin-bottom:18px;border:1px solid #e2e8f0;">';
+    html += '<div style="font-family:Barlow Condensed,sans-serif;font-weight:900;font-size:.95rem;color:#1B1F6B;letter-spacing:1px;text-transform:uppercase;margin-bottom:12px;">📈 Evolución Diaria</div>';
+    html += '<div style="display:flex;align-items:flex-end;gap:3px;height:140px;border-bottom:1.5px solid #e2e8f0;border-left:1.5px solid #e2e8f0;padding:6px 0;">';
+    diasSorted.forEach(function(d){
+      var v = kpi.porDia[d];
+      var pct = (v / maxDia) * 100;
+      var fechaCorta = d.substring(8,10) + '/' + d.substring(5,7);
+      html += '<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;min-width:24px;">' +
+        '<div style="width:100%;background:linear-gradient(180deg,#10b981,#059669);height:' + Math.max(2,pct) + '%;border-radius:3px 3px 0 0;position:relative;" title="' + fechaCorta + ': ' + rvFmtMoney(v) + '">' +
+          (pct > 30 ? '<div style="position:absolute;top:-16px;left:50%;transform:translateX(-50%);font-size:.55rem;color:#065f46;font-weight:800;white-space:nowrap;">$' + Math.round(v) + '</div>' : '') +
+        '</div>' +
+        '<div style="font-size:.55rem;color:#64748b;font-weight:600;writing-mode:' + (diasSorted.length>20?'vertical-rl':'horizontal-tb') + ';">' + fechaCorta + '</div>' +
+      '</div>';
+    });
+    html += '</div></div>';
+  }
+
+  // ── Grid 2x2: Top Clientes / Top Productos / Top Sucursales / Por Marca ──
+  html += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(380px,1fr));gap:14px;">';
+
+  // Top Clientes
+  html += rvBoxTop('🏆 Top 5 Clientes', topClientes.map(function(c, i){
+    return '<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid #f1f5f9;">' +
+      '<div style="width:24px;height:24px;border-radius:50%;background:linear-gradient(135deg,#10b981,#059669);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:.7rem;flex-shrink:0;">' + (i+1) + '</div>' +
+      '<div style="flex:1;min-width:0;"><div style="font-weight:700;color:#1B1F6B;font-size:.78rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + c.nombre + '</div>' +
+      '<div style="font-size:.62rem;color:#64748b;">' + c.facturas + ' fact. · ' + rvFmtNum(c.unidades) + ' uds</div></div>' +
+      '<div style="font-family:Barlow Condensed,sans-serif;font-weight:900;font-size:1rem;color:#10b981;">' + rvFmtMoney(c.monto) + '</div>' +
+    '</div>';
+  }).join(''));
+
+  // Top Productos
+  html += rvBoxTop('📦 Top 5 Productos', topProductos.map(function(p, i){
+    return '<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid #f1f5f9;">' +
+      '<div style="width:24px;height:24px;border-radius:50%;background:linear-gradient(135deg,#f59e0b,#d97706);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:.7rem;flex-shrink:0;">' + (i+1) + '</div>' +
+      '<div style="flex:1;min-width:0;"><div style="font-weight:800;color:#1B1F6B;font-size:.78rem;font-family:monospace;">' + p.ref + '</div>' +
+      '<div style="font-size:.62rem;color:#64748b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + (p.desc||'').substring(0,42) + ' · ' + rvFmtNum(p.unidades) + ' uds</div></div>' +
+      '<div style="font-family:Barlow Condensed,sans-serif;font-weight:900;font-size:1rem;color:#f59e0b;">' + rvFmtMoney(p.monto) + '</div>' +
+    '</div>';
+  }).join(''));
+
+  // Top Sucursales
+  html += rvBoxTop('🏢 Top 5 Sucursales', topSucursales.map(function(s, i){
+    return '<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid #f1f5f9;">' +
+      '<div style="width:24px;height:24px;border-radius:50%;background:linear-gradient(135deg,#ec4899,#be185d);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:.7rem;flex-shrink:0;">' + (i+1) + '</div>' +
+      '<div style="flex:1;min-width:0;"><div style="font-weight:700;color:#1B1F6B;font-size:.74rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + s.nombre + '</div>' +
+      '<div style="font-size:.62rem;color:#64748b;">' + s.facturas + ' fact. · ' + rvFmtNum(s.unidades) + ' uds</div></div>' +
+      '<div style="font-family:Barlow Condensed,sans-serif;font-weight:900;font-size:1rem;color:#ec4899;">' + rvFmtMoney(s.monto) + '</div>' +
+    '</div>';
+  }).join(''));
+
+  // Por Marca
+  html += rvBoxTop('🏷 Ventas por Marca', topMarcas.map(function(m){
+    var pct = kpi.facturadoNeto > 0 ? (m.monto / kpi.facturadoNeto) * 100 : 0;
+    return '<div style="padding:6px 0;border-bottom:1px solid #f1f5f9;">' +
+      '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px;"><span style="font-family:Barlow Condensed,sans-serif;font-weight:900;color:#1B1F6B;font-size:.85rem;letter-spacing:1px;">' + m.marca + '</span><span style="font-weight:800;color:#10b981;font-size:.82rem;">' + rvFmtMoney(m.monto) + ' (' + pct.toFixed(1) + '%)</span></div>' +
+      '<div style="background:#f1f5f9;height:6px;border-radius:3px;overflow:hidden;"><div style="background:linear-gradient(90deg,#10b981,#059669);height:100%;width:' + pct + '%;border-radius:3px;"></div></div>' +
+    '</div>';
+  }).join(''));
+
+  html += '</div>';
+
+  // ── Footer: por moneda ──
+  if (kpi.porMoneda.USD || kpi.porMoneda.BCV || kpi.porMoneda.TF) {
+    html += '<div style="margin-top:14px;padding:12px 16px;background:#1B1F6B;color:#fff;border-radius:10px;display:flex;gap:24px;justify-content:center;">' +
+      '<div style="text-align:center;"><div style="font-size:.6rem;opacity:.7;letter-spacing:1px;text-transform:uppercase;">USD</div><div style="font-family:Barlow Condensed,sans-serif;font-weight:900;font-size:1.1rem;">' + rvFmtMoney(kpi.porMoneda.USD||0) + '</div></div>' +
+      '<div style="text-align:center;"><div style="font-size:.6rem;opacity:.7;letter-spacing:1px;text-transform:uppercase;">BCV</div><div style="font-family:Barlow Condensed,sans-serif;font-weight:900;font-size:1.1rem;">' + rvFmtMoney(kpi.porMoneda.BCV||0) + '</div></div>' +
+      '<div style="text-align:center;"><div style="font-size:.6rem;opacity:.7;letter-spacing:1px;text-transform:uppercase;">TF</div><div style="font-family:Barlow Condensed,sans-serif;font-weight:900;font-size:1.1rem;">' + rvFmtMoney(kpi.porMoneda.TF||0) + '</div></div>' +
+    '</div>';
+  }
+
+  return html;
+}
+
+function rvKPICard(icon, val, label, color, bg) {
+  return '<div style="background:' + bg + ';border:1.5px solid ' + color + '40;border-radius:10px;padding:12px 14px;">' +
+    '<div style="display:flex;align-items:center;gap:7px;margin-bottom:4px;">' +
+      '<span style="font-size:1.1rem;">' + icon + '</span>' +
+      '<span style="font-size:.6rem;color:' + color + ';font-weight:800;letter-spacing:1px;text-transform:uppercase;">' + label + '</span>' +
+    '</div>' +
+    '<div style="font-family:Barlow Condensed,sans-serif;font-weight:900;font-size:1.5rem;color:' + color + ';line-height:1;">' + val + '</div>' +
+  '</div>';
+}
+
+function rvBoxTop(titulo, contenido) {
+  return '<div style="background:#fff;border-radius:10px;padding:14px 16px;border:1px solid #e2e8f0;">' +
+    '<div style="font-family:Barlow Condensed,sans-serif;font-weight:900;font-size:.9rem;color:#1B1F6B;letter-spacing:1px;text-transform:uppercase;margin-bottom:8px;border-bottom:2px solid #f0fdf4;padding-bottom:6px;">' + titulo + '</div>' +
+    contenido +
+  '</div>';
+}
+
+// ═══ TAB 2: POR CLIENTE ═══
+function rvRenderPorCliente(kpi) {
+  var rows = Object.values(kpi.topClientes).sort(function(a,b){ return b.monto - a.monto; });
+  if (rows.length === 0) return '<div style="text-align:center;padding:40px;color:#94a3b8;">Sin datos</div>';
+
+  var totalMonto = rows.reduce(function(s,r){ return s + r.monto; }, 0);
+
+  var html = '<div style="background:#fff;border-radius:10px;overflow:hidden;border:1px solid #e2e8f0;">';
+  html += '<table style="width:100%;border-collapse:collapse;font-size:.78rem;">';
+  html += '<thead style="background:#1B1F6B;color:#fff;"><tr>' +
+    '<th style="padding:10px 12px;text-align:left;font-family:Barlow Condensed,sans-serif;font-size:.72rem;letter-spacing:1px;">#</th>' +
+    '<th style="padding:10px 12px;text-align:left;font-family:Barlow Condensed,sans-serif;font-size:.72rem;letter-spacing:1px;">CLIENTE</th>' +
+    '<th style="padding:10px 12px;text-align:right;font-family:Barlow Condensed,sans-serif;font-size:.72rem;letter-spacing:1px;">FACTURAS</th>' +
+    '<th style="padding:10px 12px;text-align:right;font-family:Barlow Condensed,sans-serif;font-size:.72rem;letter-spacing:1px;">UNIDADES</th>' +
+    '<th style="padding:10px 12px;text-align:right;font-family:Barlow Condensed,sans-serif;font-size:.72rem;letter-spacing:1px;">TICKET PROM.</th>' +
+    '<th style="padding:10px 12px;text-align:right;font-family:Barlow Condensed,sans-serif;font-size:.72rem;letter-spacing:1px;">MONTO</th>' +
+    '<th style="padding:10px 12px;text-align:center;font-family:Barlow Condensed,sans-serif;font-size:.72rem;letter-spacing:1px;">% TOTAL</th>' +
+    '<th style="padding:10px 12px;text-align:center;font-family:Barlow Condensed,sans-serif;font-size:.72rem;letter-spacing:1px;">ÚLT. COMPRA</th>' +
+  '</tr></thead><tbody>';
+  rows.forEach(function(r, i){
+    var bg = i % 2 === 0 ? '#fff' : '#f8fafc';
+    var pct = totalMonto > 0 ? (r.monto / totalMonto * 100) : 0;
+    var ticket = r.facturas > 0 ? r.monto / r.facturas : 0;
+    var ult = r.ultimaCompra ? rvFmtFecha(r.ultimaCompra.toISOString().slice(0,10)) : '—';
+    html += '<tr style="background:' + bg + ';border-bottom:1px solid #f1f5f9;">' +
+      '<td style="padding:8px 12px;font-weight:800;color:#94a3b8;">' + (i+1) + '</td>' +
+      '<td style="padding:8px 12px;font-weight:700;color:#1B1F6B;">' + r.nombre + '</td>' +
+      '<td style="padding:8px 12px;text-align:right;font-family:monospace;font-weight:700;">' + r.facturas + '</td>' +
+      '<td style="padding:8px 12px;text-align:right;font-family:monospace;">' + rvFmtNum(r.unidades) + '</td>' +
+      '<td style="padding:8px 12px;text-align:right;font-family:Barlow Condensed,sans-serif;font-weight:700;color:#0891b2;">' + rvFmtMoney(ticket) + '</td>' +
+      '<td style="padding:8px 12px;text-align:right;font-family:Barlow Condensed,sans-serif;font-weight:900;color:#10b981;font-size:.92rem;">' + rvFmtMoney(r.monto) + '</td>' +
+      '<td style="padding:8px 12px;text-align:center;"><div style="display:inline-flex;align-items:center;gap:6px;"><span style="font-size:.7rem;font-weight:700;color:#475569;">' + pct.toFixed(1) + '%</span><div style="width:60px;background:#f1f5f9;height:5px;border-radius:3px;overflow:hidden;"><div style="background:#10b981;height:100%;width:' + pct + '%;"></div></div></div></td>' +
+      '<td style="padding:8px 12px;text-align:center;font-size:.7rem;color:#64748b;">' + ult + '</td>' +
+    '</tr>';
+  });
+  html += '</tbody></table></div>';
+  return html;
+}
+
+// ═══ TAB 3: POR PRODUCTO ═══
+function rvRenderPorProducto(kpi) {
+  var rows = Object.values(kpi.topProductos).map(function(p){
+    return Object.assign({}, p, { numFacturas: p.facturas.size });
+  }).sort(function(a,b){ return b.monto - a.monto; });
+  if (rows.length === 0) return '<div style="text-align:center;padding:40px;color:#94a3b8;">Sin datos</div>';
+
+  var totalMonto = rows.reduce(function(s,r){ return s + r.monto; }, 0);
+
+  var html = '<div style="background:#fff;border-radius:10px;overflow:hidden;border:1px solid #e2e8f0;">';
+  html += '<table style="width:100%;border-collapse:collapse;font-size:.78rem;">';
+  html += '<thead style="background:#1B1F6B;color:#fff;"><tr>' +
+    '<th style="padding:10px 12px;text-align:left;font-family:Barlow Condensed,sans-serif;font-size:.72rem;letter-spacing:1px;">#</th>' +
+    '<th style="padding:10px 12px;text-align:left;font-family:Barlow Condensed,sans-serif;font-size:.72rem;letter-spacing:1px;">REF</th>' +
+    '<th style="padding:10px 12px;text-align:left;font-family:Barlow Condensed,sans-serif;font-size:.72rem;letter-spacing:1px;">DESCRIPCIÓN</th>' +
+    '<th style="padding:10px 12px;text-align:left;font-family:Barlow Condensed,sans-serif;font-size:.72rem;letter-spacing:1px;">MARCA</th>' +
+    '<th style="padding:10px 12px;text-align:right;font-family:Barlow Condensed,sans-serif;font-size:.72rem;letter-spacing:1px;">UNIDADES</th>' +
+    '<th style="padding:10px 12px;text-align:right;font-family:Barlow Condensed,sans-serif;font-size:.72rem;letter-spacing:1px;">FACTURAS</th>' +
+    '<th style="padding:10px 12px;text-align:right;font-family:Barlow Condensed,sans-serif;font-size:.72rem;letter-spacing:1px;">P. PROM</th>' +
+    '<th style="padding:10px 12px;text-align:right;font-family:Barlow Condensed,sans-serif;font-size:.72rem;letter-spacing:1px;">MONTO</th>' +
+    '<th style="padding:10px 12px;text-align:center;font-family:Barlow Condensed,sans-serif;font-size:.72rem;letter-spacing:1px;">% TOTAL</th>' +
+  '</tr></thead><tbody>';
+  rows.forEach(function(r, i){
+    var bg = i % 2 === 0 ? '#fff' : '#f8fafc';
+    var pct = totalMonto > 0 ? (r.monto / totalMonto * 100) : 0;
+    var pProm = r.unidades > 0 ? r.monto / r.unidades : 0;
+    html += '<tr style="background:' + bg + ';border-bottom:1px solid #f1f5f9;">' +
+      '<td style="padding:8px 12px;font-weight:800;color:#94a3b8;">' + (i+1) + '</td>' +
+      '<td style="padding:8px 12px;font-family:monospace;font-weight:800;color:#1B1F6B;">' + r.ref + '</td>' +
+      '<td style="padding:8px 12px;color:#475569;">' + (r.desc||'').substring(0,55) + '</td>' +
+      '<td style="padding:8px 12px;"><span style="background:#e0e7ff;color:#3730a3;padding:2px 7px;border-radius:4px;font-size:.62rem;font-weight:700;">' + (r.marca||'—') + '</span></td>' +
+      '<td style="padding:8px 12px;text-align:right;font-family:monospace;font-weight:700;">' + rvFmtNum(r.unidades) + '</td>' +
+      '<td style="padding:8px 12px;text-align:right;font-family:monospace;color:#64748b;">' + r.numFacturas + '</td>' +
+      '<td style="padding:8px 12px;text-align:right;font-family:Barlow Condensed,sans-serif;font-weight:700;color:#0891b2;">' + rvFmtMoney(pProm) + '</td>' +
+      '<td style="padding:8px 12px;text-align:right;font-family:Barlow Condensed,sans-serif;font-weight:900;color:#f59e0b;font-size:.92rem;">' + rvFmtMoney(r.monto) + '</td>' +
+      '<td style="padding:8px 12px;text-align:center;"><div style="display:inline-flex;align-items:center;gap:6px;"><span style="font-size:.7rem;font-weight:700;color:#475569;">' + pct.toFixed(1) + '%</span><div style="width:60px;background:#f1f5f9;height:5px;border-radius:3px;overflow:hidden;"><div style="background:#f59e0b;height:100%;width:' + pct + '%;"></div></div></div></td>' +
+    '</tr>';
+  });
+  html += '</tbody></table></div>';
+  return html;
+}
+
+// ═══ TAB 4: POR SUCURSAL ═══
+function rvRenderPorSucursal(kpi) {
+  var rows = Object.values(kpi.topSucursales).sort(function(a,b){ return b.monto - a.monto; });
+  if (rows.length === 0) return '<div style="text-align:center;padding:40px;color:#94a3b8;">Sin datos</div>';
+  var totalMonto = rows.reduce(function(s,r){ return s + r.monto; }, 0);
+
+  var html = '<div style="background:#fff;border-radius:10px;overflow:hidden;border:1px solid #e2e8f0;">';
+  html += '<table style="width:100%;border-collapse:collapse;font-size:.78rem;">';
+  html += '<thead style="background:#1B1F6B;color:#fff;"><tr>' +
+    '<th style="padding:10px 12px;text-align:left;font-family:Barlow Condensed,sans-serif;font-size:.72rem;letter-spacing:1px;">#</th>' +
+    '<th style="padding:10px 12px;text-align:left;font-family:Barlow Condensed,sans-serif;font-size:.72rem;letter-spacing:1px;">CLIENTE</th>' +
+    '<th style="padding:10px 12px;text-align:left;font-family:Barlow Condensed,sans-serif;font-size:.72rem;letter-spacing:1px;">SUCURSAL</th>' +
+    '<th style="padding:10px 12px;text-align:right;font-family:Barlow Condensed,sans-serif;font-size:.72rem;letter-spacing:1px;">FACTURAS</th>' +
+    '<th style="padding:10px 12px;text-align:right;font-family:Barlow Condensed,sans-serif;font-size:.72rem;letter-spacing:1px;">UNIDADES</th>' +
+    '<th style="padding:10px 12px;text-align:right;font-family:Barlow Condensed,sans-serif;font-size:.72rem;letter-spacing:1px;">TICKET PROM.</th>' +
+    '<th style="padding:10px 12px;text-align:right;font-family:Barlow Condensed,sans-serif;font-size:.72rem;letter-spacing:1px;">MONTO</th>' +
+    '<th style="padding:10px 12px;text-align:center;font-family:Barlow Condensed,sans-serif;font-size:.72rem;letter-spacing:1px;">% TOTAL</th>' +
+  '</tr></thead><tbody>';
+  rows.forEach(function(r, i){
+    var bg = i % 2 === 0 ? '#fff' : '#f8fafc';
+    var pct = totalMonto > 0 ? (r.monto / totalMonto * 100) : 0;
+    var ticket = r.facturas > 0 ? r.monto / r.facturas : 0;
+    html += '<tr style="background:' + bg + ';border-bottom:1px solid #f1f5f9;">' +
+      '<td style="padding:8px 12px;font-weight:800;color:#94a3b8;">' + (i+1) + '</td>' +
+      '<td style="padding:8px 12px;font-weight:700;color:#1B1F6B;">' + (r.cliente||'—') + '</td>' +
+      '<td style="padding:8px 12px;color:#475569;">' + (r.sucursal||'<span style="color:#94a3b8;font-style:italic;">(sin sucursal)</span>') + '</td>' +
+      '<td style="padding:8px 12px;text-align:right;font-family:monospace;font-weight:700;">' + r.facturas + '</td>' +
+      '<td style="padding:8px 12px;text-align:right;font-family:monospace;">' + rvFmtNum(r.unidades) + '</td>' +
+      '<td style="padding:8px 12px;text-align:right;font-family:Barlow Condensed,sans-serif;font-weight:700;color:#0891b2;">' + rvFmtMoney(ticket) + '</td>' +
+      '<td style="padding:8px 12px;text-align:right;font-family:Barlow Condensed,sans-serif;font-weight:900;color:#ec4899;font-size:.92rem;">' + rvFmtMoney(r.monto) + '</td>' +
+      '<td style="padding:8px 12px;text-align:center;"><div style="display:inline-flex;align-items:center;gap:6px;"><span style="font-size:.7rem;font-weight:700;color:#475569;">' + pct.toFixed(1) + '%</span><div style="width:60px;background:#f1f5f9;height:5px;border-radius:3px;overflow:hidden;"><div style="background:#ec4899;height:100%;width:' + pct + '%;"></div></div></div></td>' +
+    '</tr>';
+  });
+  html += '</tbody></table></div>';
+  return html;
+}
+
+// ═══ TAB 5: DETALLE FACTURAS ═══
+function rvRenderDetalle(facturas) {
+  // Ordenar por fecha descendente
+  var rows = facturas.slice().sort(function(a,b){
+    var fa = rvParseDate(a.fechaEmision || a.fecha);
+    var fb = rvParseDate(b.fechaEmision || b.fecha);
+    return (fb ? fb.getTime() : 0) - (fa ? fa.getTime() : 0);
+  });
+
+  var html = '<div style="background:#fff;border-radius:10px;overflow:hidden;border:1px solid #e2e8f0;">';
+  html += '<table style="width:100%;border-collapse:collapse;font-size:.76rem;">';
+  html += '<thead style="background:#1B1F6B;color:#fff;"><tr>' +
+    '<th style="padding:10px 12px;text-align:left;font-family:Barlow Condensed,sans-serif;font-size:.72rem;letter-spacing:1px;">N° FACTURA</th>' +
+    '<th style="padding:10px 12px;text-align:left;font-family:Barlow Condensed,sans-serif;font-size:.72rem;letter-spacing:1px;">FECHA</th>' +
+    '<th style="padding:10px 12px;text-align:left;font-family:Barlow Condensed,sans-serif;font-size:.72rem;letter-spacing:1px;">CLIENTE</th>' +
+    '<th style="padding:10px 12px;text-align:left;font-family:Barlow Condensed,sans-serif;font-size:.72rem;letter-spacing:1px;">SUCURSAL</th>' +
+    '<th style="padding:10px 12px;text-align:center;font-family:Barlow Condensed,sans-serif;font-size:.72rem;letter-spacing:1px;">ITEMS</th>' +
+    '<th style="padding:10px 12px;text-align:right;font-family:Barlow Condensed,sans-serif;font-size:.72rem;letter-spacing:1px;">UNIDADES</th>' +
+    '<th style="padding:10px 12px;text-align:center;font-family:Barlow Condensed,sans-serif;font-size:.72rem;letter-spacing:1px;">MONEDA</th>' +
+    '<th style="padding:10px 12px;text-align:right;font-family:Barlow Condensed,sans-serif;font-size:.72rem;letter-spacing:1px;">TOTAL</th>' +
+    '<th style="padding:10px 12px;text-align:right;font-family:Barlow Condensed,sans-serif;font-size:.72rem;letter-spacing:1px;">N. CRÉD.</th>' +
+    '<th style="padding:10px 12px;text-align:right;font-family:Barlow Condensed,sans-serif;font-size:.72rem;letter-spacing:1px;">NETO</th>' +
+  '</tr></thead><tbody>';
+  rows.forEach(function(fa, i){
+    var bg = i % 2 === 0 ? '#fff' : '#f8fafc';
+    var items = fa.items || [];
+    var unidades = items.reduce(function(s,it){ return s + (parseFloat(it.cantidad||it.qty||it.cant||0)||0); }, 0);
+    var total = parseFloat(fa.total)||0;
+    var totalNC = parseFloat(fa.totalNC)||0;
+    var neto = total - totalNC;
+    html += '<tr style="background:' + bg + ';border-bottom:1px solid #f1f5f9;">' +
+      '<td style="padding:8px 12px;font-family:monospace;font-weight:800;color:#1B1F6B;">' + (fa.numero || fa.numpedido || '—') + '</td>' +
+      '<td style="padding:8px 12px;font-size:.72rem;color:#64748b;">' + rvFmtFecha(fa.fechaEmision || fa.fecha) + '</td>' +
+      '<td style="padding:8px 12px;font-weight:700;color:#1B1F6B;">' + (fa.clienteNombre || fa.cliente || '—') + '</td>' +
+      '<td style="padding:8px 12px;color:#475569;font-size:.72rem;">' + (fa.sucursal || '—') + '</td>' +
+      '<td style="padding:8px 12px;text-align:center;font-family:monospace;">' + items.length + '</td>' +
+      '<td style="padding:8px 12px;text-align:right;font-family:monospace;">' + rvFmtNum(unidades) + '</td>' +
+      '<td style="padding:8px 12px;text-align:center;"><span style="background:#e0e7ff;color:#3730a3;padding:2px 6px;border-radius:4px;font-size:.6rem;font-weight:800;">' + (fa.moneda||'USD') + '</span></td>' +
+      '<td style="padding:8px 12px;text-align:right;font-family:Barlow Condensed,sans-serif;font-weight:700;">' + rvFmtMoney(total) + '</td>' +
+      '<td style="padding:8px 12px;text-align:right;font-family:Barlow Condensed,sans-serif;color:' + (totalNC>0?'#dc2626':'#cbd5e1') + ';">' + (totalNC>0?'-'+rvFmtMoney(totalNC):'—') + '</td>' +
+      '<td style="padding:8px 12px;text-align:right;font-family:Barlow Condensed,sans-serif;font-weight:900;color:#10b981;">' + rvFmtMoney(neto) + '</td>' +
+    '</tr>';
+  });
+  html += '</tbody></table></div>';
+  return html;
+}
+
+// ═══ EXPORTAR EXCEL ═══
+window.rvExportarExcel = function() {
+  if (typeof XLSX === 'undefined') { alert('Librería Excel no disponible'); return; }
+  var facturas = window.rvCargarFacturasFiltradas();
+  if (facturas.length === 0) { alert('No hay datos para exportar'); return; }
+  var kpi = window.rvCalcularKPIs(facturas);
+
+  var wb = XLSX.utils.book_new();
+
+  // Hoja 1: Resumen
+  var resumen = [
+    ['REPORTE DE VENTAS — FARMERS C.A.'],
+    [''],
+    ['Período:', (window.RV.filtros.desde||'(todo)') + ' → ' + (window.RV.filtros.hasta||'(todo)')],
+    ['Generado:', new Date().toLocaleString('es-VE')],
+    [''],
+    ['MÉTRICA', 'VALOR'],
+    ['Facturado neto', kpi.facturadoNeto],
+    ['Total facturas', kpi.numFacturas],
+    ['Clientes únicos', kpi.clientesUnicos],
+    ['Sucursales únicas', kpi.sucursalesUnicas],
+    ['Unidades vendidas', kpi.unidadesTotal],
+    ['Ticket promedio', kpi.ticketPromedio]
+  ];
+  var ws1 = XLSX.utils.aoa_to_sheet(resumen);
+  ws1['!cols'] = [{wch:30},{wch:20}];
+  XLSX.utils.book_append_sheet(wb, ws1, 'Resumen');
+
+  // Hoja 2: Por Cliente
+  var dataClientes = [['Cliente', 'Facturas', 'Unidades', 'Ticket Promedio', 'Monto', 'Última Compra']];
+  Object.values(kpi.topClientes).sort(function(a,b){ return b.monto-a.monto; }).forEach(function(r){
+    dataClientes.push([
+      r.nombre, r.facturas, r.unidades,
+      r.facturas>0 ? r.monto/r.facturas : 0,
+      r.monto,
+      r.ultimaCompra ? r.ultimaCompra.toISOString().slice(0,10) : ''
+    ]);
+  });
+  var ws2 = XLSX.utils.aoa_to_sheet(dataClientes);
+  ws2['!cols'] = [{wch:35},{wch:10},{wch:11},{wch:14},{wch:14},{wch:13}];
+  XLSX.utils.book_append_sheet(wb, ws2, 'Por Cliente');
+
+  // Hoja 3: Por Producto
+  var dataProds = [['REF', 'Descripción', 'Marca', 'Unidades', 'Facturas', 'Precio Prom.', 'Monto']];
+  Object.values(kpi.topProductos).sort(function(a,b){ return b.monto-a.monto; }).forEach(function(r){
+    dataProds.push([
+      r.ref, r.desc||'', r.marca||'', r.unidades, r.facturas.size,
+      r.unidades>0 ? r.monto/r.unidades : 0,
+      r.monto
+    ]);
+  });
+  var ws3 = XLSX.utils.aoa_to_sheet(dataProds);
+  ws3['!cols'] = [{wch:12},{wch:45},{wch:12},{wch:11},{wch:10},{wch:13},{wch:14}];
+  XLSX.utils.book_append_sheet(wb, ws3, 'Por Producto');
+
+  // Hoja 4: Por Sucursal
+  var dataSucs = [['Cliente', 'Sucursal', 'Facturas', 'Unidades', 'Ticket Prom.', 'Monto']];
+  Object.values(kpi.topSucursales).sort(function(a,b){ return b.monto-a.monto; }).forEach(function(r){
+    dataSucs.push([
+      r.cliente||'', r.sucursal||'(sin sucursal)', r.facturas, r.unidades,
+      r.facturas>0 ? r.monto/r.facturas : 0,
+      r.monto
+    ]);
+  });
+  var ws4 = XLSX.utils.aoa_to_sheet(dataSucs);
+  ws4['!cols'] = [{wch:30},{wch:25},{wch:10},{wch:11},{wch:14},{wch:14}];
+  XLSX.utils.book_append_sheet(wb, ws4, 'Por Sucursal');
+
+  // Hoja 5: Detalle Facturas
+  var dataDet = [['N° Factura', 'Fecha', 'Cliente', 'Sucursal', 'Items', 'Unidades', 'Moneda', 'Total', 'Notas Crédito', 'Neto']];
+  facturas.slice().sort(function(a,b){
+    var fa = rvParseDate(a.fechaEmision || a.fecha);
+    var fb = rvParseDate(b.fechaEmision || b.fecha);
+    return (fb ? fb.getTime() : 0) - (fa ? fa.getTime() : 0);
+  }).forEach(function(fa){
+    var items = fa.items || [];
+    var unidades = items.reduce(function(s,it){ return s + (parseFloat(it.cantidad||it.qty||it.cant||0)||0); }, 0);
+    var total = parseFloat(fa.total)||0;
+    var totalNC = parseFloat(fa.totalNC)||0;
+    dataDet.push([
+      fa.numero || fa.numpedido || '',
+      fa.fechaEmision || fa.fecha || '',
+      fa.clienteNombre || fa.cliente || '',
+      fa.sucursal || '',
+      items.length,
+      unidades,
+      fa.moneda || 'USD',
+      total,
+      totalNC,
+      total - totalNC
+    ]);
+  });
+  var ws5 = XLSX.utils.aoa_to_sheet(dataDet);
+  ws5['!cols'] = [{wch:15},{wch:12},{wch:30},{wch:20},{wch:7},{wch:10},{wch:8},{wch:13},{wch:13},{wch:13}];
+  XLSX.utils.book_append_sheet(wb, ws5, 'Detalle Facturas');
+
+  var fechaStr = new Date().toISOString().slice(0,10);
+  XLSX.writeFile(wb, 'FARMERS_Reporte_Ventas_' + fechaStr + '.xlsx');
+  if (typeof showToast === 'function') showToast('📥 Reporte exportado a Excel', 'success');
+};
+
+// ═══ EXPORTAR PDF (impresión del dashboard) ═══
+window.rvExportarPDF = function() {
+  var facturas = window.rvCargarFacturasFiltradas();
+  if (facturas.length === 0) { alert('No hay datos para exportar'); return; }
+  var kpi = window.rvCalcularKPIs(facturas);
+  var topClientes = Object.values(kpi.topClientes).sort(function(a,b){ return b.monto-a.monto; }).slice(0, 10);
+  var topProductos = Object.values(kpi.topProductos).sort(function(a,b){ return b.monto-a.monto; }).slice(0, 10);
+  var topSucursales = Object.values(kpi.topSucursales).sort(function(a,b){ return b.monto-a.monto; }).slice(0, 10);
+
+  var w = window.open('', '_blank', 'width=900,height=700');
+  if (!w) { alert('Bloqueador de popups activado'); return; }
+  var hoy = new Date().toLocaleDateString('es-VE', {weekday:'long', day:'numeric', month:'long', year:'numeric'});
+  var html =
+    '<!DOCTYPE html><html><head><meta charset="utf-8">' +
+    '<title>Reporte de Ventas — Farmers</title>' +
+    '<style>' +
+      '@page{size:A4 portrait;margin:10mm 12mm;}' +
+      'body{font-family:Arial,sans-serif;color:#1a2050;margin:0;padding:0;}' +
+      'h1{font-size:1.5rem;margin:0 0 4px;color:#10b981;letter-spacing:2px;text-transform:uppercase;}' +
+      'h2{font-size:.95rem;margin:14px 0 6px;color:#1B1F6B;border-bottom:2px solid #10b981;padding-bottom:3px;text-transform:uppercase;letter-spacing:1px;}' +
+      '.subtitle{font-size:.78rem;color:#64748b;margin-bottom:12px;}' +
+      '.kpis{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:14px;}' +
+      '.kpi{background:#f0fdf4;border:1px solid #d1fae5;border-radius:6px;padding:8px 12px;}' +
+      '.kpi-lbl{font-size:.62rem;color:#065f46;font-weight:700;text-transform:uppercase;letter-spacing:1px;}' +
+      '.kpi-val{font-size:1.2rem;font-weight:900;color:#10b981;}' +
+      'table{width:100%;border-collapse:collapse;font-size:.7rem;margin-bottom:10px;}' +
+      'th{background:#1B1F6B;color:white;padding:5px 7px;text-align:left;font-size:.62rem;letter-spacing:.8px;text-transform:uppercase;}' +
+      'td{padding:4px 7px;border-bottom:1px solid #e2e8f0;}' +
+      '.tr-r{text-align:right;font-weight:700;}' +
+      '.footer{margin-top:18px;text-align:center;font-size:.6rem;color:#94a3b8;border-top:1px solid #e2e8f0;padding-top:8px;}' +
+    '</style></head><body>' +
+    '<h1>📊 Reporte de Ventas</h1>' +
+    '<div class="subtitle">' + hoy + ' · Período: ' + (window.RV.filtros.desde||'todo') + ' → ' + (window.RV.filtros.hasta||'todo') + '</div>' +
+
+    '<h2>Resumen General</h2>' +
+    '<div class="kpis">' +
+      '<div class="kpi"><div class="kpi-lbl">💰 Facturado Neto</div><div class="kpi-val">' + rvFmtMoney(kpi.facturadoNeto) + '</div></div>' +
+      '<div class="kpi"><div class="kpi-lbl">📄 Facturas</div><div class="kpi-val">' + rvFmtNum(kpi.numFacturas) + '</div></div>' +
+      '<div class="kpi"><div class="kpi-lbl">👥 Clientes</div><div class="kpi-val">' + rvFmtNum(kpi.clientesUnicos) + '</div></div>' +
+      '<div class="kpi"><div class="kpi-lbl">📦 Unidades</div><div class="kpi-val">' + rvFmtNum(kpi.unidadesTotal) + '</div></div>' +
+      '<div class="kpi"><div class="kpi-lbl">🏢 Sucursales</div><div class="kpi-val">' + rvFmtNum(kpi.sucursalesUnicas) + '</div></div>' +
+      '<div class="kpi"><div class="kpi-lbl">🎫 Ticket Prom.</div><div class="kpi-val">' + rvFmtMoney(kpi.ticketPromedio) + '</div></div>' +
+    '</div>' +
+
+    '<h2>Top 10 Clientes</h2><table><thead><tr><th>#</th><th>Cliente</th><th>Fact.</th><th>Uds.</th><th class="tr-r">Monto</th></tr></thead><tbody>' +
+    topClientes.map(function(c,i){ return '<tr><td>'+(i+1)+'</td><td>'+c.nombre+'</td><td>'+c.facturas+'</td><td>'+rvFmtNum(c.unidades)+'</td><td class="tr-r">'+rvFmtMoney(c.monto)+'</td></tr>'; }).join('') +
+    '</tbody></table>' +
+
+    '<h2>Top 10 Productos</h2><table><thead><tr><th>#</th><th>REF</th><th>Descripción</th><th>Marca</th><th>Uds.</th><th class="tr-r">Monto</th></tr></thead><tbody>' +
+    topProductos.map(function(p,i){ return '<tr><td>'+(i+1)+'</td><td>'+p.ref+'</td><td>'+(p.desc||'').substring(0,40)+'</td><td>'+(p.marca||'')+'</td><td>'+rvFmtNum(p.unidades)+'</td><td class="tr-r">'+rvFmtMoney(p.monto)+'</td></tr>'; }).join('') +
+    '</tbody></table>' +
+
+    '<h2>Top 10 Sucursales</h2><table><thead><tr><th>#</th><th>Cliente</th><th>Sucursal</th><th>Fact.</th><th>Uds.</th><th class="tr-r">Monto</th></tr></thead><tbody>' +
+    topSucursales.map(function(s,i){ return '<tr><td>'+(i+1)+'</td><td>'+(s.cliente||'')+'</td><td>'+(s.sucursal||'-')+'</td><td>'+s.facturas+'</td><td>'+rvFmtNum(s.unidades)+'</td><td class="tr-r">'+rvFmtMoney(s.monto)+'</td></tr>'; }).join('') +
+    '</tbody></table>' +
+
+    '<div class="footer">Farmers C.A. · Generado el ' + new Date().toLocaleString('es-VE') + ' · Documento confidencial</div>' +
+    '<script>window.onload=function(){setTimeout(function(){window.print();},400);};<' + '/script>' +
+    '</body></html>';
+  w.document.write(html);
+  w.document.close();
+};
+
+
 window.descAbrirGestion = function() {
   var existente = document.getElementById('desc-overlay');
   if (existente) existente.remove();
@@ -57398,6 +58210,16 @@ window.cxcMostrarReconciliacion = cxcMostrarReconciliacion;
           <div class="vt-card-name">Ventas IA</div>
           <div class="vt-card-desc">Análisis inteligente de tus ventas históricas con recomendaciones y tendencias.</div>
           <div class="vt-badge" style="background:rgba(155,111,212,.14);color:#9B6FD4;"><span class="vt-dot" style="background:#9B6FD4;"></span>ACTIVO</div>
+        </div>
+      </div>
+
+      <div class="vt-card" onclick="vtOpenModule(rvAbrirModulo)">
+        <div class="vt-card-bar" style="background:linear-gradient(90deg,#10b981,#059669);"></div>
+        <div class="vt-card-inner">
+          <div class="vt-card-icon" style="background:rgba(16,185,129,.1);color:#10b981;">📊</div>
+          <div class="vt-card-name">Reportes de Ventas</div>
+          <div class="vt-card-desc">Dashboard completo de ventas con análisis por cliente, producto, sucursal y rango de fechas. Exporta a Excel y PDF.</div>
+          <div class="vt-badge" style="background:rgba(16,185,129,.14);color:#10b981;"><span class="vt-dot" style="background:#10b981;"></span>NUEVO</div>
         </div>
       </div>
 
