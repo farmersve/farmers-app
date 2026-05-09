@@ -17,7 +17,7 @@
 <meta http-equiv="Expires" content="0">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.05.05.56">
+<meta name="farmers-version" content="2026.05.05.57">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -4161,9 +4161,20 @@ window.libLiberarRef = function(ref, opciones) {
   return resultado;
 };
 window.getDisponible = function(ref) {
-  var inv  = typeof getInventory==='function' ? getInventory() : {};
+  // Fuente de verdad: p.exNE (post AN-eliminado). Fallback: inv legacy.
+  var real = 0;
+  if (typeof PRODUCTS !== 'undefined' && Array.isArray(PRODUCTS)) {
+    var p = PRODUCTS.find(function(pp){ return pp && pp.r === ref; });
+    if (p) {
+      real = (parseInt(p.exNE)||0) + (parseInt(p.exAN)||0);
+    }
+  }
+  if (real === 0) {
+    // Fallback a inv legacy si PRODUCTS no tiene la ref
+    var inv = typeof getInventory==='function' ? getInventory() : {};
+    real = parseInt(inv[ref])||0;
+  }
   var comp = getComprometido();
-  var real = parseInt(inv[ref])||0;
   var comp_qty = comp[ref] ? (comp[ref].qty||0) : 0;
   return Math.max(0, real - comp_qty);
 };
@@ -44778,6 +44789,247 @@ window.msCancelarPedido = function(numP) {
   pedidos[idx].fechaCancelacion = new Date().toLocaleDateString('es-VE',{day:'2-digit',month:'2-digit',year:'numeric'});
   saveMsPedidos(pedidos);
 };
+
+
+// ═══════════════════════════════════════════════════════════════════════
+// AUDITORÍA AUTOMÁTICA INTEGRAL DEL SISTEMA
+// ═══════════════════════════════════════════════════════════════════════
+// Se ejecuta automáticamente al cargar el sistema (post-loadFromFirebase).
+// Verifica y auto-corrige inconsistencias en:
+//
+//   1. p.exAN debe ser SIEMPRE 0 (post-eliminación AN)
+//   2. p.ex debe ser igual a p.exNE (consistencia interna)
+//   3. inv[ref] debe coincidir con p.exNE + p.exAN (drift)
+//   4. comp[ref] debe tener refs válidas (existir en PRODUCTS)
+//   5. Pedidos en comp[] deben existir en ms_pedidos y estar activos
+//
+// Reporta resultado en consola y persiste correcciones a Firebase.
+// No bloquea UX — corre en background con setTimeout.
+// ═══════════════════════════════════════════════════════════════════════
+window.farmersAuditoriaIntegral = function(opts) {
+  opts = opts || {};
+  var dryRun = !!opts.dryRun;
+  var silencioso = !!opts.silencioso;
+
+  if (typeof PRODUCTS === 'undefined' || !Array.isArray(PRODUCTS) || PRODUCTS.length === 0) {
+    if (!silencioso) console.warn('[Auditoría] PRODUCTS no disponible aún, abortando');
+    return null;
+  }
+
+  var inicio = Date.now();
+  var inv = (typeof getInventory === 'function') ? getInventory() : {};
+  var comp = (typeof getComprometido === 'function') ? getComprometido() : {};
+  var pedidos = (typeof getMsPedidos === 'function') ? getMsPedidos() : [];
+
+  // Estado de pedidos por numP
+  var pedMap = {};
+  pedidos.forEach(function(p){ pedMap[p.numP] = String(p.estado || '').toUpperCase(); });
+
+  // Set de refs válidas en PRODUCTS
+  var refsValidas = {};
+  PRODUCTS.forEach(function(p){ if (p && p.r) refsValidas[p.r] = true; });
+
+  var reporte = {
+    exANNoCero: [],          // p.exAN no era 0
+    exDesalineado: [],       // p.ex !== p.exNE + p.exAN
+    invDrift: [],            // inv[ref] !== p.exNE + p.exAN
+    refInvOrfana: [],        // inv[ref] existe pero ref no en PRODUCTS
+    compRefInvalida: [],     // comp[ref] pero ref no en PRODUCTS
+    compHuerfanoPed: [],     // comp[].pedidos referencia pedido no existente o despachado
+    correccionesAplicadas: 0
+  };
+
+  // ── 1. Auditar PRODUCTS: exAN, ex coherente con exNE+exAN ──
+  PRODUCTS.forEach(function(p){
+    if (!p || !p.r) return;
+    var ne = parseInt(p.exNE) || 0;
+    var an = parseInt(p.exAN) || 0;
+    var totalReal = ne + an;
+
+    // 1a. exAN debe ser 0 (post-eliminación)
+    if (an !== 0) {
+      reporte.exANNoCero.push({ ref: p.r, exAN: an });
+      if (!dryRun) {
+        p.exAN = 0;
+        an = 0;
+        totalReal = ne;
+        reporte.correccionesAplicadas++;
+      }
+    }
+
+    // 1b. p.ex debe ser igual a exNE+exAN
+    var pEx = parseInt(p.ex) || 0;
+    if (pEx !== totalReal) {
+      reporte.exDesalineado.push({ ref: p.r, ex: pEx, esperado: totalReal });
+      if (!dryRun) {
+        p.ex = totalReal;
+        reporte.correccionesAplicadas++;
+      }
+    }
+
+    // 1c. inv[ref] debe coincidir con totalReal
+    var invStored = inv[p.r];
+    if (invStored === undefined || parseInt(invStored) !== totalReal) {
+      reporte.invDrift.push({ ref: p.r, inv: invStored, esperado: totalReal });
+      if (!dryRun) {
+        inv[p.r] = totalReal;
+        reporte.correccionesAplicadas++;
+      }
+    }
+  });
+
+  // ── 2. Detectar refs en inv que no existen en PRODUCTS (huérfanas) ──
+  Object.keys(inv).forEach(function(ref){
+    if (!refsValidas[ref] && parseInt(inv[ref]) > 0) {
+      reporte.refInvOrfana.push({ ref: ref, qty: parseInt(inv[ref]) });
+      // No corregimos automáticamente — pueden ser productos legítimos sin sync con PRODUCTS
+    }
+  });
+
+  // ── 3. Auditar comp[]: refs inválidas y pedidos huérfanos ──
+  var compModificado = false;
+  Object.keys(comp).forEach(function(ref){
+    var entry = comp[ref];
+    if (!entry) return;
+
+    // 3a. Ref no existe en PRODUCTS
+    if (!refsValidas[ref]) {
+      reporte.compRefInvalida.push({ ref: ref, qty: entry.qty || 0 });
+      if (!dryRun) {
+        delete comp[ref];
+        compModificado = true;
+        reporte.correccionesAplicadas++;
+      }
+      return;
+    }
+
+    // 3b. qty <= 0 → eliminar entry
+    if (!entry.qty || entry.qty <= 0) {
+      if (!dryRun) {
+        delete comp[ref];
+        compModificado = true;
+        reporte.correccionesAplicadas++;
+      }
+      return;
+    }
+
+    // 3c. Cada pedido del comp debe existir y estar activo
+    var pedidosValidos = [];
+    var qtyValida = 0;
+    (entry.pedidos || []).forEach(function(pe){
+      var estado = pedMap[pe.numP];
+      var esActivo = estado === 'RESERVADO' || estado === 'PARCIAL';
+      var tieneCantidad = (parseInt(pe.qty) || 0) > 0;
+      if (estado && esActivo && tieneCantidad) {
+        pedidosValidos.push(pe);
+        qtyValida += parseInt(pe.qty) || 0;
+      } else {
+        reporte.compHuerfanoPed.push({
+          ref: ref,
+          numP: pe.numP,
+          qty: pe.qty,
+          motivo: !estado ? 'pedido no existe' : !esActivo ? 'estado: ' + estado : 'qty inválida'
+        });
+      }
+    });
+
+    if (pedidosValidos.length !== (entry.pedidos || []).length || qtyValida !== entry.qty) {
+      if (!dryRun) {
+        if (qtyValida === 0 || pedidosValidos.length === 0) {
+          delete comp[ref];
+        } else {
+          comp[ref].qty = qtyValida;
+          comp[ref].pedidos = pedidosValidos;
+        }
+        compModificado = true;
+        reporte.correccionesAplicadas++;
+      }
+    }
+  });
+
+  // ── 4. Persistir correcciones (solo si no es dryRun y hubo cambios) ──
+  if (!dryRun && reporte.correccionesAplicadas > 0) {
+    try {
+      if (typeof saveProducts === 'function') saveProducts(PRODUCTS);
+      if (typeof saveInventory === 'function') saveInventory(inv);
+      if (compModificado && typeof saveComprometido === 'function') saveComprometido(comp);
+      if (window.fbSaveProducts) window.fbSaveProducts(PRODUCTS).catch(function(){});
+      if (window.fbSaveInventory) window.fbSaveInventory(inv).catch(function(){});
+      if (window.fbTriggerPortalSnapshot) window.fbTriggerPortalSnapshot('auditoria-integral');
+    } catch(eP) { console.warn('[Auditoría] Error persistiendo:', eP); }
+  }
+
+  // ── 5. Reporte en consola ──
+  var ms = Date.now() - inicio;
+  if (!silencioso) {
+    var problemas =
+      reporte.exANNoCero.length +
+      reporte.exDesalineado.length +
+      reporte.invDrift.length +
+      reporte.compRefInvalida.length +
+      reporte.compHuerfanoPed.length;
+
+    if (problemas === 0 && reporte.refInvOrfana.length === 0) {
+      console.log('%c[Auditoría Integral] ✅ Sistema sincronizado perfectamente (' + ms + 'ms)',
+                  'color:#16a34a;font-weight:bold;');
+    } else {
+      console.group('%c[Auditoría Integral] ' + (dryRun ? '🔍 ANÁLISIS' : '🔧 CORRECCIONES') + ' (' + ms + 'ms)',
+                    'color:#1e40af;font-weight:bold;font-size:1.05rem;');
+
+      if (reporte.exANNoCero.length > 0) {
+        console.warn('⚠ ' + reporte.exANNoCero.length + ' productos con exAN ≠ 0 (post AN-eliminación)');
+        console.table(reporte.exANNoCero.slice(0, 10));
+      }
+      if (reporte.exDesalineado.length > 0) {
+        console.warn('⚠ ' + reporte.exDesalineado.length + ' productos con p.ex desalineado de exNE+exAN');
+        console.table(reporte.exDesalineado.slice(0, 10));
+      }
+      if (reporte.invDrift.length > 0) {
+        console.warn('⚠ ' + reporte.invDrift.length + ' productos con drift inv vs exNE+exAN');
+        console.table(reporte.invDrift.slice(0, 10));
+      }
+      if (reporte.refInvOrfana.length > 0) {
+        console.warn('ℹ ' + reporte.refInvOrfana.length + ' refs en inv huérfanas (no en PRODUCTS) — revisar manualmente');
+        console.table(reporte.refInvOrfana.slice(0, 10));
+      }
+      if (reporte.compRefInvalida.length > 0) {
+        console.warn('⚠ ' + reporte.compRefInvalida.length + ' refs en comp[] sin producto correspondiente — eliminadas');
+        console.table(reporte.compRefInvalida.slice(0, 10));
+      }
+      if (reporte.compHuerfanoPed.length > 0) {
+        console.warn('⚠ ' + reporte.compHuerfanoPed.length + ' entries de comp[] con pedidos huérfanos — limpiados');
+        console.table(reporte.compHuerfanoPed.slice(0, 10));
+      }
+
+      if (!dryRun) {
+        console.log('%c✅ Total correcciones aplicadas: ' + reporte.correccionesAplicadas,
+                    'color:#16a34a;font-weight:bold;');
+      } else {
+        console.log('%cℹ Modo dry-run: no se aplicaron cambios. Ejecuta farmersAuditoriaIntegral() para corregir.',
+                    'color:#1e40af;');
+      }
+      console.groupEnd();
+    }
+  }
+
+  return reporte;
+};
+
+// Atajo de consola
+window.farmersAudit = function() {
+  return window.farmersAuditoriaIntegral({ dryRun: false, silencioso: false });
+};
+
+// ── Auto-ejecutar 5 segundos después de cargar ──
+// Tiempo suficiente para que loadFromFirebase haya terminado.
+// No bloquea UX porque corre en background.
+setTimeout(function(){
+  try {
+    if (typeof PRODUCTS !== 'undefined' && Array.isArray(PRODUCTS) && PRODUCTS.length > 0) {
+      window.farmersAuditoriaIntegral({ dryRun: false, silencioso: false });
+    }
+  } catch(e) { console.warn('[Auditoría auto]', e); }
+}, 5000);
 
 
 // ═══════════════════════════════════════════════════════════════
