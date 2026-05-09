@@ -17,7 +17,7 @@
 <meta http-equiv="Expires" content="0">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.05.05.54">
+<meta name="farmers-version" content="2026.05.05.56">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -5518,26 +5518,30 @@ function confirmOrder(){
     deposito: DEPOSITO_PEDIDO_ACTUAL || 'NE',  // Multi-Depósito: registrar de qué depósito sale
   };
 
-  // Descuenta inventario del depósito correcto (Multi-Depósito)
-  const inv=getInventory();
-  const _depPed = DEPOSITO_PEDIDO_ACTUAL || 'NE';
-  items.forEach(i=>{
-    inv[i.r]=Math.max(0,(inv[i.r]||0)-i.orden);
-    const p=PRODUCTS.find(x=>x.r===i.r);
-    if(p) {
-      // Descontar del depósito específico
-      if (_depPed === 'NE') {
-        p.exNE = Math.max(0, (parseInt(p.exNE)||0) - i.orden);
-      } else if (_depPed === 'AN') {
-        p.exAN = Math.max(0, (parseInt(p.exAN)||0) - i.orden);
-      }
-      // Recalcular total para mantener compatibilidad con código que lee p.ex
-      p.ex = (parseInt(p.exNE)||0) + (parseInt(p.exAN)||0);
+  // Descuenta inventario (solo NE, AN eliminado)
+  const inv = getInventory();
+  items.forEach(i => {
+    const p = PRODUCTS.find(x => x.r === i.r);
+    if (p) {
+      // Descontar de NE (única fuente de verdad)
+      p.exNE = Math.max(0, (parseInt(p.exNE)||0) - i.orden);
+      p.exAN = 0;  // AN eliminado, siempre 0
+      p.ex = parseInt(p.exNE)||0;
       inv[i.r] = p.ex;
+    } else {
+      // Producto no encontrado en PRODUCTS (caso raro): solo actualizar inv legacy
+      inv[i.r] = Math.max(0, (inv[i.r]||0) - i.orden);
     }
   });
   saveInventory(inv);
   if (typeof saveProducts === 'function') saveProducts(PRODUCTS);
+  if (window.fbSaveProducts) {
+    window.fbSaveProducts(PRODUCTS).catch(function(e){ console.warn('[Venta] fbSaveProducts:', e); });
+  }
+  if (window.fbSaveInventory) {
+    window.fbSaveInventory(inv).catch(function(e){ console.warn('[Venta] fbSaveInventory:', e); });
+  }
+  if (window.fbTriggerPortalSnapshot) window.fbTriggerPortalSnapshot('venta-confirmada');
 
   // Guarda venta
   const sales=getSales(); sales.unshift(sale); saveSales(sales);
@@ -5807,9 +5811,17 @@ function vtConfirmarDevolucion(saleId) {
     var inputEl = document.getElementById('dev-qty-' + i);
     var devQty  = Math.min(parseInt(inputEl ? inputEl.value : 0) || 0, it.orden);
 
-    // Reponer inventario
+    // Reponer inventario (devolución → suma a NE)
     if (devQty > 0) {
-      inv[it.r] = (parseInt(inv[it.r]) || 0) + devQty;
+      var pDev = PRODUCTS.find(function(pp){ return pp && pp.r === it.r; });
+      if (pDev) {
+        pDev.exNE = (parseInt(pDev.exNE)||0) + devQty;
+        pDev.exAN = 0;  // AN eliminado
+        pDev.ex = parseInt(pDev.exNE)||0;
+        inv[it.r] = pDev.ex;
+      } else {
+        inv[it.r] = (parseInt(inv[it.r]) || 0) + devQty;
+      }
       devTotal += devQty * (it.precio || 0);
       devItems.push({ r: it.r, d: it.d, qty: devQty, precio: it.precio });
     }
@@ -5828,7 +5840,14 @@ function vtConfirmarDevolucion(saleId) {
 
   // Guardar inventario actualizado
   saveInventory(inv);
-  syncInventoryToProducts();
+  if (typeof saveProducts === 'function') saveProducts(PRODUCTS);
+  if (window.fbSaveProducts) {
+    window.fbSaveProducts(PRODUCTS).catch(function(e){ console.warn('[Devolución] fbSaveProducts:', e); });
+  }
+  if (window.fbSaveInventory) {
+    window.fbSaveInventory(inv).catch(function(e){ console.warn('[Devolución] fbSaveInventory:', e); });
+  }
+  if (window.fbTriggerPortalSnapshot) window.fbTriggerPortalSnapshot('devolucion');
 
   // Actualizar o eliminar la venta
   if (itemsRestantes.length === 0) {
@@ -5898,13 +5917,30 @@ function deleteSale(id){
   var sale  = sales.find(function(s){ return String(s.id) === String(id); });
   if (!sale) return;
 
-  // 1. Reponer inventario
+  // 1. Reponer inventario (suma de vuelta a NE)
   var inv = getInventory();
   (sale.items || []).forEach(function(it){
-    inv[it.r] = (parseInt(inv[it.r]) || 0) + (parseInt(it.orden) || 0);
+    var qty = parseInt(it.orden) || 0;
+    if (!qty) return;
+    var p = PRODUCTS.find(function(pp){ return pp && pp.r === it.r; });
+    if (p) {
+      p.exNE = (parseInt(p.exNE)||0) + qty;
+      p.exAN = 0;
+      p.ex = parseInt(p.exNE)||0;
+      inv[it.r] = p.ex;
+    } else {
+      inv[it.r] = (parseInt(inv[it.r])||0) + qty;
+    }
   });
   saveInventory(inv);
-  syncInventoryToProducts();
+  if (typeof saveProducts === 'function') saveProducts(PRODUCTS);
+  if (window.fbSaveProducts) {
+    window.fbSaveProducts(PRODUCTS).catch(function(e){ console.warn('[deleteSale] fbSaveProducts:', e); });
+  }
+  if (window.fbSaveInventory) {
+    window.fbSaveInventory(inv).catch(function(e){ console.warn('[deleteSale] fbSaveInventory:', e); });
+  }
+  if (window.fbTriggerPortalSnapshot) window.fbTriggerPortalSnapshot('venta-eliminada');
 
   // 2. Eliminar factura CXC vinculada
   var facs = cxcFacs();
@@ -6978,7 +7014,26 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
       onSnapshot(doc(db,'data','inventory'), s => {
         if (s.exists()) {
           localStorage.setItem('farmers_inv', s.data().v);
-          if (typeof syncInventoryToProducts === 'function') { syncInventoryToProducts(); if (typeof renderTable === 'function') renderTable(); }
+          // Cuando el cambio viene de Firebase: propaga inv → p.exNE
+          // (otra sesión modificó el inventario y debemos respetarlo)
+          try {
+            var invFB = JSON.parse(s.data().v || '{}');
+            if (typeof PRODUCTS !== 'undefined' && Array.isArray(PRODUCTS)) {
+              PRODUCTS.forEach(function(p){
+                if (!p || !p.r) return;
+                if (invFB[p.r] !== undefined) {
+                  var nuevo = parseInt(invFB[p.r])||0;
+                  p.exNE = nuevo;
+                  p.exAN = 0;
+                  p.ex = nuevo;
+                }
+              });
+              if (typeof saveProducts === 'function') saveProducts(PRODUCTS);
+            }
+          } catch(eFB) { console.warn('[onSnap inv] propagación:', eFB); }
+          if (typeof renderTable === 'function') renderTable();
+          if (typeof renderInvTable === 'function') renderInvTable();
+          if (typeof ptRender === 'function') ptRender();
           // Update status indicator
           try {
             var inv = JSON.parse(s.data().v || '{}');
@@ -23035,21 +23090,39 @@ function saveEditSale() {
   var oldItemMap = {};
   (old.items||[]).forEach(function(it){ oldItemMap[it.r] = it.orden || 0; });
 
-  // Devolver items eliminados
+  // Helper: aplica delta de inventario a p.exNE + inv
+  function _editAjustarStock(ref, delta) {
+    if (!delta) return;
+    var p = PRODUCTS.find(function(pp){ return pp && pp.r === ref; });
+    if (p) {
+      // delta < 0 = restar (consumir más), delta > 0 = sumar (devolver)
+      // Aquí "delta" es el signo del cambio en inventario (no en pedido)
+      p.exNE = Math.max(0, (parseInt(p.exNE)||0) + delta);
+      p.exAN = 0;
+      p.ex = parseInt(p.exNE)||0;
+      inv[ref] = p.ex;
+    } else {
+      inv[ref] = Math.max(0, (parseInt(inv[ref])||0) + delta);
+    }
+  }
+
+  // Devolver items eliminados (suma a stock)
   (old.items||[]).forEach(function(oldIt){
     if (!newItems.some(function(ni){ return ni.r === oldIt.r; })) {
-      inv[oldIt.r] = (inv[oldIt.r] || 0) + (oldIt.orden || 0);
+      _editAjustarStock(oldIt.r, parseInt(oldIt.orden)||0);
     }
   });
 
   // Ajustar diferencias en items modificados o nuevos
   newItems.forEach(function(it){
     var oldQty = oldItemMap[it.r] || 0;
-    var diff   = it.orden - oldQty;
+    var diff = it.orden - oldQty;
     if (diff > 0) {
-      inv[it.r] = Math.max(0, (inv[it.r] || 0) - diff);
+      // Pidió MÁS → resta del stock
+      _editAjustarStock(it.r, -diff);
     } else if (diff < 0) {
-      inv[it.r] = (inv[it.r] || 0) + Math.abs(diff);
+      // Pidió MENOS → suma al stock
+      _editAjustarStock(it.r, Math.abs(diff));
     }
     // diff === 0: sin cambio en inventario
   });
@@ -23066,7 +23139,14 @@ function saveEditSale() {
   sales[i].total = newTotal;
 
   saveInventory(inv);
-  syncInventoryToProducts();
+  if (typeof saveProducts === 'function') saveProducts(PRODUCTS);
+  if (window.fbSaveProducts) {
+    window.fbSaveProducts(PRODUCTS).catch(function(e){ console.warn('[EditSale] fbSaveProducts:', e); });
+  }
+  if (window.fbSaveInventory) {
+    window.fbSaveInventory(inv).catch(function(e){ console.warn('[EditSale] fbSaveInventory:', e); });
+  }
+  if (window.fbTriggerPortalSnapshot) window.fbTriggerPortalSnapshot('venta-editada');
   saveSales(sales);
   renderHistorial();
   closeEditSale();
@@ -24831,13 +24911,29 @@ function _doConfirmImport(ajustarStock) {
     ajustado: ajustarStock && (itemsAjustados.length > 0 || itemsOmitidos.length > 0)
   };
 
-  // Descontar inventario
+  // Descontar inventario (solo NE, AN eliminado)
   itemsProcesados.forEach(function(it){
-    if (inv[it.r] !== undefined) inv[it.r] = Math.max(0, inv[it.r] - it.orden);
-    else inv[it.r] = 0;
+    var p = PRODUCTS.find(function(pp){ return pp && pp.r === it.r; });
+    if (p) {
+      p.exNE = Math.max(0, (parseInt(p.exNE)||0) - it.orden);
+      p.exAN = 0;
+      p.ex = parseInt(p.exNE)||0;
+      inv[it.r] = p.ex;
+    } else {
+      // Producto no en catálogo: solo inv legacy
+      if (inv[it.r] !== undefined) inv[it.r] = Math.max(0, inv[it.r] - it.orden);
+      else inv[it.r] = 0;
+    }
   });
   saveInventory(inv);
-  syncInventoryToProducts();
+  if (typeof saveProducts === 'function') saveProducts(PRODUCTS);
+  if (window.fbSaveProducts) {
+    window.fbSaveProducts(PRODUCTS).catch(function(e){ console.warn('[ImportarFactura] fbSaveProducts:', e); });
+  }
+  if (window.fbSaveInventory) {
+    window.fbSaveInventory(inv).catch(function(e){ console.warn('[ImportarFactura] fbSaveInventory:', e); });
+  }
+  if (window.fbTriggerPortalSnapshot) window.fbTriggerPortalSnapshot('importar-factura');
   var sales = getSales();
   sales.unshift(sale);
   saveSales(sales);
@@ -29545,16 +29641,56 @@ function invPreview(input){
   cell.style.color=nv>0?'#16a34a':'#dc2626';
 }
 function invApplyRow(input){
-  if(!input) return;
-  var val=(input.value||'').trim(); if(!val) return;
-  var ref=input.getAttribute('data-ref');
-  var inv=getInventory(), cur=inv[ref]!==undefined?inv[ref]:0;
-  var nv=val.startsWith('=')?parseInt(val.slice(1)):cur+(parseInt(val)||0);
-  nv=Math.max(0,isNaN(nv)?cur:nv);
-  inv[ref]=nv; saveInventory(inv); syncInventoryToProducts();
-  input.value='';
-  if(typeof showToast==='function') showToast('&#128230; '+ref+': '+cur+' → '+nv,'success');
+  if (!input) return;
+  var val = (input.value || '').trim();
+  if (!val) return;
+  var ref = input.getAttribute('data-ref');
+  if (!ref) return;
+
+  var p = PRODUCTS.find(function(pp){ return pp && pp.r === ref; });
+  if (!p) return;
+
+  var inv = getInventory();
+  var ne = parseInt(p.exNE)||0;
+  var an = parseInt(p.exAN)||0;
+  var totalActual = ne + an;
+
+  // Calcular nuevo total: "=N" → set absoluto, "+N"/"N"/"-N" → delta
+  var nuevoTotal;
+  if (val.startsWith('=')) {
+    nuevoTotal = parseInt(val.slice(1)) || 0;
+  } else {
+    nuevoTotal = totalActual + (parseInt(val) || 0);
+  }
+  nuevoTotal = Math.max(0, isNaN(nuevoTotal) ? totalActual : nuevoTotal);
+
+  if (nuevoTotal === totalActual) {
+    input.value = '';
+    return;
+  }
+
+  // Aplicar a NE (preservando AN — siempre 0 hoy)
+  var nuevoNE = Math.max(0, nuevoTotal - an);
+  p.exNE = nuevoNE;
+  p.exAN = an;
+  p.ex = nuevoNE + an;
+  inv[ref] = p.ex;
+
+  // Persistir local + Firebase
+  saveInventory(inv);
+  if (typeof saveProducts === 'function') saveProducts(PRODUCTS);
+  if (window.fbSaveProducts) {
+    window.fbSaveProducts(PRODUCTS).catch(function(e){ console.warn('[invApplyRow] fbSaveProducts:', e); });
+  }
+  if (window.fbSaveInventory) {
+    window.fbSaveInventory(inv).catch(function(e){ console.warn('[invApplyRow] fbSaveInventory:', e); });
+  }
+  if (window.fbTriggerPortalSnapshot) window.fbTriggerPortalSnapshot('inv-row-' + ref);
+
+  input.value = '';
+  if (typeof showToast === 'function') showToast('\u{1F4E6} ' + ref + ': ' + totalActual + ' \u2192 ' + nuevoTotal, 'success');
   renderInvTable();
+  if (typeof ptRender === 'function') ptRender();
 }
 function invSaveAll(){
   // ═══ Pestaña Ajuste de Inventario ═══
@@ -30664,11 +30800,19 @@ window.ptGuardarHuerfana = async function(idx, ref) {
       }
     }
 
-    // Actualizar inventario si se especificó existencia
+    // Actualizar inventario si se especificó existencia (ahora también p.exNE)
     if (data.ex && data.ex > 0) {
       var inv = (typeof getInventory === 'function') ? getInventory() : {};
+      var pHuerf = PRODUCTS.find(function(pp){ return pp && pp.r === ref; });
+      if (pHuerf) {
+        pHuerf.exNE = parseInt(data.ex) || 0;
+        pHuerf.exAN = 0;
+        pHuerf.ex = pHuerf.exNE;
+      }
       inv[ref] = data.ex;
       if (typeof saveInventory === 'function') saveInventory(inv);
+      if (typeof saveProducts === 'function') saveProducts(PRODUCTS);
+      if (window.fbSaveInventory) window.fbSaveInventory(inv);
     }
 
     // UI: marcar la tarjeta como guardada
@@ -30872,9 +31016,15 @@ window.ptGuardarTodasHuerfanas = async function() {
         nuevos.push(ref);
       }
 
-      // Actualizar inventario si tiene existencia
+      // Actualizar inventario si tiene existencia (también p.exNE)
       if (data.ex && data.ex > 0) {
         var inv = (typeof getInventory === 'function') ? getInventory() : {};
+        var pH = PRODUCTS.find(function(pp){ return pp && pp.r === ref; });
+        if (pH) {
+          pH.exNE = parseInt(data.ex) || 0;
+          pH.exAN = 0;
+          pH.ex = pH.exNE;
+        }
         inv[ref] = data.ex;
         // Solo actualizar localStorage temporalmente (saveInventory se llamará al final)
         try { localStorage.setItem('farmers_inv', JSON.stringify(inv)); } catch(e){}
@@ -35247,46 +35397,26 @@ window.ptImportarCatalogoSimple = function() {
           var anCongeladoImp = (typeof window.estaCongeladoAN === 'function') && window.estaCongeladoAN();
 
           var stockNEExcel = ('STOCK_NE' in row) ? row.STOCK_NE : '';
-          var stockANExcel = anCongeladoImp ? '' : (('STOCK_AN' in row) ? row.STOCK_AN : '');
           var stockTotalExcel = ('STOCK_TOTAL' in row) ? row.STOCK_TOTAL : '';
 
           var nNE = (stockNEExcel === '' || stockNEExcel === null) ? null : parseInt(stockNEExcel);
-          var nAN = (stockANExcel === '' || stockANExcel === null) ? null : parseInt(stockANExcel);
           var nTotal = (stockTotalExcel === '' || stockTotalExcel === null) ? null : parseInt(stockTotalExcel);
 
-          // Detectar qué cambió en el Excel respecto a lo guardado
-          var cambioNE = (nNE !== null && !isNaN(nNE) && nNE >= 0 && nNE !== stockNEActual);
-          var cambioAN = (nAN !== null && !isNaN(nAN) && nAN >= 0 && nAN !== stockANActual);
-          var cambioTotal = (nTotal !== null && !isNaN(nTotal) && nTotal >= 0 && nTotal !== stockTotalActual);
+          // AN eliminado: solo importan STOCK_NE o STOCK_TOTAL (equivalentes)
+          // STOCK_AN se ignora.
+          var stockNuevo = null;
+          if (nNE !== null && !isNaN(nNE) && nNE >= 0) {
+            stockNuevo = nNE;
+          } else if (nTotal !== null && !isNaN(nTotal) && nTotal >= 0) {
+            stockNuevo = nTotal;
+          }
 
           var nuevoNE = stockNEActual;
-          var nuevoAN = stockANActual;
+          var nuevoAN = 0;  // siempre 0
           var stockSeModifico = false;
 
-          // PRIORIDAD: si cambió NE o AN explícitamente, usar esos valores
-          if (cambioNE || cambioAN) {
-            nuevoNE = cambioNE ? nNE : stockNEActual;
-            nuevoAN = cambioAN ? nAN : stockANActual;
-            stockSeModifico = true;
-          }
-          // Si solo cambió TOTAL (no NE ni AN), distribuir manteniendo proporción actual
-          // (Si AN está congelado: TODO el cambio va a NE)
-          else if (cambioTotal) {
-            if (anCongeladoImp) {
-              // AN congelado: el delta del total se aplica a NE, exAN intacto
-              nuevoNE = nTotal - stockANActual;
-              if (nuevoNE < 0) nuevoNE = nTotal; // si nuevo total es menor que AN, NE absorbe
-              nuevoAN = stockANActual; // intacto
-            } else if (stockTotalActual === 0) {
-              // Sin proporción previa: todo a NE (depósito principal en Margarita)
-              nuevoNE = nTotal;
-              nuevoAN = 0;
-            } else {
-              // Mantener proporción NE/AN actual
-              var ratioNE = stockNEActual / stockTotalActual;
-              nuevoNE = Math.round(nTotal * ratioNE);
-              nuevoAN = nTotal - nuevoNE;
-            }
+          if (stockNuevo !== null && stockNuevo !== stockNEActual) {
+            nuevoNE = stockNuevo;
             stockSeModifico = true;
           }
 
@@ -35304,9 +35434,9 @@ window.ptImportarCatalogoSimple = function() {
             }
 
             prod.exNE = nuevoNE;
-            prod.exAN = nuevoAN;
-            prod.ex = nuevoTotal; // mantener consistencia con el resto del sistema
-            camposCambiados.push('stock (NE:' + stockNEActual + '→' + nuevoNE + ', AN:' + stockANActual + '→' + nuevoAN + ')');
+            prod.exAN = 0;        // AN eliminado, siempre 0
+            prod.ex = nuevoNE;
+            camposCambiados.push('stock (' + stockNEActual + '→' + nuevoNE + ')');
           }
 
           // ═══════════════════════════════════════════════════════════
@@ -37502,9 +37632,14 @@ function auditBuildComparison(excelItems, inv) {
     var ref = String(it.ref||'').toUpperCase().trim();
     if (ref) excelMap[ref] = {stock: parseInt(it.stock)||0, desc: it.desc||''};
   });
+  // FIX v.55: leer stock REAL de la app desde p.exNE+p.exAN (fuente de verdad
+  // post-eliminación AN), no desde inv legacy que puede estar desfasado.
   var appMap = {};
   PRODUCTS.forEach(function(p){
-    appMap[p.r] = {stock: inv[p.r]!==undefined ? inv[p.r] : (p.ex||0), desc: p.d||''};
+    if (!p || !p.r) return;
+    var ne = parseInt(p.exNE)||0;
+    var an = parseInt(p.exAN)||0;
+    appMap[p.r] = {stock: ne + an, desc: p.d||''};
   });
   var allRefs = {};
   Object.keys(excelMap).forEach(function(r){ allRefs[r]=1; });
@@ -37576,33 +37711,124 @@ function auditToggleAll(checked) {
   document.querySelectorAll('.audit-chk').forEach(function(cb){cb.checked=checked;});
 }
 function auditApplySelected() {
-  var inv=getInventory(), changed=0;
+  // ═══════════════════════════════════════════════════════════════════
+  // FIX v.55: La auditoría DEBE editar p.exNE (la fuente de verdad),
+  // no solo inv[] legacy. Antes editaba inv y luego syncInventoryToProducts
+  // (con regla "exNE+exAN siempre gana" v.51) revertía el cambio.
+  // ═══════════════════════════════════════════════════════════════════
+  var inv = getInventory();
+  var changed = 0;
+  var refsModificadas = [];
+
   document.querySelectorAll('.audit-chk:checked').forEach(function(cb){
-    var ref=cb.getAttribute('data-ref'), stock=parseInt(cb.getAttribute('data-stock'))||0;
-    if(inv[ref]!==stock){inv[ref]=stock; changed++;}
-  });
-  if(changed===0){showToast('Ninguna referencia seleccionada','info');return;}
-  saveInventory(inv); syncInventoryToProducts();
-  _auditData.forEach(function(it){
-    if(inv[it.ref]!==undefined && it.exlStock!==null){
-      it.appStock=inv[it.ref]; it.diff=it.exlStock-it.appStock;
-      if(it.diff===0) it.status='ok';
+    var ref = cb.getAttribute('data-ref');
+    var nuevoTotal = parseInt(cb.getAttribute('data-stock')) || 0;
+    var p = PRODUCTS.find(function(pp){ return pp && pp.r === ref; });
+    if (!p) return;
+
+    var ne = parseInt(p.exNE)||0;
+    var an = parseInt(p.exAN)||0;
+    var totalActual = ne + an;
+
+    if (totalActual !== nuevoTotal) {
+      // AN está siempre en 0 (post-eliminación), pero usamos la fórmula completa por seguridad
+      var nuevoNE = Math.max(0, nuevoTotal - an);
+      p.exNE = nuevoNE;
+      p.exAN = an;          // mantener AN intacto (=0 hoy)
+      p.ex = nuevoNE + an;
+      inv[ref] = p.ex;
+      changed++;
+      refsModificadas.push(ref);
     }
   });
-  renderAuditTable(_auditData); renderInvTable();
-  showToast('\u2705 '+changed+' referencias sincronizadas','success');
+
+  if (changed === 0) { showToast('Ninguna referencia seleccionada','info'); return; }
+
+  // Persistir TODO: products + inv legacy + Firebase
+  saveInventory(inv);
+  if (typeof saveProducts === 'function') saveProducts(PRODUCTS);
+  if (window.fbSaveProducts) {
+    window.fbSaveProducts(PRODUCTS).catch(function(e){
+      console.warn('[Audit] fbSaveProducts:', e);
+    });
+  }
+  if (window.fbSaveInventory) {
+    window.fbSaveInventory(inv).catch(function(e){
+      console.warn('[Audit] fbSaveInventory:', e);
+    });
+  }
+  if (window.fbTriggerPortalSnapshot) window.fbTriggerPortalSnapshot('audit-' + changed);
+
+  // Refrescar _auditData en memoria para que la tabla refleje los cambios sin recargar
+  _auditData.forEach(function(it){
+    var p = PRODUCTS.find(function(pp){ return pp && pp.r === it.ref; });
+    if (p && it.exlStock !== null) {
+      it.appStock = (parseInt(p.exNE)||0) + (parseInt(p.exAN)||0);
+      it.diff = it.exlStock - it.appStock;
+      if (it.diff === 0) it.status = 'ok';
+    }
+  });
+
+  renderAuditTable(_auditData);
+  if (typeof renderInvTable === 'function') renderInvTable();
+  if (typeof ptRender === 'function') ptRender();
+  console.log('[Audit] ' + changed + ' refs aplicadas:', refsModificadas);
+  showToast('\u2705 ' + changed + ' referencias sincronizadas','success');
 }
+
 function auditApplyAll() {
-  if(!confirm('Aplicar TODO el inventario del Excel a la App?\n\nEsto actualizara los stocks de todas las referencias encontradas.')) return;
-  var inv=getInventory(), changed=0;
+  if (!confirm('¿Aplicar TODO el inventario del Excel a la App?\n\nEsto actualizara los stocks de todas las referencias encontradas.')) return;
+
+  // Mismo fix v.55 que auditApplySelected: editar p.exNE directamente
+  var inv = getInventory();
+  var changed = 0;
+  var refsModificadas = [];
+
   _auditData.forEach(function(it){
-    if(it.exlStock!==null && it.status!=='extra'){
-      inv[it.ref]=it.exlStock; it.appStock=it.exlStock; it.diff=0; it.status='ok'; changed++;
+    if (it.exlStock === null || it.status === 'extra') return;
+    var p = PRODUCTS.find(function(pp){ return pp && pp.r === it.ref; });
+    if (!p) return;
+
+    var ne = parseInt(p.exNE)||0;
+    var an = parseInt(p.exAN)||0;
+    var totalActual = ne + an;
+    var nuevoTotal = parseInt(it.exlStock)||0;
+
+    if (totalActual !== nuevoTotal) {
+      var nuevoNE = Math.max(0, nuevoTotal - an);
+      p.exNE = nuevoNE;
+      p.exAN = an;
+      p.ex = nuevoNE + an;
+      inv[it.ref] = p.ex;
+      it.appStock = p.ex;
+      it.diff = 0;
+      it.status = 'ok';
+      changed++;
+      refsModificadas.push(it.ref);
     }
   });
-  saveInventory(inv); syncInventoryToProducts();
-  renderAuditTable(_auditData); renderInvTable();
-  showToast('\u2705 '+changed+' referencias sincronizadas','success');
+
+  if (changed === 0) { showToast('No hay diferencias que aplicar','info'); return; }
+
+  saveInventory(inv);
+  if (typeof saveProducts === 'function') saveProducts(PRODUCTS);
+  if (window.fbSaveProducts) {
+    window.fbSaveProducts(PRODUCTS).catch(function(e){
+      console.warn('[Audit] fbSaveProducts:', e);
+    });
+  }
+  if (window.fbSaveInventory) {
+    window.fbSaveInventory(inv).catch(function(e){
+      console.warn('[Audit] fbSaveInventory:', e);
+    });
+  }
+  if (window.fbTriggerPortalSnapshot) window.fbTriggerPortalSnapshot('audit-all-' + changed);
+
+  renderAuditTable(_auditData);
+  if (typeof renderInvTable === 'function') renderInvTable();
+  if (typeof ptRender === 'function') ptRender();
+  console.log('[Audit-All] ' + changed + ' refs aplicadas');
+  showToast('\u2705 ' + changed + ' referencias sincronizadas','success');
 }
 
 
@@ -38866,14 +39092,30 @@ function confirmDevolucion() {
 
   if (!confirm('¿Confirmar devolución de ' + totalUds + ' unidades ($' + totalVal.toFixed(2) + ')?\n\nSe repondrá el stock automáticamente.')) return;
 
-  // ── Restore inventory ──
+  // ── Restore inventory (suma a NE) ──
   var inv = getInventory();
   itemsADevolver.forEach(function(it) {
-    inv[it.r] = (inv[it.r]||0) + it.qty;
-    var prod = PRODUCTS.find(function(p){ return p.r===it.r; });
-    if (prod) prod.ex = inv[it.r];
+    var qty = parseInt(it.qty) || 0;
+    if (!qty) return;
+    var prod = PRODUCTS.find(function(p){ return p.r === it.r; });
+    if (prod) {
+      prod.exNE = (parseInt(prod.exNE)||0) + qty;
+      prod.exAN = 0;
+      prod.ex = parseInt(prod.exNE)||0;
+      inv[it.r] = prod.ex;
+    } else {
+      inv[it.r] = (parseInt(inv[it.r])||0) + qty;
+    }
   });
   saveInventory(inv);
+  if (typeof saveProducts === 'function') saveProducts(PRODUCTS);
+  if (window.fbSaveProducts) {
+    window.fbSaveProducts(PRODUCTS).catch(function(e){ console.warn('[Devolucion-Items] fbSaveProducts:', e); });
+  }
+  if (window.fbSaveInventory) {
+    window.fbSaveInventory(inv).catch(function(e){ console.warn('[Devolucion-Items] fbSaveInventory:', e); });
+  }
+  if (window.fbTriggerPortalSnapshot) window.fbTriggerPortalSnapshot('devolucion-items');
 
   // ── Register devolucion in sale history ──
   var sales = getSales();
@@ -39007,24 +39249,40 @@ window.confirmImportPrices=function(){
       if(r.desc) {
         r.original.d = (typeof window.aplicarRefAlFinal === 'function') ? window.aplicarRefAlFinal(r.desc, r.original.r) : r.desc;
       }
-      if(r.stock!=null){r.original.ex=r.stock;r.original.et=r.stock;inv[r.original.r]=r.stock;}
-      if(r.brand)r.original.br=r.brand;
+      if (r.stock != null) {
+        r.original.exNE = parseInt(r.stock) || 0;
+        r.original.exAN = 0;  // AN eliminado
+        r.original.ex = r.original.exNE;
+        r.original.et = r.original.exNE;
+        inv[r.original.r] = r.original.ex;
+      }
+      if (r.brand) r.original.br = r.brand;
       applied++;
-    }else if(r.status==='new'&&r.price!=null&&r.code){
-      var _descNp = (typeof window.aplicarRefAlFinal === 'function') ? window.aplicarRefAlFinal(r.desc||r.code, r.code) : (r.desc||r.code);
-      var np={r:r.code,b:'',c:r.code,d:_descNp,e:'UNIDAD',m:0,br:r.brand||'VARIOS',ex:r.stock||0,et:r.stock||0,u:r.price,bv:parseFloat((r.price*1.6).toFixed(6)),t:parseFloat((r.price*1.92).toFixed(6))};
-      if(typeof PRODUCTS!=='undefined')PRODUCTS.push(np);
-      if(r.stock)inv[r.code]=r.stock;
+    } else if (r.status === 'new' && r.price != null && r.code) {
+      var _descNp = (typeof window.aplicarRefAlFinal === 'function') ? window.aplicarRefAlFinal(r.desc || r.code, r.code) : (r.desc || r.code);
+      var stockNew = parseInt(r.stock) || 0;
+      var np = {
+        r: r.code, b: '', c: r.code, d: _descNp, e: 'UNIDAD', m: 0,
+        br: r.brand || 'VARIOS',
+        ex: stockNew, et: stockNew,
+        exNE: stockNew, exAN: 0,
+        u: r.price,
+        bv: parseFloat((r.price * 1.6).toFixed(6)),
+        t: parseFloat((r.price * 1.92).toFixed(6))
+      };
+      if (typeof PRODUCTS !== 'undefined') PRODUCTS.push(np);
+      if (stockNew) inv[r.code] = stockNew;
       applied++;
     }
   });
-  if(typeof saveInventory==='function')saveInventory(inv);
-  if(typeof syncInventoryToProducts==='function')syncInventoryToProducts();
+  if (typeof saveInventory === 'function') saveInventory(inv);
   // Persistir PRODUCTS (precios, descripciones y nuevos productos) — CRÍTICO para sincronizar portal
-  if(typeof saveProducts==='function')saveProducts();
-  if(typeof window.fbSaveProducts==='function')window.fbSaveProducts(PRODUCTS);
-  if(typeof renderTable==='function')renderTable();
-  document.getElementById('ip-action-msg').textContent='✅ '+applied+' cambios aplicados.';
+  if (typeof saveProducts === 'function') saveProducts();
+  if (typeof window.fbSaveProducts === 'function') window.fbSaveProducts(PRODUCTS);
+  if (typeof window.fbSaveInventory === 'function') window.fbSaveInventory(inv);
+  if (typeof window.fbTriggerPortalSnapshot === 'function') window.fbTriggerPortalSnapshot('importar-precios');
+  if (typeof renderTable === 'function') renderTable();
+  document.getElementById('ip-action-msg').textContent = '✅ ' + applied + ' cambios aplicados.';
   btn.textContent='✅ Aplicado';
   setTimeout(closeImportPricesModal,1600);
 };
@@ -44040,7 +44298,7 @@ function msRegistrarVentaYCXC(numP, sel) {
   if(typeof msLiberarComprometido==='function') {
     msLiberarComprometido(numP || MS.numPedido, sel, MS.data);
   }
-  // Descontar inventario real
+  // Descontar inventario real (solo NE, AN eliminado)
   var _invD = typeof getInventory==='function' ? getInventory() : {};
   MS.data.forEach(function(p){
     var td=0;
@@ -44050,12 +44308,25 @@ function msRegistrarVentaYCXC(numP, sel) {
       if(pide>0) td+=Math.min(desp,pide);
     });
     if(!td) return;
-    _invD[p.ref] = Math.max(0,(parseInt(_invD[p.ref])||0)-td);
-    var prod=PRODUCTS.find(function(x){return x.r===p.ref;});
-    if(prod) prod.ex=_invD[p.ref];
+    var prod = PRODUCTS.find(function(x){ return x.r===p.ref; });
+    if (prod) {
+      prod.exNE = Math.max(0, (parseInt(prod.exNE)||0) - td);
+      prod.exAN = 0;
+      prod.ex = parseInt(prod.exNE)||0;
+      _invD[p.ref] = prod.ex;
+    } else {
+      _invD[p.ref] = Math.max(0, (parseInt(_invD[p.ref])||0) - td);
+    }
   });
   if(typeof saveInventory==='function') saveInventory(_invD);
-  if(typeof syncInventoryToProducts==='function') syncInventoryToProducts();
+  if(typeof saveProducts==='function') saveProducts(PRODUCTS);
+  if(window.fbSaveProducts) {
+    window.fbSaveProducts(PRODUCTS).catch(function(e){ console.warn('[MS-Despacho] fbSaveProducts:', e); });
+  }
+  if(window.fbSaveInventory) {
+    window.fbSaveInventory(_invD).catch(function(e){ console.warn('[MS-Despacho] fbSaveInventory:', e); });
+  }
+  if(window.fbTriggerPortalSnapshot) window.fbTriggerPortalSnapshot('ms-despacho');
   var tfSpr=(typeof TF_SPREAD!=='undefined')?TF_SPREAD:0;
   var tasaTF=tasa>0?tasa*(1+tfSpr/100):0;
   var moneda=MS.moneda||'USD';
@@ -62280,11 +62551,30 @@ function ncConfirmar(saleId, cxcFacId, tasa, moneda, itemsOrig) {
 
   // ── Efectos según tipo ──
   if (tipo === 'devolucion' && ncItems.length > 0) {
-    // Reponer inventario
+    // Reponer inventario (suma a NE)
     var inv = getInventory();
-    ncItems.forEach(function(it) { inv[it.r] = (parseInt(inv[it.r])||0) + it.qty; });
+    ncItems.forEach(function(it) {
+      var qty = parseInt(it.qty) || 0;
+      if (!qty) return;
+      var p = PRODUCTS.find(function(pp){ return pp && pp.r === it.r; });
+      if (p) {
+        p.exNE = (parseInt(p.exNE)||0) + qty;
+        p.exAN = 0;
+        p.ex = parseInt(p.exNE)||0;
+        inv[it.r] = p.ex;
+      } else {
+        inv[it.r] = (parseInt(inv[it.r])||0) + qty;
+      }
+    });
     saveInventory(inv);
-    syncInventoryToProducts();
+    if (typeof saveProducts === 'function') saveProducts(PRODUCTS);
+    if (window.fbSaveProducts) {
+      window.fbSaveProducts(PRODUCTS).catch(function(e){ console.warn('[NC] fbSaveProducts:', e); });
+    }
+    if (window.fbSaveInventory) {
+      window.fbSaveInventory(inv).catch(function(e){ console.warn('[NC] fbSaveInventory:', e); });
+    }
+    if (window.fbTriggerPortalSnapshot) window.fbTriggerPortalSnapshot('nc-devolucion');
   }
 
   // ── Ajustar CXC ─────────────────────────────────────────────────────────
