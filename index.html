@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.07.29.277">
+<meta name="farmers-version" content="2026.07.29.278">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -54142,7 +54142,11 @@ window.msLiberarComprometido = function(numP, sel, data) {
     sel.forEach(function(s){ pedidos[idx].sucursalesEstado[s] = 'DESPACHADO'; });
     var todasDesp = pedidos[idx].sucursales.every(function(s){ return pedidos[idx].sucursalesEstado[s]==='DESPACHADO'; });
     pedidos[idx].estado = todasDesp ? 'DESPACHADO' : 'PARCIAL';
-    pedidos[idx].fechaDespacho = new Date().toLocaleDateString('es-VE',{day:'2-digit',month:'2-digit',year:'numeric'});
+    // v.278: NO sobreescribir una fecha de despacho ya existente. Si el pedido
+    // se despachó parcial el día 1 y el resto el día 5, la fecha original manda.
+    if (!pedidos[idx].fechaDespacho) {
+      pedidos[idx].fechaDespacho = new Date().toLocaleDateString('es-VE',{day:'2-digit',month:'2-digit',year:'numeric'});
+    }
     saveMsPedidos(pedidos);
   }
 };
@@ -59150,11 +59154,96 @@ window.msImprimirSucursalUnica = function(suc) {
   msGenerarEtiquetasPDF([suc]);
 };
 
+
+/* ══════════════════════════════════════════════════════════════════════════
+   v.278 — FECHA DE DESPACHO INMUTABLE
+   ─────────────────────────────────────────────────────────────────────────
+   BUG QUE CORRIGE:
+   Los DOS generadores de etiquetas hacían:
+       var fecha = new Date().toLocaleDateString('es-VE');
+   O sea, estampaban SIEMPRE el día de hoy. Si reimprimías una etiqueta un
+   mes después, salía con la fecha de la reimpresión y no con la del despacho
+   real. Se perdía la trazabilidad y la etiqueta contradecía la factura.
+
+   REGLA NUEVA:
+   La fecha de despacho se fija UNA sola vez —en la primera emisión— y desde
+   ahí es inmutable. Reimprimir mil veces devuelve siempre la misma fecha.
+
+   Triple respaldo, en este orden de autoridad:
+     1. ped.fechaDespacho del pedido guardado (se sincroniza por Firebase)
+     2. Mapa local farmers_ms_fechadesp (por si el pedido aún no se guardó)
+     3. Sólo si no existe en ninguna parte: se fija HOY y queda congelada
+   ══════════════════════════════════════════════════════════════════════════ */
+window.msFechaDespachoFija = function(numP){
+  var hoy = new Date().toLocaleDateString('es-VE',{day:'2-digit',month:'2-digit',year:'numeric'});
+  if (!numP) return hoy;
+
+  var LS = 'farmers_ms_fechadesp';
+  var mapa = {};
+  try { mapa = JSON.parse(localStorage.getItem(LS) || '{}') || {}; } catch(e){ mapa = {}; }
+  function guardarMapa(){ try { localStorage.setItem(LS, JSON.stringify(mapa)); } catch(e){} }
+
+  var pedidos = null, ped = null;
+  try {
+    if (typeof getMsPedidos === 'function') {
+      pedidos = getMsPedidos() || [];
+      ped = pedidos.find(function(p){ return p && p.numP === numP; }) || null;
+    }
+  } catch(e){ console.warn('[FECHA DESPACHO] lectura de pedidos:', e); }
+
+  // 1) El pedido guardado manda
+  if (ped && ped.fechaDespacho) {
+    if (mapa[numP] !== ped.fechaDespacho) { mapa[numP] = ped.fechaDespacho; guardarMapa(); }
+    return ped.fechaDespacho;
+  }
+
+  // 2) Respaldo local (pedido sin guardar todavía)
+  if (mapa[numP]) {
+    if (ped && !ped.fechaDespacho && typeof saveMsPedidos === 'function') {
+      ped.fechaDespacho = mapa[numP];
+      try { saveMsPedidos(pedidos); } catch(e){}
+    }
+    return mapa[numP];
+  }
+
+  // 3) Primera emisión: se congela HOY
+  mapa[numP] = hoy; guardarMapa();
+  if (ped && typeof saveMsPedidos === 'function') {
+    ped.fechaDespacho = hoy;
+    try { saveMsPedidos(pedidos); } catch(e){}
+  }
+  console.log('[FECHA DESPACHO] ' + numP + ' → fijada en ' + hoy + ' (primera emisión, ya no cambia)');
+  return hoy;
+};
+
+// Corrección manual, por si necesitas rectificar una fecha mal estampada:
+//   msCorregirFechaDespacho('MS-260527-1828','27/05/2026')
+window.msCorregirFechaDespacho = function(numP, fechaDDMMYYYY){
+  if (!numP || !/^\d{2}\/\d{2}\/\d{4}$/.test(String(fechaDDMMYYYY||''))) {
+    console.error('Uso: msCorregirFechaDespacho("MS-260527-1828","27/05/2026")');
+    return false;
+  }
+  var LS = 'farmers_ms_fechadesp', mapa = {};
+  try { mapa = JSON.parse(localStorage.getItem(LS) || '{}') || {}; } catch(e){}
+  mapa[numP] = fechaDDMMYYYY;
+  try { localStorage.setItem(LS, JSON.stringify(mapa)); } catch(e){}
+  try {
+    if (typeof getMsPedidos === 'function' && typeof saveMsPedidos === 'function') {
+      var peds = getMsPedidos() || [];
+      var p = peds.find(function(x){ return x && x.numP === numP; });
+      if (p) { p.fechaDespacho = fechaDDMMYYYY; saveMsPedidos(peds); }
+    }
+  } catch(e){ console.warn(e); }
+  console.log('[FECHA DESPACHO] ' + numP + ' corregida a ' + fechaDDMMYYYY);
+  return true;
+};
+
 window.msGenerarEtiquetasPDF = function(sucsFiltradas) {
   var sucsAImprimir = (sucsFiltradas && sucsFiltradas.length) ? sucsFiltradas : MS.sucursales;
   var logoB64=typeof FARMERS_LOGO_B64!=='undefined'?FARMERS_LOGO_B64:'';
   var numP=MS.numPedido||'MS-?';
-  var fecha=new Date().toLocaleDateString('es-VE');
+  // v.278: fecha de despacho INMUTABLE — nunca se reescribe al reimprimir
+  var fecha=window.msFechaDespachoFija(numP);
 
   // Recolectar cajas por sucursal
   var etiquetas=[];
@@ -76340,7 +76429,8 @@ window.msGenerarEtiquetasDespacho = function(sucsFiltradas) {
   var sucsAImprimir = (sucsFiltradas && sucsFiltradas.length) ? sucsFiltradas : MS.sucursales;
   var logoB64=typeof FARMERS_LOGO_B64!=='undefined'?FARMERS_LOGO_B64:'';
   var numP=MS.numPedido||'MS-?';
-  var fecha=new Date().toLocaleDateString('es-VE');
+  // v.278: fecha de despacho INMUTABLE — nunca se reescribe al reimprimir
+  var fecha=window.msFechaDespachoFija(numP);
 
   console.log('📦 GENERANDO ETIQUETAS DE DESPACHO (SOBRES)');
   
