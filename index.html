@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.07.30.279">
+<meta name="farmers-version" content="2026.07.30.280">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -32480,6 +32480,7 @@ function catUpdateSelectionBar() {
     '<span>' + (n === 1 ? '1 referencia seleccionada' : n + ' referencias seleccionadas') + '</span>' +
     '<button onclick="catDownloadSelectionPDF()" style="background:linear-gradient(135deg,#f47b3e,#e05a1e);border:none;color:white;border-radius:10px;padding:8px 16px;cursor:pointer;font-weight:800;font-size:.78rem;letter-spacing:.5px;">📥 PDF</button>' +
     '<button onclick="catDownloadSelectionExcel()" style="background:linear-gradient(135deg,#15803d,#0f5f2d);border:none;color:white;border-radius:10px;padding:8px 16px;cursor:pointer;font-weight:800;font-size:.78rem;letter-spacing:.5px;">📊 Excel</button>' +
+    '<button onclick="estMarcarSeleccionadas()" title="Marcar/quitar estas referencias como estrella" style="background:linear-gradient(135deg,#fbbf24,#d97706);border:none;color:#1a2050;border-radius:10px;padding:8px 16px;cursor:pointer;font-weight:900;font-size:.78rem;letter-spacing:.5px;">⭐ Estrella</button>' +
     '<button onclick="catClearSelection()" style="background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.2);color:rgba(255,255,255,.7);border-radius:10px;padding:8px 12px;cursor:pointer;font-weight:700;font-size:.75rem;">✕ Limpiar</button>';
 }
 window.catUpdateSelectionBar = catUpdateSelectionBar;
@@ -33369,10 +33370,9 @@ window.toggleEstrella = function(ref, motivoPre){
     return false;
   }
 
-  var motivo = (motivoPre !== undefined && motivoPre !== null)
-    ? String(motivoPre)
-    : (prompt('⭐ ' + ref + ' → referencia estrella\n\n¿Por qué? (ancla de Abreu, exclusiva Lumen, quiebre nos costó, etc.)\n\nUn motivo corto. Sirve para revisar después contra el histórico:', '') || '');
-  if (motivo === null) return false;
+  // v.280: SIN prompt. Marcar es un clic y ya. El motivo es opcional y se
+  // agrega después desde la vista de gestión (botón "Motivo") si quieres.
+  var motivo = (motivoPre !== undefined && motivoPre !== null) ? String(motivoPre) : '';
 
   d[ref].estrella = true;
   d[ref].estrellaMotivo = String(motivo).trim().slice(0, 140);
@@ -33473,11 +33473,124 @@ window.catAbrirGestionEstrellas = function(soloRefrescar){
               '<th></th></tr></thead><tbody>' + filas + '</tbody></table>') +
       '</div>' +
       '<div style="padding:13px 24px;border-top:1px solid #e8edf5;background:#f8fafc;display:flex;gap:10px;justify-content:flex-end;">' +
+        '<button onclick="estAbrirPegarLista()" style="background:#fbbf24;color:#1a2050;border:none;border-radius:8px;padding:9px 18px;font-weight:900;cursor:pointer;font-size:.8rem;margin-right:auto;">📋 Pegar lista</button>' +
         '<button onclick="estExportarExcel()" style="background:#16a34a;color:#fff;border:none;border-radius:8px;padding:9px 18px;font-weight:900;cursor:pointer;font-size:.8rem;">📊 Exportar</button>' +
         '<button onclick="document.getElementById(\'est-gestion-modal\').remove()" style="background:#1B1F6B;color:#fff;border:none;border-radius:8px;padding:9px 20px;font-weight:900;cursor:pointer;font-size:.8rem;">Cerrar</button>' +
       '</div>' +
     '</div>';
   document.body.appendChild(m);
+};
+
+/* ── v.280: MARCADO MASIVO ────────────────────────────────────────────────
+   Escribe UNA sola vez en localStorage/Firebase para las N referencias, en
+   vez de N escrituras seguidas. */
+window.estMarcarLote = function(refs, marcar){
+  if (!refs || !refs.length) return { marcadas:0, quitadas:0, tope:0, yaEstaban:0 };
+  var d = estGetPtData();
+  var res = { marcadas:0, quitadas:0, tope:0, yaEstaban:0 };
+  var actuales = 0;
+  Object.keys(d).forEach(function(r){ if (d[r] && d[r].estrella) actuales++; });
+
+  refs.forEach(function(ref){
+    if (!ref) return;
+    if (!d[ref]) d[ref] = {};
+    var esta = !!d[ref].estrella;
+    if (marcar) {
+      if (esta) { res.yaEstaban++; return; }
+      if (actuales >= window.FARMERS_TOPE_ESTRELLAS) { res.tope++; return; }
+      d[ref].estrella = true;
+      if (!d[ref].estrellaMotivo) d[ref].estrellaMotivo = '';
+      d[ref].estrellaTs = Date.now();
+      actuales++; res.marcadas++;
+    } else {
+      if (!esta) return;
+      d[ref].estrella = false;
+      delete d[ref].estrellaMotivo; delete d[ref].estrellaTs;
+      actuales--; res.quitadas++;
+    }
+  });
+
+  estGuardarPtData(d);
+  estRefrescarUI();
+  console.log('[ESTRELLAS] lote → +' + res.marcadas + ' / -' + res.quitadas +
+              ' · ya estaban ' + res.yaEstaban + ' · bloqueadas por tope ' + res.tope +
+              ' · total ' + window.contarEstrellas() + '/' + window.FARMERS_TOPE_ESTRELLAS);
+  return res;
+};
+
+// Botón de la barra de selección del catálogo
+window.estMarcarSeleccionadas = function(){
+  var refs = Array.from(_catSelection || []);
+  if (!refs.length) return;
+  var todasYa = refs.every(function(r){ return window.esEstrella(r); });
+  var res = window.estMarcarLote(refs, !todasYa);
+
+  var msg;
+  if (todasYa) {
+    msg = '⭐ Quitadas ' + res.quitadas + ' referencia(s) de la lista estrella.';
+  } else {
+    msg = '⭐ Marcadas ' + res.marcadas + ' referencia(s).';
+    if (res.yaEstaban) msg += '\n' + res.yaEstaban + ' ya estaban marcadas.';
+    if (res.tope) msg += '\n\n⚠ ' + res.tope + ' no entraron: se llegó al tope de ' +
+      window.FARMERS_TOPE_ESTRELLAS + '. Quita algunas desde ⭐ ESTRELLAS y vuelve a intentar.';
+  }
+  msg += '\n\nTotal: ' + window.contarEstrellas() + ' / ' + window.FARMERS_TOPE_ESTRELLAS;
+  alert(msg);
+};
+
+// Pegar una lista de referencias (desde Excel, WhatsApp, lo que sea)
+window.estAbrirPegarLista = function(){
+  var prev = document.getElementById('est-pegar-modal'); if (prev) prev.remove();
+  var m = document.createElement('div');
+  m.id = 'est-pegar-modal';
+  m.style.cssText = 'position:fixed;inset:0;background:rgba(10,15,50,.8);z-index:100007;display:flex;align-items:center;justify-content:center;padding:22px;';
+  m.innerHTML =
+    '<div style="background:#fff;border-radius:15px;width:100%;max-width:560px;overflow:hidden;box-shadow:0 22px 60px rgba(0,0,0,.45);">' +
+      '<div style="background:linear-gradient(135deg,#1B1F6B,#F47B3E);padding:16px 22px;color:#fff;">' +
+        '<div style="font-family:Barlow Condensed,sans-serif;font-weight:900;font-size:1.2rem;letter-spacing:1.4px;text-transform:uppercase;">⭐ Pegar lista de referencias</div>' +
+        '<div style="font-size:.74rem;opacity:.9;margin-top:2px;">Una por línea, o separadas por coma o espacio</div>' +
+      '</div>' +
+      '<div style="padding:18px 22px;">' +
+        '<textarea id="est-pegar-txt" placeholder="EXC001&#10;EXC002&#10;GEN045&#10;LUM012" style="width:100%;box-sizing:border-box;height:190px;border:1.5px solid #c8cce0;border-radius:10px;padding:11px;font-family:monospace;font-size:.86rem;resize:vertical;"></textarea>' +
+        '<div style="font-size:.72rem;color:#64748b;margin-top:8px;line-height:1.5;">Puedes pegar una columna directo desde Excel. Las referencias que no existan en el catálogo te las voy a listar aparte, sin marcarlas.</div>' +
+      '</div>' +
+      '<div style="padding:13px 22px;border-top:1px solid #e8edf5;background:#f8fafc;display:flex;gap:10px;justify-content:flex-end;">' +
+        '<button onclick="document.getElementById(\'est-pegar-modal\').remove()" style="background:#e5e7eb;color:#1f2440;border:none;border-radius:8px;padding:9px 18px;font-weight:800;cursor:pointer;font-size:.8rem;">Cancelar</button>' +
+        '<button onclick="estProcesarPegado()" style="background:#fbbf24;color:#1a2050;border:none;border-radius:8px;padding:9px 20px;font-weight:900;cursor:pointer;font-size:.8rem;">⭐ Marcar todas</button>' +
+      '</div>' +
+    '</div>';
+  document.body.appendChild(m);
+  setTimeout(function(){ try{ document.getElementById('est-pegar-txt').focus(); }catch(e){} }, 60);
+};
+
+window.estProcesarPegado = function(){
+  var txt = (document.getElementById('est-pegar-txt') || {}).value || '';
+  var brutas = txt.split(/[\s,;\t\n\r]+/).map(function(s){ return String(s||'').trim().toUpperCase(); })
+                  .filter(function(s){ return s.length > 0; });
+  if (!brutas.length) { alert('No pegaste ninguna referencia.'); return; }
+
+  var existentes = {};
+  try { (PRODUCTS||[]).forEach(function(p){ if (p && p.r) existentes[String(p.r).toUpperCase()] = p.r; }); } catch(e){}
+
+  var validas = [], desconocidas = [], vistas = {};
+  brutas.forEach(function(r){
+    if (vistas[r]) return; vistas[r] = 1;
+    if (existentes[r]) validas.push(existentes[r]); else desconocidas.push(r);
+  });
+
+  if (!validas.length) {
+    alert('Ninguna de las ' + brutas.length + ' referencias existe en el catálogo.\n\nRevisa: ' + desconocidas.slice(0,10).join(', '));
+    return;
+  }
+
+  var res = window.estMarcarLote(validas, true);
+  var msg = '⭐ Marcadas ' + res.marcadas + ' referencia(s).';
+  if (res.yaEstaban)   msg += '\n' + res.yaEstaban + ' ya estaban marcadas.';
+  if (res.tope)        msg += '\n\n⚠ ' + res.tope + ' no entraron por el tope de ' + window.FARMERS_TOPE_ESTRELLAS + '.';
+  if (desconocidas.length) msg += '\n\n⚠ No existen en el catálogo (' + desconocidas.length + '): ' + desconocidas.slice(0,12).join(', ') + (desconocidas.length>12?'…':'');
+  msg += '\n\nTotal: ' + window.contarEstrellas() + ' / ' + window.FARMERS_TOPE_ESTRELLAS;
+  alert(msg);
+  var pm = document.getElementById('est-pegar-modal'); if (pm) pm.remove();
 };
 
 window.catToggleFiltroEstrellas = function(){
