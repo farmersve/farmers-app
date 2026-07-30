@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.07.30.280">
+<meta name="farmers-version" content="2026.07.30.281">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -29513,6 +29513,11 @@ function _doConfirmImport(ajustarStock) {
             style="background:rgba(251,191,36,.14);border:1.5px solid rgba(251,191,36,.45);color:#fde68a;font-size:.62rem;font-weight:900;cursor:pointer;border-radius:8px;padding:7px 13px;letter-spacing:.6px;white-space:nowrap;transition:all .2s;font-family:'Barlow Condensed',Arial,sans-serif;text-transform:uppercase;">
             ⭐ ESTRELLAS
           </button>
+          <button onclick="catAbrirGestionDescontinuados()"
+            title="REFERENCIAS DESCONTINUADAS — no se reponen y no salen al cliente"
+            style="background:rgba(220,38,38,.13);border:1.5px solid rgba(220,38,38,.42);color:#fca5a5;font-size:.62rem;font-weight:900;cursor:pointer;border-radius:8px;padding:7px 13px;letter-spacing:.6px;white-space:nowrap;transition:all .2s;font-family:'Barlow Condensed',Arial,sans-serif;text-transform:uppercase;">
+            🚫 DESCONT.
+          </button>
         </div>
 
       </div>
@@ -29535,6 +29540,7 @@ function _doConfirmImport(ajustarStock) {
           <button id="rsf-OUT"   onclick="setRefStock('OUT')"   style="border-radius:20px;padding:5px 12px;font-size:.72rem;font-weight:700;cursor:pointer;border:1.5px solid rgba(255,255,255,.2);background:rgba(220,38,38,.3);color:white;">✗ Agotados</button>
           <button id="rsf-ORD"   onclick="setRefStock('ORD')"   style="border-radius:20px;padding:5px 12px;font-size:.72rem;font-weight:700;cursor:pointer;border:1.5px solid rgba(255,255,255,.2);background:rgba(180,83,9,.3);color:#fde68a;">📦 Con Ordenada</button>
           <button id="rsf-STAR" onclick="catToggleFiltroEstrellas()" title="Ver sólo las referencias estrella" style="border-radius:20px;padding:5px 12px;font-size:.72rem;font-weight:700;cursor:pointer;border:1.5px solid rgba(251,191,36,.45);background:rgba(251,191,36,.18);color:#fde68a;">⭐ Solo estrellas</button>
+          <button id="rsf-DESC" onclick="catToggleFiltroDescontinuados()" title="Ver sólo las descontinuadas" style="border-radius:20px;padding:5px 12px;font-size:.72rem;font-weight:700;cursor:pointer;border:1.5px solid rgba(220,38,38,.45);background:rgba(220,38,38,.18);color:#fca5a5;">🚫 Descontinuadas</button>
         </div>
         <!-- Moneda para modo cliente — sincronizado con el panel "Mostrar/Ocultar" -->
         <div id="cat-moneda-sel" style="display:none;gap:6px;align-items:center;">
@@ -31049,6 +31055,9 @@ function catDownloadExcel(monedasParam) {
         if (Math.max(0, _stEx - _cQEx) <= 0) return false;
       }
 
+      // v.281: en Modo Cliente, los descontinuados no se exportan
+      if (_catClientMode && window.esDescontinuado && window.esDescontinuado(p.r)) return false;
+
       // v.141.3: Filtro por depósito (NE o TF) — coherencia con pantalla/PDF
       var _depoModeExcel = (typeof _catDepoModeExport !== 'undefined') ? _catDepoModeExport : (typeof _catDepoMode !== 'undefined' ? _catDepoMode : 'AMBOS');
       if (_depoModeExcel === 'NE' && (parseInt(p.exNE)||0) === 0) return false;
@@ -32481,6 +32490,7 @@ function catUpdateSelectionBar() {
     '<button onclick="catDownloadSelectionPDF()" style="background:linear-gradient(135deg,#f47b3e,#e05a1e);border:none;color:white;border-radius:10px;padding:8px 16px;cursor:pointer;font-weight:800;font-size:.78rem;letter-spacing:.5px;">📥 PDF</button>' +
     '<button onclick="catDownloadSelectionExcel()" style="background:linear-gradient(135deg,#15803d,#0f5f2d);border:none;color:white;border-radius:10px;padding:8px 16px;cursor:pointer;font-weight:800;font-size:.78rem;letter-spacing:.5px;">📊 Excel</button>' +
     '<button onclick="estMarcarSeleccionadas()" title="Marcar/quitar estas referencias como estrella" style="background:linear-gradient(135deg,#fbbf24,#d97706);border:none;color:#1a2050;border-radius:10px;padding:8px 16px;cursor:pointer;font-weight:900;font-size:.78rem;letter-spacing:.5px;">⭐ Estrella</button>' +
+    '<button onclick="descMarcarSeleccionadas()" title="Marcar/quitar como descontinuadas" style="background:linear-gradient(135deg,#dc2626,#7f1d1d);border:none;color:white;border-radius:10px;padding:8px 16px;cursor:pointer;font-weight:900;font-size:.78rem;letter-spacing:.5px;">🚫 Descont.</button>' +
     '<button onclick="catClearSelection()" style="background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.2);color:rgba(255,255,255,.7);border-radius:10px;padding:8px 12px;cursor:pointer;font-weight:700;font-size:.75rem;">✕ Limpiar</button>';
 }
 window.catUpdateSelectionBar = catUpdateSelectionBar;
@@ -32639,6 +32649,19 @@ function _catDownloadPDFWithImgs(_prodImgsLocal) {
   pool.forEach(function(p){ var st=(inv[p.r]!==undefined)?inv[p.r]:(p.ex||0); capTotal+=(p.u&&st?p.u*st:0); });
 
   // Construir tarjetas HTML igual que el catálogo visual
+  // ═══ v.281: los DESCONTINUADOS nunca salen en el PDF ═══════════════════
+  // Regla dura, sin excepción ni toggle: el PDF es el documento que llega al
+  // cliente y queda archivado. Un descontinuado ahí es un reclamo futuro.
+  if (window.esDescontinuado) {
+    var _antesDesc = pool.length;
+    pool = pool.filter(function(p){ return !window.esDescontinuado(p.r); });
+    var _excluidos = _antesDesc - pool.length;
+    if (_excluidos > 0) {
+      console.log('[PDF] ' + _excluidos + ' referencia(s) descontinuada(s) excluida(s) del catálogo.');
+      try { if (typeof showToast === 'function') showToast('🚫 ' + _excluidos + ' descontinuada(s) excluida(s) del PDF', 'info'); } catch(e){}
+    }
+  }
+
   var porMarca = {};
   pool.forEach(function(p){ if(!porMarca[p.br]) porMarca[p.br]=[]; porMarca[p.br].push(p); });
 
@@ -33593,6 +33616,214 @@ window.estProcesarPegado = function(){
   var pm = document.getElementById('est-pegar-modal'); if (pm) pm.remove();
 };
 
+
+/* ══════════════════════════════════════════════════════════════════════════
+   v.281 — REFERENCIAS DESCONTINUADAS 🚫
+   ─────────────────────────────────────────────────────────────────────────
+   Un descontinuado NO se borra ni se esconde del sistema: todavía tienes
+   stock que vender, historial y pedidos en curso. Lo que cambia es que
+   deja de ser reponible y DEJA DE SALIR HACIA EL CLIENTE.
+
+   REGLAS EN FIRME:
+     · NUNCA sale en el PDF del catálogo (ni interno ni cliente).
+       Decisión de Omar: que no quede en un PDF que después le reclamen.
+     · NUNCA sale en el Excel cuando está activo el Modo Cliente.
+     · En pantalla interna SÍ se ve, con badge 🚫, para poder liquidarlo.
+     · Sale del motor de reposición → recomendación "NO REPONER".
+     · Si era ESTRELLA, se le quita automáticamente: una estrella promete
+       "nunca nos quedamos sin esto" y un descontinuado se va a agotar sí o sí.
+
+   DÓNDE VIVE: farmers_pt_data[ref].descontinuado  (sincroniza solo)
+   ══════════════════════════════════════════════════════════════════════════ */
+window.esDescontinuado = function(ref){
+  var d = estGetPtData();
+  return !!(d[ref] && d[ref].descontinuado);
+};
+window.getDescontinuados = function(){
+  var d = estGetPtData(), out = [];
+  Object.keys(d).forEach(function(r){
+    if (d[r] && d[r].descontinuado) out.push({ ref:r, ts:(d[r].descontinuadoTs||0) });
+  });
+  out.sort(function(a,b){ return String(a.ref).localeCompare(String(b.ref),'es',{numeric:true}); });
+  return out;
+};
+
+window.descMarcarLote = function(refs, marcar){
+  if (!refs || !refs.length) return { marcadas:0, quitadas:0, estrellasQuitadas:[] };
+  var d = estGetPtData();
+  var res = { marcadas:0, quitadas:0, estrellasQuitadas:[] };
+  refs.forEach(function(ref){
+    if (!ref) return;
+    if (!d[ref]) d[ref] = {};
+    if (marcar) {
+      if (d[ref].descontinuado) return;
+      d[ref].descontinuado = true;
+      d[ref].descontinuadoTs = Date.now();
+      // Incompatible con estrella: se le quita y se avisa
+      if (d[ref].estrella) {
+        d[ref].estrella = false;
+        delete d[ref].estrellaMotivo; delete d[ref].estrellaTs;
+        res.estrellasQuitadas.push(ref);
+      }
+      res.marcadas++;
+    } else {
+      if (!d[ref].descontinuado) return;
+      d[ref].descontinuado = false;
+      delete d[ref].descontinuadoTs;
+      res.quitadas++;
+    }
+  });
+  estGuardarPtData(d);
+  estRefrescarUI();
+  try { if (document.getElementById('desc-gestion-modal')) catAbrirGestionDescontinuados(); } catch(e){}
+  console.log('[DESCONTINUADOS] +' + res.marcadas + ' / -' + res.quitadas +
+              (res.estrellasQuitadas.length ? ' · estrellas retiradas: ' + res.estrellasQuitadas.join(', ') : ''));
+  return res;
+};
+
+window.descMarcarSeleccionadas = function(){
+  var refs = Array.from(_catSelection || []);
+  if (!refs.length) return;
+  var todosYa = refs.every(function(r){ return window.esDescontinuado(r); });
+
+  if (!todosYa) {
+    if (!confirm('🚫 Marcar ' + refs.length + ' referencia(s) como DESCONTINUADAS.\n\n' +
+                 'Dejan de salir en el PDF del catálogo y en el Excel de cliente.\n' +
+                 'Se siguen viendo en pantalla interna para liquidar el stock.\n\n¿Continuar?')) return;
+  }
+  var res = window.descMarcarLote(refs, !todosYa);
+  var msg = todosYa
+    ? '🚫 Reactivadas ' + res.quitadas + ' referencia(s).'
+    : '🚫 Descontinuadas ' + res.marcadas + ' referencia(s).';
+  if (res.estrellasQuitadas.length) {
+    msg += '\n\n⚠ Se les quitó la ESTRELLA a ' + res.estrellasQuitadas.length + ':\n' +
+           res.estrellasQuitadas.slice(0,12).join(', ') +
+           '\n\nUna estrella promete que nunca falta; un descontinuado se va a agotar.';
+  }
+  msg += '\n\nTotal descontinuadas: ' + window.getDescontinuados().length;
+  alert(msg);
+};
+
+window.descAbrirPegarLista = function(){
+  var prev = document.getElementById('desc-pegar-modal'); if (prev) prev.remove();
+  var m = document.createElement('div');
+  m.id = 'desc-pegar-modal';
+  m.style.cssText = 'position:fixed;inset:0;background:rgba(10,15,50,.8);z-index:100008;display:flex;align-items:center;justify-content:center;padding:22px;';
+  m.innerHTML =
+    '<div style="background:#fff;border-radius:15px;width:100%;max-width:560px;overflow:hidden;box-shadow:0 22px 60px rgba(0,0,0,.45);">' +
+      '<div style="background:linear-gradient(135deg,#7f1d1d,#b45309);padding:16px 22px;color:#fff;">' +
+        '<div style="font-family:Barlow Condensed,sans-serif;font-weight:900;font-size:1.2rem;letter-spacing:1.4px;text-transform:uppercase;">🚫 Descontinuar por lista</div>' +
+        '<div style="font-size:.74rem;opacity:.9;margin-top:2px;">Una por línea, o separadas por coma o espacio</div>' +
+      '</div>' +
+      '<div style="padding:18px 22px;">' +
+        '<textarea id="desc-pegar-txt" placeholder="EXC001&#10;GEN045&#10;MAT012" style="width:100%;box-sizing:border-box;height:180px;border:1.5px solid #c8cce0;border-radius:10px;padding:11px;font-family:monospace;font-size:.86rem;resize:vertical;"></textarea>' +
+        '<div style="font-size:.72rem;color:#64748b;margin-top:8px;line-height:1.5;">Pega la lista que te mandó el proveedor. Las que no existan en el catálogo te las listo aparte sin tocarlas.</div>' +
+      '</div>' +
+      '<div style="padding:13px 22px;border-top:1px solid #e8edf5;background:#f8fafc;display:flex;gap:10px;justify-content:flex-end;">' +
+        '<button onclick="document.getElementById(\'desc-pegar-modal\').remove()" style="background:#e5e7eb;color:#1f2440;border:none;border-radius:8px;padding:9px 18px;font-weight:800;cursor:pointer;font-size:.8rem;">Cancelar</button>' +
+        '<button onclick="descProcesarPegado()" style="background:#b91c1c;color:#fff;border:none;border-radius:8px;padding:9px 20px;font-weight:900;cursor:pointer;font-size:.8rem;">🚫 Descontinuar</button>' +
+      '</div>' +
+    '</div>';
+  document.body.appendChild(m);
+  setTimeout(function(){ try{ document.getElementById('desc-pegar-txt').focus(); }catch(e){} }, 60);
+};
+
+window.descProcesarPegado = function(){
+  var txt = (document.getElementById('desc-pegar-txt') || {}).value || '';
+  var brutas = txt.split(/[\s,;\t\n\r]+/).map(function(s){ return String(s||'').trim().toUpperCase(); })
+                  .filter(function(s){ return s.length > 0; });
+  if (!brutas.length) { alert('No pegaste ninguna referencia.'); return; }
+  var existentes = {};
+  try { (PRODUCTS||[]).forEach(function(p){ if (p && p.r) existentes[String(p.r).toUpperCase()] = p.r; }); } catch(e){}
+  var validas = [], desconocidas = [], vistas = {};
+  brutas.forEach(function(r){
+    if (vistas[r]) return; vistas[r] = 1;
+    if (existentes[r]) validas.push(existentes[r]); else desconocidas.push(r);
+  });
+  if (!validas.length) { alert('Ninguna de esas referencias existe en el catálogo.\n\n' + desconocidas.slice(0,10).join(', ')); return; }
+  var res = window.descMarcarLote(validas, true);
+  var msg = '🚫 Descontinuadas ' + res.marcadas + ' referencia(s).';
+  if (res.estrellasQuitadas.length) msg += '\n\n⚠ Estrella retirada a: ' + res.estrellasQuitadas.slice(0,12).join(', ');
+  if (desconocidas.length) msg += '\n\n⚠ No existen (' + desconocidas.length + '): ' + desconocidas.slice(0,12).join(', ') + (desconocidas.length>12?'…':'');
+  alert(msg);
+  var pm = document.getElementById('desc-pegar-modal'); if (pm) pm.remove();
+};
+
+window.catToggleFiltroDescontinuados = function(){
+  window._catSoloDescont = !window._catSoloDescont;
+  var b = document.getElementById('rsf-DESC');
+  if (b) {
+    if (window._catSoloDescont) { b.style.background = '#dc2626'; b.style.color = '#fff'; b.style.fontWeight = '900'; }
+    else { b.style.background = 'rgba(220,38,38,.18)'; b.style.color = '#fca5a5'; b.style.fontWeight = '700'; }
+  }
+  try { doRefSearch(); } catch(e){}
+};
+
+// ── VISTA DE GESTIÓN: capital inmovilizado ────────────────────────────────
+window.catAbrirGestionDescontinuados = function(){
+  var prev = document.getElementById('desc-gestion-modal'); if (prev) prev.remove();
+  var lista = window.getDescontinuados();
+  var prodPorRef = {}; try { (PRODUCTS||[]).forEach(function(p){ if(p&&p.r) prodPorRef[p.r]=p; }); } catch(e){}
+  var inv = {}; try { inv = getInventory(); } catch(e){}
+
+  var capitalTotal = 0, conStock = 0;
+  var filas = lista.map(function(it){
+    var p = prodPorRef[it.ref] || {};
+    var st = parseInt((inv[it.ref]!==undefined)?inv[it.ref]:(p.ex||0))||0;
+    var costo = (typeof p.costoCIF === 'number') ? p.costoCIF : (p.u || 0);
+    var cap = st * costo;
+    capitalTotal += cap; if (st > 0) conStock++;
+    return { html:'<tr style="border-bottom:1px solid #eef1f7;">' +
+      '<td style="padding:9px 8px;font-weight:900;color:#1a2050;font-size:.82rem;white-space:nowrap;">' + it.ref + '</td>' +
+      '<td style="padding:9px 8px;font-size:.74rem;color:#475569;">' + ((p.d||'').slice(0,44)) + '</td>' +
+      '<td style="padding:9px 8px;font-size:.7rem;color:#64748b;font-weight:700;">' + (p.br||'—') + '</td>' +
+      '<td style="padding:9px 8px;font-size:.78rem;font-weight:900;color:' + (st>0?'#b45309':'#94a3b8') + ';white-space:nowrap;">' + (st>0? st+' uds' : 'agotado') + '</td>' +
+      '<td style="padding:9px 8px;font-size:.78rem;font-weight:900;color:' + (cap>0?'#b91c1c':'#94a3b8') + ';white-space:nowrap;">$' + cap.toFixed(2) + '</td>' +
+      '<td style="padding:9px 8px;text-align:right;"><button onclick="descMarcarLote([\'' + it.ref + '\'],false)" style="background:#dcfce7;color:#15803d;border:1px solid #86efac;border-radius:6px;padding:4px 10px;font-size:.68rem;font-weight:800;cursor:pointer;">Reactivar</button></td>' +
+      '</tr>', cap:cap };
+  });
+  filas.sort(function(a,b){ return b.cap - a.cap; });
+
+  var m = document.createElement('div');
+  m.id = 'desc-gestion-modal';
+  m.style.cssText = 'position:fixed;inset:0;background:rgba(10,15,50,.78);z-index:100006;display:flex;align-items:center;justify-content:center;padding:22px;backdrop-filter:blur(4px);';
+  m.innerHTML =
+    '<div style="background:#fff;border-radius:16px;width:100%;max-width:1000px;max-height:88vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 24px 70px rgba(0,0,0,.45);">' +
+      '<div style="background:linear-gradient(135deg,#7f1d1d,#b45309);padding:17px 24px;color:#fff;display:flex;align-items:center;justify-content:space-between;gap:12px;">' +
+        '<div><div style="font-family:Barlow Condensed,sans-serif;font-weight:900;font-size:1.35rem;letter-spacing:1.6px;text-transform:uppercase;">🚫 Referencias Descontinuadas</div>' +
+        '<div style="font-size:.75rem;opacity:.9;margin-top:2px;">No se reponen · No salen en PDF ni Excel de cliente</div></div>' +
+        '<button onclick="document.getElementById(\'desc-gestion-modal\').remove()" style="background:rgba(255,255,255,.18);border:none;color:#fff;width:34px;height:34px;border-radius:9px;font-size:1.2rem;cursor:pointer;font-weight:900;">×</button>' +
+      '</div>' +
+      '<div style="padding:14px 24px;background:#fef2f2;border-bottom:1px solid #fecaca;display:flex;gap:26px;flex-wrap:wrap;align-items:center;">' +
+        '<div><div style="font-size:.62rem;color:#7f1d1d;font-weight:800;text-transform:uppercase;letter-spacing:.9px;">Descontinuadas</div>' +
+          '<div style="font-size:1.5rem;font-weight:900;color:#1a2050;font-family:Barlow Condensed,sans-serif;">' + lista.length + '</div></div>' +
+        '<div><div style="font-size:.62rem;color:#7f1d1d;font-weight:800;text-transform:uppercase;letter-spacing:.9px;">Todavía con stock</div>' +
+          '<div style="font-size:1.5rem;font-weight:900;color:#b45309;font-family:Barlow Condensed,sans-serif;">' + conStock + '</div></div>' +
+        '<div><div style="font-size:.62rem;color:#7f1d1d;font-weight:800;text-transform:uppercase;letter-spacing:.9px;">Capital inmovilizado</div>' +
+          '<div style="font-size:1.5rem;font-weight:900;color:#b91c1c;font-family:Barlow Condensed,sans-serif;">$' + capitalTotal.toFixed(2) + '</div></div>' +
+        (capitalTotal > 0 ? '<div style="flex:1;min-width:220px;font-size:.73rem;color:#7f1d1d;line-height:1.5;">Esa plata ya no se repone. Mientras más rápido la liquides, más capital liberas para las referencias que sí rotan.</div>' : '') +
+      '</div>' +
+      '<div style="flex:1;overflow-y:auto;padding:0 24px 8px;">' +
+        (lista.length === 0
+          ? '<div style="text-align:center;padding:56px 20px;color:#94a3b8;"><div style="font-size:2.6rem;margin-bottom:10px;">🚫</div>' +
+            '<div style="font-weight:800;color:#64748b;font-size:1rem;">No hay referencias descontinuadas</div>' +
+            '<div style="font-size:.8rem;margin-top:8px;">Usa <b>Pegar lista</b> con las que te informe el proveedor, o selecciónalas en el catálogo.</div></div>'
+          : '<table style="width:100%;border-collapse:collapse;"><thead><tr style="border-bottom:2px solid #7f1d1d;">' +
+            '<th style="text-align:left;padding:9px 8px;font-size:.65rem;color:#7f1d1d;text-transform:uppercase;letter-spacing:.8px;">Ref</th>' +
+            '<th style="text-align:left;padding:9px 8px;font-size:.65rem;color:#7f1d1d;text-transform:uppercase;letter-spacing:.8px;">Descripción</th>' +
+            '<th style="text-align:left;padding:9px 8px;font-size:.65rem;color:#7f1d1d;text-transform:uppercase;letter-spacing:.8px;">Marca</th>' +
+            '<th style="text-align:left;padding:9px 8px;font-size:.65rem;color:#7f1d1d;text-transform:uppercase;letter-spacing:.8px;">Stock</th>' +
+            '<th style="text-align:left;padding:9px 8px;font-size:.65rem;color:#7f1d1d;text-transform:uppercase;letter-spacing:.8px;">Capital</th>' +
+            '<th></th></tr></thead><tbody>' + filas.map(function(f){return f.html;}).join('') + '</tbody></table>') +
+      '</div>' +
+      '<div style="padding:13px 24px;border-top:1px solid #e8edf5;background:#f8fafc;display:flex;gap:10px;justify-content:flex-end;">' +
+        '<button onclick="descAbrirPegarLista()" style="background:#b91c1c;color:#fff;border:none;border-radius:8px;padding:9px 18px;font-weight:900;cursor:pointer;font-size:.8rem;margin-right:auto;">📋 Pegar lista</button>' +
+        '<button onclick="document.getElementById(\'desc-gestion-modal\').remove()" style="background:#1B1F6B;color:#fff;border:none;border-radius:8px;padding:9px 20px;font-weight:900;cursor:pointer;font-size:.8rem;">Cerrar</button>' +
+      '</div>' +
+    '</div>';
+  document.body.appendChild(m);
+};
+
 window.catToggleFiltroEstrellas = function(){
   window._catSoloEstrellas = !window._catSoloEstrellas;
   var b = document.getElementById('rsf-STAR');
@@ -33704,6 +33935,13 @@ function doRefSearch() {
   // v.279: filtro SOLO ESTRELLAS
   if (window._catSoloEstrellas) {
     pool = pool.filter(function(p){ return window.esEstrella(p.r); });
+  }
+
+  // v.281: DESCONTINUADOS — en Modo Cliente nunca se muestran
+  if (window._catSoloDescont) {
+    pool = pool.filter(function(p){ return window.esDescontinuado(p.r); });
+  } else if (_catClientMode) {
+    pool = pool.filter(function(p){ return !window.esDescontinuado(p.r); });
   }
 
   // Filtro: excluir artículos sin disponible si _catExclComp está activo
@@ -33907,6 +34145,9 @@ function doRefSearch() {
           '<div style="flex:1;min-width:0;">' +
             '<div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;font-size:1.5rem;color:white;letter-spacing:2px;line-height:1;text-shadow:0 1px 3px rgba(0,0,0,.25);">' + hl(p.r) + '</div>' +
             '<div style="display:inline-block;margin-top:5px;background:rgba(255,255,255,.16);border:1px solid rgba(255,255,255,.25);color:rgba(255,255,255,.92);font-weight:800;font-size:.52rem;text-transform:uppercase;letter-spacing:1.5px;padding:2px 8px;border-radius:99px;">' + p.br + '</div>' +
+            (window.esDescontinuado && window.esDescontinuado(p.r)
+              ? '<div style="display:inline-block;margin-top:5px;margin-left:5px;background:rgba(220,38,38,.85);border:1px solid #fca5a5;color:#fff;font-weight:900;font-size:.52rem;text-transform:uppercase;letter-spacing:1.2px;padding:2px 8px;border-radius:99px;">🚫 Descontinuado</div>'
+              : '') +
             // v.141: Mini-badge de desglose NE / TF (solo cuando hay stock en Tierra Firme)
             (stockTF_card > 0 && !_catClientMode
               ? '<div style="display:flex;gap:5px;margin-top:5px;flex-wrap:wrap;">' +
@@ -71336,6 +71577,11 @@ window.cxcMostrarReconciliacion = cxcMostrarReconciliacion;
      DASHBOARD REPOSICIÓN — Layout: sidebar filtros + 3 charts + tabla prioridad
      ══════════════════════════════════════════════════════ */
   function cmpCalcReposicion(it, diasTranscurridos){
+    /* v.281: una referencia descontinuada NUNCA se repone, sin importar
+       qué tan bien rote. El proveedor ya no la fabrica. */
+    if (window.esDescontinuado && it.ref_farmers && window.esDescontinuado(it.ref_farmers)) {
+      return { sugerido:0, prioridad:0, cobDias:0, recomendacion:'DESCONTINUADO' };
+    }
     /* Calcula unidades sugeridas a reponer y score de prioridad */
     var e = it.estado || 'NO_IDENTIFICADO';
     var vend = typeof it.vendidas === 'number' ? it.vendidas : 0;
