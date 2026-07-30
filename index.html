@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.07.29.278">
+<meta name="farmers-version" content="2026.07.30.279">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -29508,6 +29508,11 @@ function _doConfirmImport(ajustarStock) {
             style="background:rgba(168,85,247,.1);border:1.5px solid rgba(168,85,247,.3);color:#d8b4fe;font-size:.62rem;font-weight:900;cursor:pointer;border-radius:8px;padding:7px 13px;letter-spacing:.6px;white-space:nowrap;transition:all .2s;font-family:'Barlow Condensed',Arial,sans-serif;text-transform:uppercase;">
             🖼 IMÁGENES
           </button>
+          <button onclick="catAbrirGestionEstrellas()"
+            title="REFERENCIAS ESTRELLA — las que nunca se pueden quedar sin stock"
+            style="background:rgba(251,191,36,.14);border:1.5px solid rgba(251,191,36,.45);color:#fde68a;font-size:.62rem;font-weight:900;cursor:pointer;border-radius:8px;padding:7px 13px;letter-spacing:.6px;white-space:nowrap;transition:all .2s;font-family:'Barlow Condensed',Arial,sans-serif;text-transform:uppercase;">
+            ⭐ ESTRELLAS
+          </button>
         </div>
 
       </div>
@@ -29529,6 +29534,7 @@ function _doConfirmImport(ajustarStock) {
           <button id="rsf-LOW"   onclick="setRefStock('LOW')"   style="border-radius:20px;padding:5px 12px;font-size:.72rem;font-weight:700;cursor:pointer;border:1.5px solid rgba(255,255,255,.2);background:rgba(217,119,6,.3);color:white;">⚠ Bajo stock</button>
           <button id="rsf-OUT"   onclick="setRefStock('OUT')"   style="border-radius:20px;padding:5px 12px;font-size:.72rem;font-weight:700;cursor:pointer;border:1.5px solid rgba(255,255,255,.2);background:rgba(220,38,38,.3);color:white;">✗ Agotados</button>
           <button id="rsf-ORD"   onclick="setRefStock('ORD')"   style="border-radius:20px;padding:5px 12px;font-size:.72rem;font-weight:700;cursor:pointer;border:1.5px solid rgba(255,255,255,.2);background:rgba(180,83,9,.3);color:#fde68a;">📦 Con Ordenada</button>
+          <button id="rsf-STAR" onclick="catToggleFiltroEstrellas()" title="Ver sólo las referencias estrella" style="border-radius:20px;padding:5px 12px;font-size:.72rem;font-weight:700;cursor:pointer;border:1.5px solid rgba(251,191,36,.45);background:rgba(251,191,36,.18);color:#fde68a;">⭐ Solo estrellas</button>
         </div>
         <!-- Moneda para modo cliente — sincronizado con el panel "Mostrar/Ocultar" -->
         <div id="cat-moneda-sel" style="display:none;gap:6px;align-items:center;">
@@ -32792,7 +32798,7 @@ function _catDownloadPDFWithImgs(_prodImgsLocal) {
         // ── BARRA REF + STOCK PILL ──
         '<div class="card-ref-bar" style="background:' + bColor + ';">' +
           '<div>' +
-            '<div class="card-ref">' + (p.r||'') + '</div>' +
+            '<div class="card-ref">' + (window.esEstrella && window.esEstrella(p.r) ? '\u2605 ' : '') + (p.r||'') + '</div>' +
             '<div class="card-marca">' + (p.br||'') + '</div>' +
           '</div>' +
           stockPill +
@@ -33291,6 +33297,233 @@ function _catDownloadPDFWithImgs(_prodImgsLocal) {
   toastOk('📄 Catálogo abierto · Ctrl+P → activar Gráficos de fondo → Guardar PDF');
 }
 
+
+/* ══════════════════════════════════════════════════════════════════════════
+   v.279 — REFERENCIAS ESTRELLA ⭐  (selección MANUAL)
+   ─────────────────────────────────────────────────────────────────────────
+   Las referencias con las que Farmers NUNCA se puede quedar sin stock.
+   Selección a dedo por Omar. El histórico se cruza después (estrellaAuto),
+   sin pisar nunca lo manual.
+
+   DÓNDE VIVEN: farmers_pt_data[ref].estrella / .estrellaMotivo
+   Se eligió pt_data porque ya sincroniza solo por Firebase (onSnapshot) y
+   está en la lista de colecciones críticas del Portero de Escritura v.276.
+
+   TOPE: 50. No es capricho — una lista de 120 "imprescindibles" no sirve
+   para decidir dónde recortar cuando aprieta el efectivo.
+   ══════════════════════════════════════════════════════════════════════════ */
+window.FARMERS_TOPE_ESTRELLAS = 50;
+
+function estGetPtData(){
+  var d = {};
+  try { d = JSON.parse(localStorage.getItem('farmers_pt_data') || '{}') || {}; } catch(e){ d = {}; }
+  return d;
+}
+function estGuardarPtData(d){
+  try { localStorage.setItem('farmers_pt_data', JSON.stringify(d)); } catch(e){
+    console.error('[ESTRELLAS] no se pudo guardar en localStorage:', e);
+    alert('⚠ No se pudo guardar. Puede que el almacenamiento del navegador esté lleno.');
+    return false;
+  }
+  window.ptData = d;
+  try { if (window.fbSavePtData) window.fbSavePtData(d); } catch(e){ console.warn('[ESTRELLAS] nube:', e); }
+  return true;
+}
+window.esEstrella = function(ref){
+  var d = estGetPtData();
+  return !!(d[ref] && d[ref].estrella);
+};
+window.getEstrellas = function(){
+  var d = estGetPtData(), out = [];
+  Object.keys(d).forEach(function(r){
+    if (d[r] && d[r].estrella) out.push({ ref:r, motivo:(d[r].estrellaMotivo||''), ts:(d[r].estrellaTs||0) });
+  });
+  out.sort(function(a,b){ return String(a.ref).localeCompare(String(b.ref),'es',{numeric:true}); });
+  return out;
+};
+window.contarEstrellas = function(){ return window.getEstrellas().length; };
+
+window.toggleEstrella = function(ref, motivoPre){
+  if (!ref) return false;
+  var d = estGetPtData();
+  if (!d[ref]) d[ref] = {};
+  var eraEstrella = !!d[ref].estrella;
+
+  if (eraEstrella) {
+    d[ref].estrella = false;
+    delete d[ref].estrellaMotivo;
+    delete d[ref].estrellaTs;
+    if (estGuardarPtData(d)) {
+      console.log('[ESTRELLAS] ' + ref + ' quitada · quedan ' + window.contarEstrellas());
+      estRefrescarUI();
+    }
+    return false;
+  }
+
+  var actuales = window.contarEstrellas();
+  if (actuales >= window.FARMERS_TOPE_ESTRELLAS) {
+    alert('⭐ Tope alcanzado: ' + window.FARMERS_TOPE_ESTRELLAS + ' referencias estrella.\n\n' +
+          'Para agregar ' + ref + ' tienes que quitar otra primero.\n\n' +
+          'Esa fricción es a propósito: una lista que crece sin límite deja de servir ' +
+          'para decidir dónde recortar cuando el capital aprieta.');
+    return false;
+  }
+
+  var motivo = (motivoPre !== undefined && motivoPre !== null)
+    ? String(motivoPre)
+    : (prompt('⭐ ' + ref + ' → referencia estrella\n\n¿Por qué? (ancla de Abreu, exclusiva Lumen, quiebre nos costó, etc.)\n\nUn motivo corto. Sirve para revisar después contra el histórico:', '') || '');
+  if (motivo === null) return false;
+
+  d[ref].estrella = true;
+  d[ref].estrellaMotivo = String(motivo).trim().slice(0, 140);
+  d[ref].estrellaTs = Date.now();
+  if (estGuardarPtData(d)) {
+    console.log('[ESTRELLAS] ' + ref + ' marcada (' + (actuales+1) + '/' + window.FARMERS_TOPE_ESTRELLAS + ')');
+    estRefrescarUI();
+  }
+  return true;
+};
+
+function estRefrescarUI(){
+  try { if (typeof doRefSearch === 'function') doRefSearch(); } catch(e){}
+  try { if (document.getElementById('est-gestion-modal')) catAbrirGestionEstrellas(true); } catch(e){}
+}
+
+// Botón ⭐ para la tarjeta del catálogo
+window.estBotonTarjeta = function(ref){
+  var on = window.esEstrella(ref);
+  return '<button onclick="event.stopPropagation();toggleEstrella(\'' + ref + '\')" ' +
+    'title="' + (on ? 'Quitar de referencias estrella' : 'Marcar como referencia estrella') + '" ' +
+    'style="position:absolute;top:8px;right:34px;z-index:4;width:26px;height:26px;border-radius:7px;cursor:pointer;' +
+    'border:1px solid ' + (on ? '#fbbf24' : 'rgba(255,255,255,.3)') + ';' +
+    'background:' + (on ? 'rgba(251,191,36,.28)' : 'rgba(255,255,255,.10)') + ';' +
+    'font-size:14px;line-height:1;padding:0;display:flex;align-items:center;justify-content:center;' +
+    'filter:' + (on ? 'none' : 'grayscale(1) opacity(.55)') + ';">⭐</button>';
+};
+
+// ── VISTA DE GESTIÓN ───────────────────────────────────────────────────────
+window.catAbrirGestionEstrellas = function(soloRefrescar){
+  var prev = document.getElementById('est-gestion-modal');
+  if (prev) prev.remove();
+
+  var lista = window.getEstrellas();
+  var tope = window.FARMERS_TOPE_ESTRELLAS;
+  var pct = Math.round((lista.length / tope) * 100);
+  var colorBarra = lista.length >= tope ? '#dc2626' : (lista.length > tope*0.8 ? '#d97706' : '#16a34a');
+
+  var prodPorRef = {};
+  try { (PRODUCTS||[]).forEach(function(p){ if(p && p.r) prodPorRef[p.r] = p; }); } catch(e){}
+
+  var filas = lista.map(function(it){
+    var p = prodPorRef[it.ref] || {};
+    var inv = {}; try { inv = getInventory(); } catch(e){}
+    var st = parseInt((inv[it.ref] !== undefined) ? inv[it.ref] : (p.ex || 0)) || 0;
+    var stColor = st > 10 ? '#16a34a' : (st > 0 ? '#d97706' : '#dc2626');
+    var stTxt   = st > 10 ? st + ' uds' : (st > 0 ? st + ' uds · BAJO' : 'AGOTADO');
+    return '<tr style="border-bottom:1px solid #eef1f7;">' +
+      '<td style="padding:9px 8px;font-weight:900;color:#1a2050;font-size:.82rem;white-space:nowrap;">' + it.ref + '</td>' +
+      '<td style="padding:9px 8px;font-size:.74rem;color:#475569;">' + ((p.d||'').slice(0,46)) + '</td>' +
+      '<td style="padding:9px 8px;font-size:.7rem;color:#64748b;font-weight:700;">' + (p.br||'—') + '</td>' +
+      '<td style="padding:9px 8px;font-size:.74rem;font-weight:900;color:' + stColor + ';white-space:nowrap;">' + stTxt + '</td>' +
+      '<td style="padding:9px 8px;font-size:.72rem;color:#475569;font-style:' + (it.motivo?'normal':'italic') + ';">' + (it.motivo || 'sin motivo') + '</td>' +
+      '<td style="padding:9px 8px;text-align:right;white-space:nowrap;">' +
+        '<button onclick="estEditarMotivo(\'' + it.ref + '\')" style="background:#eef2ff;color:#1B1F6B;border:1px solid #c7d2fe;border-radius:6px;padding:4px 9px;font-size:.68rem;font-weight:800;cursor:pointer;margin-right:5px;">Motivo</button>' +
+        '<button onclick="toggleEstrella(\'' + it.ref + '\')" style="background:#fee2e2;color:#b91c1c;border:1px solid #fca5a5;border-radius:6px;padding:4px 9px;font-size:.68rem;font-weight:800;cursor:pointer;">Quitar</button>' +
+      '</td></tr>';
+  }).join('');
+
+  var agotadas = lista.filter(function(it){
+    var p = prodPorRef[it.ref] || {}; var inv = {}; try { inv = getInventory(); } catch(e){}
+    return (parseInt((inv[it.ref]!==undefined)?inv[it.ref]:(p.ex||0))||0) === 0;
+  }).length;
+
+  var m = document.createElement('div');
+  m.id = 'est-gestion-modal';
+  m.style.cssText = 'position:fixed;inset:0;background:rgba(10,15,50,.78);z-index:100005;display:flex;align-items:center;justify-content:center;padding:22px;backdrop-filter:blur(4px);';
+  m.innerHTML =
+    '<div style="background:#fff;border-radius:16px;width:100%;max-width:1000px;max-height:88vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 24px 70px rgba(0,0,0,.45);">' +
+      '<div style="background:linear-gradient(135deg,#1B1F6B,#F47B3E);padding:17px 24px;color:#fff;display:flex;align-items:center;justify-content:space-between;gap:12px;">' +
+        '<div><div style="font-family:Barlow Condensed,sans-serif;font-weight:900;font-size:1.35rem;letter-spacing:1.6px;text-transform:uppercase;">⭐ Referencias Estrella</div>' +
+        '<div style="font-size:.75rem;opacity:.9;margin-top:2px;">Las que nunca se pueden quedar sin stock</div></div>' +
+        '<button onclick="document.getElementById(\'est-gestion-modal\').remove()" style="background:rgba(255,255,255,.18);border:none;color:#fff;width:34px;height:34px;border-radius:9px;font-size:1.2rem;cursor:pointer;font-weight:900;">×</button>' +
+      '</div>' +
+      '<div style="padding:14px 24px 10px;background:#f8fafc;border-bottom:1px solid #e8edf5;">' +
+        '<div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;">' +
+          '<div style="font-size:1.6rem;font-weight:900;color:' + colorBarra + ';font-family:Barlow Condensed,sans-serif;">' + lista.length + '<span style="font-size:.9rem;color:#94a3b8;"> / ' + tope + '</span></div>' +
+          '<div style="flex:1;min-width:180px;height:9px;background:#e2e8f0;border-radius:99px;overflow:hidden;"><div style="width:' + Math.min(100,pct) + '%;height:100%;background:' + colorBarra + ';"></div></div>' +
+          (agotadas > 0
+            ? '<div style="background:#fef2f2;border:1.5px solid #fca5a5;color:#b91c1c;padding:5px 12px;border-radius:8px;font-size:.74rem;font-weight:900;">⚠ ' + agotadas + ' estrella' + (agotadas>1?'s':'') + ' SIN STOCK</div>'
+            : (lista.length ? '<div style="background:#f0fdf4;border:1.5px solid #86efac;color:#15803d;padding:5px 12px;border-radius:8px;font-size:.74rem;font-weight:900;">✓ Todas con stock</div>' : '')) +
+        '</div>' +
+        (lista.length >= tope ? '<div style="font-size:.72rem;color:#b91c1c;font-weight:700;margin-top:7px;">Tope alcanzado. Para agregar otra, quita una primero.</div>' : '') +
+      '</div>' +
+      '<div style="flex:1;overflow-y:auto;padding:0 24px 8px;">' +
+        (lista.length === 0
+          ? '<div style="text-align:center;padding:56px 20px;color:#94a3b8;"><div style="font-size:2.6rem;margin-bottom:10px;">⭐</div>' +
+            '<div style="font-weight:800;color:#64748b;font-size:1rem;">Todavía no hay referencias estrella</div>' +
+            '<div style="font-size:.8rem;margin-top:8px;line-height:1.6;max-width:440px;margin-left:auto;margin-right:auto;">Ábre el catálogo y toca la ⭐ en la esquina de cada tarjeta. ' +
+            'Empieza por las que ya sabes de memoria: las anclas de Abreu y las exclusivas.</div></div>'
+          : '<table style="width:100%;border-collapse:collapse;">' +
+            '<thead><tr style="border-bottom:2px solid #1B1F6B;">' +
+              '<th style="text-align:left;padding:9px 8px;font-size:.65rem;color:#1B1F6B;text-transform:uppercase;letter-spacing:.8px;">Ref</th>' +
+              '<th style="text-align:left;padding:9px 8px;font-size:.65rem;color:#1B1F6B;text-transform:uppercase;letter-spacing:.8px;">Descripción</th>' +
+              '<th style="text-align:left;padding:9px 8px;font-size:.65rem;color:#1B1F6B;text-transform:uppercase;letter-spacing:.8px;">Marca</th>' +
+              '<th style="text-align:left;padding:9px 8px;font-size:.65rem;color:#1B1F6B;text-transform:uppercase;letter-spacing:.8px;">Stock</th>' +
+              '<th style="text-align:left;padding:9px 8px;font-size:.65rem;color:#1B1F6B;text-transform:uppercase;letter-spacing:.8px;">Motivo</th>' +
+              '<th></th></tr></thead><tbody>' + filas + '</tbody></table>') +
+      '</div>' +
+      '<div style="padding:13px 24px;border-top:1px solid #e8edf5;background:#f8fafc;display:flex;gap:10px;justify-content:flex-end;">' +
+        '<button onclick="estExportarExcel()" style="background:#16a34a;color:#fff;border:none;border-radius:8px;padding:9px 18px;font-weight:900;cursor:pointer;font-size:.8rem;">📊 Exportar</button>' +
+        '<button onclick="document.getElementById(\'est-gestion-modal\').remove()" style="background:#1B1F6B;color:#fff;border:none;border-radius:8px;padding:9px 20px;font-weight:900;cursor:pointer;font-size:.8rem;">Cerrar</button>' +
+      '</div>' +
+    '</div>';
+  document.body.appendChild(m);
+};
+
+window.catToggleFiltroEstrellas = function(){
+  window._catSoloEstrellas = !window._catSoloEstrellas;
+  var b = document.getElementById('rsf-STAR');
+  if (b) {
+    if (window._catSoloEstrellas) {
+      b.style.background = '#fbbf24'; b.style.color = '#1a2050'; b.style.fontWeight = '900';
+    } else {
+      b.style.background = 'rgba(251,191,36,.18)'; b.style.color = '#fde68a'; b.style.fontWeight = '700';
+    }
+  }
+  try { doRefSearch(); } catch(e){}
+};
+
+window.estEditarMotivo = function(ref){
+  var d = estGetPtData();
+  if (!d[ref] || !d[ref].estrella) return;
+  var nuevo = prompt('Motivo por el que ' + ref + ' es referencia estrella:', d[ref].estrellaMotivo || '');
+  if (nuevo === null) return;
+  d[ref].estrellaMotivo = String(nuevo).trim().slice(0,140);
+  if (estGuardarPtData(d)) estRefrescarUI();
+};
+
+window.estExportarExcel = function(){
+  var lista = window.getEstrellas();
+  if (!lista.length) { alert('No hay referencias estrella que exportar.'); return; }
+  var prodPorRef = {}; try { (PRODUCTS||[]).forEach(function(p){ if(p&&p.r) prodPorRef[p.r]=p; }); } catch(e){}
+  var inv = {}; try { inv = getInventory(); } catch(e){}
+  var filas = [['REFERENCIA','DESCRIPCION','MARCA','STOCK','PRECIO USD','MOTIVO','MARCADA EL']];
+  lista.forEach(function(it){
+    var p = prodPorRef[it.ref] || {};
+    filas.push([ it.ref, p.d||'', p.br||'',
+      parseInt((inv[it.ref]!==undefined)?inv[it.ref]:(p.ex||0))||0,
+      (p.u!=null? Number(p.u.toFixed(2)) : ''), it.motivo||'',
+      it.ts ? new Date(it.ts).toLocaleDateString('es-VE') : '' ]);
+  });
+  try {
+    var wb = XLSX.utils.book_new();
+    var ws = XLSX.utils.aoa_to_sheet(filas);
+    ws['!cols'] = [{wch:14},{wch:46},{wch:13},{wch:9},{wch:11},{wch:38},{wch:13}];
+    XLSX.utils.book_append_sheet(wb, ws, 'Estrellas');
+    XLSX.writeFile(wb, 'FARMERS_Referencias_Estrella_' + new Date().toISOString().slice(0,10) + '.xlsx');
+  } catch(e){ alert('No se pudo generar el Excel: ' + e.message); }
+};
+
 function doRefSearch() {
   var qRaw = (document.getElementById('ref-search-input').value || '').trim().toLowerCase();
   var countEl   = document.getElementById('ref-search-count');
@@ -33353,6 +33586,11 @@ function doRefSearch() {
       return pasa;
     });
     if (_debugPantalla.length) console.log('[Catálogo] Excluidos ejemplo:', _debugPantalla.join(' · '));
+  }
+
+  // v.279: filtro SOLO ESTRELLAS
+  if (window._catSoloEstrellas) {
+    pool = pool.filter(function(p){ return window.esEstrella(p.r); });
   }
 
   // Filtro: excluir artículos sin disponible si _catExclComp está activo
@@ -33547,6 +33785,8 @@ function doRefSearch() {
         '<label class="cat-sel-chk" style="position:absolute;top:10px;right:10px;cursor:pointer;z-index:3;">' +
           '<input type="checkbox" data-ref="' + p.r + '" onchange="catToggleSelect(this)" style="width:15px;height:15px;accent-color:#f47b3e;cursor:pointer;">' +
         '</label>' +
+        // v.279: toggle de referencia estrella
+        window.estBotonTarjeta(p.r) +
 
         // ── FRANJA: Imagen + REF + Existencia ──
         '<div style="display:flex;align-items:center;gap:12px;padding:11px 44px 11px 13px;">' +
