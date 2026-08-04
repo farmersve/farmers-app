@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.07.30.281">
+<meta name="farmers-version" content="2026.08.04.282">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -58908,23 +58908,10 @@ window.msAbrirEtiquetas = function() {
   console.log('[msAbrirEtiquetas] ✓ ETIQDATA construido:', ETIQDATA.length, 'refs para', MS.numPedido);
 
   MS.sucursales.forEach(function(suc){
-    var totalRef=0, totalUnd=0;
-    // Usar ETIQDATA local (NO MS.data que puede estar contaminado)
-    ETIQDATA.forEach(function(p){
-      var d = (p.dist && p.dist[suc]) || 0;
-      // Si está despachado y dist es 0, usar pedidos
-      if (d === 0) {
-        var pide = (p.pedidos && p.pedidos[suc]) || 0;
-        var _esDesp = false;
-        try {
-          var _ps = (typeof getMsPedidos === 'function') ? getMsPedidos() : [];
-          var _pp = _ps.find(function(x){ return x.numP === MS.numPedido; });
-          _esDesp = _pp && (_pp.estado || '').toUpperCase() === 'DESPACHADO';
-        } catch(e){}
-        if (_esDesp && pide > 0) d = pide;
-      }
-      if(d>0){totalRef++;totalUnd+=d;}
-    });
+    // ═══ v.282: MISMO motor que las etiquetas — el panel no puede mostrar
+    // una cifra distinta a la que después se imprime en el rótulo. ═══════════
+    var _Tp = window.msTotalesSucursal(MS.numPedido, suc);
+    var totalRef = _Tp.refs, totalUnd = _Tp.uds;
 
     // Datos guardados previamente
     var _savedSuc = _etiqData[suc] || {};
@@ -59832,6 +59819,94 @@ window.msCorregirFechaDespacho = function(numP, fechaDDMMYYYY){
   return true;
 };
 
+
+/* ══════════════════════════════════════════════════════════════════════════
+   v.282 — MOTOR ÚNICO DE TOTALES POR SUCURSAL
+   ─────────────────────────────────────────────────────────────────────────
+   BUG QUE CORRIGE:
+   Existían DOS cálculos independientes para el mismo despacho:
+
+     · msGenerarEtiquetasPDF      (etiquetas por BULTO)
+     · msGenerarEtiquetasDespacho (etiquetas por DESPACHO)
+
+   La de BULTO rellenaba con `pide` cuando `desp` era 0 —es decir, asumía
+   que todo lo pedido se despachó— y encima tenía dos fallbacks más, uno de
+   ellos leyendo texto del DOM con expresiones regulares.
+   Resultado medido sobre MS-260527-1828 (24 sucursales, 100 bultos):
+
+     Por despacho : 878 refs · 23.727 uds · 1.373,2 kg   ← correcto
+     Por bulto    : 1.253 refs · 34.971 uds · 2.176,4 kg ← inflado
+     Diferencia   : +375 refs · +11.244 uds · +803,2 kg
+
+   Los +11.244 uds eran mercancía PEDIDA pero NO despachada (faltantes).
+   Declararlas en la etiqueta es prometerle al cliente algo que no va en
+   la caja, y declararle al transportista 803 kg que no existen.
+
+   REGLA ÚNICA:
+   `desp` es la verdad. Lo que no se despachó, no se declara. Sin fallbacks
+   que inventen cantidades. Si no hay `desp` registrado, se avisa fuerte —
+   NUNCA se rellena en silencio.
+   ══════════════════════════════════════════════════════════════════════════ */
+window.msTotalesSucursal = function(numP, suc){
+  var r = { refs:0, uds:0, vol:0, peso:0, pedidoRefs:0, pedidoUds:0, sinDesp:0, sinMedidas:0, ok:false };
+  try {
+    var peds = (typeof getMsPedidos === 'function') ? (getMsPedidos() || []) : [];
+    var ped  = peds.find(function(p){ return p && p.numP === numP; });
+    if (!ped || !Array.isArray(ped.items)) return r;
+
+    ped.items.forEach(function(item){
+      var sd = (item.sucursales || {})[suc];
+      if (!sd) return;
+      var pide = parseInt(sd.pide) || 0;
+      var desp = parseInt(sd.desp) || 0;
+
+      if (pide > 0) { r.pedidoRefs++; r.pedidoUds += pide; }
+      if (pide > 0 && desp === 0) r.sinDesp++;
+      if (desp <= 0) return;
+
+      r.refs++;
+      r.uds += desp;
+      var med = (typeof getMedidasProducto === 'function') ? getMedidasProducto(item.ref) : null;
+      if (med && med.udsBulto > 0) {
+        var bultos = desp / med.udsBulto;
+        r.vol  += (med.volFt3Bulto  || 0) * bultos;
+        r.peso += (med.pesoBrutoKg || 0) * bultos;
+      } else {
+        r.sinMedidas++;   // sin master data: no se estima, se reporta
+      }
+    });
+    r.ok = r.refs > 0;
+  } catch(e){ console.error('[msTotalesSucursal]', suc, e); }
+  return r;
+};
+
+/* Aviso agregado tras generar etiquetas. No bloquea la impresión, pero deja
+   constancia de qué sucursales quedaron sin distribución registrada. */
+window.msAvisarTotales = function(diag, origen){
+  try {
+    var vacias = diag.filter(function(d){ return !d.ok; });
+    var faltan = diag.filter(function(d){ return d.sinDesp > 0; });
+    var sinMed = diag.reduce(function(a,d){ return a + d.sinMedidas; }, 0);
+
+    console.log('[' + origen + '] Totales por sucursal:',
+      diag.map(function(d){ return d.suc + '=' + d.refs + 'ref/' + d.uds + 'uds'; }).join(' · '));
+
+    if (vacias.length) {
+      alert('⚠ ATENCIÓN — ' + vacias.length + ' sucursal(es) sin NADA despachado registrado:\n\n' +
+            vacias.map(function(d){ return '· ' + d.suc + ' (pedidas ' + d.pedidoUds + ' uds)'; }).join('\n') +
+            '\n\nEsas etiquetas van a salir en CERO. Revisa la distribución antes de imprimir; ' +
+            'el sistema ya no rellena con lo pedido porque eso declaraba mercancía que no viaja.');
+    }
+    if (faltan.length && typeof showToast === 'function') {
+      var totalFalt = faltan.reduce(function(a,d){ return a + d.sinDesp; }, 0);
+      showToast('ℹ ' + totalFalt + ' línea(s) pedidas sin despachar — no se declaran en la etiqueta', 'info');
+    }
+    if (sinMed > 0) {
+      console.warn('[' + origen + '] ' + sinMed + ' referencia(s) sin medidas en Master Data — no suman peso ni volumen.');
+    }
+  } catch(e){ console.warn('[msAvisarTotales]', e); }
+};
+
 window.msGenerarEtiquetasPDF = function(sucsFiltradas) {
   var sucsAImprimir = (sucsFiltradas && sucsFiltradas.length) ? sucsFiltradas : MS.sucursales;
   var logoB64=typeof FARMERS_LOGO_B64!=='undefined'?FARMERS_LOGO_B64:'';
@@ -59907,6 +59982,7 @@ window.msGenerarEtiquetasPDF = function(sucsFiltradas) {
   } catch(eL){ console.error('[msGenerarEtiquetasPDF] Error LBLDATA:', eL); }
   console.log('[msGenerarEtiquetasPDF] ✓ LBLDATA:', LBLDATA.length, 'refs · pedido:', numP, '· estado:', _esDespachadoLbl?'DESPACHADO':'otro');
 
+  var _diagLbl = [];   // v.282: diagnóstico por sucursal
   sucsAImprimir.forEach(function(suc) {
     var idKey=suc.replace(/\W/g,'_'); // UNA sola regla consistente con \W
     var inp=document.getElementById('cajas-'+idKey);
@@ -59916,76 +59992,13 @@ window.msGenerarEtiquetasPDF = function(sucsFiltradas) {
     var ptD={};
     try{var ptRaw=localStorage.getItem('farmers_pt_data');if(ptRaw){var ptArr=JSON.parse(ptRaw);ptArr.forEach(function(x){ptD[x.r]=x;});}}catch(e){}
 
-    // CALCULAR desde LBLDATA local (NO MS.data)
-    if(LBLDATA.length > 0) {
-      LBLDATA.forEach(function(p){
-        var pide = (p.pedidos && p.pedidos[suc]) || 0;
-        var d;
-        if (p.dist && Object.keys(p.dist).length > 0) {
-          d = Math.min(p.dist[suc] || 0, pide);
-        } else if (_esDespachadoLbl) {
-          d = pide;
-        } else {
-          d = pide;
-        }
-        // Fallback adicional: si despachado y d=0 pero pide>0
-        if (d === 0 && _esDespachadoLbl && pide > 0) d = pide;
-
-        if(d > 0) {
-          totalRef++;
-          totalUnd += d;
-          // ─── v.113: Usa Master Data primero, fallback automático ───
-          var med = (typeof getMedidasProducto === 'function') ? getMedidasProducto(p.ref) : null;
-          if (med && med.udsBulto > 0) {
-            var bultosReales = d / med.udsBulto;
-            totalVol  += (med.volFt3Bulto || 0) * bultosReales;
-            totalPeso += (med.pesoBrutoKg || 0) * bultosReales;
-          }
-          // Si no hay datos: no sumar nada (mejor 0 que estimación errónea)
-        }
-      });
-    }
-    
-    // ESTRATEGIA 2: Usar datos del formulario si Strategy 1 falló (refs/uds del header)
-    if(totalRef === 0 && typeof MS !== 'undefined' && MS.clientesPorSucursal && MS.clientesPorSucursal[suc]) {
-      var sucInfo = MS.clientesPorSucursal[suc];
-      totalRef = parseInt(sucInfo.refs) || 0;
-      totalUnd = parseInt(sucInfo.uds) || 0;
-      // v.113: NO estimar vol con constante hardcoded — dejar en 0 si no hay datos reales
-    }
-    
-    // ESTRATEGIA 3: Extraer datos REALES específicos para esta sucursal
-    if(totalRef === 0 || totalUnd === 0) {
-      // Buscar elementos específicos que muestran datos de esta sucursal
-      var sucElements = document.querySelectorAll('[id*="' + suc.replace(/[()]/g, '') + '"], div, span');
-      for(var i = 0; i < sucElements.length; i++) {
-        var text = sucElements[i].textContent || '';
-        var parentText = sucElements[i].parentElement ? (sucElements[i].parentElement.textContent || '') : '';
-        var fullText = text + ' ' + parentText;
-        
-        // Buscar patrones específicos para esta sucursal
-        if(fullText.includes(suc) || fullText.includes(suc.replace(/[()]/g, ''))) {
-          // Extraer refs y uds del contexto de esta sucursal
-          var refsMatch = fullText.match(/(\d+)\s*refs?/i);
-          var udsMatch = fullText.match(/(\d+)\s*uds?/i);
-          
-          if(refsMatch && parseInt(refsMatch[1]) > 0) {
-            totalRef = parseInt(refsMatch[1]);
-          }
-          if(udsMatch && parseInt(udsMatch[1]) > 0) {
-            totalUnd = parseInt(udsMatch[1]);
-            // v.113: NO estimar vol con constante hardcoded
-          }
-          
-          if(totalRef > 0 && totalUnd > 0) break; // Encontró datos válidos para esta sucursal
-        }
-      }
-    }
-    
-    // Solo si NO se encontraron datos específicos, reportar error
-    if(totalRef === 0 && totalUnd === 0) {
-      console.error('ERROR: No se encontraron datos para sucursal: ' + suc);
-      // NO usar valores ficticios - mantener en 0 para detectar el problema
+    // ═══ v.282: MOTOR ÚNICO — `desp` es la verdad, sin rellenos ═══════════
+    var _T = window.msTotalesSucursal(numP, suc);
+    totalRef = _T.refs; totalUnd = _T.uds; totalVol = _T.vol; totalPeso = _T.peso;
+    _diagLbl.push({ suc:suc, refs:_T.refs, uds:_T.uds, ok:_T.ok,
+                    sinDesp:_T.sinDesp, sinMedidas:_T.sinMedidas, pedidoUds:_T.pedidoUds });
+    if (!_T.ok) {
+      console.error('[ETIQUETAS BULTO] ' + suc + ' sin distribución despachada registrada · pedidas ' + _T.pedidoUds + ' uds');
     }
     // Leer inputs del formulario — con fallback completo a localStorage/pedido guardado
     var rifInput  =document.getElementById('rif-'+idKey);
@@ -60006,6 +60019,7 @@ window.msGenerarEtiquetasPDF = function(sucsFiltradas) {
   });
 
   if(!etiquetas.length){showToast('No hay etiquetas para generar','warn');return;}
+  window.msAvisarTotales(_diagLbl, 'ETIQUETAS BULTO');
 
   // ── Marcar sucursales impresas como EMBALADO ────
   if(!MS.sucursalesEstado) MS.sucursalesEstado = {};
@@ -77052,7 +77066,7 @@ window.msGenerarEtiquetasDespacho = function(sucsFiltradas) {
   }
 
   var etiquetasDespacho=[];
-  
+  var _diagDesp = [];   // v.282: diagnóstico por sucursal
   sucsAImprimir.forEach(function(suc) {
     var idKey=suc.replace(/\W/g,'_'); 
     var inp=document.getElementById('cajas-'+idKey);
@@ -77060,29 +77074,13 @@ window.msGenerarEtiquetasDespacho = function(sucsFiltradas) {
     var numBultosTotal=inp?parseInt(inp.value)||1:(parseInt(_fb.cajas)||1);
     var totalRef=0,totalUnd=0,totalVol=0,totalPeso=0;
     
-    if(pedidoActual && pedidoActual.items && pedidoActual.items.length > 0) {
-      pedidoActual.items.forEach(function(item) {
-        var sucData = (item.sucursales || {})[suc];
-        if(sucData && sucData.desp > 0) {
-          var cantidadDesp = parseInt(sucData.desp) || 0;
-          if(cantidadDesp > 0) {
-            totalRef++;
-            totalUnd += cantidadDesp;
-            // ─── v.113: Usa Master Data primero, fallback automático ───
-            var med = (typeof getMedidasProducto === 'function') ? getMedidasProducto(item.ref) : null;
-            if (med && med.udsBulto > 0) {
-              var bultosReales = cantidadDesp / med.udsBulto;
-              totalVol  += (med.volFt3Bulto || 0) * bultosReales;
-              totalPeso += (med.pesoBrutoKg || 0) * bultosReales;
-            }
-          }
-        }
-      });
-    }
-    
-    // v.113: NO estimar con constantes hardcoded — mejor 0 que dato falso
-    if(totalRef === 0) {
-      totalRef = 1; totalUnd = 1; totalVol = 0; totalPeso = 0;
+    // ═══ v.282: MOTOR ÚNICO — el mismo cálculo que las etiquetas por bulto ═══
+    var _T = window.msTotalesSucursal(numP, suc);
+    totalRef = _T.refs; totalUnd = _T.uds; totalVol = _T.vol; totalPeso = _T.peso;
+    _diagDesp.push({ suc:suc, refs:_T.refs, uds:_T.uds, ok:_T.ok,
+                     sinDesp:_T.sinDesp, sinMedidas:_T.sinMedidas, pedidoUds:_T.pedidoUds });
+    if (!_T.ok) {
+      console.error('[ETIQUETAS DESPACHO] ' + suc + ' sin distribución despachada registrada · pedidas ' + _T.pedidoUds + ' uds');
     }
 
     var rifInput  =document.getElementById('rif-'+idKey);
@@ -77105,6 +77103,7 @@ window.msGenerarEtiquetasDespacho = function(sucsFiltradas) {
     });
   });
 
+  window.msAvisarTotales(_diagDesp, 'ETIQUETAS DESPACHO');
   if(!etiquetasDespacho.length){
     showToast('No hay despachos para etiquetar','warn');
     return;
