@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.08.15.283">
+<meta name="farmers-version" content="2026.08.15.285">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -14625,6 +14625,8 @@ function ocRenderFicha(oc) {
         _ocInfoMini('💵 Moneda', oc.moneda) +
         _ocInfoMini('📦 Items', (oc.items||[]).length + ' refs') +
       '</div>' +
+
+
 
       // Tabla items
       '<div style="background:white;border:1px solid #e2e8f0;border-radius:10px;overflow:hidden;margin-bottom:14px;">' +
@@ -62268,14 +62270,45 @@ function cxcTabFacturas(body){
 // Si options.returnContent === true, devuelve { html, filename } sin descargar
 function cxcComprobantePago(facId, pagoTs, options) {
   options = options || {};
+  /* ═══ v.285 — FIX "Pago no encontrado" ════════════════════════════════════
+     El comprobante se dispara 500 ms después de aplicar el pago, pero en ese
+     intervalo cxcGoTab() redibuja y recarga las facturas. Si la recarga viene
+     de la copia sincronizada (que aún no trae el pago recién creado), la
+     búsqueda por timestamp falla y salía "Pago no encontrado" — aunque el
+     pago SÍ estaba aplicado.
+     Solución: quien ya tiene el objeto pago puede pasarlo en options, y si no,
+     se reintenta con una segunda lectura antes de rendirse. */
   var facs = cxcFacs();
   var f = facs.find(function(x){ return x.id === facId; });
+  if (!f && options.facturaDirecta) f = options.facturaDirecta;
   if (!f) {
     if (!options.returnContent) showToast('Factura no encontrada', 'error');
     return null;
   }
 
   var pago = (f.pagos||[]).find(function(p){ return String(p.ts) === String(pagoTs); });
+
+  // Reintento 1: el pago que el llamador ya tenía en mano
+  if (!pago && options.pagoDirecto && String(options.pagoDirecto.ts) === String(pagoTs)) {
+    pago = options.pagoDirecto;
+  }
+  // Reintento 2: releer localStorage directo (evita cachés intermedias)
+  if (!pago) {
+    try {
+      var _raw = JSON.parse(localStorage.getItem('farmers_cxc') || '{"facturas":[]}');
+      var _f2 = (_raw.facturas || []).find(function(x){ return x.id === facId; });
+      if (_f2) {
+        pago = (_f2.pagos || []).find(function(p){ return String(p.ts) === String(pagoTs); });
+        if (pago) f = _f2;
+      }
+    } catch(eRe){}
+  }
+  // Reintento 3: el último pago de la factura (el recién aplicado)
+  if (!pago && f.pagos && f.pagos.length) {
+    pago = f.pagos[f.pagos.length - 1];
+    console.warn('[Comprobante] ts ' + pagoTs + ' no coincidió — se usa el último pago registrado.');
+  }
+
   if (!pago) {
     if (!options.returnContent) showToast('Pago no encontrado', 'error');
     return null;
@@ -64111,9 +64144,14 @@ function cxcConfirmarPago(){
     showToast('⚠️ Error al transferir a Bancos: '+e.message, 'error');
   }
   // ── Comprobante automático ──────────────────────────────────
-  setTimeout(function(){
-    if(typeof cxcComprobantePago==='function') cxcComprobantePago(_cxcPagFac, _pagoTs);
-  }, 500);
+  // v.285: se genera ANTES de cxcGoTab() y se le pasa el pago ya resuelto,
+  // para que no dependa de releer las facturas mientras la pantalla se redibuja.
+  var _pagoObj = f.pagos[f.pagos.length-1];
+  try {
+    if(typeof cxcComprobantePago==='function') {
+      cxcComprobantePago(_cxcPagFac, _pagoTs, { pagoDirecto:_pagoObj, facturaDirecta:f });
+    }
+  } catch(eComp) { console.error('[Comprobante]', eComp); }
 
   if (typeof cxcUpdateBadge === 'function') cxcUpdateBadge();
   cxcGoTab(_cxcTab);
