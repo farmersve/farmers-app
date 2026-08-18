@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.08.15.285">
+<meta name="farmers-version" content="2026.08.18.286">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -14626,6 +14626,16 @@ function ocRenderFicha(oc) {
         _ocInfoMini('📦 Items', (oc.items||[]).length + ' refs') +
       '</div>' +
 
+      // v.286: etiquetas de bulto ANTICIPADAS — antes de que llegue el contenedor
+      ((oc.items||[]).length
+        ? '<div style="display:flex;align-items:center;gap:10px;background:#eff6ff;border:1.5px solid #bfdbfe;border-radius:9px;padding:10px 14px;margin-bottom:14px;flex-wrap:wrap;">' +
+            '<div style="flex:1;min-width:240px;font-size:.73rem;color:#1e40af;line-height:1.5;">' +
+              '<b>🏷 Etiquetas anticipadas</b> — imprímelas ahora con las cantidades pedidas y tenlas listas para pegar cuando baje el contenedor. No crea recepción ni toca inventario.' +
+            '</div>' +
+            '<button onclick="ocRecepEtiquetasGenerar(\'' + oc.id + '\', \'__OC__\', \'bultos\')" style="background:#1a2050;color:#fff;border:none;border-radius:7px;padding:9px 16px;cursor:pointer;font-weight:900;font-size:.73rem;white-space:nowrap;">🏷 Etiq. Bultos (anticipadas)</button>' +
+          '</div>'
+        : '') +
+
 
 
       // Tabla items
@@ -21167,8 +21177,33 @@ window.ocRecepEtiquetasGenerar = function(ocId, recepcionId, modo, orientacion) 
   try {
     var oc = (_ocDB || []).find(function(x){ return x.id === ocId; });
     if (!oc) { alert('OC no encontrada'); return; }
-    var rec = (oc.recepciones || []).find(function(x){ return x.id === recepcionId; });
-    if (!rec) { alert('Recepción no encontrada'); return; }
+    var rec;
+    if (recepcionId === '__OC__') {
+      /* ═══ v.286 — ETIQUETAS ANTICIPADAS ══════════════════════════════════
+         Genera las etiquetas de bulto ANTES de que llegue el contenedor,
+         usando las cantidades PEDIDAS en la OC. Permite imprimirlas y tenerlas
+         listas para pegar el día que baja la mercancía, sin frenar el almacén.
+         NO crea recepción · NO toca inventario · sólo impresión. */
+      var _itemsOC = (oc.items || []).filter(function(it){
+        return it.refFarmers && (parseInt(it.cantidad) || 0) > 0;
+      });
+      if (!_itemsOC.length) { alert('Esta OC no tiene items con cantidad.'); return; }
+      rec = {
+        id: '__OC__',
+        numero: 'PRE-' + (oc.numero || ''),
+        fecha: '',
+        items: _itemsOC.map(function(it){
+          return { refFarmers: it.refFarmers,
+                   cantidad: parseInt(it.cantidad) || 0,
+                   cantidadRecibida: parseInt(it.cantidad) || 0,
+                   descripcion: it.descripcion || '' };
+        }),
+        _anticipada: true
+      };
+    } else {
+      rec = (oc.recepciones || []).find(function(x){ return x.id === recepcionId; });
+      if (!rec) { alert('Recepción no encontrada'); return; }
+    }
 
     // ── Calcular bultos por referencia (incluye parciales) ──
     // Lógica:
@@ -21367,11 +21402,11 @@ window.ocRecepEtiquetasGenerar = function(ocId, recepcionId, modo, orientacion) 
       return '<div class="etq">'
         +'<div class="etq-hdr">'
         +(logoB64 ? '<img class="etq-logo" src="'+logoB64+'" alt="Farmers">' : '<span style="font-size:8px;font-weight:900;letter-spacing:1px;">FARMERS</span>')
-        +'<span class="etq-tipo">📦 RECEPCIÓN</span>'
+        +'<span class="etq-tipo">'+(rec._anticipada ? '🏷 PRE-RECEPCIÓN' : '📦 RECEPCIÓN')+'</span>'
         +'<span class="etq-oc">'+(ocNumero?'OC '+ocNumero:'')+'</span>'
         +'</div>'
         +'<div class="etq-empresa">FARMERS C.A. · RIF J-401008631</div>'
-        +'<div class="etq-fecha-rec">FECHA: '+fechaRec+'</div>'
+        +'<div class="etq-fecha-rec">'+(rec._anticipada ? 'FECHA RECEPCIÓN: ____/____/________' : 'FECHA: '+fechaRec)+'</div>'
         +'<div class="etq-ref-block">'
           +'<div class="etq-ref">'+(b.ref||'')+'</div>'
           +(b.marca?'<div class="etq-marca">'+b.marca+'</div>':'')
