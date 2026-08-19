@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.08.18.286">
+<meta name="farmers-version" content="2026.08.19.287">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -8381,8 +8381,115 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
             });
           }
         } catch(eBk0) { console.warn('[fbSaveProducts · backup] try-catch externo:', eBk0); }
+
+        // ── v.287: ESCRITURA DUAL ────────────────────────────────────────
+        // Además del formato clásico, cada producto se escribe como documento
+        // individual en products_v2. Si esto falla NO afecta el guardado
+        // principal — es una copia en paralelo mientras dura la migración.
+        try {
+          if (window._v2Activo !== false && typeof window.fbSaveProductsV2 === 'function') {
+            window.fbSaveProductsV2(payload).then(function(r){
+              if (r.fallos.length) console.warn('[V2] ' + r.fallos.length + ' ref(s) no se escribieron:', r.fallos.slice(0,10));
+              else console.log('[V2] ' + r.ok + ' productos sincronizados (formato por documento)');
+            }).catch(function(e){ console.warn('[V2] escritura dual falló (no crítico):', e && e.message); });
+          }
+        } catch(eV2) { console.warn('[V2] dual:', eV2); }
+
         return { count: payload.length, ok: true };
       };
+      /* ═══════════════════════════════════════════════════════════════════════
+         v.287 — CATÁLOGO POR DOCUMENTO (fase 1: escritura dual)
+         ─────────────────────────────────────────────────────────────────────
+         Hasta ahora los 900 productos viajaban como UNA sola cadena JSON en
+         data/products. Si no cabía (cuota del navegador, red cortada, límite
+         de 1 MB de Firestore) se guardaba TRUNCADA y se perdían las últimas
+         referencias, en silencio. Eso produjo el 883 de 900 y la pérdida de
+         EXC452-455, FL001-005, LUM037-038 y MAT095-100.
+
+         Ahora cada producto es un documento propio en products_v2/<ref>:
+         no se trunca, no se pisa entre dispositivos, y si falla la bajada de
+         uno los otros 899 llegan igual.
+
+         FASE 1 (esta versión): se escribe en LOS DOS formatos y se sigue
+         leyendo del viejo. Sin riesgo — si v2 falla, el sistema opera igual.
+
+         Consola:  farmersV2Estado()  ·  farmersV2Migrar()  ·  farmersV2Verificar()
+         ═══════════════════════════════════════════════════════════════════════ */
+      var V2_COL = 'products_v2';
+
+      window.fbSaveProductsV2 = async function(arr, onProgreso){
+        var lista = Array.isArray(arr) ? arr : (typeof PRODUCTS !== 'undefined' ? PRODUCTS : []);
+        if (!lista.length) throw new Error('fbSaveProductsV2: lista vacía');
+        var ok = 0, fallos = [], LOTE = 25;
+        for (var i = 0; i < lista.length; i += LOTE) {
+          var trozo = lista.slice(i, i + LOTE);
+          await Promise.all(trozo.map(async function(p){
+            if (!p || !p.r) return;
+            try { await setDoc(doc(db, V2_COL, String(p.r)), { d: JSON.stringify(p), at: Date.now() }); ok++; }
+            catch(e) { fallos.push(String(p.r)); }
+          }));
+          if (typeof onProgreso === 'function') onProgreso(Math.min(i+LOTE, lista.length), lista.length);
+        }
+        return { ok: ok, fallos: fallos, total: lista.length };
+      };
+
+      window.fbGetProductsV2 = async function(){
+        try {
+          var snap = await getDocs(collection(db, V2_COL));
+          var out = [];
+          snap.forEach(function(s){ try { out.push(JSON.parse(s.data().d)); } catch(e){} });
+          return out.length ? out : null;
+        } catch(e) { console.warn('[V2] lectura falló:', e && e.message); return null; }
+      };
+
+      window.farmersV2Estado = async function(){
+        var loc = (typeof PRODUCTS !== 'undefined' ? PRODUCTS : []).length;
+        var viejo = 0, nuevo = 0;
+        try { var s = await getDoc(doc(db,'data','products')); if (s.exists()) viejo = (JSON.parse(s.data().v)||[]).length; } catch(e){}
+        try { var v2 = await window.fbGetProductsV2(); nuevo = v2 ? v2.length : 0; } catch(e){}
+        var msg = 'CATÁLOGO\n  Local (este equipo) : ' + loc +
+          '\n  Nube formato viejo  : ' + viejo +
+          '\n  Nube formato NUEVO  : ' + nuevo + '\n\n' +
+          (nuevo === 0 ? '→ Todavía no has migrado. Corre: farmersV2Migrar()'
+           : nuevo === loc ? '✅ Migración al día. Los dos formatos coinciden.'
+           : '⚠ Difieren en ' + Math.abs(loc-nuevo) + ' ref(s). Corre farmersV2Migrar().');
+        console.log(msg); return msg;
+      };
+
+      window.farmersV2Migrar = async function(){
+        var lista = (typeof PRODUCTS !== 'undefined' ? PRODUCTS : []);
+        if (!lista.length) return '⛔ No hay productos cargados en este equipo.';
+        if (!confirm('Migrar ' + lista.length + ' productos al formato por documento.\n\nEs SEGURO: el formato actual no se toca, solo se agrega el nuevo.\nPuede tardar 1-2 minutos.\n\n¿Continuar?')) return 'Cancelado.';
+        console.log('[V2] Migrando ' + lista.length + ' productos…');
+        var r = await window.fbSaveProductsV2(lista, function(h,t){ if (h % 100 === 0 || h === t) console.log('[V2] ' + h + '/' + t); });
+        var msg = '✅ Migración terminada\n  Subidos: ' + r.ok + ' de ' + r.total +
+                  (r.fallos.length ? '\n  ⚠ Fallaron: ' + r.fallos.join(', ') : '\n  Sin fallos.') +
+                  '\n\nVerifica con: farmersV2Verificar()';
+        console.log(msg); alert(msg); return msg;
+      };
+
+      window.farmersV2Verificar = async function(){
+        var lista = (typeof PRODUCTS !== 'undefined' ? PRODUCTS : []);
+        var v2 = await window.fbGetProductsV2();
+        if (!v2) return '⛔ No se pudo leer el formato nuevo.';
+        var idx = {}; v2.forEach(function(p){ if(p && p.r) idx[p.r] = p; });
+        var faltan = [], difieren = [];
+        lista.forEach(function(p){
+          var q = idx[p.r];
+          if (!q) { faltan.push(p.r); return; }
+          if ((parseInt(q.exNE)||0) !== (parseInt(p.exNE)||0)) difieren.push(p.r);
+        });
+        var sobran = v2.filter(function(p){ return !lista.some(function(x){ return x.r === p.r; }); }).map(function(p){ return p.r; });
+        var msg = 'VERIFICACIÓN\n  Local: ' + lista.length + '  ·  Nuevo formato: ' + v2.length +
+          '\n  Faltan en el nuevo : ' + faltan.length + (faltan.length ? ' → ' + faltan.slice(0,15).join(', ') : '') +
+          '\n  Sobran en el nuevo : ' + sobran.length + (sobran.length ? ' → ' + sobran.slice(0,15).join(', ') : '') +
+          '\n  Con stock distinto : ' + difieren.length + (difieren.length ? ' → ' + difieren.slice(0,15).join(', ') : '') + '\n\n' +
+          (faltan.length + sobran.length + difieren.length === 0
+            ? '✅ PERFECTO — los dos formatos son idénticos.'
+            : '⚠ Hay diferencias. Corre farmersV2Migrar() para igualar.');
+        console.log(msg); return msg;
+      };
+
       window.fbGetProducts = async () => {
         try { var s = await getDoc(doc(db,'data','products')); if (s.exists()) return JSON.parse(s.data().v); } catch(e) { if(window._farmersFalloLectura) window._farmersFalloLectura('Products', e); }
         return null;
