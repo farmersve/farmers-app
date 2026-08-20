@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.08.19.287">
+<meta name="farmers-version" content="2026.08.20.289">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -9002,7 +9002,16 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
             else {
               // Si Firebase tiene versión más reciente, actualizar
               var idx = localClients.findIndex(function(lc){ return lc.id === fc.id; });
-              if (idx >= 0 && fc._ts && localClients[idx]._ts && fc._ts > localClients[idx]._ts) {
+
+              // v.288: no pisar un cliente que acabamos de editar en este equipo.
+              // El eco de Firebase llega con los datos PREVIOS al write y revertía
+              // el cambio. Ventana de gracia de 12 s tras guardar.
+              var _reciente = window._clUltimoGuardadoLocal &&
+                              window._clUltimoGuardadoLocal.id === fc.id &&
+                              (Date.now() - window._clUltimoGuardadoLocal.at) < 12000;
+              if (_reciente) {
+                console.log('[Clientes] eco ignorado para ' + fc.id + ' (editado hace un momento)');
+              } else if (idx >= 0 && fc._ts && localClients[idx]._ts && fc._ts > localClients[idx]._ts) {
                 localClients[idx] = fc;
               }
             }
@@ -26286,6 +26295,16 @@ function clGuardar() {
   var idx = _clDB.findIndex(function(x){ return x.id === _clActiveId; });
   if (idx === -1) return;
   _clDB[idx] = clCollectForm(_clDB[idx]);
+  /* ═══ v.288 — SELLO DE TIEMPO AL GUARDAR ════════════════════════════════
+     El onSnapshot de clientes decide con `_ts` quién manda: si la nube tiene
+     un _ts mayor, pisa lo local. Pero clGuardar() NUNCA actualizaba _ts, así
+     que el registro editado conservaba la marca vieja y el eco de Firebase
+     revertía el cambio a los pocos segundos.
+     Síntoma exacto: borrabas un campo, guardabas, y el valor reaparecía.
+     Ahora cada guardado sella el momento, y lo recién editado siempre gana. */
+  _clDB[idx]._ts = Date.now();
+  // Marca de escritura propia: el listener ignora su propio eco por 12 s
+  window._clUltimoGuardadoLocal = { id: _clDB[idx].id, at: Date.now() };
   saveClientsDB(_clDB);
   _clDirty = false;
   _clFiltered = _clDB.slice();
@@ -58694,9 +58713,14 @@ window.msExportarPedidoExcel = async function(ped) {
       styleCell(ws,c,'F0FDF4',mkFont('065F46',true,10),{horizontal:'right',vertical:'center'},mkBorder());
     });
     // Datos del cliente (fila 4) - Values
-    ['B5','E5','H5','K5'].forEach(function(c){
+    ['B5','E5','H5'].forEach(function(c){
       styleCell(ws,c,'FEFFFE',mkFont('065F46',false,10),{horizontal:'left',vertical:'center'},mkBorder());
     });
+    // v.289: la ORDEN DE COMPRA del cliente se resalta en ámbar y en negrita.
+    // Es el número con el que el cliente identifica el pedido de su lado, así
+    // que debe saltar a la vista al abrir la hoja de la sucursal.
+    styleCell(ws,'J5','FEF3C7',mkFont('92400E',true,10),{horizontal:'right',vertical:'center'},mkBorder());
+    styleCell(ws,'K5','FFFBEB',mkFont('92400E',true,11),{horizontal:'left',vertical:'center'},mkBorder());
     
     // Cabecera de productos (fila 6)
     ['A7','B7','C7','D7','E7','F7','G7','H7','I7','J7','K7'].forEach(function(c){
@@ -58751,15 +58775,31 @@ window.msExportarPedidoExcel = async function(ped) {
     var sucLine=subs.join(' | ');
 
     // Cabecera
+    /* ═══ v.289 — N° DE ORDEN DE COMPRA DEL CLIENTE EN EL RESUMEN ══════════
+       Es el número con el que el cliente (Grupo Abreu) identifica el pedido de
+       su lado. Tenerlo en el Excel permite cruzar de inmediato cada sucursal
+       con su ODC sin abrir el Monitor de Pedidos. */
+    var _ocLine = subs.map(function(s){
+      var _oc = ((etiqData[s]||{}).oc || '').trim();
+      var _nm = ((etiqData[s]||{}).nom || s);
+      return _nm + ': ' + (_oc || 'S/OC');
+    }).join('   |   ');
+
     var rows=[
       [' FARMERS C.A. — PEDIDO MULTI-SUCURSAL — '],
       ['N° Pedido:',ped.numP,'Fecha:',ped.fecha,'Moneda:',monL,'Tasa BCV:',tasaStr+' Bs/$','Tasa TF:',tasaStr+' Bs/$'],
       ['Sucursales:', sucLine],
+      ['N° ORDEN DE COMPRA:', _ocLine],
     ];
 
     // Cabecera de columnas — fija + por sucursal
     var hdrs=['REFERENCIA','DESCRIPCIÓN','CÓD.BARRA','CÓDIGO','STOCK','P.'+monC,'T.PEDIDO','T.DESP','VENTA '+monC,'ESTADO'];
-    subs.forEach(function(s){ hdrs.push('PIDE\n'+s,'DESP\n'+s,'VENTA '+monC+'\n'+s); });
+    subs.forEach(function(s){
+      // v.289: cada bloque de sucursal muestra su N° de orden de compra
+      var _oc = ((etiqData[s]||{}).oc || '').trim();
+      var _suf = _oc ? ('\nOC: ' + _oc) : '';
+      hdrs.push('PIDE\n'+s+_suf, 'DESP\n'+s+_suf, 'VENTA '+monC+'\n'+s+_suf);
+    });
     rows.push(hdrs);
 
     // Filas de datos
@@ -58820,6 +58860,15 @@ window.msExportarPedidoExcel = async function(ped) {
     if(!ws['!merges']) ws['!merges']=[];
     ws['!merges'].push({s:{r:0,c:0},e:{r:0,c:cols.length-1}});
     ws['!merges'].push({s:{r:2,c:1},e:{r:2,c:cols.length-1}});
+    // v.289: la fila 3 (índice 3) es la de N° ORDEN DE COMPRA — se fusiona
+    // y se resalta para que salte a la vista al abrir el resumen.
+    ws['!merges'].push({s:{r:3,c:1},e:{r:3,c:cols.length-1}});
+    try {
+      styleCell(ws,'A4','FEF3C7',mkFont('92400E',true,10),{horizontal:'right',vertical:'center'},mkBorder());
+      styleCell(ws,'B4','FFFBEB',mkFont('92400E',true,10),{horizontal:'left',vertical:'center',wrapText:true},mkBorder());
+      if(!ws['!rows']) ws['!rows']=[];
+      ws['!rows'][3]={hpt:20};
+    } catch(eOC){}
     return ws;
   }
 
