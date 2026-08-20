@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.08.20.290">
+<meta name="farmers-version" content="2026.08.20.291">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -52923,10 +52923,10 @@ window.msExportarExcel = function() {
     // v.78: Metadata fila 2: CLIENTE = razón social del CRM (no la sucursal)
     rows.push({h:14,cells:[{v:'Cliente:',s:S.norm},{v:clienteRazonSocial,s:S.norm},{v:'RIF:',s:S.norm},{v:cliRif,s:S.norm},{v:'Crédito:',s:S.norm},{v:cliCredito,s:S.norm},{v:'Vendedor:',s:S.norm},{v:cliVendedor,s:S.norm}]});
     // v.78: Metadata fila 3 NUEVA: SUCURSAL oficial del CRM + ubicación
-    rows.push({h:14,cells:[{v:'Sucursal:',s:S.norm},{v:sucursalOficial,s:S.norm},{v:'Ubicación:',s:S.norm},{v:ubicacionStr,s:S.norm},{v:'Despacho:',s:S.norm},{v:'#'+_v147NumSuc+' de '+_v147TotalSuc,s:S.tot},{v:'',s:S.norm},{v:'',s:S.norm}]});
-    // v.289: N° de orden de compra del cliente, resaltado
+    // v.291: la OC del cliente entra en las DOS CELDAS LIBRES que ya tenía esta
+    // fila (posiciones 7 y 8). Sin fila extra, sin tocar anchos.
     var _ocSuc = window.msOCSucursal(suc, numP);
-    rows.push({h:16,cells:[{v:'N° ORDEN DE COMPRA:',s:S.tot},{v:_ocSuc || '(sin OC registrada)',s:S.tot},{v:'',s:S.norm},{v:'',s:S.norm},{v:'',s:S.norm},{v:'',s:S.norm},{v:'',s:S.norm},{v:'',s:S.norm}]});
+    rows.push({h:14,cells:[{v:'Sucursal:',s:S.norm},{v:sucursalOficial,s:S.norm},{v:'Ubicación:',s:S.norm},{v:ubicacionStr,s:S.norm},{v:'Despacho:',s:S.norm},{v:'#'+_v147NumSuc+' de '+_v147TotalSuc,s:S.tot},{v:'N° O/C:',s:S.tot},{v:_ocSuc || '—',s:S.tot}]});
     // Metadata fila 4: contacto de la sucursal
     rows.push({h:14,cells:[{v:'Contacto:',s:S.norm},{v:sucContacto,s:S.norm},{v:'Teléfono:',s:S.norm},{v:sucTel,s:S.norm},{v:'Correo:',s:S.norm},{v:sucCorreo,s:S.norm},{v:'',s:S.norm},{v:'',s:S.norm}]});
     // Metadata fila 5: DIRECCIÓN FISCAL (legal, para facturación)
@@ -53045,18 +53045,14 @@ window.msExportarExcel = function() {
   resRows.push({h:14,cells:[{v:'Teléfono:',s:S.norm},{v:hdrTel,s:S.norm},{v:'Correo:',s:S.norm},{v:hdrCorreo,s:S.norm},{v:'Ubicación:',s:S.norm},{v:hdrUbic,s:S.norm},{v:'',s:S.norm},{v:'',s:S.norm}]});
   // v.78: Sucursales usa nombres oficiales del CRM
   resRows.push({h:14,cells:[{v:'Sucursales:',s:S.norm},{v:sucursalesOficiales.join(' | '),s:S.norm}]});
-  // v.289: listado de N° de orden de compra por sucursal
-  var _ocResumen = MS.sucursales.map(function(s){
-    var _o = window.msOCSucursal(s, numP);
-    return _v78NombreOficial(s) + ': ' + (_o || 'S/OC');
-  }).join('   |   ');
-  resRows.push({h:18,cells:[{v:'N° ÓRDENES DE COMPRA:',s:S.tot},{v:_ocResumen,s:S.tot}]});
   resRows.push({h:4,cells:[{v:'',s:S.norm}]});
 
   // Tabla de direcciones por sucursal — usa resolverCliente para CADA sucursal (sincronización automática)
-  resRows.push({h:20,cells:[{v:'📋 DIRECCIONES POR SUCURSAL',s:S.hdr},{v:'',s:S.hdr},{v:'',s:S.hdr},{v:'',s:S.hdr}]});
+  // v.291: se agrega la columna N° O/C a la tabla que ya existía. Es el sitio
+  // natural — una fila por sucursal, legible, sin alargar la hoja.
+  resRows.push({h:20,cells:[{v:'📋 DIRECCIONES Y ÓRDENES DE COMPRA POR SUCURSAL',s:S.hdr},{v:'',s:S.hdr},{v:'',s:S.hdr},{v:'',s:S.hdr},{v:'',s:S.hdr}]});
   resRows.push({h:18,cells:[
-    {v:'SUCURSAL',s:S.hdr},{v:'DIR. FISCAL',s:S.hdr},{v:'DIR. DESPACHO',s:S.hdr},{v:'CONTACTO',s:S.hdr}
+    {v:'SUCURSAL',s:S.hdr},{v:'N° O/C',s:S.hdr},{v:'DIR. FISCAL',s:S.hdr},{v:'DIR. DESPACHO',s:S.hdr},{v:'CONTACTO',s:S.hdr}
   ]});
   MS.sucursales.forEach(function(s){
     var Rs = (typeof resolverCliente === 'function') ? resolverCliente(s) : null;
@@ -53067,8 +53063,9 @@ window.msExportarExcel = function() {
     var co = contacto ? (contacto + (tel ? ' · ' + tel : '')) : (tel || '');
     // v.78: Columna SUCURSAL muestra el nombre oficial del CRM
     var sucNomOficial = _v78NombreOficial(s);
+    var _ocFila = window.msOCSucursal(s, numP);
     resRows.push({h:16,cells:[
-      {v:sucNomOficial,s:S.norm},{v:df,s:S.norm},{v:dd,s:S.norm},{v:co,s:S.norm}
+      {v:sucNomOficial,s:S.norm},{v:_ocFila || '—',s:S.tot},{v:df,s:S.norm},{v:dd,s:S.norm},{v:co,s:S.norm}
     ]});
   });
 
@@ -53080,9 +53077,10 @@ window.msExportarExcel = function() {
     var sNomOf = _v78NombreOficial(s);
     // v.289: cada bloque de sucursal lleva su OC, para no perder la referencia
     // al desplazarse a la derecha entre muchas sucursales.
+    // v.291: la OC va SOLO en la primera columna del bloque (PIDE), no en las
+    // tres — así se identifica el grupo sin triplicar texto en la cabecera.
     var _ocH = window.msOCSucursal(s, numP);
-    var _sfx = _ocH ? ('\nOC: ' + _ocH) : '';
-    hRes.push({v:'PIDE\n'+sNomOf+_sfx,s:S.hdr},{v:'DESP\n'+sNomOf+_sfx,s:S.hdr},{v:'VENTA\n'+sNomOf+_sfx,s:S.hdr});
+    hRes.push({v:'PIDE\n'+sNomOf+(_ocH ? '\n'+_ocH : ''),s:S.hdr},{v:'DESP\n'+sNomOf,s:S.hdr},{v:'VENTA\n'+sNomOf,s:S.hdr});
   });
   resRows.push({h:28,cells:hRes});
   // v.144: acumuladores totales (uds y $ perdidos, % global)
