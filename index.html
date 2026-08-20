@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.08.20.289">
+<meta name="farmers-version" content="2026.08.20.290">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -52769,6 +52769,36 @@ window.msFilterTabla = function() { msRenderTbody(msGetFiltradas()); };
 // El bug era: contenido XML SpreadsheetML 2003 con extensión .xls que
 // Excel moderno bloquea. Fix: cambiar extensión a .xml (Excel lo abre
 // igual y reconoce el formato correctamente sin advertencias).
+/* ═══════════════════════════════════════════════════════════════════════════
+   v.289 — N° DE ORDEN DE COMPRA DEL CLIENTE EN EL EXCEL
+   ─────────────────────────────────────────────────────────────────────────
+   Es el número con el que el cliente (Grupo Abreu) identifica el pedido de su
+   lado — el que se ve en los chips del Monitor de Pedidos como "OC: OCIS…".
+   Tenerlo en el Excel permite cruzar cada sucursal con su ODC sin abrir el
+   sistema, y es lo que el almacén y el cliente usan para conciliar.
+
+   Misma fuente que el Monitor: localStorage 'ms_etiq_<pedido>' con respaldo
+   en el etiqData guardado con el pedido (sincronizado por Firebase).
+   ═══════════════════════════════════════════════════════════════════════════ */
+window.msOCSucursal = function(suc, numPedido) {
+  if (!suc) return '';
+  var np = numPedido || (typeof MS !== 'undefined' ? MS.numPedido : '');
+  if (!np) return '';
+  try {
+    var ls = JSON.parse(localStorage.getItem('ms_etiq_' + np) || '{}');
+    if (ls[suc] && String(ls[suc].oc || '').trim()) return String(ls[suc].oc).trim();
+  } catch(e) {}
+  try {
+    if (typeof getMsPedidos === 'function') {
+      var ped = (getMsPedidos() || []).find(function(p){ return p && p.numP === np; });
+      if (ped && ped.etiqData && ped.etiqData[suc] && String(ped.etiqData[suc].oc || '').trim()) {
+        return String(ped.etiqData[suc].oc).trim();
+      }
+    }
+  } catch(e) {}
+  return '';
+};
+
 window.msExportarExcel = function() {
   if(!MS.data.length) return;
   var moneda=MS.moneda||'USD';
@@ -52894,6 +52924,9 @@ window.msExportarExcel = function() {
     rows.push({h:14,cells:[{v:'Cliente:',s:S.norm},{v:clienteRazonSocial,s:S.norm},{v:'RIF:',s:S.norm},{v:cliRif,s:S.norm},{v:'Crédito:',s:S.norm},{v:cliCredito,s:S.norm},{v:'Vendedor:',s:S.norm},{v:cliVendedor,s:S.norm}]});
     // v.78: Metadata fila 3 NUEVA: SUCURSAL oficial del CRM + ubicación
     rows.push({h:14,cells:[{v:'Sucursal:',s:S.norm},{v:sucursalOficial,s:S.norm},{v:'Ubicación:',s:S.norm},{v:ubicacionStr,s:S.norm},{v:'Despacho:',s:S.norm},{v:'#'+_v147NumSuc+' de '+_v147TotalSuc,s:S.tot},{v:'',s:S.norm},{v:'',s:S.norm}]});
+    // v.289: N° de orden de compra del cliente, resaltado
+    var _ocSuc = window.msOCSucursal(suc, numP);
+    rows.push({h:16,cells:[{v:'N° ORDEN DE COMPRA:',s:S.tot},{v:_ocSuc || '(sin OC registrada)',s:S.tot},{v:'',s:S.norm},{v:'',s:S.norm},{v:'',s:S.norm},{v:'',s:S.norm},{v:'',s:S.norm},{v:'',s:S.norm}]});
     // Metadata fila 4: contacto de la sucursal
     rows.push({h:14,cells:[{v:'Contacto:',s:S.norm},{v:sucContacto,s:S.norm},{v:'Teléfono:',s:S.norm},{v:sucTel,s:S.norm},{v:'Correo:',s:S.norm},{v:sucCorreo,s:S.norm},{v:'',s:S.norm},{v:'',s:S.norm}]});
     // Metadata fila 5: DIRECCIÓN FISCAL (legal, para facturación)
@@ -53012,6 +53045,12 @@ window.msExportarExcel = function() {
   resRows.push({h:14,cells:[{v:'Teléfono:',s:S.norm},{v:hdrTel,s:S.norm},{v:'Correo:',s:S.norm},{v:hdrCorreo,s:S.norm},{v:'Ubicación:',s:S.norm},{v:hdrUbic,s:S.norm},{v:'',s:S.norm},{v:'',s:S.norm}]});
   // v.78: Sucursales usa nombres oficiales del CRM
   resRows.push({h:14,cells:[{v:'Sucursales:',s:S.norm},{v:sucursalesOficiales.join(' | '),s:S.norm}]});
+  // v.289: listado de N° de orden de compra por sucursal
+  var _ocResumen = MS.sucursales.map(function(s){
+    var _o = window.msOCSucursal(s, numP);
+    return _v78NombreOficial(s) + ': ' + (_o || 'S/OC');
+  }).join('   |   ');
+  resRows.push({h:18,cells:[{v:'N° ÓRDENES DE COMPRA:',s:S.tot},{v:_ocResumen,s:S.tot}]});
   resRows.push({h:4,cells:[{v:'',s:S.norm}]});
 
   // Tabla de direcciones por sucursal — usa resolverCliente para CADA sucursal (sincronización automática)
@@ -53039,7 +53078,11 @@ window.msExportarExcel = function() {
   // v.78: Headers de columnas-sucursal usan nombre oficial del CRM
   MS.sucursales.forEach(function(s){
     var sNomOf = _v78NombreOficial(s);
-    hRes.push({v:'PIDE\n'+sNomOf,s:S.hdr},{v:'DESP\n'+sNomOf,s:S.hdr},{v:'VENTA\n'+sNomOf,s:S.hdr});
+    // v.289: cada bloque de sucursal lleva su OC, para no perder la referencia
+    // al desplazarse a la derecha entre muchas sucursales.
+    var _ocH = window.msOCSucursal(s, numP);
+    var _sfx = _ocH ? ('\nOC: ' + _ocH) : '';
+    hRes.push({v:'PIDE\n'+sNomOf+_sfx,s:S.hdr},{v:'DESP\n'+sNomOf+_sfx,s:S.hdr},{v:'VENTA\n'+sNomOf+_sfx,s:S.hdr});
   });
   resRows.push({h:28,cells:hRes});
   // v.144: acumuladores totales (uds y $ perdidos, % global)
@@ -58713,14 +58756,9 @@ window.msExportarPedidoExcel = async function(ped) {
       styleCell(ws,c,'F0FDF4',mkFont('065F46',true,10),{horizontal:'right',vertical:'center'},mkBorder());
     });
     // Datos del cliente (fila 4) - Values
-    ['B5','E5','H5'].forEach(function(c){
+    ['B5','E5','H5','K5'].forEach(function(c){
       styleCell(ws,c,'FEFFFE',mkFont('065F46',false,10),{horizontal:'left',vertical:'center'},mkBorder());
     });
-    // v.289: la ORDEN DE COMPRA del cliente se resalta en ámbar y en negrita.
-    // Es el número con el que el cliente identifica el pedido de su lado, así
-    // que debe saltar a la vista al abrir la hoja de la sucursal.
-    styleCell(ws,'J5','FEF3C7',mkFont('92400E',true,10),{horizontal:'right',vertical:'center'},mkBorder());
-    styleCell(ws,'K5','FFFBEB',mkFont('92400E',true,11),{horizontal:'left',vertical:'center'},mkBorder());
     
     // Cabecera de productos (fila 6)
     ['A7','B7','C7','D7','E7','F7','G7','H7','I7','J7','K7'].forEach(function(c){
@@ -58775,31 +58813,15 @@ window.msExportarPedidoExcel = async function(ped) {
     var sucLine=subs.join(' | ');
 
     // Cabecera
-    /* ═══ v.289 — N° DE ORDEN DE COMPRA DEL CLIENTE EN EL RESUMEN ══════════
-       Es el número con el que el cliente (Grupo Abreu) identifica el pedido de
-       su lado. Tenerlo en el Excel permite cruzar de inmediato cada sucursal
-       con su ODC sin abrir el Monitor de Pedidos. */
-    var _ocLine = subs.map(function(s){
-      var _oc = ((etiqData[s]||{}).oc || '').trim();
-      var _nm = ((etiqData[s]||{}).nom || s);
-      return _nm + ': ' + (_oc || 'S/OC');
-    }).join('   |   ');
-
     var rows=[
       [' FARMERS C.A. — PEDIDO MULTI-SUCURSAL — '],
       ['N° Pedido:',ped.numP,'Fecha:',ped.fecha,'Moneda:',monL,'Tasa BCV:',tasaStr+' Bs/$','Tasa TF:',tasaStr+' Bs/$'],
       ['Sucursales:', sucLine],
-      ['N° ORDEN DE COMPRA:', _ocLine],
     ];
 
     // Cabecera de columnas — fija + por sucursal
     var hdrs=['REFERENCIA','DESCRIPCIÓN','CÓD.BARRA','CÓDIGO','STOCK','P.'+monC,'T.PEDIDO','T.DESP','VENTA '+monC,'ESTADO'];
-    subs.forEach(function(s){
-      // v.289: cada bloque de sucursal muestra su N° de orden de compra
-      var _oc = ((etiqData[s]||{}).oc || '').trim();
-      var _suf = _oc ? ('\nOC: ' + _oc) : '';
-      hdrs.push('PIDE\n'+s+_suf, 'DESP\n'+s+_suf, 'VENTA '+monC+'\n'+s+_suf);
-    });
+    subs.forEach(function(s){ hdrs.push('PIDE\n'+s,'DESP\n'+s,'VENTA '+monC+'\n'+s); });
     rows.push(hdrs);
 
     // Filas de datos
@@ -58860,15 +58882,6 @@ window.msExportarPedidoExcel = async function(ped) {
     if(!ws['!merges']) ws['!merges']=[];
     ws['!merges'].push({s:{r:0,c:0},e:{r:0,c:cols.length-1}});
     ws['!merges'].push({s:{r:2,c:1},e:{r:2,c:cols.length-1}});
-    // v.289: la fila 3 (índice 3) es la de N° ORDEN DE COMPRA — se fusiona
-    // y se resalta para que salte a la vista al abrir el resumen.
-    ws['!merges'].push({s:{r:3,c:1},e:{r:3,c:cols.length-1}});
-    try {
-      styleCell(ws,'A4','FEF3C7',mkFont('92400E',true,10),{horizontal:'right',vertical:'center'},mkBorder());
-      styleCell(ws,'B4','FFFBEB',mkFont('92400E',true,10),{horizontal:'left',vertical:'center',wrapText:true},mkBorder());
-      if(!ws['!rows']) ws['!rows']=[];
-      ws['!rows'][3]={hpt:20};
-    } catch(eOC){}
     return ws;
   }
 
