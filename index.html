@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.08.24.296">
+<meta name="farmers-version" content="2026.08.24.297">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -54631,6 +54631,14 @@ function msRegistrarVentaYCXC(numP, sel) {
   }
   // Descontar inventario real (solo NE, AN eliminado)
   var _invD = typeof getInventory==='function' ? getInventory() : {};
+  // v.297: foto del stock ANTES de descontar, para verificar después que bajó de verdad
+  window._snapPre297 = {};
+  (MS.data||[]).forEach(function(p){
+    if (!p || !p.ref) return;
+    var _pp = (PRODUCTS||[]).find(function(x){ return x.r===p.ref; });
+    var _v = (_invD[p.ref] !== undefined) ? parseInt(_invD[p.ref]) : (_pp ? parseInt(_pp.exNE) : NaN);
+    if (!isNaN(_v)) window._snapPre297[p.ref] = _v;
+  });
   MS.data.forEach(function(p){
     var td=0;
     sel.forEach(function(s){
@@ -54832,15 +54840,13 @@ function msRegistrarVentaYCXC(numP, sel) {
       peds[pidx].fase = MS.fase;
       peds[pidx].datosFiscales = MS.datosFiscales || {};
       peds[pidx].formalizado = true;
-      // Fix: sincronizar también el campo "estado" (visible en UI)
-      // msLiberarComprometido ya lo actualizó, pero esta re-persistencia lo volvería a
-      // leer viejo sin el fix. Reconstruimos aquí basado en sucursalesEstado:
-      var todasDesp = (peds[pidx].sucursales||[]).every(function(s){
-        var est = (peds[pidx].sucursalesEstado||{})[s] || '';
-        return String(est).toUpperCase() === 'DESPACHADO';
-      });
-      peds[pidx].estado = todasDesp ? 'DESPACHADO' : 'PARCIAL';
-      peds[pidx].fechaDespacho = peds[pidx].fechaDespacho || new Date().toLocaleDateString('es-VE',{day:'2-digit',month:'2-digit',year:'numeric'});
+      /* ═══ v.297 — AQUÍ YA NO SE MARCA 'DESPACHADO' ══════════════════════
+         Este bloque fijaba estado='DESPACHADO' y la fecha ANTES de la
+         verificación final, anulando el blindaje de v.295: aunque después
+         se detectara que faltaba una factura o el inventario no bajó, el
+         pedido ya figuraba despachado y nadie lo repetía.
+         Ahora sólo se persisten los datos fiscales y la fase. El estado lo
+         fija msMarcarDespachado() al final, con todo verificado. */
       saveMsPedidos(peds);
     }
   }
@@ -54885,20 +54891,42 @@ function msRegistrarVentaYCXC(numP, sel) {
     });
   } catch(_eG166){ console.warn('[v.294] guard despacho:', _eG166); }
 
-  // Verificación del DESCARGO de inventario (no existía en v.166)
-  var _invOK = true, _detInv = '';
+  /* ═══ v.297 — VERIFICACIÓN REAL, LEYENDO LO QUE QUEDÓ GUARDADO ═════════════
+     Antes sólo se recalculaba cuánto DEBÍA descontarse. Ahora se relee el
+     inventario ya persistido y se comprueba, referencia por referencia, que
+     el stock bajó de verdad. Si no bajó, el pedido NO se marca despachado. */
+  var _invOK = true, _detInv = '', _refsMal = [];
   try {
-    var _udsDesc = 0;
+    var _udsDesc = 0, _refsCheck = 0;
+    var _invReal = (typeof getInventory==='function') ? getInventory() : {};
     (MS.data||[]).forEach(function(p){
+      var td = 0;
       (sel||[]).forEach(function(s){
         var pide=(p.pedidos||{})[s]||0, desp=(p.dist||{})[s]||0;
-        if (pide>0) _udsDesc += Math.min(desp,pide);
+        if (pide>0) td += Math.min(desp,pide);
       });
+      if (!td) return;
+      _udsDesc += td; _refsCheck++;
+      // El snapshot de antes del descuento se guardó en _snapPre297
+      var antes = (window._snapPre297||{})[p.ref];
+      if (antes !== undefined) {
+        var ahora = parseInt(_invReal[p.ref]);
+        if (isNaN(ahora)) {
+          var _pp = (PRODUCTS||[]).find(function(x){return x.r===p.ref;});
+          ahora = _pp ? (parseInt(_pp.exNE)||0) : NaN;
+        }
+        if (!isNaN(ahora) && ahora >= antes) _refsMal.push(p.ref);
+      }
     });
-    _invOK = _udsDesc > 0;
-    _detInv = _udsDesc + ' uds en ' + (MS.data||[]).length + ' refs';
-    console.log('[v.294] Inventario descontado: ' + _detInv);
-  } catch(eInv){ console.warn('[v.294] verificación inventario:', eInv); }
+    _invOK = (_udsDesc > 0) && (_refsMal.length === 0);
+    _detInv = _udsDesc + ' uds en ' + _refsCheck + ' refs';
+    if (_refsMal.length) {
+      console.error('[v.297] Refs que NO bajaron: ' + _refsMal.slice(0,15).join(', '));
+      _detInv += ' · ⚠ ' + _refsMal.length + ' sin bajar';
+    } else {
+      console.log('[v.297] Inventario verificado — descontado: ' + _detInv);
+    }
+  } catch(eInv){ console.warn('[v.297] verificación inventario:', eInv); }
 
   /* ═══ v.295 — SELLADO FINAL ═══════════════════════════════════════════════
      El pedido se marca DESPACHADO SÓLO ahora, con inventario descontado y
@@ -54915,10 +54943,11 @@ function msRegistrarVentaYCXC(numP, sel) {
           '\n\nEL PEDIDO NO SE MARCÓ COMO DESPACHADO.\n' +
           'Revisa la conexión y vuelve a intentarlo — no se perdió nada.');
   } else {
-    console.error('[v.295] ⚠ Facturas OK pero el inventario NO se descontó.');
-    alert('⚠ DESPACHO INCOMPLETO\n\nLas facturas se registraron, pero el inventario NO se descontó.\n\n' +
-          'EL PEDIDO NO SE MARCÓ COMO DESPACHADO.\n' +
-          'Avísale a soporte antes de volver a despachar — repetirlo podría duplicar las facturas.');
+    console.error('[v.297] ⚠ Facturas OK pero el inventario NO bajó.');
+    alert('⚠ DESPACHO INCOMPLETO\n\nLas facturas se registraron, pero el inventario NO bajó' +
+          (_refsMal.length ? ' en ' + _refsMal.length + ' referencia(s):\n' + _refsMal.slice(0,10).join(', ') : '') +
+          '.\n\nEL PEDIDO NO SE MARCÓ COMO DESPACHADO.\n' +
+          'Avisa antes de volver a despachar — repetirlo duplicaría las facturas.');
   }
 }
 
