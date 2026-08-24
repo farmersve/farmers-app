@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.08.20.292">
+<meta name="farmers-version" content="2026.08.24.296">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -54543,19 +54543,91 @@ function msRegistrarVentaYCXC(numP, sel) {
   // de alguna sucursal de 'sel', se recarga limpio desde el pedido guardado
   // (que sí está completo), eliminando la causa de raíz.
   var _numDesp166 = numP || MS.numPedido;
-  var _faltaData166 = (sel||[]).some(function(s){
-    return !(MS.data||[]).some(function(it){ return (it.pedidos && it.pedidos[s]) > 0; });
-  });
-  if (_faltaData166 && typeof msAsegurarDataPedido === 'function') {
-    MS.data = [];                       // limpiar para forzar recarga limpia
-    msAsegurarDataPedido(_numDesp166);
-    console.warn('[v.166] MS.data estaba incompleto para el despacho — recargado desde el pedido.');
+
+  /* ═══════════════════════════════════════════════════════════════════════════
+     v.294 — GUARDIA DURA ANTES DE DESPACHAR
+     ─────────────────────────────────────────────────────────────────────────
+     El guardia de v.166 tenía tres huecos que dejaban pasar despachos rotos:
+
+     1. MS.data podía ser de OTRO pedido. La comprobación sólo miraba si había
+        alguna sucursal con datos, no si esos datos eran del pedido correcto.
+        Al despachar desde el Monitor sin abrir el pedido, MS.data podía traer
+        el anterior — y entonces se descontaba el inventario EQUIVOCADO.
+
+     2. No verificaba el resultado de la recarga. Si msAsegurarDataPedido()
+        devolvía false, el código seguía igual y descontaba sobre MS.data vacío:
+        la venta y la CXC se creaban, el inventario NO bajaba.
+
+     3. Ninguna verificación de que las unidades a descontar cuadraran con lo
+        que dice el pedido guardado.
+
+     Ahora: se fuerza la recarga SIEMPRE que MS.numPedido no sea el pedido que
+     se está despachando, se aborta si la carga falla, y se compara el total de
+     unidades contra el pedido guardado antes de tocar nada.
+     ═══════════════════════════════════════════════════════════════════════════ */
+  var _pedGuardado = null;
+  try {
+    _pedGuardado = (typeof getMsPedidos === 'function' ? getMsPedidos() : [])
+                     .find(function(p){ return p && p.numP === _numDesp166; }) || null;
+  } catch(e) {}
+
+  // (1) ¿MS.data corresponde REALMENTE a este pedido?
+  var _dataEsDeOtroPedido = (MS.numPedido !== _numDesp166);
+  var _faltaData166 = _dataEsDeOtroPedido || !(MS.data && MS.data.length) ||
+    (sel||[]).some(function(s){
+      return !(MS.data||[]).some(function(it){ return (it.pedidos && it.pedidos[s]) > 0; });
+    });
+
+  if (_faltaData166) {
+    if (typeof msAsegurarDataPedido !== 'function') {
+      alert('⛔ DESPACHO ABORTADO\n\nNo se pudo verificar los datos del pedido ' + _numDesp166 +
+            '.\n\nAbre el pedido con DESPACHAR y vuelve a intentarlo.');
+      return;
+    }
+    MS.data = [];
+    MS.numPedido = '';           // fuerza recarga real, evita el early-return
+    var _okCarga = msAsegurarDataPedido(_numDesp166);
+    // (2) Si la recarga falló, NO seguir: descontaría sobre datos vacíos.
+    if (!_okCarga || !MS.data || !MS.data.length) {
+      alert('⛔ DESPACHO ABORTADO\n\nNo se pudieron cargar los productos del pedido ' +
+            _numDesp166 + '.\n\nNo se modificó nada. Abre el pedido con DESPACHAR y reintenta.');
+      console.error('[v.294] Carga fallida para ' + _numDesp166 + ' — despacho abortado.');
+      return;
+    }
+    console.warn('[v.294] MS.data recargado desde el pedido guardado (' + MS.data.length + ' refs).');
+  }
+
+  // (3) Contraste contra el pedido guardado ANTES de tocar inventario
+  if (_pedGuardado && Array.isArray(_pedGuardado.items)) {
+    var _espUds = 0;
+    _pedGuardado.items.forEach(function(i){
+      (sel||[]).forEach(function(s){
+        var sd = (i.sucursales||{})[s];
+        if (sd) _espUds += Math.min(parseInt(sd.desp)||0, parseInt(sd.pide)||0) || (parseInt(sd.pide)||0);
+      });
+    });
+    var _calcUds = 0;
+    (MS.data||[]).forEach(function(p){
+      (sel||[]).forEach(function(s){
+        var pide = (p.pedidos||{})[s]||0, desp = (p.dist||{})[s]||0;
+        if (pide > 0) _calcUds += Math.min(desp, pide);
+      });
+    });
+    if (_espUds > 0 && _calcUds === 0) {
+      alert('⛔ DESPACHO ABORTADO\n\nEl pedido ' + _numDesp166 + ' tiene ' + _espUds +
+            ' unidades por despachar, pero el sistema calculó 0.\n\nNo se modificó nada. ' +
+            'Abre el pedido con DESPACHAR y reintenta.');
+      console.error('[v.294] Descuadre: esperadas ' + _espUds + ' uds, calculadas ' + _calcUds);
+      return;
+    }
+    console.log('[v.294] Verificación previa OK — ' + _calcUds + ' uds a descontar en ' + (MS.data||[]).length + ' refs.');
   }
 
   // ── FASE 2: Liberar comprometido Y descontar inventario real ──
   // Ahora sí se hace efectivo: real -= comprometido, comp -= comprometido
   if(typeof msLiberarComprometido==='function') {
-    msLiberarComprometido(numP || MS.numPedido, sel, MS.data);
+    // v.295: se libera el comprometido pero NO se marca DESPACHADO todavía.
+    msLiberarComprometido(numP || MS.numPedido, sel, MS.data, true);
   }
   // Descontar inventario real (solo NE, AN eliminado)
   var _invD = typeof getInventory==='function' ? getInventory() : {};
@@ -54787,20 +54859,66 @@ function msRegistrarVentaYCXC(numP, sel) {
   // Verificación autoritaria post-despacho. Si alguna sucursal de 'sel' no
   // tiene factura, se avisa FUERTE en pantalla (en vez de fallar en silencio
   // como ocurrió el 02/06/2026 con MS-260526-1752).
+  /* v.294 — La verificación de v.166 sólo reconocía facturas con el número
+     'MS-pedido-SUCURSAL'. Cuando el despacho emite con el correlativo fiscal
+     (0000004421), el número guardado es otro y la comprobación fallaba: te
+     alertaba de sucursales SIN factura aunque estuvieran perfectamente
+     registradas. Eso fue la falsa alarma del 24/08 con las 24 sucursales.
+     Ahora se reconoce la factura por cualquiera de sus vías. */
   var _faltanFac166 = [];
   try {
     var _facs166 = (typeof cxcFacs==='function') ? cxcFacs() : [];
+    var _npBase  = (numP || MS.numPedido);
+    var _dF      = MS.datosFiscales || {};
     (sel||[]).forEach(function(s){
-      var _np166 = (numP||MS.numPedido) + '-' + s.replace(/[^A-Z0-9]/gi,'').toUpperCase();
-      if (!_facs166.some(function(f){ return f.numpedido === _np166; })) _faltanFac166.push(s);
+      var _npMS   = _npBase + '-' + s.replace(/[^A-Z0-9]/gi,'').toUpperCase();
+      var _fiscal = String((_dF[s]||{}).nFactura || '').trim();
+      var _hay = _facs166.some(function(f){
+        var fn = String(f.numpedido||'').trim();
+        if (fn === _npMS) return true;                       // formato MS-…
+        if (_fiscal && fn === _fiscal) return true;          // correlativo fiscal
+        var txt = fn + ' ' + String(f.notas||'');
+        if (txt.indexOf(_npBase) >= 0) return true;          // pedido citado en notas
+        return false;
+      });
+      if (!_hay) _faltanFac166.push(s);
     });
-  } catch(_eG166){ console.warn('[v.166] guard despacho:', _eG166); }
+  } catch(_eG166){ console.warn('[v.294] guard despacho:', _eG166); }
 
-  if (_faltanFac166.length) {
-    console.error('[v.166] ⚠ Sucursales SIN factura CXC tras despachar: ' + _faltanFac166.join(', ') + '. Revisar y volver a despacharlas.');
-    showToast('⚠ ATENCIÓN: ' + _faltanFac166.length + ' sucursal(es) NO emitieron factura (' + _faltanFac166.join(', ') + '). Quedaron pendientes — revísalas y vuelve a despacharlas.', 'error');
+  // Verificación del DESCARGO de inventario (no existía en v.166)
+  var _invOK = true, _detInv = '';
+  try {
+    var _udsDesc = 0;
+    (MS.data||[]).forEach(function(p){
+      (sel||[]).forEach(function(s){
+        var pide=(p.pedidos||{})[s]||0, desp=(p.dist||{})[s]||0;
+        if (pide>0) _udsDesc += Math.min(desp,pide);
+      });
+    });
+    _invOK = _udsDesc > 0;
+    _detInv = _udsDesc + ' uds en ' + (MS.data||[]).length + ' refs';
+    console.log('[v.294] Inventario descontado: ' + _detInv);
+  } catch(eInv){ console.warn('[v.294] verificación inventario:', eInv); }
+
+  /* ═══ v.295 — SELLADO FINAL ═══════════════════════════════════════════════
+     El pedido se marca DESPACHADO SÓLO ahora, con inventario descontado y
+     facturas verificadas. Si algo falló, queda como estaba y se puede repetir
+     el despacho sin haber perdido nada. */
+  var _npFinal = numP || MS.numPedido;
+  if (!_faltanFac166.length && _invOK) {
+    if (typeof msMarcarDespachado === 'function') msMarcarDespachado(_npFinal, sel);
+    showToast('✅ Despacho confirmado · '+sel.length+' factura'+(sel.length>1?'s':'')+' · inventario descontado ('+_detInv+')','success');
+  } else if (_faltanFac166.length) {
+    console.error('[v.295] ⚠ Sucursales SIN factura CXC: ' + _faltanFac166.join(', '));
+    alert('⚠ DESPACHO INCOMPLETO\n\n' + _faltanFac166.length + ' sucursal(es) no emitieron factura:\n' +
+          _faltanFac166.join(', ') +
+          '\n\nEL PEDIDO NO SE MARCÓ COMO DESPACHADO.\n' +
+          'Revisa la conexión y vuelve a intentarlo — no se perdió nada.');
   } else {
-    showToast('✅ Despacho confirmado · '+sel.length+' factura'+(sel.length>1?'s':'')+' registrada'+(sel.length>1?'s':''),'success');
+    console.error('[v.295] ⚠ Facturas OK pero el inventario NO se descontó.');
+    alert('⚠ DESPACHO INCOMPLETO\n\nLas facturas se registraron, pero el inventario NO se descontó.\n\n' +
+          'EL PEDIDO NO SE MARCÓ COMO DESPACHADO.\n' +
+          'Avísale a soporte antes de volver a despachar — repetirlo podría duplicar las facturas.');
   }
 }
 
@@ -54826,16 +54944,39 @@ function msRegistrarVentaYCXC(numP, sel) {
 
 // ── Comprometer inventario al RESERVAR ───────────────────────
 window.msComprometerInventario = function(numP, sel, data, clientesPorSucursal, moneda, fecha) {
+  /* ═══ v.296 — VALIDACIÓN AL MONTAR EL PEDIDO ══════════════════════════════
+     Antes se creaba el pedido con lo que viniera, incluso si `data` llegaba
+     vacía o sin sucursales: quedaba un pedido RESERVADO sin líneas, que luego
+     no se podía despachar ni cancelar bien. Ahora se aborta antes de crear
+     nada si no hay datos válidos. */
+  if (!numP) { console.error('[v.296] msComprometerInventario sin número de pedido'); return false; }
+  if (!Array.isArray(sel) || !sel.length) {
+    alert('⛔ No se puede reservar: no hay sucursales seleccionadas.');
+    return false;
+  }
+  if (!Array.isArray(data) || !data.length) {
+    alert('⛔ No se puede reservar el pedido ' + numP + ': no hay productos cargados.\n\nNo se modificó nada.');
+    console.error('[v.296] data vacía al comprometer ' + numP);
+    return false;
+  }
+
   var comp = getComprometido();
   var pedidos = getMsPedidos();
 
   // Calcular totales comprometidos por referencia
   var refs = {};
   data.forEach(function(p){
+    if (!p || !p.ref) return;
     var td = 0;
-    sel.forEach(function(s){ td += Math.min(p.dist[s]||0, p.pedidos[s]||0); });
+    sel.forEach(function(s){ td += Math.min((p.dist||{})[s]||0, (p.pedidos||{})[s]||0); });
     if(td > 0) refs[p.ref] = td;
   });
+
+  if (!Object.keys(refs).length) {
+    alert('⛔ No se puede reservar el pedido ' + numP + ': ninguna referencia tiene cantidad a despachar.\n\nNo se modificó nada.');
+    console.error('[v.296] ninguna ref con cantidad > 0 al comprometer ' + numP);
+    return false;
+  }
 
   // Actualizar comprometido
   Object.keys(refs).forEach(function(ref){
@@ -54858,6 +54999,13 @@ window.msComprometerInventario = function(numP, sel, data, clientesPorSucursal, 
     });
     return {ref:p.ref, desc:p.desc, sucursales:sucursalesDetalle};
   }).filter(function(i){ return Object.keys(i.sucursales).length > 0; });
+
+  // v.296: no registrar un pedido sin líneas — quedaría inoperable en el Monitor
+  if (!itemsPedido.length) {
+    alert('⛔ El pedido ' + numP + ' quedaría sin líneas. No se registró.\n\nRevisa las cantidades e inténtalo de nuevo.');
+    console.error('[v.296] itemsPedido vacío para ' + numP);
+    return false;
+  }
 
   pedidos.unshift({
     numP: numP,
@@ -54909,11 +55057,25 @@ window.msComprometerInventario = function(numP, sel, data, clientesPorSucursal, 
 
 // ── Liberar comprometido al DESPACHAR ────────────────────────
 // (inventario real se descuenta en msConfirmarSeleccionadas — igual que antes)
-window.msLiberarComprometido = function(numP, sel, data) {
+/* ═══════════════════════════════════════════════════════════════════════════
+   v.295 — EL ESTADO 'DESPACHADO' SE MARCA AL FINAL, NO AL PRINCIPIO
+   ─────────────────────────────────────────────────────────────────────────
+   FALLO DE RAÍZ que causó los pedidos "despachados sin descargo":
+   esta función liberaba el comprometido Y marcaba el pedido como DESPACHADO
+   en el PASO 1 del proceso. Pero el descuento de inventario ocurre después,
+   y la venta y la CXC unas 180 líneas más adelante. Si la red se caía o algo
+   fallaba en el medio, el pedido ya estaba DESPACHADO — sin inventario
+   descontado y sin factura. Y como figuraba despachado, nadie lo repetía.
+
+   Ahora acepta `noMarcarEstado`: el despacho libera aquí, pero marca el
+   estado sólo cuando inventario + venta + CXC ya están confirmados.
+   ═══════════════════════════════════════════════════════════════════════════ */
+window.msLiberarComprometido = function(numP, sel, data, noMarcarEstado) {
   var comp = getComprometido();
-  data.forEach(function(p){
+  (data||[]).forEach(function(p){
+    if (!p || !p.ref) return;
     var td = 0;
-    sel.forEach(function(s){ td += Math.min(p.dist[s]||0, p.pedidos[s]||0); });
+    sel.forEach(function(s){ td += Math.min((p.dist||{})[s]||0, (p.pedidos||{})[s]||0); });
     if(!td || !comp[p.ref]) return;
     comp[p.ref].qty = Math.max(0, (comp[p.ref].qty||0) - td);
     comp[p.ref].pedidos = (comp[p.ref].pedidos||[]).map(function(entry){
@@ -54923,6 +55085,10 @@ window.msLiberarComprometido = function(numP, sel, data) {
     if(comp[p.ref].qty <= 0) delete comp[p.ref];
   });
   saveComprometido(comp);
+
+  // v.295: si el despacho pidió no marcar, se devuelve aquí. El estado lo
+  // fija msMarcarDespachado() cuando todo lo demás ya está confirmado.
+  if (noMarcarEstado) return;
 
   // Actualizar estado del pedido → DESPACHADO
   var pedidos = getMsPedidos();
@@ -54938,6 +55104,99 @@ window.msLiberarComprometido = function(numP, sel, data) {
     }
     saveMsPedidos(pedidos);
   }
+};
+
+/* v.295 — Marca el pedido como DESPACHADO. Se llama SÓLO cuando el
+   inventario ya bajó y las facturas ya están registradas. */
+window.msMarcarDespachado = function(numP, sel) {
+  try {
+    var pedidos = getMsPedidos();
+    var idx = pedidos.findIndex(function(p){ return p.numP === numP; });
+    if (idx < 0) return false;
+    pedidos[idx].sucursalesEstado = pedidos[idx].sucursalesEstado || {};
+    (sel||[]).forEach(function(s){ pedidos[idx].sucursalesEstado[s] = 'DESPACHADO'; });
+    var todas = (pedidos[idx].sucursales||[]).every(function(s){
+      return pedidos[idx].sucursalesEstado[s] === 'DESPACHADO';
+    });
+    pedidos[idx].estado = todas ? 'DESPACHADO' : 'PARCIAL';
+    if (!pedidos[idx].fechaDespacho) {
+      pedidos[idx].fechaDespacho = new Date().toLocaleDateString('es-VE',{day:'2-digit',month:'2-digit',year:'numeric'});
+    }
+    saveMsPedidos(pedidos);
+    console.log('[v.295] ' + numP + ' marcado ' + pedidos[idx].estado + ' (tras confirmar inventario y facturas).');
+    return true;
+  } catch(e) { console.error('[v.295] msMarcarDespachado:', e); return false; }
+};
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   v.296 — AUDITORÍA DE LA CADENA DE DESPACHO
+   Corre farmersAuditarDespachos() en la consola cuando quieras.
+   Sólo lectura: revisa que cada pedido DESPACHADO tenga venta, CXC, el
+   comprometido liberado, y que el inventario no haya quedado en negativo.
+   ═══════════════════════════════════════════════════════════════════════════ */
+window.farmersAuditarDespachos = function(){
+  var peds  = (typeof getMsPedidos==='function') ? getMsPedidos() : [];
+  var sales = (typeof getSales==='function') ? getSales() : [];
+  var facs  = (typeof cxcFacs==='function') ? cxcFacs() : [];
+  var comp  = (typeof getComprometido==='function') ? getComprometido() : {};
+  var rojo=[], amar=[], ok=0;
+
+  peds.forEach(function(p){
+    var est = String(p.estado||'').toUpperCase();
+    if (est!=='DESPACHADO' && est!=='PARCIAL') return;
+
+    var uds=0;
+    (p.items||[]).forEach(function(i){
+      uds += Object.values(i.sucursales||{}).reduce(function(a,s){ return a+(+s.desp||0); },0);
+    });
+
+    var nV = sales.filter(function(s){
+      return s.msNumPedido===p.numP || String(s.numpedido||'').indexOf(p.numP)>=0;
+    }).length;
+    var nF = facs.filter(function(f){
+      return String(f.numpedido||'').indexOf(p.numP)>=0 || String(f.notas||'').indexOf(p.numP)>=0;
+    }).length;
+
+    var colg=0;
+    Object.keys(comp).forEach(function(r){
+      ((comp[r]||{}).pedidos||[]).forEach(function(e){ if(e && e.numP===p.numP) colg += (parseInt(e.qty)||0); });
+    });
+
+    var nSuc=(p.sucursales||[]).length;
+    var prob=[];
+    if (nV===0) prob.push('SIN VENTA');
+    if (nF===0) prob.push('SIN CXC');
+    if (colg>0) prob.push('comprometido colgado: '+colg+' uds');
+    if (nF>0 && nF<nSuc && est==='DESPACHADO') prob.push('sólo '+nF+' de '+nSuc+' facturas');
+
+    var linea='  '+p.numP+' ('+(p.fechaDespacho||'?')+') · '+nSuc+' sucs · '+uds+' uds';
+    if (!prob.length) { ok++; return; }
+    if (nV===0 || nF===0) rojo.push(linea+'\n      → '+prob.join(' · '));
+    else amar.push(linea+'\n      → '+prob.join(' · '));
+  });
+
+  var neg=[], inv={};
+  try { inv=JSON.parse(localStorage.getItem('farmers_inv')||'{}'); } catch(e){}
+  Object.keys(inv).forEach(function(k){ if(parseInt(inv[k])<0) neg.push(k+': '+inv[k]); });
+
+  var desc=[];
+  (PRODUCTS||[]).forEach(function(p){
+    if (inv[p.r]===undefined) return;
+    if ((parseInt(inv[p.r])||0) !== (parseInt(p.exNE)||0)) desc.push(p.r);
+  });
+
+  var msg = '═══ AUDITORÍA DE DESPACHOS ═══\n' +
+    'Pedidos despachados sanos: ' + ok + '\n\n' +
+    '🔴 CRÍTICOS (' + rojo.length + ')' + (rojo.length ? ':\n'+rojo.join('\n') : ' — ninguno') + '\n\n' +
+    '🟡 REVISAR (' + amar.length + ')' + (amar.length ? ':\n'+amar.join('\n') : ' — ninguno') + '\n\n' +
+    '═══ INVENTARIO ═══\n' +
+    'En negativo: ' + neg.length + (neg.length ? '  → '+neg.slice(0,10).join(', ') : '') + '\n' +
+    'Descuadre inv vs exNE: ' + desc.length + (desc.length ? '  → '+desc.slice(0,10).join(', ') : '') + '\n' +
+    'Comprometido total: ' + Object.keys(comp).reduce(function(a,k){ return a+(parseInt((comp[k]||{}).qty)||0); },0) + ' uds';
+
+  console.log(msg);
+  return msg;
 };
 
 // ─────────────────────────────────────────────────────────────────
@@ -76092,12 +76351,65 @@ function ncMostrarModal(saleId, origen, cxcFacId) {
   if (origen === 'venta' && saleId) {
     sale = getSales().find(function(s){ return String(s.id) === String(saleId); });
   } else if (fac) {
-    // Buscar venta por numpedido o saleId
-    sale = getSales().find(function(s){
-      return (fac.numpedido && s.numpedido && s.numpedido === fac.numpedido) ||
-             (fac.saleId && String(s.id) === String(fac.saleId));
-    });
-    if (sale) saleId = sale.id;
+    /* ═══════════════════════════════════════════════════════════════════════
+       v.293 — VÍNCULO FACTURA ↔ VENTA POR VARIAS VÍAS
+       ─────────────────────────────────────────────────────────────────────
+       Antes sólo se comparaba `s.numpedido === fac.numpedido`. Eso funciona
+       cuando la factura se guarda con el número de pedido (formato MS-…), pero
+       NO cuando lleva el correlativo fiscal (0000004421): ahí `fac.numpedido`
+       vale '0000004421' y la venta tiene 'MS-260812-2341-MXMCLA', así que
+       nunca coincidían. Resultado: la Nota de Crédito abría SIN productos y
+       sólo permitía un monto suelto — 61 de 118 facturas estaban así.
+
+       Ahora se intenta, en orden: saleId directo → numpedido exacto →
+       número de factura fiscal guardado en la venta → número de pedido
+       rescatado de las notas de la factura → cliente + monto + fecha.
+       ═══════════════════════════════════════════════════════════════════════ */
+    var _sales = getSales();
+    var _facNum = String(fac.numpedido || '').trim();
+
+    // 1) por saleId explícito
+    if (fac.saleId) {
+      sale = _sales.find(function(s){ return String(s.id) === String(fac.saleId); });
+    }
+    // 2) por numpedido idéntico (facturas con formato MS-…)
+    if (!sale && _facNum) {
+      sale = _sales.find(function(s){ return s.numpedido && s.numpedido === _facNum; });
+    }
+    // 3) por el N° de factura fiscal que la venta guardó al despachar
+    if (!sale && _facNum) {
+      sale = _sales.find(function(s){
+        return String(s.nFactura || '').trim() === _facNum ||
+               String(s.numFactura || '').trim() === _facNum ||
+               String(s.facturaNum || '').trim() === _facNum;
+      });
+    }
+    // 4) por el N° de pedido MS-… que quedó escrito en las notas de la factura
+    if (!sale) {
+      var _txt = String(fac.notas || '') + ' ' + String(fac.numpedido || '') + ' ' + String(fac.observaciones || '');
+      var _m = _txt.match(/MS-\d{6}-\d{3,}[A-Z0-9-]*/i);
+      if (_m) {
+        var _ms = _m[0].toUpperCase();
+        sale = _sales.find(function(s){ return String(s.numpedido||'').toUpperCase() === _ms; }) ||
+               _sales.find(function(s){ return String(s.msNumPedido||'').toUpperCase() === _ms.split('-').slice(0,3).join('-'); });
+      }
+    }
+    // 5) último recurso: mismo cliente y mismo monto (tolerancia de 1 centavo)
+    if (!sale && fac.clienteNombre && fac.monto) {
+      var _cli = String(fac.clienteNombre).trim().toUpperCase();
+      sale = _sales.find(function(s){
+        return String(s.cliente||'').trim().toUpperCase() === _cli &&
+               Math.abs((+s.total||0) - (+fac.monto||0)) < 0.01;
+      });
+      if (sale) console.log('[NC v.293] Venta vinculada por cliente+monto: ' + sale.numpedido);
+    }
+
+    if (sale) {
+      saleId = sale.id;
+      console.log('[NC v.293] Factura ' + _facNum + ' → venta ' + sale.numpedido + ' (' + (sale.items||[]).length + ' ítems)');
+    } else {
+      console.warn('[NC v.293] Factura ' + _facNum + ' sin venta vinculada — la NC abrirá sin productos.');
+    }
   }
 
   if (!sale && !fac) { showToast('No se encontró la venta o factura.', 'error'); return; }
