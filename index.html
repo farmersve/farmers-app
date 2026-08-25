@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.08.24.298">
+<meta name="farmers-version" content="2026.08.25.299">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -62353,6 +62353,78 @@ function cxcGet()  {
   try{var r=localStorage.getItem('farmers_cxc');if(r)return JSON.parse(r);}catch(e){}
   return{facturas:[]};
 }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   v.299 — DIAGNÓSTICO DE VÍNCULO FACTURA ↔ VENTA
+   farmersVerificarFacturas()  → informe de cuáles tienen productos
+   farmersRepararVinculos()    → corrige el saleId de todas las que se puedan
+   ═══════════════════════════════════════════════════════════════════════════ */
+window._ncBuscarVenta = function(fac, sales){
+  var num = String(fac.numpedido || '').trim();
+  var s = null;
+  if (fac.saleId) s = sales.find(function(x){ return String(x.id) === String(fac.saleId); });
+  if (!s && num) s = sales.find(function(x){ return x.numpedido && x.numpedido === num; });
+  if (!s && num) {
+    var C = ['nroFacturaExternal','nFactura','numFactura','facturaNum','nroFactura','numeroFactura'];
+    s = sales.find(function(x){ return C.some(function(c){ return String(x[c]||'').trim() === num; }); });
+  }
+  if (!s && num && /^\d{6,}$/.test(num)) {
+    s = sales.find(function(x){
+      var t = String(x.notas||'')+' '+String(x.observaciones||'')+' '+String(x.numpedido||'');
+      return t.indexOf(num) >= 0;
+    });
+  }
+  if (!s) {
+    var t = String(fac.notas||'')+' '+num+' '+String(fac.observaciones||'');
+    var m = t.match(/MS-\d{6}-\d{3,}[A-Z0-9-]*/i);
+    if (m) {
+      var ms = m[0].toUpperCase();
+      s = sales.find(function(x){ return String(x.numpedido||'').toUpperCase() === ms; });
+    }
+  }
+  if (!s && fac.clienteNombre && fac.monto) {
+    var cli = String(fac.clienteNombre).trim().toUpperCase(), mto = +fac.monto||0;
+    var tol = Math.max(1, mto*0.005);
+    var c = sales.filter(function(x){
+      var sc = String(x.cliente||'').trim().toUpperCase();
+      if (sc !== cli && sc.indexOf(cli.slice(0,18)) < 0 && cli.indexOf(sc.slice(0,18)) < 0) return false;
+      return Math.abs((+x.total||0) - mto) <= tol;
+    });
+    if (c.length) s = c[0];
+  }
+  return s;
+};
+
+window.farmersVerificarFacturas = function(){
+  var facs = cxcFacs() || [], sales = getSales() || [];
+  var ok = 0, sin = [];
+  facs.forEach(function(f){
+    var s = window._ncBuscarVenta(f, sales);
+    if (s && (s.items||[]).length) ok++;
+    else sin.push('  ' + (f.numpedido||'?') + ' · ' + String(f.clienteNombre||'').slice(0,32) +
+                  ' · $' + (+f.monto||0).toFixed(2) + (s ? ' (venta sin ítems)' : ' (sin venta)'));
+  });
+  var msg = '═══ VÍNCULO FACTURA ↔ PRODUCTOS ═══\n' +
+    'Total facturas: ' + facs.length + '\n' +
+    '✅ Con productos: ' + ok + '\n' +
+    '❌ Sin productos: ' + sin.length +
+    (sin.length ? '\n\n' + sin.slice(0,30).join('\n') + (sin.length>30 ? '\n  … y ' + (sin.length-30) + ' más' : '') : '');
+  console.log(msg); return msg;
+};
+
+window.farmersRepararVinculos = function(){
+  var facs = cxcFacs() || [], sales = getSales() || [];
+  var arr = 0;
+  facs.forEach(function(f){
+    var s = window._ncBuscarVenta(f, sales);
+    if (s && String(f.saleId||'') !== String(s.id)) { f.saleId = s.id; arr++; }
+  });
+  if (arr) { cxcSaveFacs(facs); }
+  var msg = arr ? ('✅ ' + arr + ' factura(s) revinculadas a su venta.\nCorre farmersVerificarFacturas() para confirmar.')
+                : 'No hubo vínculos que corregir.';
+  console.log(msg); return msg;
+};
+
 function cxcSave(d){
   // Guardar en localStorage
   localStorage.setItem('farmers_cxc',JSON.stringify(d));
@@ -76452,13 +76524,29 @@ function ncMostrarModal(saleId, origen, cxcFacId) {
     if (!sale && _facNum) {
       sale = _sales.find(function(s){ return s.numpedido && s.numpedido === _facNum; });
     }
-    // 3) por el N° de factura fiscal que la venta guardó al despachar
+    /* 3) v.299 — POR EL Nº DE FACTURA FISCAL EN CUALQUIERA DE SUS NOMBRES
+       ───────────────────────────────────────────────────────────────────────
+       Aquí estaba el hueco real. Las ventas importadas desde HCL guardan el
+       número fiscal en `nroFacturaExternal`, campo que v.293 no miraba. Y al
+       reimportar, la venta CAMBIA de id: la factura conserva un `saleId`
+       (1787005686097) que ya no existe, mientras la venta real es
+       'hcl_sale_hcl_1787086426544'. El único puente que sobrevive a la
+       reimportación es el número fiscal — por eso ahora se busca por él en
+       las seis variantes de nombre que usa el sistema. */
     if (!sale && _facNum) {
+      var _campos = ['nroFacturaExternal','nFactura','numFactura','facturaNum','nroFactura','numeroFactura'];
       sale = _sales.find(function(s){
-        return String(s.nFactura || '').trim() === _facNum ||
-               String(s.numFactura || '').trim() === _facNum ||
-               String(s.facturaNum || '').trim() === _facNum;
+        return _campos.some(function(c){ return String(s[c] || '').trim() === _facNum; });
       });
+      if (sale) console.log('[NC v.299] Vinculada por número fiscal ' + _facNum);
+    }
+    // 3b) el número fiscal escrito en las notas / observaciones de la venta
+    if (!sale && _facNum && /^\d{6,}$/.test(_facNum)) {
+      sale = _sales.find(function(s){
+        var t = String(s.notas||'') + ' ' + String(s.observaciones||'') + ' ' + String(s.numpedido||'');
+        return t.indexOf(_facNum) >= 0;
+      });
+      if (sale) console.log('[NC v.299] Vinculada por número fiscal en notas');
     }
     // 4) por el N° de pedido MS-… que quedó escrito en las notas de la factura
     if (!sale) {
@@ -76470,19 +76558,56 @@ function ncMostrarModal(saleId, origen, cxcFacId) {
                _sales.find(function(s){ return String(s.msNumPedido||'').toUpperCase() === _ms.split('-').slice(0,3).join('-'); });
       }
     }
-    // 5) último recurso: mismo cliente y mismo monto (tolerancia de 1 centavo)
+    /* 5) v.299 — cliente + monto, con tolerancia REALISTA.
+       Antes la tolerancia era de 1 centavo. Pero la factura guarda
+       $1568.979722 y la venta $1568.62 — difieren 36 centavos por el
+       redondeo BCV↔USD, así que nunca coincidían. Ahora se admite hasta
+       $1 de diferencia (o 0,5%, lo que sea mayor) y, si hay varias
+       candidatas, gana la de fecha más cercana a la factura. */
     if (!sale && fac.clienteNombre && fac.monto) {
       var _cli = String(fac.clienteNombre).trim().toUpperCase();
-      sale = _sales.find(function(s){
-        return String(s.cliente||'').trim().toUpperCase() === _cli &&
-               Math.abs((+s.total||0) - (+fac.monto||0)) < 0.01;
+      var _mto = +fac.monto || 0;
+      var _tol = Math.max(1, _mto * 0.005);
+      var _cands = _sales.filter(function(s){
+        var sc = String(s.cliente||'').trim().toUpperCase();
+        if (sc !== _cli && sc.indexOf(_cli.slice(0,18)) < 0 && _cli.indexOf(sc.slice(0,18)) < 0) return false;
+        return Math.abs((+s.total||0) - _mto) <= _tol;
       });
-      if (sale) console.log('[NC v.293] Venta vinculada por cliente+monto: ' + sale.numpedido);
+      if (_cands.length === 1) {
+        sale = _cands[0];
+      } else if (_cands.length > 1) {
+        // desempatar por cercanía de fecha
+        var _fF = String(fac.fechaEmision||'').replace(/-/g,'');
+        _cands.sort(function(a,b){
+          function dd(x){
+            var p = String(x.fecha||'').split('/');
+            return p.length===3 ? (p[2]+p[1].padStart(2,'0')+p[0].padStart(2,'0')) : '';
+          }
+          return Math.abs(parseInt(dd(a)||0)-parseInt(_fF||0)) -
+                 Math.abs(parseInt(dd(b)||0)-parseInt(_fF||0));
+        });
+        sale = _cands[0];
+      }
+      if (sale) console.log('[NC v.299] Vinculada por cliente+monto (tol $' + _tol.toFixed(2) + ')');
     }
 
     if (sale) {
       saleId = sale.id;
-      console.log('[NC v.293] Factura ' + _facNum + ' → venta ' + sale.numpedido + ' (' + (sale.items||[]).length + ' ítems)');
+      /* v.299 — Autorreparación: si la factura tenía un saleId que ya no
+         existe (típico tras reimportar desde HCL), se corrige aquí para que
+         la próxima vez encuentre la venta por la vía 1, sin recorrer todo. */
+      try {
+        if (String(fac.saleId||'') !== String(sale.id)) {
+          var _fs = cxcFacs();
+          var _i = _fs.findIndex(function(x){ return x.id === fac.id; });
+          if (_i >= 0) {
+            _fs[_i].saleId = sale.id;
+            cxcSaveFacs(_fs);
+            console.log('[NC v.299] saleId corregido en la factura ' + _facNum + ' → ' + sale.id);
+          }
+        }
+      } catch(eFix){ console.warn('[NC v.299] no se pudo corregir saleId:', eFix); }
+      console.log('[NC v.299] Factura ' + _facNum + ' → venta ' + (sale.numpedido||sale.id) + ' (' + (sale.items||[]).length + ' ítems)');
     } else {
       console.warn('[NC v.293] Factura ' + _facNum + ' sin venta vinculada — la NC abrirá sin productos.');
     }
