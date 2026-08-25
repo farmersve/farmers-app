@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.08.24.297">
+<meta name="farmers-version" content="2026.08.24.298">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -4583,6 +4583,8 @@ window.getComprometido = function() {
 };
 window.saveComprometido = function(comp) {
   try { localStorage.setItem(COMP_KEY, JSON.stringify(comp)); } catch(e){}
+  // v.298: sello de hora — el listener lo usa para no revertir un guardado reciente
+  try { localStorage.setItem('farmers_comprometido_savedAt', String(Date.now())); } catch(e){}
   if(window.fbSaveComprometido) window.fbSaveComprometido(comp);
   if(window.fbTriggerPortalSnapshot) window.fbTriggerPortalSnapshot('saveComprometido');
 };
@@ -8944,6 +8946,18 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
       onSnapshot(doc(db,'data','proveedores'), function(s) {
         try {
           if (!s.exists()) return;
+          /* v.298 — guardia anti-reversión: no dejar que el eco de Firebase
+             (que llega con los datos PREVIOS a tu escritura) pise lo local. */
+          var _rAt = s.data().updatedAt || 0;
+          var _lAt = parseInt(localStorage.getItem('farmers_prov_savedAt')||'0')||0;
+          if (_rAt && _lAt && _rAt < _lAt) {
+            console.warn('[onSnapshot proveedores] remoto más viejo — ignorado');
+            return;
+          }
+          if (_lAt && (Date.now() - _lAt) < 15000 && !(_rAt && _rAt > _lAt)) {
+            console.warn('[onSnapshot proveedores] guardado local reciente — protegido');
+            return;
+          }
           var fbProv = JSON.parse(s.data().v);
           if (!Array.isArray(fbProv)) return;
           localStorage.setItem('farmers_proveedores', JSON.stringify(fbProv));
@@ -8975,6 +8989,18 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
       onSnapshot(doc(db,'data','ordenes_compra'), function(s) {
         try {
           if (!s.exists()) return;
+          /* v.298 — guardia anti-reversión: no dejar que el eco de Firebase
+             (que llega con los datos PREVIOS a tu escritura) pise lo local. */
+          var _rAt = s.data().updatedAt || 0;
+          var _lAt = parseInt(localStorage.getItem('farmers_oc_savedAt')||'0')||0;
+          if (_rAt && _lAt && _rAt < _lAt) {
+            console.warn('[onSnapshot ordenes_compra] remoto más viejo — ignorado');
+            return;
+          }
+          if (_lAt && (Date.now() - _lAt) < 15000 && !(_rAt && _rAt > _lAt)) {
+            console.warn('[onSnapshot ordenes_compra] guardado local reciente — protegido');
+            return;
+          }
           var fbOCs = JSON.parse(s.data().v);
           if (!Array.isArray(fbOCs)) return;
           localStorage.setItem('farmers_ordenes_compra', JSON.stringify(fbOCs));
@@ -9167,6 +9193,25 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
       onSnapshot(doc(db,'data','comprometido'), function(s) {
         try {
           if (!s.exists() || !s.data().v) return;
+          /* ═══ v.298 — GUARDIA ANTI-REVERSIÓN DEL COMPROMETIDO ═══════════════
+             Este listener pisaba lo local con lo remoto SIN comparar fechas.
+             Si Firebase devolvía el eco anterior a tu escritura —normal con la
+             red inestable— el comprometido volvía atrás: reservas que
+             desaparecían o mercancía que quedaba reservada tras despacharla.
+             Es el mismo defecto que ya se corrigió en clientes (v.288) y en
+             pedidos (v.172/199); comprometido era la última pieza sin proteger. */
+          var _remoteAt = s.data().updatedAt || 0;
+          var _localAt  = parseInt(localStorage.getItem('farmers_comprometido_savedAt')||'0')||0;
+          if (_remoteAt && _localAt && _remoteAt < _localAt) {
+            console.warn('[onSnapshot comprometido] remoto más viejo que el guardado local — ignorado; re-subiendo local');
+            try { if (window.fbSaveComprometido) window.fbSaveComprometido(JSON.parse(localStorage.getItem('farmers_inv_comprometido')||'{}')); } catch(eRe){}
+            return;
+          }
+          if (_localAt && (Date.now() - _localAt) < 15000 && !(_remoteAt && _remoteAt > _localAt)) {
+            console.warn('[onSnapshot comprometido] guardado local muy reciente — protegido; re-subiendo local');
+            try { if (window.fbSaveComprometido) window.fbSaveComprometido(JSON.parse(localStorage.getItem('farmers_inv_comprometido')||'{}')); } catch(eRe){}
+            return;
+          }
           var compObj = JSON.parse(s.data().v);
           if (!compObj || typeof compObj !== 'object') return;
           var compLocal = {};
@@ -12564,6 +12609,7 @@ window.getProveedoresDB = function() {
 
 window.saveProveedoresDB = function(data) {
   try { localStorage.setItem('farmers_proveedores', JSON.stringify(data)); } catch(e) {}
+  try { localStorage.setItem('farmers_prov_savedAt', String(Date.now())); } catch(e) {}  // v.298
   if (window.fbSaveProveedores) window.fbSaveProveedores(data);
 };
 
@@ -12630,6 +12676,7 @@ window.getOrdenesCompraDB = function() {
 
 window.saveOrdenesCompraDB = function(data) {
   try { localStorage.setItem('farmers_ordenes_compra', JSON.stringify(data)); } catch(e) {}
+  try { localStorage.setItem('farmers_oc_savedAt', String(Date.now())); } catch(e) {}   // v.298
   if (window.fbSaveOrdenesCompra) window.fbSaveOrdenesCompra(data);
 };
 
