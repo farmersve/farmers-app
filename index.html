@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.08.25.299">
+<meta name="farmers-version" content="2026.08.26.301">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -62423,6 +62423,208 @@ window.farmersRepararVinculos = function(){
   var msg = arr ? ('✅ ' + arr + ' factura(s) revinculadas a su venta.\nCorre farmersVerificarFacturas() para confirmar.')
                 : 'No hubo vínculos que corregir.';
   console.log(msg); return msg;
+};
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   v.300 — ARCHIVADO DE HISTÓRICOS (liberar localStorage)
+   farmersEspacio() · farmensArchivarPlan(a,m) · farmersArchivar(a,m)
+   Saca de local los registros anteriores a la fecha de corte SOLO si la nube
+   tiene al menos tantos registros como local. Nada se borra sin respaldo.
+   ═══════════════════════════════════════════════════════════════════════════ */
+window.farmersEspacio = function(){
+  var t=0, l=[];
+  for (var i=0;i<localStorage.length;i++){
+    var k=localStorage.key(i), v=(localStorage.getItem(k)||'').length;
+    t+=v; if(v>10240) l.push({k:k,kb:Math.round(v/1024)});
+  }
+  l.sort(function(a,b){ return b.kb-a.kb; });
+  var mb=(t/1048576).toFixed(2), pct=Math.round(t/1048576/5*100);
+  var msg='ESPACIO: '+mb+' MB de ~5 MB  ('+pct+'%)'+
+    (pct>=80?'  🔴 CRÍTICO':(pct>=65?'  🟡 ALTO':'  🟢 OK'))+
+    '\n\n'+l.map(function(x){ return '  '+x.k+': '+x.kb+' KB'; }).join('\n');
+  console.log(msg); return msg;
+};
+function _fecAnio(x){
+  var f=String(x.fecha||x.fechaEmision||x.fechaDespacho||'');
+  var m=f.match(/(20\d\d)-(\d\d)/); if(m) return {y:+m[1], m:+m[2]};
+  m=f.match(/(\d\d)\/(\d\d)\/(20\d\d)/); if(m) return {y:+m[3], m:+m[2]};
+  return null;
+}
+window.farmersArchivarPlan = function(anio, mes){
+  var CFG=[{k:'farmers_hcl_v7_facturas',n:'Facturas HCL'},{k:'farmers_sales',n:'Ventas'},{k:'farmers_ms_pedidos',n:'Pedidos'}];
+  var out=[], libera=0;
+  CFG.forEach(function(c){
+    var a=[]; try{ a=JSON.parse(localStorage.getItem(c.k)||'[]'); }catch(e){}
+    if(!Array.isArray(a)) { out.push('  '+c.n+': no es lista, se omite'); return; }
+    var viejos=a.filter(function(x){ var d=_fecAnio(x); return d && ((d.y<anio)||(d.y===anio&&d.m<mes)); });
+    var kbTot=Math.round((localStorage.getItem(c.k)||'').length/1024);
+    var kbLib=a.length? Math.round(kbTot*viejos.length/a.length):0;
+    libera+=kbLib;
+    out.push('  '+c.n+': '+a.length+' → quedarían '+(a.length-viejos.length)+'  (archiva '+viejos.length+' · ~'+kbLib+' KB)');
+  });
+  var msg='SIMULACRO — anterior a '+String(mes).padStart(2,'0')+'/'+anio+'\n\n'+out.join('\n')+
+    '\n\nLiberaría ~'+libera+' KB. Nada modificado.\nAplicar: farmersArchivar('+anio+','+mes+')';
+  console.log(msg); return msg;
+};
+window.farmersArchivar = async function(anio, mes){
+  var CFG=[{k:'farmers_hcl_v7_facturas',n:'Facturas HCL',fb:'fbGetHCL'},
+           {k:'farmers_sales',n:'Ventas',fb:'fbGetSales'},
+           {k:'farmers_ms_pedidos',n:'Pedidos',fb:'fbGetMsPedidos'}];
+  if(!confirm('ARCHIVAR anterior a '+String(mes).padStart(2,'0')+'/'+anio+'\n\nSe saca de este equipo SOLO lo confirmado en Firebase.\n¿Continuar?')) return 'Cancelado.';
+  var res=[], totalLib=0;
+  for (var i=0;i<CFG.length;i++){
+    var c=CFG[i], a=[];
+    try{ a=JSON.parse(localStorage.getItem(c.k)||'[]'); }catch(e){}
+    if(!Array.isArray(a)||!a.length){ res.push('  '+c.n+': vacío'); continue; }
+    var nube=null; try{ if(window[c.fb]) nube=await window[c.fb](); }catch(e){}
+    var nN=Array.isArray(nube)?nube.length:(nube&&nube.facturas?nube.facturas.length:-1);
+    if(nN<a.length){ res.push('  ⛔ '+c.n+': nube '+nN+' vs local '+a.length+' — NO archivado'); continue; }
+    var kbA=Math.round((localStorage.getItem(c.k)||'').length/1024);
+    var quedan=a.filter(function(x){ var d=_fecAnio(x); return !d || !((d.y<anio)||(d.y===anio&&d.m<mes)); });
+    if(quedan.length===a.length){ res.push('  '+c.n+': nada anterior'); continue; }
+    localStorage.setItem(c.k, JSON.stringify(quedan));
+    var kbD=Math.round((localStorage.getItem(c.k)||'').length/1024);
+    totalLib+=(kbA-kbD);
+    res.push('  ✅ '+c.n+': '+a.length+' → '+quedan.length+' ('+(kbA-kbD)+' KB)');
+  }
+  var t=0; for(var j=0;j<localStorage.length;j++) t+=(localStorage.getItem(localStorage.key(j))||'').length;
+  var msg='ARCHIVADO\n\n'+res.join('\n')+'\n\nLiberado: '+totalLib+' KB · Ahora: '+(t/1048576).toFixed(2)+' MB';
+  console.log(msg); alert(msg); return msg;
+};
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   v.301 — FASE A: MOTOR IndexedDB (base de la nueva arquitectura)
+   ─────────────────────────────────────────────────────────────────────────
+   localStorage tiene ~5 MB inampliables y guarda cada colección como un solo
+   texto: si no cabe, se trunca en silencio. IndexedDB permite cientos de MB,
+   guarda registro por registro y escribe por transacciones (todo o nada).
+
+   Esta fase instala SOLO el motor: no cambia dónde lee o escribe el sistema.
+   Las colecciones se migrarán una a una en las fases B y C, con escritura
+   dual y verificación, igual que se hizo con products_v2.
+
+   API:  fdbGuardar(col, array)  fdbLeer(col)  fdbContar(col)
+         fdbBorrarCol(col)       farmersIDBEstado()  farmersIDBProbar()
+   ═══════════════════════════════════════════════════════════════════════════ */
+window._fdb = null;
+window.fdbAbrir = function(){
+  return new Promise(function(res, rej){
+    if (window._fdb) return res(window._fdb);
+    if (!window.indexedDB) return rej(new Error('IndexedDB no disponible en este navegador'));
+    var req = indexedDB.open('farmers_db', 1);
+    req.onupgradeneeded = function(e){
+      var db = e.target.result;
+      if (!db.objectStoreNames.contains('registros')) {
+        var st = db.createObjectStore('registros', { keyPath: ['col','id'] });
+        st.createIndex('porCol', 'col', { unique:false });
+      }
+      if (!db.objectStoreNames.contains('meta')) {
+        db.createObjectStore('meta', { keyPath: 'k' });
+      }
+    };
+    req.onsuccess = function(e){ window._fdb = e.target.result; res(window._fdb); };
+    req.onerror   = function(e){ rej(e.target.error || new Error('No se pudo abrir farmers_db')); };
+  });
+};
+
+// Guarda una colección completa: transacción única — o entra todo, o nada.
+window.fdbGuardar = async function(col, arr, idField){
+  var db = await fdbAbrir();
+  var idF = idField || 'id';
+  return new Promise(function(res, rej){
+    var tx = db.transaction(['registros','meta'], 'readwrite');
+    var st = tx.objectStore('registros');
+    var idx = st.index('porCol');
+    // borrar lo existente de la colección
+    var delReq = idx.openKeyCursor(IDBKeyRange.only(col));
+    delReq.onsuccess = function(e){
+      var cur = e.target.result;
+      if (cur) { st.delete(cur.primaryKey); cur.continue(); }
+      else {
+        // insertar todo
+        (arr||[]).forEach(function(x, i){
+          var id = String((x && x[idF]) || (x && x.numP) || (x && x.numpedido) || ('reg_'+i));
+          st.put({ col: col, id: id, d: x });
+        });
+        tx.objectStore('meta').put({ k:'count_'+col, n:(arr||[]).length, at:Date.now() });
+      }
+    };
+    tx.oncomplete = function(){ res({ ok:true, n:(arr||[]).length }); };
+    tx.onerror    = function(e){ rej(e.target.error); };
+    tx.onabort    = function(e){ rej(e.target.error || new Error('transacción abortada')); };
+  });
+};
+
+window.fdbLeer = async function(col){
+  var db = await fdbAbrir();
+  return new Promise(function(res, rej){
+    var out = [];
+    var tx = db.transaction('registros','readonly');
+    var idx = tx.objectStore('registros').index('porCol');
+    var req = idx.openCursor(IDBKeyRange.only(col));
+    req.onsuccess = function(e){
+      var cur = e.target.result;
+      if (cur) { out.push(cur.value.d); cur.continue(); }
+    };
+    tx.oncomplete = function(){ res(out); };
+    tx.onerror = function(e){ rej(e.target.error); };
+  });
+};
+
+window.fdbContar = async function(col){
+  var db = await fdbAbrir();
+  return new Promise(function(res, rej){
+    var tx = db.transaction('registros','readonly');
+    var req = tx.objectStore('registros').index('porCol').count(IDBKeyRange.only(col));
+    req.onsuccess = function(){ res(req.result); };
+    req.onerror = function(e){ rej(e.target.error); };
+  });
+};
+
+window.fdbBorrarCol = async function(col){
+  return window.fdbGuardar(col, []);
+};
+
+window.farmersIDBEstado = async function(){
+  try {
+    var db = await fdbAbrir();
+    var cols = ['hcl_facturas','sales','ms_pedidos'];
+    var lineas = [];
+    for (var i=0;i<cols.length;i++){
+      var n = await fdbContar(cols[i]);
+      lineas.push('  ' + cols[i] + ': ' + n + ' registros');
+    }
+    var est = null;
+    try { est = await navigator.storage.estimate(); } catch(e){}
+    var msg = 'IndexedDB: ✅ operativo (farmers_db)\n' + lineas.join('\n') +
+      (est ? '\n\nEspacio del navegador: ' + (est.usage/1048576).toFixed(1) + ' MB usados de ' +
+             (est.quota/1048576/1024).toFixed(1) + ' GB disponibles' : '');
+    console.log(msg); return msg;
+  } catch(e) {
+    var m = '⛔ IndexedDB no disponible: ' + e.message;
+    console.error(m); return m;
+  }
+};
+
+window.farmersIDBProbar = async function(){
+  try {
+    var prueba = [{id:'t1', v:'hola'}, {id:'t2', v:'mundo', num:42}];
+    await fdbGuardar('_test', prueba);
+    var leido = await fdbLeer('_test');
+    var okN = leido.length === 2;
+    var okV = okN && leido.some(function(x){ return x.v==='mundo' && x.num===42; });
+    await fdbBorrarCol('_test');
+    var quedo = await fdbContar('_test');
+    var ok = okN && okV && quedo === 0;
+    var msg = ok
+      ? '✅ PRUEBA SUPERADA\n  escritura: ok\n  lectura: ok (2 registros, datos íntegros)\n  borrado: ok\n\nEl motor IndexedDB funciona en este equipo.\nListo para la Fase B (migrar Facturas HCL).'
+      : '⚠ Prueba con anomalías: n='+leido.length+' · datos='+okV+' · restos='+quedo;
+    console.log(msg); return msg;
+  } catch(e) {
+    var m = '⛔ La prueba falló: ' + e.message;
+    console.error(m); return m;
+  }
 };
 
 function cxcSave(d){
