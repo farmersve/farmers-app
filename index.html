@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.08.27.304">
+<meta name="farmers-version" content="2026.08.28.306">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -26173,6 +26173,60 @@ function clRenderFicha(c) {
           ['USD','BCV','TIERRA FIRME','CRÉDITO'].map(function(t){ return '<option value="'+t+'"'+(c.tipoPrecio===t?' selected':'')+'>'+t+'</option>'; }).join('') +
         '</select></div>' +
       '</div>' +
+
+      /* ═══ v.305 — AJUSTE DE PRECIOS POR CLIENTE ═══════════════════════════
+         Aumento (o rebaja, con valor negativo) que se aplica al facturar a
+         ESTE cliente: general o por marca, en % o en monto fijo, y sólo en
+         las monedas marcadas. La regla por marca prevalece sobre la general. */
+      (function(){
+        var ap = c.ajustePrecio || {};
+        var mon = ap.monedas || {USD:true, BCV:true, TF:true};
+        var marcas = [];
+        try {
+          var _vis = {};
+          (PRODUCTS||[]).forEach(function(p){ if (p.br) _vis[p.br] = 1; });
+          marcas = Object.keys(_vis).sort();
+        } catch(e){}
+        var g = ap.general || {};
+        var html =
+          '<div class="cl-card" style="border-left:4px solid #F47B3E;">' +
+            '<div class="cl-card-title">📈 AJUSTE DE PRECIOS PARA ESTE CLIENTE</div>' +
+            '<div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">' +
+              '<label style="display:flex;gap:6px;align-items:center;font-weight:800;font-size:.75rem;">' +
+                '<input type="checkbox" id="cl_ap_activo"'+(ap.activo?' checked':'')+'> Activo</label>' +
+              '<span style="font-size:.7rem;color:#64748b;">Aplicar en:</span>' +
+              ['USD','BCV','TF'].map(function(m){
+                return '<label style="display:flex;gap:4px;align-items:center;font-size:.72rem;font-weight:700;">' +
+                  '<input type="checkbox" id="cl_ap_mon_'+m+'"'+(mon[m]!==false?' checked':'')+'> '+m+'</label>';
+              }).join('') +
+            '</div>' +
+            '<div class="cl-grid">' +
+              '<div class="cl-field"><label>Ajuste GENERAL — tipo</label>' +
+                '<select id="cl_ap_gen_tipo">' +
+                  '<option value="pct"'+(g.tipo!=='monto'?' selected':'')+'>Porcentaje (%)</option>' +
+                  '<option value="monto"'+(g.tipo==='monto'?' selected':'')+'>Monto fijo ($)</option>' +
+                '</select></div>' +
+              '<div class="cl-field"><label>Ajuste GENERAL — valor</label>' +
+                '<input type="number" step="0.01" id="cl_ap_gen_valor" value="'+(g.valor!==undefined?g.valor:0)+'" placeholder="Ej: 5 = +5%"></div>' +
+            '</div>' +
+            '<div style="font-size:.68rem;color:#64748b;margin:8px 0 4px;">POR MARCA (prevalece sobre el general · vacío o 0 = sin ajuste):</div>' +
+            '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(215px,1fr));gap:6px;">' +
+              marcas.map(function(br){
+                var m2 = (ap.marcas||{})[br] || {};
+                var idb = br.replace(/[^A-Z0-9]/gi,'');
+                return '<div style="display:flex;gap:4px;align-items:center;background:#f8fafc;border:1px solid #e2e8f0;border-radius:7px;padding:5px 7px;">' +
+                  '<span style="font-size:.68rem;font-weight:800;min-width:74px;">'+br+'</span>' +
+                  '<select id="cl_apm_'+idb+'_tipo" style="font-size:.66rem;padding:2px;">' +
+                    '<option value="pct"'+(m2.tipo!=='monto'?' selected':'')+'>%</option>' +
+                    '<option value="monto"'+(m2.tipo==='monto'?' selected':'')+'>$</option>' +
+                  '</select>' +
+                  '<input type="number" step="0.01" id="cl_apm_'+idb+'_valor" value="'+(m2.valor!==undefined?m2.valor:'')+'" placeholder="0" style="width:64px;font-size:.68rem;padding:2px 4px;">' +
+                '</div>';
+              }).join('') +
+            '</div>' +
+          '</div>';
+        return html;
+      })() +
     '</div>' +
 
     // ── Sección 2: Contactos ──
@@ -26332,6 +26386,28 @@ function clCollectForm(c) {
   c.diasCredito  = v('cl_diasCredito');
   c.vendedor     = v('cl_vendedor');
   c.tipoPrecio   = v('cl_tipoPrecio');
+
+  // v.305: recolectar el ajuste de precios
+  try {
+    var _apCk = function(id){ var el=document.getElementById(id); return el ? !!el.checked : false; };
+    var _apMarcas = {};
+    var _visBr = {};
+    (PRODUCTS||[]).forEach(function(p){ if (p.br) _visBr[p.br]=1; });
+    Object.keys(_visBr).forEach(function(br){
+      var idb = br.replace(/[^A-Z0-9]/gi,'');
+      var elV = document.getElementById('cl_apm_'+idb+'_valor');
+      var elT = document.getElementById('cl_apm_'+idb+'_tipo');
+      if (!elV) return;
+      var val = parseFloat(elV.value);
+      if (!isNaN(val) && val !== 0) _apMarcas[br] = { tipo: (elT&&elT.value)==='monto'?'monto':'pct', valor: val };
+    });
+    c.ajustePrecio = {
+      activo: _apCk('cl_ap_activo'),
+      monedas: { USD:_apCk('cl_ap_mon_USD'), BCV:_apCk('cl_ap_mon_BCV'), TF:_apCk('cl_ap_mon_TF') },
+      general: { tipo: v('cl_ap_gen_tipo')==='monto'?'monto':'pct', valor: parseFloat(v('cl_ap_gen_valor'))||0 },
+      marcas: _apMarcas
+    };
+  } catch(eAP){ console.warn('[v.305] ajustePrecio:', eAP); }
   c.notas        = v('cl_notas');
   c.gerenteNombre  = v('gerenteNombre');
   c.gerenteTel     = v('gerenteTel');
@@ -51923,6 +51999,39 @@ window.msGetPrecioCongelado = function(linea, moneda) {
   return null;
 };
 
+/* ═══ v.305 — MOTOR DE AJUSTE DE PRECIOS POR CLIENTE ══════════════════════
+   Aplica el ajuste configurado en la ficha del cliente (CRM):
+   marca prevalece sobre general · respeta las monedas marcadas ·
+   'pct' suma porcentaje, 'monto' suma un fijo. Valor negativo = rebaja. */
+window.ajustarPrecioCliente = function(precioBase, ref, clienteObj, moneda) {
+  try {
+    if (!clienteObj) return precioBase;
+    var ap = clienteObj.ajustePrecio;
+    if (!ap || !ap.activo) return precioBase;
+    var monKey = (moneda==='TF'||moneda==='TIERRA FIRME') ? 'TF' : (moneda==='BCV' ? 'BCV' : 'USD');
+    if (ap.monedas && ap.monedas[monKey] === false) return precioBase;
+    var prod = (PRODUCTS||[]).find(function(x){ return x.r === ref; });
+    var regla = (prod && prod.br && ap.marcas && ap.marcas[prod.br]) ? ap.marcas[prod.br] : (ap.general || null);
+    if (!regla || !regla.valor) return precioBase;
+    var v = parseFloat(regla.valor) || 0;
+    var nuevo = (regla.tipo === 'monto') ? (precioBase + v) : (precioBase * (1 + v/100));
+    return Math.max(0, Math.round(nuevo * 10000) / 10000);
+  } catch(e) { return precioBase; }
+};
+
+/* Busca el objeto cliente en el CRM por nombre o RIF (para el motor de ajuste). */
+window.buscarClienteCRM = function(nombre, rif) {
+  try {
+    var db = (typeof _clDB !== 'undefined' && Array.isArray(_clDB)) ? _clDB
+           : JSON.parse(localStorage.getItem('farmers_clients_v2') || '[]');
+    var N = String(nombre||'').trim().toUpperCase(), R = String(rif||'').replace(/[^A-Z0-9]/gi,'').toUpperCase();
+    return db.find(function(c){
+      if (R && String(c.rif||'').replace(/[^A-Z0-9]/gi,'').toUpperCase() === R) return true;
+      return N && String(c.nombre||'').trim().toUpperCase() === N;
+    }) || null;
+  } catch(e) { return null; }
+};
+
 function msGetPrecio(ref) {
   // v.124: si hay override de selección (precio del cliente), respetar
   var override = (MS._precioOverride || {})[ref];
@@ -54431,6 +54540,15 @@ function _msFacturaRenderizar(numP, suc) {
     var precio = (p[_campoCong] !== undefined && p[_campoCong] !== null && !isNaN(p[_campoCong]))
                  ? parseFloat(p[_campoCong])
                  : ((typeof msGetPrecio==='function' ? msGetPrecio(p.ref) : 0) || 0);
+    // v.305: ajuste de precios del cliente de ESTA sucursal (CRM)
+    if (typeof ajustarPrecioCliente === 'function') {
+      var _cliAP = (typeof buscarClienteCRM === 'function') ? buscarClienteCRM(nomCli, rifCli) : null;
+      var _pAj = ajustarPrecioCliente(precio, p.ref, _cliAP, moneda);
+      if (_pAj !== precio) {
+        if (!window._logAjuste305) { console.log('[v.305] Ajuste de precios activo para ' + nomCli); window._logAjuste305 = true; }
+        precio = _pAj;
+      }
+    }
     var tot = precio * desp;
     subtotal += tot;
     var prod = (PRODUCTS||[]).find(function(x){return x.r===p.ref;}) || {};
@@ -78826,6 +78944,20 @@ function pcAbrirFormToken(existente, clDB) {
       ordenadaModo: (document.getElementById('pc-ord-modo') ? document.getElementById('pc-ord-modo').value : 'exacto'),
       marcasVisibles: marcasSeleccionadas,
     };
+
+    /* ═══ v.306 — EL LINK DEL PORTAL LLEVA EL AJUSTE DE PRECIOS ═══════════
+       El aumento por cliente (v.305) NO toca el catálogo maestro: viaja
+       dentro del token de cada cliente. Al guardar el link se copia el
+       ajustePrecio desde su ficha del CRM (buscando por RIF o nombre), y el
+       portal lo aplica al mostrar SUS precios. Cada cliente ve los suyos. */
+    try {
+      var _cliTok = (typeof buscarClienteCRM === 'function') ? buscarClienteCRM(nombre, rif) : null;
+      data.configVista.ajustePrecio = (_cliTok && _cliTok.ajustePrecio && _cliTok.ajustePrecio.activo)
+        ? _cliTok.ajustePrecio : null;
+      if (data.configVista.ajustePrecio) {
+        console.log('[v.306] Link de ' + nombre + ' guardado CON ajuste de precios del CRM');
+      }
+    } catch(eTok){ console.warn('[v.306] ajustePrecio en token:', eTok); data.configVista.ajustePrecio = null; }
 
     var btn = document.getElementById('pc-form-save');
     btn.disabled = true;
