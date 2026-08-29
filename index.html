@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.08.28.306">
+<meta name="farmers-version" content="2026.08.29.307">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -58241,16 +58241,35 @@ window.msAsegurarDataPedido = function(numP) {
   if (ped.data && Array.isArray(ped.data) && ped.data.length) {
     var _inv1 = (typeof getInventory==='function') ? getInventory() : {};
     var _esDespachado = (ped.estado || '').toUpperCase() === 'DESPACHADO';
+
+    /* ═══ v.307 — LA DISTRIBUCIÓN REGISTRADA SIEMPRE SE RESPETA ═══════════
+       CAUSA RAÍZ del despacho MS-260827-1210 (venta creada, inventario en 0):
+       esta rama tomaba `dist` de ped.data y, si venía vacío, sólo lo rellenaba
+       cuando el pedido YA estaba DESPACHADO. Con el pedido RESERVADO, dist
+       quedaba en {} — y el descargo hace min(dist, pedidos) = 0. Pero la
+       distribución REAL (desp por sucursal) sí estaba guardada en
+       ped.items[].sucursales, que esta rama jamás consultaba.
+       Ahora se construye ese mapa primero y es la fuente prioritaria. */
+    var _despReal = {};   // ref → {sucursal: desp}
+    (ped.items || []).forEach(function(it){
+      if (!it || !it.ref) return;
+      Object.keys(it.sucursales || {}).forEach(function(s){
+        var d = parseInt((it.sucursales[s]||{}).desp) || 0;
+        if (d > 0) { (_despReal[it.ref] = _despReal[it.ref] || {})[s] = d; }
+      });
+    });
+
     // Asegurar que cada entry tenga los campos requeridos por msExportarPDF/msExportarExcel
     MS.data = ped.data.map(function(p){
-      // FIX: defensa contra estructuras incompletas (pedidos despachados antiguos
-      // pueden tener 'pedidos' pero no 'dist', o tener 'dist' vacío).
       var pedidos = p.pedidos || {};
       var dist = p.dist || {};
-      // Si no hay dist y el pedido está despachado, asumir dist = pedidos
-      // (lo que se pidió, se despachó al 100%)
+      // v.307: si dist viene vacío, la distribución registrada en items manda
+      if (Object.keys(dist).length === 0 && _despReal[p.ref]) {
+        dist = Object.assign({}, _despReal[p.ref]);
+      }
+      // Respaldo histórico: despachados antiguos sin desp registrado
       if (Object.keys(dist).length === 0 && _esDespachado && Object.keys(pedidos).length > 0) {
-        dist = Object.assign({}, pedidos); // copia profunda
+        dist = Object.assign({}, pedidos);
       }
 
       var totalPedido = p.totalPedido;
