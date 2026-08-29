@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.08.29.307">
+<meta name="farmers-version" content="2026.08.29.308">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -9315,6 +9315,7 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
           try { hclLocal = JSON.parse(localStorage.getItem('farmers_hcl_v7_facturas') || '[]'); } catch(e){}
           if (JSON.stringify(hclArr) !== JSON.stringify(hclLocal)) {
             localStorage.setItem('farmers_hcl_v7_facturas', JSON.stringify(hclArr));
+            try { if (typeof _hclEspejoIDB==='function') _hclEspejoIDB(hclArr); } catch(e){}   // v.308
             // FIX v.98: NO escribir a farmers_hcl_facturas (legacy duplicado, ahorra 929 KB)
             console.log('[onSnapshot hcl] ↓ sincronizado: ' + hclArr.length + ' facturas');
             if (typeof hclRenderFacturas === 'function') {
@@ -11919,6 +11920,7 @@ async function loadFromFirebase() {
       var hclData = await window.fbGetHCL();
       if (hclData && hclData.length) {
         localStorage.setItem('farmers_hcl_v7_facturas', JSON.stringify(hclData));
+        try { if (typeof _hclEspejoIDB==='function') _hclEspejoIDB(hclData); } catch(e){}   // v.308
         // FIX v.98: NO escribir a farmers_hcl_facturas (legacy duplicado, ahorra 929 KB)
       }
     }
@@ -73999,12 +74001,52 @@ function hclGetFacturas() {
   return [];
 }
 
+/* ═══ v.308 — FASE B: ESPEJO DUAL HACIA IndexedDB ══════════════════════════
+   Cada guardado de facturas HCL se COPIA también al motor nuevo (fdbGuardar,
+   colección 'hcl_facturas'). No cambia de dónde LEE el sistema: localStorage
+   y Firebase siguen mandando. Si el espejo falla, no afecta nada — se anota
+   en consola y ya. El interruptor de lectura es la Fase B2, sólo tras
+   verificar con farmersFaseBVerificar() que ambos lados son idénticos. */
+function _hclEspejoIDB(facs) {
+  try {
+    if (typeof fdbGuardar !== 'function') return;
+    fdbGuardar('hcl_facturas', facs || []).then(function(r){
+      console.log('[FaseB] espejo IDB: ' + r.n + ' facturas');
+    }).catch(function(e){ console.warn('[FaseB] espejo IDB falló (no crítico):', e && e.message); });
+  } catch(e) { console.warn('[FaseB] espejo:', e); }
+}
+
+window.farmersFaseBMigrar = async function(){
+  var facs=[]; try{ facs=JSON.parse(localStorage.getItem('farmers_hcl_v7_facturas')||'[]'); }catch(e){}
+  if(!facs.length) return '⛔ No hay facturas en localStorage.';
+  var r = await fdbGuardar('hcl_facturas', facs);
+  var msg='✅ Fase B: '+r.n+' facturas copiadas al motor nuevo.\nVerifica con farmersFaseBVerificar()';
+  console.log(msg); return msg;
+};
+window.farmersFaseBVerificar = async function(){
+  var loc=[]; try{ loc=JSON.parse(localStorage.getItem('farmers_hcl_v7_facturas')||'[]'); }catch(e){}
+  var idb = await fdbLeer('hcl_facturas');
+  var idx={}; idb.forEach(function(f){ if(f) idx[f.id||f.nroFactura||JSON.stringify(f).length]=f; });
+  var faltan=0, difieren=0, ej=[];
+  loc.forEach(function(f){
+    var k=f.id||f.nroFactura||JSON.stringify(f).length;
+    var g=idx[k];
+    if(!g){ faltan++; if(ej.length<5) ej.push('falta '+k); return; }
+    if(JSON.stringify(g)!==JSON.stringify(f)){ difieren++; if(ej.length<5) ej.push('difiere '+k); }
+  });
+  var msg='FASE B — VERIFICACIÓN\n  localStorage: '+loc.length+'\n  Motor nuevo : '+idb.length+
+    '\n  Faltan: '+faltan+' · Difieren: '+difieren+(ej.length?'\n  '+ej.join(', '):'')+
+    '\n\n'+(faltan+difieren===0 && loc.length===idb.length ? '✅ IDÉNTICOS — listo para Fase B2 (lectura).' : '⚠ Hay diferencias — corre farmersFaseBMigrar() de nuevo.');
+  console.log(msg); return msg;
+};
+
 function hclSaveFacturas(facs) {
   // 1. Guardar en localStorage inmediatamente
   try {
     localStorage.setItem(HCL_STORAGE_KEY, JSON.stringify(facs));
     // FIX v.98: NO escribir a HCL_LS_KEY (legacy 'farmers_hcl_facturas') — ahorra 929 KB
   } catch(e) { console.error('HCL localStorage error:', e); }
+  _hclEspejoIDB(facs);   // v.308 — Fase B
   // 2. Guardar en Firebase INMEDIATAMENTE — fuente de verdad
   if (window.fbSaveHCL) {
     window.fbSaveHCL(facs).then(function() {
