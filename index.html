@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.08.29.309">
+<meta name="farmers-version" content="2026.08.31.311">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -4609,6 +4609,8 @@ window.libSaveLog = function(entry) {
     log.unshift(entry); // más nuevo primero
     if(log.length > 500) log = log.slice(0, 500); // límite 500 entradas
     localStorage.setItem(LIB_LOG_KEY, JSON.stringify(log));
+    // v.310: la bitácora de auditoría de liberaciones también se respalda en data/liberacion_log
+    if (window.fbSaveLiberacionLog) window.fbSaveLiberacionLog(log);
   } catch(e){ console.warn('[libSaveLog]', e); }
 };
 
@@ -7824,6 +7826,139 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
   }
   window._fbEsperarSyncListo = _fbEsperarSyncListo;
 
+  /* ═══ v.310 — AUDITORÍA DE PERSISTENCIA (29/08/2026) ═══════════════════════
+     (1) GUARDIA ANTI-REDUCCIÓN: antes de sobreescribir una colección de un solo
+         documento (ventas, HCL, pedidos, CXC, OCs, traslados) se compara el
+         conteo nuevo con el que ya está en la nube. Borrar 1-4 registros es
+         una operación normal y pasa. Si el guardado trae ≥5 registros menos, o
+         más del 10% menos, se ABORTA: casi siempre significa que este equipo
+         tiene datos viejos o se archivó localmente, y subirlo borraría historia
+         de Firebase. Lo local no se toca — queda a salvo. Para forzar una
+         reducción legítima: farmersPermitirReduccion(true) y repetir la acción.
+     (2) RESPALDO DIARIO POR COLECCIÓN: igual al que ya existía para productos
+         (FIX#4 v.111), ahora para ventas, HCL, CXC y pedidos MS. Un snapshot
+         por día en la colección 'backups' (id <colección>_YYYYMMDD), 7 días.
+         Consola: farmersBackupsListar() · farmersBackupRestaurarColeccion(col, 'YYYY-MM-DD')
+     (3) farmersAuditoriaNube(): tamaño real de cada documento en Firestore
+         frente al límite de 1 MB, conteos local vs nube.
+     ══════════════════════════════════════════════════════════════════════════ */
+  window._farmersPermitirReduccion = false;
+  window.farmersPermitirReduccion = function(v) {
+    window._farmersPermitirReduccion = (v !== false);
+    console.log('[Guardia v.310] reducción ' + (window._farmersPermitirReduccion ? 'PERMITIDA para el próximo guardado de cada colección' : 'bloqueada (modo normal)'));
+    return window._farmersPermitirReduccion;
+  };
+  // Devuelve true si el guardado puede seguir; false si debe abortarse.
+  window._fbGuardiaReduccion = async function(etiqueta, docId, nuevoCount) {
+    if (window._farmersPermitirReduccion) return true;
+    var nubeCount = null;
+    try {
+      var d = await getDoc(doc(db, 'data', docId));
+      if (!d.exists()) return true;
+      var data = d.data() || {};
+      if (typeof data.count === 'number') nubeCount = data.count;
+      else if (data.v) {
+        try { var arr = JSON.parse(data.v); nubeCount = Array.isArray(arr) ? arr.length : (arr && Array.isArray(arr.facturas) ? arr.facturas.length : null); } catch(_) {}
+      }
+    } catch(eG) {
+      console.warn('[Guardia v.310] no se pudo leer ' + docId + ' (continuando):', eG && eG.message);
+      return true;
+    }
+    if (nubeCount === null || nuevoCount >= nubeCount) return true;
+    var dif = nubeCount - nuevoCount;
+    if (dif < 5 && dif <= nubeCount * 0.10) return true;
+    var msg = '⛔ Guardado de ' + etiqueta + ' BLOQUEADO: intentaba subir ' + nuevoCount + ' registros pero la nube tiene ' + nubeCount +
+              ' (' + dif + ' menos). Para proteger el historial NO se sobreescribió Firebase. Tus datos locales están a salvo. ' +
+              'Recarga la página para traer lo más reciente; si la reducción es intencional: farmersPermitirReduccion(true).';
+    console.error('[Guardia v.310] ' + msg);
+    try { if (typeof showToast === 'function') showToast(msg, 'error', { duration: 15000, title: 'Protección de datos' }); } catch(_){}
+    try { if (typeof fbLog === 'function') fbLog('⛔ ' + etiqueta + ' no subido (guardia anti-reducción: ' + nuevoCount + ' vs ' + nubeCount + ')', 'error'); } catch(_){}
+    return false;
+  };
+
+  var BK_COL = 'backups';
+  var BK_MAX = 7;
+  function _bkFechaKey(d) { d = d || new Date(); return d.getFullYear() + String(d.getMonth()+1).padStart(2,'0') + String(d.getDate()).padStart(2,'0'); }
+  // Backup diario (una vez por día por dispositivo y colección). No bloquea el guardado principal.
+  window._fbBackupColeccion = async function(docId, payloadStr, count) {
+    var hoy = _bkFechaKey();
+    var sk = 'farmers_bk_' + docId;
+    try { if (sessionStorage.getItem(sk) === hoy) return; } catch(_){}
+    try {
+      await setDoc(doc(db, BK_COL, docId + '_' + hoy), { col: docId, fecha: hoy, v: payloadStr, count: count, updatedAt: Date.now() });
+      try { sessionStorage.setItem(sk, hoy); } catch(_){}
+      console.log('[Backup v.310] ✓ ' + docId + '_' + hoy + ' (' + count + ' registros)');
+      var snap = await getDocs(collection(db, BK_COL));
+      var mios = [];
+      snap.forEach(function(x){ var dd = x.data() || {}; if (dd.col === docId) mios.push(x.id); });
+      mios.sort();
+      var sobran = mios.slice(0, Math.max(0, mios.length - BK_MAX));
+      for (var i = 0; i < sobran.length; i++) { try { await deleteDoc(doc(db, BK_COL, sobran[i])); } catch(_){} }
+    } catch(eB) { console.warn('[Backup v.310] ' + docId + ' no crítico:', eB && eB.message); }
+  };
+  window.farmersBackupsListar = async function() {
+    try {
+      var snap = await getDocs(collection(db, BK_COL));
+      var lista = [];
+      snap.forEach(function(x){ var dd = x.data() || {}; lista.push({ id: x.id, col: dd.col, fecha: dd.fecha, count: dd.count, kb: Math.round((dd.v || '').length / 1024) }); });
+      lista.sort(function(a,b){ return (a.col + a.fecha).localeCompare(b.col + b.fecha); });
+      console.log('═══ RESPALDOS POR COLECCIÓN (v.310) ═══');
+      lista.forEach(function(b){ console.log('  • ' + b.col + '  ' + b.fecha.slice(0,4)+'-'+b.fecha.slice(4,6)+'-'+b.fecha.slice(6,8) + '  → ' + b.count + ' registros (' + b.kb + ' KB)'); });
+      if (!lista.length) console.log('  (aún no hay; se crean al primer guardado de cada día)');
+      console.log('Restaurar: farmersBackupRestaurarColeccion(\'sales\'|\'hcl_facturas\'|\'cxc\'|\'ms_pedidos\', \'YYYY-MM-DD\')');
+      return lista;
+    } catch(e) { console.error('[farmersBackupsListar]', e); return null; }
+  };
+  // Restaura una colección desde su respaldo: escribe en local Y en la nube (con confirmación).
+  window.farmersBackupRestaurarColeccion = async function(docId, fechaStr) {
+    var key = String(fechaStr || '').replace(/[-\/]/g, '');
+    var LS = { sales: 'farmers_sales', hcl_facturas: 'farmers_hcl_v7_facturas', cxc: 'farmers_cxc', ms_pedidos: 'farmers_ms_pedidos' };
+    if (!LS[docId] || !/^\d{8}$/.test(key)) { console.error('Uso: farmersBackupRestaurarColeccion(\'sales\'|\'hcl_facturas\'|\'cxc\'|\'ms_pedidos\', \'YYYY-MM-DD\')'); return false; }
+    try {
+      var d = await getDoc(doc(db, BK_COL, docId + '_' + key));
+      if (!d.exists()) { console.error('No existe respaldo ' + docId + '_' + key + '. Ver farmersBackupsListar()'); return false; }
+      var dd = d.data();
+      if (!confirm('RESTAURAR ' + docId + ' desde ' + fechaStr + ' (' + dd.count + ' registros)?\n\nSe reemplaza lo local y la nube con ese respaldo.')) return false;
+      localStorage.setItem(LS[docId], dd.v);
+      window._farmersPermitirReduccion = true;
+      await setDoc(doc(db, 'data', docId), { v: dd.v, count: dd.count, updatedAt: Date.now(), restauradoDe: docId + '_' + key });
+      window._farmersPermitirReduccion = false;
+      alert('✅ ' + docId + ' restaurado (' + dd.count + ' registros). Recarga la página.');
+      return true;
+    } catch(e) { window._farmersPermitirReduccion = false; console.error('[farmersBackupRestaurarColeccion]', e); return false; }
+  };
+
+  // Diagnóstico: tamaño real de cada documento en Firestore vs el límite de 1 MB.
+  window.farmersAuditoriaNube = async function() {
+    var DOCS = [ ['sales','farmers_sales'], ['hcl_facturas','farmers_hcl_v7_facturas'], ['ms_pedidos','farmers_ms_pedidos'],
+                 ['cxc','farmers_cxc'], ['ordenes_compra','farmers_ordenes_compra'], ['traslados','farmers_traslados'],
+                 ['bancos','farmers_bancos'], ['products','farmers_products'], ['pt_data','farmers_pt_data'],
+                 ['clients','farmers_clients_v2'], ['comprometido','farmers_inv_comprometido'], ['descuentos','farmers_descuentos'],
+                 ['liberacion_log','farmers_liberacion_log'] ];
+    var LIM = 1048576, out = [], alerta = [];
+    for (var i = 0; i < DOCS.length; i++) {
+      var id = DOCS[i][0], ls = DOCS[i][1], fila = { doc: id, nube_kb: '-', pct_1MB: '-', nube_n: '-', local_n: '-', actualizado: '-' };
+      try {
+        var d = await getDoc(doc(db, 'data', id));
+        if (d.exists()) {
+          var dd = d.data() || {}, bytes = new Blob([dd.v || '']).size;
+          fila.nube_kb = Math.round(bytes / 1024); fila.pct_1MB = Math.round(bytes / LIM * 100) + '%';
+          fila.nube_n = (typeof dd.count === 'number') ? dd.count : '?';
+          fila.actualizado = dd.updatedAt ? new Date(dd.updatedAt).toLocaleString('es-VE') : '-';
+          if (bytes > LIM * 0.6) alerta.push(id + ' está al ' + fila.pct_1MB + ' del límite de 1 MB');
+        } else fila.nube_kb = 'NO EXISTE';
+      } catch(e) { fila.nube_kb = 'ERROR'; }
+      try { var raw = localStorage.getItem(ls); if (raw) { var a = JSON.parse(raw); fila.local_n = Array.isArray(a) ? a.length : (a && Array.isArray(a.facturas) ? a.facturas.length : Object.keys(a).length); } } catch(_){}
+      if (fila.nube_n !== '?' && fila.nube_n !== '-' && fila.local_n !== '-' && fila.nube_n !== fila.local_n) alerta.push(id + ': nube ' + fila.nube_n + ' vs local ' + fila.local_n);
+      out.push(fila);
+    }
+    console.log('═══ AUDITORÍA DE PERSISTENCIA EN LA NUBE (v.310) ═══');
+    console.table(out);
+    if (alerta.length) { console.warn('⚠ ATENCIÓN:'); alerta.forEach(function(a){ console.warn('  • ' + a); }); }
+    else console.log('✅ Sin alertas: todos los documentos por debajo del 60% del límite y conteos alineados.');
+    return { filas: out, alertas: alerta };
+  };
+
   window.fbSaveInventory = async (v) => {
     await _fbEsperarSyncListo('inventario'); // v.262: candado — espera confirmación de carga antes de subir
     var payload = v || {};
@@ -7839,11 +7974,14 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
   window.fbSaveSales = async (v) => {
     await _fbEsperarSyncListo('ventas'); // v.262: candado
     var payload = Array.isArray(v) ? v : [];
+    if (!(await window._fbGuardiaReduccion('ventas', 'sales', payload.length))) return { count: payload.length, ok: false, aborted: 'reduccion' }; // v.310
+    var payloadStr = JSON.stringify(payload);
     await _fbConReintento(function(){ return setDoc(doc(db,'data','sales'), {
-      v: JSON.stringify(payload),
+      v: payloadStr,
       count: payload.length,
       updatedAt: Date.now()
     }); }, 30000, 'ventas', 3);
+    window._fbBackupColeccion('sales', payloadStr, payload.length); // v.310
     return { count: payload.length, ok: true };
   };
   window.fbGetSales = async () => {
@@ -7857,6 +7995,7 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
   // v.139 — Traslados entre depósitos (NE ↔ TF)
   window.fbSaveTraslados = async (arr) => {
     var payload = Array.isArray(arr) ? arr : [];
+    if (!(await window._fbGuardiaReduccion('traslados', 'traslados', payload.length))) return { count: payload.length, ok: false, aborted: 'reduccion' }; // v.310
     await setDoc(doc(db,'data','traslados'), {
       v: JSON.stringify(payload),
       count: payload.length,
@@ -8071,11 +8210,14 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
         }
 
         // 3) Guardar de verdad
+        if (!(await window._fbGuardiaReduccion('CXC', 'cxc', payload.length))) return { count: payload.length, ok: false, aborted: 'reduccion' }; // v.310
+        var payloadStr = JSON.stringify(payload);
         await setDoc(doc(db,'data','cxc'), {
-          v: JSON.stringify(payload),
+          v: payloadStr,
           count: payload.length,
           updatedAt: Date.now()
         });
+        window._fbBackupColeccion('cxc', payloadStr, payload.length); // v.310
         return { count: payload.length, ok: true };
       };
       // ── v.167: cola serializada de escrituras CXC ──────────────────
@@ -8270,11 +8412,14 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
       window.fbSaveHCL = async (v) => {
         await _fbEsperarSyncListo('Historial de Clientes'); // v.262: candado
         var payload = Array.isArray(v) ? v : [];
+        if (!(await window._fbGuardiaReduccion('facturas HCL', 'hcl_facturas', payload.length))) return { count: payload.length, ok: false, aborted: 'reduccion' }; // v.310
+        var payloadStr = JSON.stringify(payload);
         await setDoc(doc(db,'data','hcl_facturas'), {
-          v: JSON.stringify(payload),
+          v: payloadStr,
           count: payload.length,
           updatedAt: Date.now()
         });
+        window._fbBackupColeccion('hcl_facturas', payloadStr, payload.length); // v.310
         return { count: payload.length, ok: true };
       };
       window.fbGetHCL = async () => {
@@ -8311,6 +8456,27 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
       };
       window.fbGetRefAlias = async () => {
         try { const d = await getDoc(doc(db,'data','ref_alias')); return d.exists() ? JSON.parse(d.data().v) : null; } catch(e) { if(window._farmersFalloLectura) window._farmersFalloLectura('RefAlias', e); return null; }
+      };
+
+      // ── v.310: Descuentos/campañas y bitácora de liberaciones (antes solo en localStorage) ──
+      window.fbSaveDescuentos = async (data) => {
+        try {
+          await setDoc(doc(db,'data','descuentos'), { v: JSON.stringify(data || {}), updatedAt: Date.now() });
+          return true;
+        } catch(e) { console.warn('fbSaveDescuentos:', e); return false; }
+      };
+      window.fbGetDescuentos = async () => {
+        try { const d = await getDoc(doc(db,'data','descuentos')); return d.exists() ? JSON.parse(d.data().v) : null; } catch(e) { if(window._farmersFalloLectura) window._farmersFalloLectura('Descuentos', e); return null; }
+      };
+      window.fbSaveLiberacionLog = async (arr) => {
+        try {
+          var payload = Array.isArray(arr) ? arr : [];
+          await setDoc(doc(db,'data','liberacion_log'), { v: JSON.stringify(payload), count: payload.length, updatedAt: Date.now() });
+          return true;
+        } catch(e) { console.warn('fbSaveLiberacionLog:', e); return false; }
+      };
+      window.fbGetLiberacionLog = async () => {
+        try { const d = await getDoc(doc(db,'data','liberacion_log')); return d.exists() ? JSON.parse(d.data().v) : null; } catch(e) { if(window._farmersFalloLectura) window._farmersFalloLectura('LiberacionLog', e); return null; }
       };
 
       // ── Inventarios reportados por cliente (HCL) ─────────────────────
@@ -8974,6 +9140,7 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
       window.fbSaveOrdenesCompra = async (v) => {
         await _fbEsperarSyncListo('órdenes de compra'); // v.262: candado
         var payload = Array.isArray(v) ? v : [];
+        if (!(await window._fbGuardiaReduccion('órdenes de compra', 'ordenes_compra', payload.length))) return { count: payload.length, ok: false, aborted: 'reduccion' }; // v.310
         await setDoc(doc(db,'data','ordenes_compra'), {
           v: JSON.stringify(payload),
           count: payload.length,
@@ -9499,7 +9666,8 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
     window.fbSetStatus('syncing', 'ventas…');
     fbLog('Guardando ventas…', 'warn');
     try {
-      await _origSaveSales(v);
+      var rSales = await _origSaveSales(v);
+      if (rSales && rSales.ok === false) { window.fbSetStatus('disconnected', 'ventas no subidas'); return rSales; } // v.310: guardia
       window._fbState.salesCount = Array.isArray(v) ? v.length : 0;
       window._fbState.lastSync = fbNow();
       window.fbSetStatus('connected');
@@ -9687,7 +9855,10 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
       var arr = Array.isArray(pedidosArr) ? pedidosArr : (function(){
         try { return JSON.parse(localStorage.getItem('farmers_ms_pedidos') || '[]'); } catch(e) { return []; }
       })();
-      await setDoc(doc(db, 'data', 'ms_pedidos'), { v: JSON.stringify(arr), updatedAt: Date.now(), count: arr.length });
+      if (!(await window._fbGuardiaReduccion('pedidos multi-sucursal', 'ms_pedidos', arr.length))) return false; // v.310
+      var arrStr = JSON.stringify(arr);
+      await setDoc(doc(db, 'data', 'ms_pedidos'), { v: arrStr, updatedAt: Date.now(), count: arr.length });
+      window._fbBackupColeccion('ms_pedidos', arrStr, arr.length); // v.310
       return true;
     } catch(e) { console.error('[fbSaveMsPedidos] ✗ error:', e); return false; }
   };
@@ -10787,6 +10958,10 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
       if (idx >= 0) ocs[idx] = oc;
       localStorage.setItem('farmers_ordenes_compra', JSON.stringify(ocs));
       console.log('✓ OC actualizada en localStorage');
+      // v.310: antes la OC reparada quedaba solo en local
+      if (typeof window.fbSaveOrdenesCompra === 'function') {
+        try { await window.fbSaveOrdenesCompra(ocs); console.log('✓ OC sincronizada con Firebase'); } catch(eOC){ console.warn('OC → Firebase:', eOC && eOC.message); }
+      }
 
       // 2. Guardar PRODUCTS (saveProducts hace async Firebase también)
       if (typeof saveProducts === 'function') {
@@ -11933,6 +12108,38 @@ async function loadFromFirebase() {
           console.log('[loadFromFirebase] ✓ Equivalencias de ref cargadas: ' + Object.keys(aliasFB).length);
         }
       } catch(eRA) { console.warn('loadFromFirebase REF_ALIAS:', eRA); }
+    }
+    // ── v.310: descuentos y bitácora de liberaciones desde Firebase ──
+    // Regla: la nube manda si tiene datos; si la nube está vacía y local tiene, se sube lo local (primera migración).
+    if (window.fbGetDescuentos) {
+      try {
+        var descFB = await window.fbGetDescuentos();
+        var descLocalRaw = localStorage.getItem('farmers_descuentos');
+        var descFBTiene = descFB && ((descFB.campañas||[]).length || Object.keys(descFB.individuales||{}).length);
+        if (descFBTiene) {
+          localStorage.setItem('farmers_descuentos', JSON.stringify(descFB));
+          console.log('[loadFromFirebase] ✓ Descuentos cargados: ' + (descFB.campañas||[]).length + ' campañas, ' + Object.keys(descFB.individuales||{}).length + ' individuales');
+        } else if (descLocalRaw && window.fbSaveDescuentos) {
+          try { await window.fbSaveDescuentos(JSON.parse(descLocalRaw)); console.log('[loadFromFirebase] ↑ Descuentos locales subidos a Firebase por primera vez'); } catch(_){}
+        }
+      } catch(eDs) { console.warn('loadFromFirebase DESCUENTOS:', eDs); }
+    }
+    if (window.fbGetLiberacionLog) {
+      try {
+        var libFB = await window.fbGetLiberacionLog();
+        var libLocal = []; try { libLocal = JSON.parse(localStorage.getItem('farmers_liberacion_log') || '[]'); } catch(_){}
+        if (Array.isArray(libFB) && libFB.length) {
+          // Fusión por (ref+fecha+numP): nada se pierde, más nuevo primero, tope 500
+          var vistos = {}, fusion = [];
+          libFB.concat(libLocal).forEach(function(e){ if(!e) return; var k=(e.ref||'')+'|'+(e.fecha||'')+'|'+(e.qtyLiberada||''); if(vistos[k]) return; vistos[k]=1; fusion.push(e); });
+          fusion.sort(function(a,b){ return String(b.fecha||'').localeCompare(String(a.fecha||'')); });
+          if (fusion.length > 500) fusion = fusion.slice(0,500);
+          localStorage.setItem('farmers_liberacion_log', JSON.stringify(fusion));
+          if (fusion.length > libFB.length && window.fbSaveLiberacionLog) window.fbSaveLiberacionLog(fusion);
+        } else if (libLocal.length && window.fbSaveLiberacionLog) {
+          window.fbSaveLiberacionLog(libLocal);
+        }
+      } catch(eLb) { console.warn('loadFromFirebase LIBERACION_LOG:', eLb); }
     }
     // ── Cargar inventarios reportados por cliente (HCL) ──────────────────
     // Sincroniza datos del módulo de reposición entre dispositivos.
@@ -39284,6 +39491,12 @@ window.getDescuentos = function() {
 window.saveDescuentos = function(data) {
   try {
     localStorage.setItem(window.DESC_KEY, JSON.stringify(data));
+    // v.310: antes vivía SOLO en el navegador; ahora se respalda en data/descuentos
+    if (window.fbSaveDescuentos) {
+      window.fbSaveDescuentos(data).then(function(ok){
+        if (!ok && typeof showToast === 'function') showToast('⚠ Descuentos guardados en local, falló la subida a Firebase', 'warning');
+      });
+    }
     if (window.fbTriggerPortalSnapshot) window.fbTriggerPortalSnapshot('descuentos-actualizados');
     return true;
   } catch(e) {
@@ -54711,6 +54924,7 @@ function _msFacturaRenderizar(numP, suc) {
 function msRegistrarVentaYCXC(numP, sel) {
   // El overlay de despacho ya capturó los datos fiscales y confirmó la intención.
   // No duplicar confirmación aquí — el usuario ya pulsó 'Confirmar Despacho' en el overlay.
+  window._cxcUltimoError = ''; // v.311: aquí se acumula el motivo real si falla construir una factura
 
   var now=new Date();
   var dateStr=now.toLocaleDateString('es-VE',{day:'2-digit',month:'2-digit',year:'numeric'});
@@ -54807,11 +55021,26 @@ function msRegistrarVentaYCXC(numP, sel) {
     console.log('[v.294] Verificación previa OK — ' + _calcUds + ' uds a descontar en ' + (MS.data||[]).length + ' refs.');
   }
 
+  /* ═══ v.311 — CANDADO ANTI-DOBLE-DESCUENTO ══════════════════════════════
+     Hasta hoy, si el despacho fallaba DESPUÉS de descontar (ej. no se pudo
+     construir una factura CXC), cada reintento volvía a descontar el
+     inventario de TODAS las sucursales seleccionadas. Ahora, al descontar,
+     cada sucursal queda marcada en el pedido (invDescontadoSucs) y los
+     reintentos saltan el descuento de las ya marcadas. La marca solo la
+     limpia msMarcarDespachado al sellar, o una cancelación del pedido. */
+  var _yaDesc311 = {};
+  try { _yaDesc311 = (_pedGuardado && _pedGuardado.invDescontadoSucs) || MS.invDescontadoSucs || {}; } catch(e){}
+  var selDesc = (sel||[]).filter(function(s){ return !_yaDesc311[s]; });
+  if (selDesc.length < (sel||[]).length) {
+    var _yaList311 = (sel||[]).filter(function(s){ return _yaDesc311[s]; });
+    console.warn('[v.311] Inventario YA descontado en intento previo para: ' + _yaList311.join(', ') + ' — NO se repite el descuento.');
+  }
+
   // ── FASE 2: Liberar comprometido Y descontar inventario real ──
   // Ahora sí se hace efectivo: real -= comprometido, comp -= comprometido
-  if(typeof msLiberarComprometido==='function') {
+  if(typeof msLiberarComprometido==='function' && selDesc.length) {
     // v.295: se libera el comprometido pero NO se marca DESPACHADO todavía.
-    msLiberarComprometido(numP || MS.numPedido, sel, MS.data, true);
+    msLiberarComprometido(numP || MS.numPedido, selDesc, MS.data, true);
   }
   // Descontar inventario real (solo NE, AN eliminado)
   var _invD = typeof getInventory==='function' ? getInventory() : {};
@@ -54825,7 +55054,7 @@ function msRegistrarVentaYCXC(numP, sel) {
   });
   MS.data.forEach(function(p){
     var td=0;
-    sel.forEach(function(s){
+    selDesc.forEach(function(s){   // v.311: solo sucursales sin descuento previo
       var pide=p.pedidos[s]||0;
       var desp=p.dist[s]||0;
       if(pide>0) td+=Math.min(desp,pide);
@@ -54844,6 +55073,20 @@ function msRegistrarVentaYCXC(numP, sel) {
     }
   });
   if(typeof saveInventory==='function') saveInventory(_invD);
+  // v.311: dejar constancia INMEDIATA y persistente de qué sucursales ya
+  // tienen su inventario descontado, antes de cualquier paso que pueda fallar.
+  if (selDesc.length) {
+    try {
+      var _m311 = {}; Object.keys(_yaDesc311).forEach(function(k){ _m311[k] = _yaDesc311[k]; });
+      selDesc.forEach(function(s){ _m311[s] = Date.now(); });
+      MS.invDescontadoSucs = _m311;
+      if (typeof getMsPedidos==='function' && typeof saveMsPedidos==='function') {
+        var _peds311 = getMsPedidos();
+        var _pi311 = _peds311.findIndex(function(p){ return p.numP === (numP || MS.numPedido); });
+        if (_pi311 >= 0) { _peds311[_pi311].invDescontadoSucs = _m311; saveMsPedidos(_peds311); }
+      }
+    } catch(e311){ console.warn('[v.311] no se pudo persistir invDescontadoSucs:', e311); }
+  }
   if(typeof saveProducts==='function') saveProducts(PRODUCTS);
   if(window.fbSaveProducts) {
     window.fbSaveProducts(PRODUCTS).catch(function(e){ console.warn('[MS-Despacho] fbSaveProducts:', e); });
@@ -55085,7 +55328,7 @@ function msRegistrarVentaYCXC(numP, sel) {
     var _invReal = (typeof getInventory==='function') ? getInventory() : {};
     (MS.data||[]).forEach(function(p){
       var td = 0;
-      (sel||[]).forEach(function(s){
+      (selDesc||[]).forEach(function(s){   // v.311: verificar solo lo descontado en ESTE intento
         var pide=(p.pedidos||{})[s]||0, desp=(p.dist||{})[s]||0;
         if (pide>0) td += Math.min(desp,pide);
       });
@@ -55102,8 +55345,13 @@ function msRegistrarVentaYCXC(numP, sel) {
         if (!isNaN(ahora) && ahora >= antes) _refsMal.push(p.ref);
       }
     });
-    _invOK = (_udsDesc > 0) && (_refsMal.length === 0);
-    _detInv = _udsDesc + ' uds en ' + _refsCheck + ' refs';
+    if (!selDesc.length) {
+      // v.311: nada que descontar en este intento porque ya se descontó antes — no es un fallo.
+      _invOK = true; _detInv = 'descontado en intento previo (candado v.311)';
+    } else {
+      _invOK = (_udsDesc > 0) && (_refsMal.length === 0);
+      _detInv = _udsDesc + ' uds en ' + _refsCheck + ' refs';
+    }
     if (_refsMal.length) {
       console.error('[v.297] Refs que NO bajaron: ' + _refsMal.slice(0,15).join(', '));
       _detInv += ' · ⚠ ' + _refsMal.length + ' sin bajar';
@@ -55124,8 +55372,9 @@ function msRegistrarVentaYCXC(numP, sel) {
     console.error('[v.295] ⚠ Sucursales SIN factura CXC: ' + _faltanFac166.join(', '));
     alert('⚠ DESPACHO INCOMPLETO\n\n' + _faltanFac166.length + ' sucursal(es) no emitieron factura:\n' +
           _faltanFac166.join(', ') +
+          (window._cxcUltimoError ? '\n\nMotivo técnico:\n' + window._cxcUltimoError : '') +
           '\n\nEL PEDIDO NO SE MARCÓ COMO DESPACHADO.\n' +
-          'Revisa la conexión y vuelve a intentarlo — no se perdió nada.');
+          'El inventario de este intento quedó descontado y PROTEGIDO contra doble descuento (v.311): puedes reintentar sin que el stock baje otra vez.');
   } else {
     console.error('[v.297] ⚠ Facturas OK pero el inventario NO bajó.');
     alert('⚠ DESPACHO INCOMPLETO\n\nLas facturas se registraron, pero el inventario NO bajó' +
@@ -55339,6 +55588,54 @@ window.msMarcarDespachado = function(numP, sel) {
     console.log('[v.295] ' + numP + ' marcado ' + pedidos[idx].estado + ' (tras confirmar inventario y facturas).');
     return true;
   } catch(e) { console.error('[v.295] msMarcarDespachado:', e); return false; }
+};
+
+/* ═══ v.311 — REPARACIÓN DE DOBLE DESCUENTO ═════════════════════════════════
+   Para intentos de despacho ANTERIORES al candado v.311 que descontaron el
+   inventario más de una vez. Devuelve al stock NE lo descontado de más.
+   Uso:  farmersRevertirDescuentosExtra('MS-310826-XXXX', vecesDeMas)
+         vecesDeMas = intentos totales de Confirmar Despacho MENOS 1.
+         (Ej.: pulsaste 3 veces → vecesDeMas = 2)
+   Muestra el detalle ref por ref y PIDE CONFIRMACIÓN antes de tocar nada. */
+window.farmersRevertirDescuentosExtra = function(numP, vecesDeMas, sucursalesOpc) {
+  vecesDeMas = parseInt(vecesDeMas) || 0;
+  if (!numP || vecesDeMas <= 0) { console.error('Uso: farmersRevertirDescuentosExtra(\'MS-...\', vecesDeMas>0)'); return false; }
+  var peds = (typeof getMsPedidos==='function') ? getMsPedidos() : [];
+  var ped = peds.find(function(p){ return p.numP === numP; });
+  if (!ped) { console.error('Pedido ' + numP + ' no encontrado.'); return false; }
+  // Sucursales afectadas: las indicadas, o las que aún NO están selladas DESPACHADO
+  var sucs = Array.isArray(sucursalesOpc) && sucursalesOpc.length ? sucursalesOpc :
+    (ped.sucursales||[]).filter(function(s){ return String((ped.sucursalesEstado||{})[s]||'').toUpperCase() !== 'DESPACHADO'; });
+  if (!sucs.length) { console.error('No hay sucursales pendientes en ' + numP + '. Pasa la lista explícita como 3er argumento.'); return false; }
+  var porRef = {};
+  (ped.items||[]).forEach(function(i){
+    var td = 0;
+    sucs.forEach(function(s){
+      var sd = (i.sucursales||{})[s]; if (!sd) return;
+      var pide = parseInt(sd.pide)||0, desp = parseInt(sd.desp)||0;
+      if (pide > 0) td += Math.min(desp||pide, pide);
+    });
+    if (td > 0) porRef[i.ref] = td * vecesDeMas;
+  });
+  var refs = Object.keys(porRef);
+  if (!refs.length) { console.error('Nada que revertir: 0 unidades calculadas.'); return false; }
+  var totalUds = refs.reduce(function(a,r){ return a + porRef[r]; }, 0);
+  var det = refs.map(function(r){ return '  ' + r + '  +' + porRef[r] + ' uds'; }).join('\n');
+  console.log('═══ REVERSIÓN DE DOBLE DESCUENTO · ' + numP + ' ═══\nSucursales: ' + sucs.join(', ') + '\nVeces de más: ' + vecesDeMas + '\n' + det + '\nTOTAL a devolver: ' + totalUds + ' uds');
+  if (!confirm('DEVOLVER AL STOCK (NE) ' + totalUds + ' uds en ' + refs.length + ' referencia(s) del pedido ' + numP + '?\n\n(Detalle en consola. Solo hazlo si el despacho se intentó ' + (vecesDeMas+1) + ' veces en total.)')) return false;
+  var inv = (typeof getInventory==='function') ? getInventory() : {};
+  refs.forEach(function(r){
+    var prod = (PRODUCTS||[]).find(function(x){ return x.r === r; });
+    if (prod && typeof window.devolverStockAuto === 'function') { window.devolverStockAuto(prod, porRef[r]); inv[r] = prod.ex; }
+    else { inv[r] = (parseInt(inv[r])||0) + porRef[r]; }
+  });
+  if (typeof saveInventory==='function') saveInventory(inv);
+  if (typeof saveProducts==='function') saveProducts(PRODUCTS);
+  if (window.fbSaveProducts) { window.fbSaveProducts(PRODUCTS).catch(function(e){ console.warn(e); }); }
+  if (window.fbSaveInventory) { window.fbSaveInventory(inv).catch(function(e){ console.warn(e); }); }
+  console.log('✅ Reversión aplicada y sincronizada. Verifica con farmersAuditoriaIntegral({dryRun:true}).');
+  if (typeof showToast==='function') showToast('✅ Stock devuelto: ' + totalUds + ' uds en ' + refs.length + ' refs (' + numP + ')', 'success');
+  return true;
 };
 
 
@@ -62624,6 +62921,13 @@ window.farmersArchivarPlan = function(anio, mes){
   console.log(msg); return msg;
 };
 window.farmersArchivar = async function(anio, mes){
+  // v.310: DESHABILITADO. Esta función quitaba registros viejos de localStorage
+  // confiando en Firebase, pero fbSaveSales/fbSaveHCL/fbSaveMsPedidos sobreescriben
+  // la nube con EXACTAMENTE lo local → el siguiente guardado borraba el historial
+  // archivado de Firebase. Se reactivará cuando ventas/HCL vivan como documento
+  // por registro (patrón products_v2). Mientras, usa farmersArchivarPlan() solo para medir.
+  var msgOff='⛔ farmersArchivar está deshabilitado en v.310 (riesgo de borrar historial en la nube). Consulta farmersAuditoriaNube() para ver tamaños.';
+  console.error(msgOff); alert(msgOff); return msgOff;
   var CFG=[{k:'farmers_hcl_v7_facturas',n:'Facturas HCL',fb:'fbGetHCL'},
            {k:'farmers_sales',n:'Ventas',fb:'fbGetSales'},
            {k:'farmers_ms_pedidos',n:'Pedidos',fb:'fbGetMsPedidos'}];
@@ -68055,6 +68359,7 @@ function cxcCrearDesdePedido(sale, opts) {
     // visiblemente y se retorna false para que el caller NO marque
     // la sucursal como DESPACHADO.
     console.error('[cxcCrearDesdePedido v.89] ❌ FALLÓ al crear factura para ' + (sale && sale.numpedido) + ':', err);
+    window._cxcUltimoError = ((sale && sale.numpedido) || '?') + ' → ' + (err && (err.message || String(err))) + (err && err.stack ? ' @ ' + String(err.stack).split('\n')[1] : ''); // v.311
     if(typeof showToast === 'function') {
       showToast('❌ Error creando factura CXC para ' + (sale.cliente||'sucursal') + '. Revisa consola (F12).', 'error');
     }
