@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.09.18.314">
+<meta name="farmers-version" content="2026.09.18.315">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -52138,7 +52138,18 @@ function msMostrarAuditoria(audit, onContinuar, productosNorm) {
     var cmp = audit._comparacion;
     var difDiv = document.createElement('div');
     difDiv.style.cssText = 'margin-bottom:14px;';
-    var header = '<div style="font-size:.7rem;font-weight:800;color:#1e40af;text-transform:uppercase;letter-spacing:.8px;margin-bottom:6px;">🔎 ' + cmp.totalDif + ' diferencia(s) cliente vs nuestro sistema (se usaron datos del sistema)</div>';
+    /* v.315 — el encabezado y las filas reflejan la decisión REAL de precio */
+    var _ovr315 = (window.MS && MS._precioOverride) || {};
+    function _esPrecio315(c){ return c.tipo === 'num' && String(c.label||'').indexOf('Precio') === 0; }
+    var _nNeg315 = 0;
+    cmp.campos.forEach(function(c){
+      if (!_esPrecio315(c)) return;
+      (cmp.diferencias[c.k] || []).forEach(function(d){ if (_ovr315[d.ref] === 'cliente') _nNeg315++; });
+    });
+    var _txtHdr315 = _nNeg315 > 0
+      ? '(' + _nNeg315 + ' precio(s) negociado(s) del cliente · resto datos del sistema)'
+      : '(se usaron datos del sistema)';
+    var header = '<div style="font-size:.7rem;font-weight:800;color:#1e40af;text-transform:uppercase;letter-spacing:.8px;margin-bottom:6px;">🔎 ' + cmp.totalDif + ' diferencia(s) cliente vs nuestro sistema ' + _txtHdr315 + '</div>';
     var contenedor = '<div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:10px 14px;max-height:240px;overflow-y:auto;">';
     var filas = '';
     cmp.campos.forEach(function(c){
@@ -52148,11 +52159,16 @@ function msMostrarAuditoria(audit, onContinuar, productosNorm) {
       lista.slice(0, 8).forEach(function(d){
         var vc = (c.tipo === 'num') ? parseFloat(d.cliente||0).toFixed(2) : String(d.cliente||'(vacío)');
         var vs = (c.tipo === 'num') ? parseFloat(d.sistema||0).toFixed(2) : String(d.sistema||'(vacío)');
-        filas += '<div style="display:flex;gap:10px;padding:2px 0;font-size:.66rem;line-height:1.4;">' +
+        var usaCliente = _esPrecio315(c) && _ovr315[d.ref] === 'cliente';
+        var vTach = usaCliente ? vs : vc;                    // el descartado
+        var vUsado = usaCliente ? vc : vs;                   // el que va al pedido
+        var colorUsado = usaCliente ? '#b45309' : '#166534'; // ámbar = negociado, verde = sistema
+        var etiq = usaCliente ? ' <span style="font-size:.58rem;font-weight:800;background:#fffbeb;border:1px solid #fde68a;color:#92400e;padding:1px 6px;border-radius:20px;">NEGOCIADO</span>' : '';
+        filas += '<div style="display:flex;gap:10px;padding:2px 0;font-size:.66rem;line-height:1.4;align-items:center;">' +
           '<span style="font-family:monospace;font-weight:700;color:#1e293b;min-width:70px;">' + d.ref + '</span>' +
-          '<span style="color:#991b1b;text-decoration:line-through;opacity:.75;">' + vc + '</span>' +
+          '<span style="color:#991b1b;text-decoration:line-through;opacity:.75;">' + vTach + '</span>' +
           '<span style="color:#64748b;">→</span>' +
-          '<span style="color:#166534;font-weight:600;">' + vs + '</span>' +
+          '<span style="color:' + colorUsado + ';font-weight:700;">' + vUsado + '</span>' + etiq +
         '</div>';
       });
       if (lista.length > 8) filas += '<div style="font-size:.62rem;color:#64748b;padding-left:80px;">· y ' + (lista.length - 8) + ' más...</div>';
