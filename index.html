@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.08.31.311">
+<meta name="farmers-version" content="2026.09.18.312">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -7881,6 +7881,11 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
   function _bkFechaKey(d) { d = d || new Date(); return d.getFullYear() + String(d.getMonth()+1).padStart(2,'0') + String(d.getDate()).padStart(2,'0'); }
   // Backup diario (una vez por día por dispositivo y colección). No bloquea el guardado principal.
   window._fbBackupColeccion = async function(docId, payloadStr, count) {
+    // v.312: un respaldo también es un documento — si no cabe en 1 MB, avisar en vez de fallar en silencio
+    if (payloadStr && payloadStr.length > 950000) {
+      console.warn('[Backup v.312] ' + docId + ' pesa ' + Math.round(payloadStr.length/1024) + ' KB (>950): respaldo diario omitido. Esta colección necesita migrar a documento por registro.');
+      return;
+    }
     var hoy = _bkFechaKey();
     var sk = 'farmers_bk_' + docId;
     try { if (sessionStorage.getItem(sk) === hoy) return; } catch(_){}
@@ -9404,6 +9409,7 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
       // ── MS_PEDIDOS (pedidos pendientes multi-sucursal) ──
       onSnapshot(doc(db,'data','ms_pedidos'), function(s) {
         try {
+          if (window._msV2Activo) return; // v.312: v2 es la fuente de verdad; el doc viejo ya no manda
           if (!s.exists() || !s.data().v) return;
           // v.172: GUARDIA ANTI-REVERSIÓN — si el remoto es más viejo que el
           // último guardado local, NO pisar lo local (esto revertía ediciones
@@ -9855,11 +9861,20 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
       var arr = Array.isArray(pedidosArr) ? pedidosArr : (function(){
         try { return JSON.parse(localStorage.getItem('farmers_ms_pedidos') || '[]'); } catch(e) { return []; }
       })();
-      if (!(await window._fbGuardiaReduccion('pedidos multi-sucursal', 'ms_pedidos', arr.length))) return false; // v.310
+      // v.312: la vía principal es el formato por documento (inmune al límite de 1 MB)
+      var okV2 = await window.fbSaveMsPedidosV2(arr);
+      // Formato viejo: solo como cortesía mientras quepa, y sin bloquear si falla
       var arrStr = JSON.stringify(arr);
-      await setDoc(doc(db, 'data', 'ms_pedidos'), { v: arrStr, updatedAt: Date.now(), count: arr.length });
+      if (arrStr.length < 900000) {
+        if (await window._fbGuardiaReduccion('pedidos multi-sucursal', 'ms_pedidos', arr.length)) {
+          try { await setDoc(doc(db, 'data', 'ms_pedidos'), { v: arrStr, updatedAt: Date.now(), count: arr.length }); }
+          catch(eLeg) { console.warn('[fbSaveMsPedidos] formato viejo rechazado (no crítico, v2 manda):', eLeg && eLeg.message); }
+        }
+      } else {
+        console.warn('[fbSaveMsPedidos] formato viejo omitido: ' + Math.round(arrStr.length/1024) + ' KB (>900). v2 es la fuente de verdad.');
+      }
       window._fbBackupColeccion('ms_pedidos', arrStr, arr.length); // v.310
-      return true;
+      return okV2;
     } catch(e) { console.error('[fbSaveMsPedidos] ✗ error:', e); return false; }
   };
   window.fbGetMsPedidos = async () => {
@@ -9870,6 +9885,126 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
       window._msPedidosRemoteUpdatedAt = snap.data().updatedAt || 0;
       return JSON.parse(snap.data().v);
     } catch(e) { return []; }
+  };
+
+  /* ═══ v.312 — MS_PEDIDOS_V2: un documento por pedido ══════════════════════
+     El documento único data/ms_pedidos venía siendo rechazado por Firestore
+     (error 400: límite de 1 MB) → los despachos se guardaban en local pero la
+     nube conservaba la versión vieja y al recargar el pedido "revertía" a
+     RESERVADO. Mismo mal y misma cura que products_v2: cada pedido es ahora
+     su propio documento en ms_pedidos_v2/<numP>. Cada guardado toca SOLO los
+     pedidos que cambiaron (nunca más un JSON gigante), las pestañas y equipos
+     dejan de pisarse el arreglo completo, y ningún pedido individual se
+     acerca al límite. El formato viejo se sigue escribiendo como cortesía
+     mientras quepa (<900 KB); la lectura prefiere v2 apenas exista.
+     Consola: farmersMsV2Estado() · farmersMsV2Migrar() ══════════════════════ */
+  var MSV2_COL = 'ms_pedidos_v2';
+  window._msV2Activo = false;          // se enciende cuando la nube ya tiene docs v2
+  window._msV2Cache = {};              // numP → JSON string de lo último subido/bajado
+
+  window.fbSaveMsPedidosV2 = async function(arr) {
+    var lista = Array.isArray(arr) ? arr : [];
+    var ok = 0, fallos = [], sinCambio = 0, LOTE = 20;
+    var vivos = {};
+    for (var i = 0; i < lista.length; i += LOTE) {
+      var trozo = lista.slice(i, i + LOTE);
+      await Promise.all(trozo.map(async function(pd){
+        if (!pd || !pd.numP) return;
+        var id = String(pd.numP).replace(/[\/\s]/g, '_');
+        vivos[id] = true;
+        var str = JSON.stringify(pd);
+        if (window._msV2Cache[id] === str) { sinCambio++; return; }
+        try {
+          await setDoc(doc(db, MSV2_COL, id), { v: str, numP: pd.numP, estado: pd.estado || '', updatedAt: Date.now() });
+          window._msV2Cache[id] = str; ok++;
+        } catch(e) { fallos.push(id); console.error('[MsV2] ✗ ' + id + ':', e && e.message); }
+      }));
+    }
+    // Borrados: pedidos que estaban en la nube (cache) y ya no están en local.
+    var borrar = Object.keys(window._msV2Cache).filter(function(id){ return !vivos[id]; });
+    var permitir = window._farmersPermitirReduccion || (borrar.length < 5 && borrar.length <= Math.max(1, Object.keys(window._msV2Cache).length) * 0.10);
+    if (borrar.length && permitir) {
+      for (var b = 0; b < borrar.length; b++) {
+        try { await deleteDoc(doc(db, MSV2_COL, borrar[b])); delete window._msV2Cache[borrar[b]]; }
+        catch(eD) { console.warn('[MsV2] borrar ' + borrar[b] + ':', eD && eD.message); }
+      }
+    } else if (borrar.length) {
+      console.error('[MsV2] ⛔ Guardia: se intentaba borrar ' + borrar.length + ' pedidos de la nube — omitido. Si es intencional: farmersPermitirReduccion(true) y guarda de nuevo.');
+    }
+    if (ok || borrar.length) console.log('[MsV2] ✓ subidos ' + ok + ' · sin cambio ' + sinCambio + ' · borrados ' + (permitir ? borrar.length : 0) + (fallos.length ? ' · ⚠ fallos: ' + fallos.join(', ') : ''));
+    if (ok > 0 || fallos.length === 0) window._msV2Activo = true;
+    return fallos.length === 0;
+  };
+
+  window.fbGetMsPedidosV2 = async function() {
+    try {
+      var snap = await getDocs(collection(db, MSV2_COL));
+      var out = [], maxAt = 0;
+      snap.forEach(function(d){
+        try {
+          var dd = d.data() || {};
+          if (!dd.v) return;
+          out.push(JSON.parse(dd.v));
+          window._msV2Cache[d.id] = dd.v;
+          if (dd.updatedAt > maxAt) maxAt = dd.updatedAt;
+        } catch(e){}
+      });
+      if (out.length) { window._msV2Activo = true; window._msPedidosRemoteUpdatedAt = maxAt; }
+      return out.length ? out : null;
+    } catch(e) { console.warn('[MsV2] lectura falló:', e && e.message); return null; }
+  };
+
+  window.farmersMsV2Estado = async function() {
+    var loc = 0; try { loc = (JSON.parse(localStorage.getItem('farmers_ms_pedidos')||'[]')).length; } catch(e){}
+    var viejo = 0, nuevo = 0, viejoKB = 0;
+    try { var d1 = await getDoc(doc(db,'data','ms_pedidos')); if (d1.exists()) { var v = d1.data().v||''; viejo = (JSON.parse(v)||[]).length; viejoKB = Math.round(new Blob([v]).size/1024); } } catch(e){}
+    try { var v2 = await window.fbGetMsPedidosV2(); nuevo = v2 ? v2.length : 0; } catch(e){}
+    var msg = 'PEDIDOS MS\n  Local: ' + loc + '\n  Nube formato viejo: ' + viejo + ' (' + viejoKB + ' KB de 1024 KB máx)' + '\n  Nube formato NUEVO (v2): ' + nuevo + '\n\n' +
+      (nuevo === 0 ? '→ Aún sin migrar. Corre: farmersMsV2Migrar()' : nuevo === loc ? '✅ v2 al día con lo local.' : '⚠ v2 difiere de local en ' + Math.abs(loc-nuevo) + '. Corre farmersMsV2Migrar().');
+    console.log(msg); return msg;
+  };
+  window.farmersMsV2Migrar = async function() {
+    var lista = []; try { lista = JSON.parse(localStorage.getItem('farmers_ms_pedidos')||'[]'); } catch(e){}
+    if (!lista.length) return '⛔ No hay pedidos locales.';
+    console.log('[MsV2] Migrando ' + lista.length + ' pedidos…');
+    var ok = await window.fbSaveMsPedidosV2(lista);
+    var msg = ok ? '✅ Migración v2 completa: ' + lista.length + ' pedidos, cada uno como documento propio.' : '⚠ Migración con fallos — revisa la consola.';
+    console.log(msg); return msg;
+  };
+
+  // Escucha en tiempo real del formato v2 (tablet/otra PC), con las mismas
+  // guardias v.172/v.199 de ventana de gracia que el formato viejo.
+  window._msV2Escuchar = function() {
+    try {
+      onSnapshot(collection(db, MSV2_COL), function(snap) {
+        try {
+          if (!window._msV2Activo) return;
+          var _localAt = parseInt(localStorage.getItem('farmers_ms_pedidos_savedAt')||'0')||0;
+          if (_localAt && (Date.now() - _localAt) < 15000) return; // gracia: acabo de guardar aquí
+          var peds = []; try { peds = JSON.parse(localStorage.getItem('farmers_ms_pedidos')||'[]'); } catch(e){}
+          var idx = {}; peds.forEach(function(p,i){ if(p&&p.numP) idx[String(p.numP).replace(/[\/\s]/g,'_')] = i; });
+          var cambio = false;
+          snap.docChanges().forEach(function(ch){
+            var id = ch.doc.id, dd = ch.doc.data() || {};
+            if (ch.type === 'removed') {
+              if (idx[id] !== undefined) { peds.splice(idx[id],1); delete window._msV2Cache[id]; cambio = true; }
+              return;
+            }
+            if (!dd.v || window._msV2Cache[id] === dd.v) return;
+            try {
+              var pNew = JSON.parse(dd.v);
+              if (idx[id] !== undefined) peds[idx[id]] = pNew; else peds.push(pNew);
+              window._msV2Cache[id] = dd.v; cambio = true;
+            } catch(e){}
+          });
+          if (cambio) {
+            localStorage.setItem('farmers_ms_pedidos', JSON.stringify(peds));
+            console.log('[MsV2] ↓ cambios recibidos de otro equipo/pestaña');
+            if (typeof renderMonitor === 'function') { try { renderMonitor(); } catch(e){} }
+          }
+        } catch(e){ console.warn('[MsV2] snapshot:', e); }
+      });
+    } catch(e){ console.warn('[MsV2] escuchar:', e); }
   };
   // Notas de Crédito (no estaba con setDoc explícito antes)
   if (!window.fbSaveNotasCredito) {
@@ -12276,7 +12411,23 @@ async function loadFromFirebase() {
     // ── Cargar MS_PEDIDOS (pedidos pendientes multi-sucursal) ──
     if (window.fbGetMsPedidos) {
       try {
-        var msPedidosFB = await window.fbGetMsPedidos();
+        // v.312: preferir el formato por documento; el viejo queda de respaldo
+        var msPedidosFB = (window.fbGetMsPedidosV2 ? await window.fbGetMsPedidosV2() : null);
+        if (msPedidosFB && msPedidosFB.length) {
+          console.log('[loadFromFirebase] ✓ MS_PEDIDOS v2: ' + msPedidosFB.length + ' pedidos (documento por pedido)');
+        } else {
+          msPedidosFB = await window.fbGetMsPedidos();
+          if (Array.isArray(msPedidosFB) && msPedidosFB.length && window.fbSaveMsPedidosV2) {
+            // Primera vez tras el despliegue: sembrar v2 en segundo plano, sin bloquear
+            setTimeout(function(){
+              var loc = []; try { loc = JSON.parse(localStorage.getItem('farmers_ms_pedidos')||'[]'); } catch(e){}
+              window.fbSaveMsPedidosV2(loc.length ? loc : msPedidosFB).then(function(ok){
+                console.log('[MsV2] siembra inicial ' + (ok ? 'completa' : 'con fallos'));
+              });
+            }, 8000);
+          }
+        }
+        if (window._msV2Escuchar) setTimeout(window._msV2Escuchar, 4000);
         if (Array.isArray(msPedidosFB) && msPedidosFB.length > 0) {
           // v.172: GUARDIA ANTI-REVERSIÓN — si lo remoto es más viejo que el último
           // guardado local (ej. la escritura a Firebase falló antes de recargar),
@@ -55309,9 +55460,11 @@ function msRegistrarVentaYCXC(numP, sel) {
       var _hay = _facs166.some(function(f){
         var fn = String(f.numpedido||'').trim();
         if (fn === _npMS) return true;                       // formato MS-…
-        if (_fiscal && fn === _fiscal) return true;          // correlativo fiscal
+        if (_fiscal && fn === _fiscal) return true;          // correlativo fiscal como numpedido
+        if (_fiscal && String(f.nFactura||'').trim() === _fiscal) return true; // v.312: campo nFactura
         var txt = fn + ' ' + String(f.notas||'');
         if (txt.indexOf(_npBase) >= 0) return true;          // pedido citado en notas
+        if (String(f.sucursalCodigo||'') === s && txt.indexOf(_npBase.slice(-4)) >= 0) return true; // v.312: sucursal + cola del pedido
         return false;
       });
       if (!_hay) _faltanFac166.push(s);
@@ -55588,6 +55741,44 @@ window.msMarcarDespachado = function(numP, sel) {
     console.log('[v.295] ' + numP + ' marcado ' + pedidos[idx].estado + ' (tras confirmar inventario y facturas).');
     return true;
   } catch(e) { console.error('[v.295] msMarcarDespachado:', e); return false; }
+};
+
+/* ═══ v.312 — SELLADO MANUAL DE PEDIDOS EN LIMBO ════════════════════════════
+   Para pedidos cuya venta, factura CXC e inventario YA están correctos pero
+   que quedaron sin sellarse por la falsa alarma (IKO FARMA, FERREGAMA).
+   Uso: farmersSellarPedido('MS-260916-1543')
+   Muestra el resumen (ventas y facturas halladas) y pide confirmación.
+   Marca DESPACHADO, fija fecha, y activa el candado anti-doble-descuento. */
+window.farmersSellarPedido = function(numP, sucsOpc) {
+  if (!numP) { console.error("Uso: farmersSellarPedido('MS-...')"); return false; }
+  var peds = getMsPedidos();
+  var idx = peds.findIndex(function(p){ return p.numP === numP; });
+  if (idx < 0) { console.error('Pedido ' + numP + ' no encontrado.'); return false; }
+  var ped = peds[idx];
+  var sucs = Array.isArray(sucsOpc) && sucsOpc.length ? sucsOpc : (ped.sucursales || []);
+  var sales = (typeof getSales==='function') ? getSales() : [];
+  var facs  = (typeof cxcFacs==='function') ? cxcFacs() : [];
+  var nV = sales.filter(function(x){ return x.msNumPedido === numP || String(x.numpedido||'').indexOf(numP) >= 0; }).length;
+  var nF = facs.filter(function(f){ return (String(f.numpedido||'')+' '+String(f.notas||'')).indexOf(numP) >= 0; }).length;
+  console.log('═══ SELLAR ' + numP + ' ═══\nSucursales: ' + sucs.join(', ') + '\nVentas registradas: ' + nV + ' · Facturas CXC: ' + nF);
+  if (!nV || !nF) console.warn('⚠ Ventas o facturas en 0 — verifica antes de sellar.');
+  if (!confirm('SELLAR ' + numP + ' como DESPACHADO?\n\nVentas: ' + nV + ' · Facturas CXC: ' + nF + '\nSucursales: ' + sucs.join(', ') + '\n\nSolo hazlo si la mercancía salió y la factura existe.')) return false;
+  ped.sucursalesEstado = ped.sucursalesEstado || {};
+  var lock = ped.invDescontadoSucs || {};
+  sucs.forEach(function(su){ ped.sucursalesEstado[su] = 'DESPACHADO'; lock[su] = lock[su] || Date.now(); });
+  ped.invDescontadoSucs = lock;
+  var todas = (ped.sucursales||[]).every(function(su){ return ped.sucursalesEstado[su] === 'DESPACHADO'; });
+  ped.estado = todas ? 'DESPACHADO' : 'PARCIAL';
+  ped.fase = 'despachado';
+  if (!ped.fechaDespacho) ped.fechaDespacho = new Date().toLocaleDateString('es-VE',{day:'2-digit',month:'2-digit',year:'numeric'});
+  ped.selladoManual = { fecha: new Date().toISOString(), por: 'OGK', motivo: 'v.312 — falsa alarma DESPACHO INCOMPLETO' };
+  peds[idx] = ped;
+  saveMsPedidos(peds);
+  if (typeof window.MS !== 'undefined' && MS.numPedido === numP) { MS.sucursalesEstado = ped.sucursalesEstado; MS.fase = 'despachado'; MS.invDescontadoSucs = lock; }
+  console.log('✅ ' + numP + ' sellado como ' + ped.estado + ' (con candado anti-doble-descuento). Verifica en el Monitor.');
+  if (typeof showToast === 'function') showToast('✅ ' + numP + ' sellado: ' + ped.estado, 'success');
+  if (typeof renderMonitor === 'function') { try { renderMonitor(); } catch(e){} }
+  return true;
 };
 
 /* ═══ v.311 — REPARACIÓN DE DOBLE DESCUENTO ═════════════════════════════════
@@ -62885,6 +63076,53 @@ window.farmersRepararVinculos = function(){
    Saca de local los registros anteriores a la fecha de corte SOLO si la nube
    tiene al menos tantos registros como local. Nada se borra sin respaldo.
    ═══════════════════════════════════════════════════════════════════════════ */
+/* ═══ v.312 — CENTINELA DE PESTAÑA ÚNICA ════════════════════════════════════
+   Dos pestañas del sistema abiertas a la vez se pisan los guardados entre sí
+   (comparten localStorage y cada una sube su copia completa en memoria).
+   Cada pestaña late cada 5s; si se detecta otro latido ajeno, se avisa. */
+(function(){
+  try {
+    var TAB_ID = 'tab_' + Date.now() + '_' + Math.floor(Math.random()*99999);
+    var K = 'farmers_tab_latido';
+    var avisado = 0;
+    function latir(){
+      try {
+        var otro = null;
+        try { otro = JSON.parse(localStorage.getItem(K) || 'null'); } catch(e){}
+        var ahora = Date.now();
+        if (otro && otro.id !== TAB_ID && (ahora - otro.at) < 12000) {
+          if (ahora - avisado > 120000) {
+            avisado = ahora;
+            console.error('[v.312] ⚠ HAY OTRA PESTAÑA DEL SISTEMA ABIERTA. Trabaja siempre en UNA sola: dos pestañas se pisan los guardados entre sí (pedidos que "revierten", estados que se pierden).');
+            if (typeof showToast === 'function') showToast('⚠ Tienes el sistema abierto en OTRA pestaña. Cierra una: dos pestañas se pisan los guardados.', 'error', { duration: 12000, title: 'Pestaña duplicada' });
+          }
+          return; // no robar el latido: la otra pestaña lo mantiene
+        }
+        localStorage.setItem(K, JSON.stringify({ id: TAB_ID, at: ahora }));
+      } catch(e){}
+    }
+    latir(); setInterval(latir, 5000);
+  } catch(e){}
+})();
+
+/* v.312 — Centinela de tamaño: avisa cuando una colección de documento único
+   se acerca al límite de 1 MB de Firestore (la causa del error 400). */
+setTimeout(function(){
+  try {
+    var VIG = [['farmers_sales','Ventas'],['farmers_hcl_v7_facturas','Facturas HCL'],['farmers_cxc','CXC'],['farmers_ms_pedidos','Pedidos MS']];
+    VIG.forEach(function(par){
+      var v = localStorage.getItem(par[0]) || '';
+      var kb = Math.round(v.length/1024);
+      if (v.length > 900000) {
+        console.error('[v.312] ⚠ ' + par[1] + ' pesa ' + kb + ' KB — sobre o cerca del límite de 1 MB de la nube. Los guardados a Firebase pueden estar siendo RECHAZADOS (error 400). Avísale a Claude para migrarla a documento por registro.');
+        if (typeof showToast === 'function') showToast('⚠ ' + par[1] + ': ' + kb + ' KB, cerca del límite de la nube (1024 KB). Requiere migración.', 'warning', { duration: 12000 });
+      } else if (v.length > 700000) {
+        console.warn('[v.312] ' + par[1] + ': ' + kb + ' KB (límite nube: 1024 KB). Aún cabe, pero planifica la migración.');
+      }
+    });
+  } catch(e){}
+}, 20000);
+
 window.farmersEspacio = function(){
   var t=0, l=[];
   for (var i=0;i<localStorage.length;i++){
@@ -68258,8 +68496,15 @@ function cxcCrearDesdePedido(sale, opts) {
 
     // Verificar que no existe ya una factura para este pedido
     var facturasExistentes = cxcFacs();
+    // v.312: una factura del mismo despacho puede estar registrada con el
+    // correlativo fiscal como número (ej. 0000001337) en vez del formato
+    // MS-…-SUCURSAL. Reconocerla por CUALQUIER vía evita duplicarla y evita
+    // el bucle de "DESPACHO INCOMPLETO" cuando en realidad ya existe.
     var yaExiste = facturasExistentes.some(function(f){
-      return f.numpedido === sale.numpedido || f.saleId === String(sale.id);
+      if (f.numpedido === sale.numpedido || f.saleId === String(sale.id)) return true;
+      if (sale.nFactura && String(f.nFactura||'').trim() === String(sale.nFactura).trim()) return true;
+      if (String(f.notas||'').indexOf(sale.numpedido) >= 0) return true;
+      return false;
     });
     if (yaExiste) {
       // FIX v.87: logear cuando se detecta duplicado para diagnóstico
