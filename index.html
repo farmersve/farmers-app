@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.09.19.319">
+<meta name="farmers-version" content="2026.09.19.320">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -56041,6 +56041,82 @@ window.farmersSellarPedido = function(numP, sucsOpc) {
   return true;
 };
 
+/* ═══ v.320 — AUTO-RECONCILIACIÓN DE ESTADOS ═════════════════════════════════
+   Problema: la verificación v.295/v.297 a veces no reconoce ventas/facturas
+   emitidas con correlativo fiscal → deja el pedido RESERVADO aunque todas
+   sus sucursales estén DESPACHADO. El Monitor mostraba despachados entre
+   los reservados y Omar tenía que sellarlos a mano.
+   Ahora: en cada carga y cada render del Monitor, todo pedido con TODAS sus
+   sucursales DESPACHADO se sella automáticamente como DESPACHADO, PERO SOLO
+   si hay EVIDENCIA (venta registrada Y factura CXC — por numP, por
+   correlativo fiscal de datosFiscales, o citado en notas). Sin evidencia
+   completa queda como está y se avisa en consola, para no repetir el
+   error inverso (marcar despachado lo que nunca salió). */
+window.farmersReconciliarEstados = function(silencioso){
+  try {
+    var peds = (typeof getMsPedidos==='function') ? getMsPedidos() : [];
+    var sales = (typeof getSales==='function') ? getSales() : [];
+    var facs  = (typeof cxcFacs==='function') ? cxcFacs() : [];
+    var cambios=[], limbo=[], dirty=false;
+    peds.forEach(function(ped){
+      var est = String(ped.estado||'').toUpperCase();
+      if (est==='DESPACHADO') return;
+      var sucs = ped.sucursales||[];
+      if (!sucs.length) return;
+      var se = ped.sucursalesEstado||{};
+      var todasSuc = sucs.every(function(su){ return String(se[su]||'').toUpperCase()==='DESPACHADO'; });
+      if (!todasSuc) return;  // reservado de verdad — no se toca
+      var dF = ped.datosFiscales||{};
+      var fiscales = sucs.map(function(su){ return String((dF[su]||{}).nFactura||'').trim(); }).filter(Boolean);
+      var hayVenta = sales.some(function(x){
+        if (x.msNumPedido===ped.numP) return true;
+        var np = String(x.numpedido||'').trim();
+        if (np.indexOf(ped.numP)>=0) return true;
+        return fiscales.indexOf(np)>=0 || fiscales.indexOf(String(x.nFactura||'').trim())>=0;
+      });
+      var hayFac = facs.some(function(f){
+        var np=String(f.numpedido||'').trim(), nf=String(f.nFactura||'').trim();
+        if ((np+' '+String(f.notas||'')).indexOf(ped.numP)>=0) return true;
+        return fiscales.length>0 && (fiscales.indexOf(np)>=0 || fiscales.indexOf(nf)>=0);
+      });
+      if (hayVenta && hayFac) {
+        ped.estado='DESPACHADO'; ped.fase='despachado';
+        var lock=ped.invDescontadoSucs||{};
+        sucs.forEach(function(su){ lock[su]=lock[su]||Date.now(); });
+        ped.invDescontadoSucs=lock;
+        if(!ped.fechaDespacho) ped.fechaDespacho=new Date().toLocaleDateString('es-VE',{day:'2-digit',month:'2-digit',year:'numeric'});
+        ped.selladoAuto={fecha:new Date().toISOString(), version:'v.320', evidencia:'venta+factura'};
+        cambios.push(ped.numP); dirty=true;
+      } else {
+        limbo.push(ped.numP+' (venta:'+(hayVenta?'sí':'NO')+' · factura:'+(hayFac?'sí':'NO')+')');
+      }
+    });
+    if (dirty && typeof saveMsPedidos==='function') saveMsPedidos(peds);
+    if (cambios.length){
+      console.log('[v.320] ✅ Reconciliados con evidencia: '+cambios.join(', '));
+      if (!silencioso && typeof showToast==='function') showToast('✅ Monitor reconciliado: '+cambios.length+' pedido(s) que figuraban reservados estando despachados fueron sellados (evidencia: venta + factura).','success',{duration:9000});
+    }
+    if (limbo.length){
+      console.warn('[v.320] ⚠ EN LIMBO (sucursales despachadas pero SIN evidencia completa): '+limbo.join(' · ')+' → revisar con farmersSellarPedido()');
+    }
+    return { sellados: cambios, limbo: limbo };
+  } catch(e){ console.warn('[v.320] reconciliar:', e); return null; }
+};
+
+// Disparo automático: al cargar (tras la hidratación de Firebase) y antes de
+// cada render del Monitor. El de carga avisa con toast; los demás son silenciosos.
+setTimeout(function(){
+  try { window.farmersReconciliarEstados(false); } catch(e){}
+  ['renderMonitor','renderMonitorPedidos'].forEach(function(fn){
+    var f = window[fn];
+    if (typeof f === 'function' && !f._v320) {
+      var _orig = f;
+      window[fn] = function(){ try { window.farmersReconciliarEstados(true); } catch(e){} return _orig.apply(this, arguments); };
+      window[fn]._v320 = true;
+    }
+  });
+}, 12000);
+
 /* ═══ v.311 — REPARACIÓN DE DOBLE DESCUENTO ═════════════════════════════════
    Para intentos de despacho ANTERIORES al candado v.311 que descontaron el
    inventario más de una vez. Devuelve al stock NE lo descontado de más.
@@ -57261,8 +57337,26 @@ window.msAbrirMonitor = function() {
       var col = _estUp==='DESPACHADO'?GREEN:_estUp==='RESERVADO'?AMBER:_estUp==='EMBALADO'?'#059669':GRAY;
       var bg  = _estUp==='DESPACHADO'?GREENBG:_estUp==='RESERVADO'?AMBERBG:_estUp==='EMBALADO'?'rgba(5,150,105,.12)':'rgba(255,255,255,.03)';
 
-      var uds  = (ped.items||[]).reduce(function(s,i){return s+(parseInt((i.sucursales||{})[suc]&&(i.sucursales[suc].desp||0))||0);},0);
-      var refs = (ped.items||[]).filter(function(i){return ((i.sucursales||{})[suc]&&(i.sucursales[suc].desp||0))>0;}).length;
+      /* v.320: cadena de respaldo para contar refs/uds de la tarjeta.
+         Antes solo leía items[].sucursales[suc].desp: si el detalle quedó
+         incompleto (incidente 31/08) o la clave no coincide, mostraba
+         "0 refs · 0 uds" con el pedido lleno. Ahora: desp → pide →
+         (sucursal única: cualquier clave) → ped.data. */
+      var _cnt320=function(fn){ var u=0,r=0; (ped.items||[]).forEach(function(i){ var q=fn(i)||0; if(q>0){u+=q;r++;} }); return {u:u,r:r}; };
+      var _c320=_cnt320(function(i){ var sd=(i.sucursales||{})[suc]; return parseInt(sd&&sd.desp)||0; });
+      if(!_c320.u) _c320=_cnt320(function(i){ var sd=(i.sucursales||{})[suc]; return parseInt(sd&&sd.pide)||0; });
+      if(!_c320.u && (ped.sucursales||[]).length===1) _c320=_cnt320(function(i){ var t=0; Object.keys(i.sucursales||{}).forEach(function(k){ var sd=i.sucursales[k]||{}; t+=parseInt(sd.desp||sd.pide)||0; }); return t; });
+      if(!_c320.u && Array.isArray(ped.data) && ped.data.length){
+        var _u320=0,_r320=0;
+        ped.data.forEach(function(pd){
+          var q=parseInt((pd.dist&&pd.dist[suc])||(pd.pedidos&&pd.pedidos[suc]))||0;
+          if(!q && (ped.sucursales||[]).length===1){ var t=0; Object.keys(pd.pedidos||{}).forEach(function(k){ t+=parseInt(pd.pedidos[k])||0; }); q=t; }
+          if(q>0){_u320+=q;_r320++;}
+        });
+        _c320={u:_u320,r:_r320};
+      }
+      var uds  = _c320.u;
+      var refs = _c320.r;
 
       var chip=document.createElement('div');
       chip.style.cssText='background:'+bg+';border:1px solid '+col+'33;border-radius:8px;padding:11px 14px;cursor:pointer;transition:all .15s;';
