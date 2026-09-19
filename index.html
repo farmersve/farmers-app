@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.09.18.315">
+<meta name="farmers-version" content="2026.09.18.316">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -52415,6 +52415,13 @@ function msCalcularDistribucion(productos) {
       0
     ) || 0;
 
+    // v.316 FIX: tras msCompararConCatalogo, `precio_usd` trae el precio del
+    // SISTEMA (por eso 99.37 reaparecía). Si Omar eligió el precio del CLIENTE
+    // en el modal de diferencias, ese es el que manda en la distribución.
+    var _ovr316 = p.precioOverride || ((window.MS && MS._precioOverride) || {})[ref] || undefined;
+    var _neg316 = parseFloat(p.precioNegociado || p._precioCliente || p.precioCliente || 0) || 0;
+    if (_ovr316 === 'cliente' && _neg316 > 0) precioClienteFinal = _neg316;
+
     // v.220: factor de reparto (% del pedido total que el stock permite cubrir)
     // Solo informativo, para el tooltip del Monitor en filas parciales.
     var factorReparto = (totalPedido > 0) ? Math.min(1, stock / totalPedido) : 0;
@@ -52433,8 +52440,8 @@ function msCalcularDistribucion(productos) {
       totalDespachado: totalDespachado,
       factorReparto: factorReparto,
       precioPedido: precioClienteFinal,
-      precioOverride: p.precioOverride || ((window.MS && MS._precioOverride) || {})[ref] || undefined, // v.313
-      precioNegociado: (p.precioOverride === 'cliente' && precioClienteFinal > 0) ? precioClienteFinal : undefined, // v.313
+      precioOverride: _ovr316, // v.313/v.316
+      precioNegociado: (_ovr316 === 'cliente' && precioClienteFinal > 0) ? precioClienteFinal : undefined, // v.313/v.316
       // v.126: guardar también con alias para máxima compatibilidad con detector
       precio_usd: precioClienteFinal,
       _precioCliente: precioClienteFinal
@@ -80278,6 +80285,8 @@ async function pcImportarPedido(id) {
           precio_usd: pp.precio_usd, codigoBarra: pp.codigoBarra || '', codigoProv: pp.codigoProv || '',
           marca: pp.marca || '', empaque: pp.empaque || '', udsBulto: pp.udsBulto || 0,
           _descCliente: pp._descCliente, _diferencias: pp._diferencias || [], _sinMatchCatalogo: pp._sinMatchCatalogo || false,
+          _precioCliente: pp._precioCliente,   // v.316 FIX: aquí se perdía el precio negociado del cliente
+          _barraCliente: pp._barraCliente,     // v.316: coherencia con el flujo PDF
         };
       });
       var audit = msAuditarPedido(productosNorm, sucursales, 'PORTAL');
