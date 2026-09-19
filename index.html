@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.09.18.316">
+<meta name="farmers-version" content="2026.09.19.318">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -4099,6 +4099,17 @@ window.fbSaveProducts = window.fbSaveProducts || function(arr) {
 // ══════════════════════════════════════════════════════════════
 var COMP_KEY        = 'farmers_inv_comprometido';
 var MS_PEDIDOS_KEY  = 'farmers_ms_pedidos';
+
+// v.318: `precioOverride` histórico era un NÚMERO (override manual de precio).
+// La v.313 reutilizó el mismo campo como marca de texto 'cliente'/'sistema'/'manual'.
+// Este helper devuelve el número si lo es; null si es marca o está ausente.
+// Todo lector numérico de precioOverride DEBE pasar por aquí.
+window._ovrNum = function(v){
+  if (v === undefined || v === null || v === '') return null;
+  if (typeof v === 'number' && isFinite(v)) return v;
+  var n = parseFloat(v);
+  return (!isNaN(n) && isFinite(n)) ? n : null;
+};
 
 // ══════════════════════════════════════════════════════════════
 // MULTI-DEPÓSITO — Sistema de dos depósitos NE y AN
@@ -55060,7 +55071,20 @@ function _msFacturaRenderizar(numP, suc) {
                  ? parseFloat(p[_campoCong])
                  : ((typeof msGetPrecio==='function' ? msGetPrecio(p.ref) : 0) || 0);
     // v.305: ajuste de precios del cliente de ESTA sucursal (CRM)
-    if (typeof ajustarPrecioCliente === 'function') {
+    // v.317 FIX: si el precio es NEGOCIADO (Omar eligió el precio del cliente
+    // en el modal de diferencias), es un acuerdo FINAL: no se le aplica encima
+    // el ajuste % de la ficha CRM. Sin esto: 65.00 negociado +10% CRM = 71.50
+    // en factura, mientras venta y CXC nacían a 65.00 — factura ≠ CXC.
+    var _esNegociado317 = (p.precioOverride === 'cliente') ||
+      (((window.MS && MS._precioOverride) || {})[p.ref] === 'cliente') ||
+      (p.precioNegociado !== undefined && p.precioNegociado !== null && !isNaN(p.precioNegociado) && parseFloat(p.precioNegociado) > 0);
+    if (_esNegociado317 && typeof ajustarPrecioCliente === 'function') {
+      var _cliChk = (typeof buscarClienteCRM === 'function') ? buscarClienteCRM(nomCli, rifCli) : null;
+      if (_cliChk && _cliChk.ajustePrecio && _cliChk.ajustePrecio.activo) {
+        console.log('[v.317] ' + p.ref + ': precio NEGOCIADO (' + precio + ') — ajuste CRM de ' + nomCli + ' NO aplicado en factura');
+      }
+    }
+    if (!_esNegociado317 && typeof ajustarPrecioCliente === 'function') {
       var _cliAP = (typeof buscarClienteCRM === 'function') ? buscarClienteCRM(nomCli, rifCli) : null;
       var _pAj = ajustarPrecioCliente(precio, p.ref, _cliAP, moneda);
       if (_pAj !== precio) {
@@ -56961,7 +56985,7 @@ window.msAbrirMonitor = function() {
     (ped.items||[]).forEach(function(item){
       var p=PRODUCTS.find(function(x){return x.r===item.ref;});
       if(!p) return;
-      var precio=item.precioOverride||(mon==='BCV'?p.bv:mon==='USD'?p.u:p.t)||0;
+      var precio=_ovrNum(item.precioOverride)||(mon==='BCV'?p.bv:mon==='USD'?p.u:p.t)||0; // v.318
       var uds=Object.values(item.sucursales||{}).reduce(function(s,sd){return s+(parseInt(sd.desp)||0);},0);
       var pr=parseFloat(precio); if(isNaN(pr)) pr=0;
       total+=pr*uds;
@@ -57666,7 +57690,7 @@ window.msAbrirEditorPedido = function(ped) {
   // exactamente qué cambió (precios y cantidades por sucursal) al guardar.
   var _snapOriginal = {};
   (ped.items||[]).forEach(function(it){
-    var pr = it.precioOverride || 0;
+    var pr = _ovrNum(it.precioOverride) || 0; // v.318
     var sucs = {};
     Object.keys(it.sucursales||{}).forEach(function(s){
       sucs[s] = parseInt((it.sucursales[s]||{}).desp)||0;
@@ -57686,7 +57710,7 @@ window.msAbrirEditorPedido = function(ped) {
         return;
       }
       // PRECIO
-      var prAct = it.precioOverride || 0;
+      var prAct = _ovrNum(it.precioOverride) || 0; // v.318
       if (orig.precio && prAct && Math.abs(orig.precio - prAct) > 0.001) {
         cambios.push({ tipo:'precio', ref:it.ref, antes:orig.precio, despues:prAct,
           detalle:'Precio: $'+orig.precio.toFixed(2)+' → $'+prAct.toFixed(2) });
@@ -57725,7 +57749,7 @@ window.msAbrirEditorPedido = function(ped) {
       _snapOriginal = {};
       editData.forEach(function(it){
         var sucs={}; Object.keys(it.sucursales||{}).forEach(function(s){ sucs[s]=parseInt((it.sucursales[s]||{}).desp)||0; });
-        _snapOriginal[it.ref] = { precio: it.precioOverride||0, sucs: sucs, desc: it.desc||'' };
+        _snapOriginal[it.ref] = { precio: _ovrNum(it.precioOverride)||0, sucs: sucs, desc: it.desc||'' }; // v.318
       });
     } catch(e) { console.warn('[msEdRegistrarCambios]', e); }
   }
@@ -57848,7 +57872,7 @@ window.msAbrirEditorPedido = function(ped) {
     var total=0;
     editData.forEach(function(item){
       // v.104: pasar la línea para que calcPrecio lea precio congelado si existe
-      var precio=item.precioOverride||calcPrecio(item.ref,ped.moneda,item);
+      var precio=_ovrNum(item.precioOverride)||calcPrecio(item.ref,ped.moneda,item); // v.318
       var uds=Object.values(item.sucursales||{}).reduce(function(s,sd){return s+(parseInt(sd.desp)||0);},0);
       total+=precio*uds;
     });
@@ -57923,7 +57947,7 @@ window.msAbrirEditorPedido = function(ped) {
       var stockReal= parseInt(inv[item.ref])||0;
       var comp     = typeof getComprometido==='function' ? (getComprometido()[item.ref]||{qty:0}) : {qty:0};
       var disponible = Math.max(0, stockReal - (comp.qty||0));
-      var precio   = item.precioOverride||calcPrecio(item.ref,ped.moneda);
+      var precio   = _ovrNum(item.precioOverride)||calcPrecio(item.ref,ped.moneda); // v.318
       var totalUds = Object.values(item.sucursales||{}).reduce(function(s,sd){return s+(parseInt(sd.desp)||0);},0);
       var totalLinea = precio*totalUds;
       var rowBg = idx%2===0 ? 'rgba(255,255,255,.025)' : 'rgba(255,255,255,.05)';
@@ -57958,7 +57982,7 @@ window.msAbrirEditorPedido = function(ped) {
       precioInput.onblur=function(){precioInput.style.borderColor='rgba(99,102,241,.35)';precioInput.style.background='rgba(99,102,241,.10)';precioInput.style.boxShadow='none';};
       precioInput.oninput=(function(it,row){ return function(){
         it.precioOverride=parseFloat(precioInput.value)||0;
-        var tot=(it.precioOverride||calcPrecio(it.ref,ped.moneda))*Object.values(it.sucursales||{}).reduce(function(s,sd){return s+(parseInt(sd.desp)||0);},0);
+        var tot=(_ovrNum(it.precioOverride)||calcPrecio(it.ref,ped.moneda))*Object.values(it.sucursales||{}).reduce(function(s,sd){return s+(parseInt(sd.desp)||0);},0); // v.318
         var tc=row.querySelector('.ed-total-cell');
         if(tc) tc.textContent='$ '+tot.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
         calcTotales();
@@ -57988,7 +58012,7 @@ window.msAbrirEditorPedido = function(ped) {
           it.sucursales[s].desp=parseInt(q.value)||0;
           it.sucursales[s].pide=parseInt(q.value)||0;
           var uds=Object.values(it.sucursales||{}).reduce(function(ss,sd){return ss+(parseInt(sd.desp)||0);},0);
-          var tot=(it.precioOverride||calcPrecio(it.ref,ped.moneda,it))*uds;
+          var tot=(_ovrNum(it.precioOverride)||calcPrecio(it.ref,ped.moneda,it))*uds; // v.318
           var tc=r.querySelector('.ed-total-cell');
           if(tc) tc.textContent='$ '+tot.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
           var wn=r.querySelector('.ed-warn-stock');
@@ -58619,6 +58643,7 @@ window.msGenerarDocPedido = function(numP, sel) {
         dist: dist,
         estado: p.estado || 'completo',
         precioOverride: p.precioOverride,
+        precioNegociado: p.precioNegociado,  // v.318
         precioCongelado_USD: p.precioCongelado_USD,
         precioCongelado_BCV: p.precioCongelado_BCV,
         precioCongelado_TF:  p.precioCongelado_TF,
@@ -58645,7 +58670,8 @@ window.msGenerarDocPedido = function(numP, sel) {
         pedidos: pedidos,
         dist: dist,
         estado: 'completo',
-        precioOverride: item.precioOverride
+        precioOverride: item.precioOverride,
+        precioNegociado: item.precioNegociado  // v.318
       };
     });
   }
@@ -58703,11 +58729,14 @@ window.msGenerarDocPedido = function(numP, sel) {
       //   3. msGetPrecio (fallback: precio actual del catálogo) — solo para pedidos viejos sin congelar
       var _monedaPed = (typeof _ped !== 'undefined' && _ped && _ped.moneda) ? _ped.moneda : (typeof MS !== 'undefined' ? MS.moneda : 'USD');
       var _precioCongelado = (typeof window.msGetPrecioCongelado === 'function') ? window.msGetPrecioCongelado(p, _monedaPed) : null;
-      var precio = (p.precioOverride !== undefined && p.precioOverride !== null)
-                   ? p.precioOverride
-                   : (_precioCongelado !== null
-                      ? _precioCongelado
-                      : (typeof msGetPrecio === 'function' ? (msGetPrecio(p.ref)||0) : 0));
+      var _ovrN318 = _ovrNum(p.precioOverride);   // número = override manual viejo
+      var precio = (_ovrN318 !== null)
+                   ? _ovrN318
+                   : ((p.precioOverride === 'cliente' && parseFloat(p.precioNegociado) > 0)
+                      ? parseFloat(p.precioNegociado)   // v.318: marca v.313 → precio negociado
+                      : (_precioCongelado !== null
+                         ? _precioCongelado
+                         : (typeof msGetPrecio === 'function' ? (msGetPrecio(p.ref)||0) : 0)));
       items.push({
         ref: p.ref,
         desc: p.desc,
@@ -58731,7 +58760,7 @@ window.msGenerarDocPedido = function(numP, sel) {
         '<td style="padding:7px 12px;font-size:10px;color:#374151;">'+it.desc+'</td>'+
         '<td style="padding:7px 12px;text-align:center;font-size:10px;color:#64748b;">'+it.pide+'</td>'+
         '<td style="padding:7px 12px;text-align:center;font-size:10px;font-weight:700;color:'+estadoCol+';">'+it.desp+'</td>'+
-        '<td style="padding:7px 12px;text-align:right;font-size:10px;color:#374151;">$ '+it.precio.toFixed(2)+'</td>'+
+        '<td style="padding:7px 12px;text-align:right;font-size:10px;color:#374151;">$ '+(parseFloat(it.precio)||0).toFixed(2)+'</td>'+
         '<td style="padding:7px 12px;text-align:right;font-size:10px;font-weight:700;color:'+NAVY+';">$ '+it.total.toFixed(2)+'</td>'+
       '</tr>';
     }).join('');
@@ -58806,11 +58835,14 @@ window.msGenerarDocPedido = function(numP, sel) {
       // Mismo orden de prioridad que el render por sucursal:
       //   override → congelado → catálogo actual (fallback histórico)
       var _precioCong = (typeof window.msGetPrecioCongelado === 'function') ? window.msGetPrecioCongelado(p, _monedaPed_total) : null;
-      var precio = (p.precioOverride !== undefined && p.precioOverride !== null)
-                   ? p.precioOverride
-                   : (_precioCong !== null
-                      ? _precioCong
-                      : (typeof msGetPrecio === 'function' ? (msGetPrecio(p.ref)||0) : 0));
+      var _ovrN318b = _ovrNum(p.precioOverride);
+      var precio = (_ovrN318b !== null)
+                   ? _ovrN318b
+                   : ((p.precioOverride === 'cliente' && parseFloat(p.precioNegociado) > 0)
+                      ? parseFloat(p.precioNegociado)
+                      : (_precioCong !== null
+                         ? _precioCong
+                         : (typeof msGetPrecio === 'function' ? (msGetPrecio(p.ref)||0) : 0)));
       grandTotal += precio * desp;
       grandUds += desp;
     });
