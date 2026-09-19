@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.09.19.318">
+<meta name="farmers-version" content="2026.09.19.319">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -54617,8 +54617,16 @@ window.msEmitirSeleccionadas = function(ov){
       +String(now.getHours()).padStart(2,'0')
       +String(now.getMinutes()).padStart(2,'0');
   };
+  var _numRecienGen319=false;
   if(!MS.numPedido){
-    MS.numPedido=_genNumMS();
+    // v.319: garantizar unicidad DESDE la generación. Dos pedidos creados el
+    // mismo minuto compartían número (formato MS-YYMMDD-HHMM) y el segundo
+    // pisaba al primero (caso FERREGAMA 18/09: MS-260918-1213 duplicado).
+    var _n319=_genNumMS(), _g319=0;
+    var _peds319=(typeof getMsPedidos==='function')?getMsPedidos():[];
+    while(_peds319.some(function(p){return p.numP===_n319;}) && _g319<200){ _n319=_genNumMS()+'-'+(++_g319); }
+    MS.numPedido=_n319;
+    _numRecienGen319=true;
     MS.fechaEmision=new Date().toLocaleDateString('es-VE',{day:'2-digit',month:'2-digit',year:'numeric'});
   }
   // ── v.171: BLINDAJE ANTI-COLISIÓN DE NÚMERO ───────────────────────────────
@@ -54630,7 +54638,7 @@ window.msEmitirSeleccionadas = function(ov){
     var _peds=(typeof getMsPedidos==='function')?getMsPedidos():[];
     var _ex=_peds.find(function(p){return p.numP===MS.numPedido;});
     var _mismo=_ex && (MS.sucursales||[]).some(function(s){return (_ex.sucursales||[]).indexOf(s)>=0;});
-    if(_ex && !_mismo){
+    if(_ex && (_numRecienGen319 || !_mismo)){ /* v.319: recién generado + existente = colisión SIEMPRE, aunque compartan sucursal */
       var _viejo=MS.numPedido, _nuevo=_genNumMS(), _g=0;
       while(_peds.some(function(p){return p.numP===_nuevo;}) && _g<200){ _nuevo=_genNumMS()+'-'+(++_g); }
       MS.numPedido=_nuevo;
