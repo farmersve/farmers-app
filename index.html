@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.09.21.322">
+<meta name="farmers-version" content="2026.09.21.323">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -4817,7 +4817,15 @@ window.getMsPedidos = function() {
   return [];
 };
 window.saveMsPedidos = function(pedidos) {
-  try { localStorage.setItem(MS_PEDIDOS_KEY, JSON.stringify(pedidos)); } catch(e){}
+  try { localStorage.setItem(MS_PEDIDOS_KEY, JSON.stringify(pedidos)); }
+  catch(e){
+    /* v.323: NUNCA tragarse un guardado fallido. Con el almacenamiento lleno
+       (QuotaExceeded) el pedido "se emitía" pero no quedaba guardado — caso
+       MS-260921-1352 del 21/09. Ahora se grita y se deja constancia. */
+    console.error('[saveMsPedidos] ⛔ GUARDADO FALLIDO ('+(e&&e.name)+'): '+(e&&e.message));
+    try{ alert('⛔ EL PEDIDO NO SE PUDO GUARDAR EN ESTE EQUIPO\n\nMotivo: '+(e&&e.name==='QuotaExceededError'?'ALMACENAMIENTO LLENO ('+((JSON.stringify(pedidos).length)/1048576).toFixed(1)+' MB no caben) — hay que liberar espacio':((e&&e.name)||'error')+' · '+((e&&e.message)||''))+'\n\nNO cierres esta pantalla y avísale a Claude.'); }catch(e2){}
+    return false;
+  }
   // v.172: sello de tiempo del guardado local — los sincronizadores NO deben
   // pisar este estado con una versión remota MÁS VIEJA (revertía ediciones de
   // pedidos cuando la escritura a Firebase fallaba o llegaba tarde).
