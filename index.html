@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.09.21.323">
+<meta name="farmers-version" content="2026.09.21.324">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -57242,6 +57242,20 @@ window.msAbrirMonitor = function() {
 
     var wrap=document.createElement('div');
     wrap.style.cssText='padding:20px 24px;display:flex;flex-direction:column;gap:14px;';
+
+    /* v.324 (pedido por Omar): las tarjetas salen MÁS RECIENTES PRIMERO.
+       Clave de orden: fecha de DESPACHO si existe (lo recién despachado
+       encabeza aunque el pedido sea viejo) → sellado automático → fecha de
+       emisión → fecha del propio número MS-YYMMDD. */
+    var _ord324 = function(p){
+      var fd=String(p.fechaDespacho||'').match(/(\d{2})\/(\d{2})\/(\d{4})/);
+      if(fd) return fd[3]+fd[2]+fd[1]+'z9';
+      if(p.selladoAuto&&p.selladoAuto.fecha) return String(p.selladoAuto.fecha).replace(/[^0-9]/g,'').slice(0,8)+'z8';
+      if(p.fechaISO) return String(p.fechaISO).replace(/[^0-9]/g,'').slice(0,8)+'z5';
+      var m=String(p.numP||'').match(/MS-(\d{6})/); return m?('20'+m[1]+'z0'):'00000000z0';
+    };
+    var _cmp324 = function(a,b){ var ka=_ord324(a), kb=_ord324(b); return kb<ka?-1:(kb>ka?1:String(b.numP||'').localeCompare(String(a.numP||''))); };
+    pedFiltrados.sort(_cmp324);
 
     if (filtro === 'todos') {
       // Vista TODOS: mantener separación visual entre activos y despachados
