@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.09.19.321">
+<meta name="farmers-version" content="2026.09.21.322">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -56116,6 +56116,103 @@ setTimeout(function(){
     }
   });
 }, 12000);
+
+/* ═══ v.322 — AUDITORÍA INTEGRAL + RESCATE DE PEDIDO DE SESIÓN ═══════════════
+   Pedida por Omar (21/09) tras el caso MS-260921-1352: pedido emitido en
+   pantalla que no quedó en la lista guardada. Dos herramientas:
+   · farmersRescatarPedidoSesion() — guarda el pedido armado en ESTA pantalla
+     por la vía oficial (msComprometerInventario), con sus validaciones.
+   · farmersAuditoriaIntegral() — cruza sesión↔guardado, duplicados,
+     comprometido↔reservas, despachos↔ventas↔facturas, facturas sin saldo
+     y números fiscales repetidos. Reporta con el comando de cura exacto
+     para cada hallazgo. NO corrige nada por su cuenta. */
+window.farmersRescatarPedidoSesion = function(){
+  try{
+    if(!window.MS || !MS.numPedido){ alert('No hay ningún pedido armado en esta pantalla.'); return false; }
+    var numP = MS.numPedido;
+    if(getMsPedidos().some(function(p){return p.numP===numP;})){
+      alert('El pedido '+numP+' YA está guardado en el Monitor. Nada que rescatar.');
+      return true;
+    }
+    if(!Array.isArray(MS.data) || !MS.data.length){ alert('⛔ La sesión no tiene productos cargados (MS.data vacía). No se puede rescatar.'); return false; }
+    var sel = Object.keys(MS.clientesPorSucursal||{}).filter(function(su){
+      return MS.data.some(function(pd){ return ((pd.pedidos||{})[su]||0) > 0; });
+    });
+    if(!sel.length){
+      var u={}; MS.data.forEach(function(pd){ Object.keys(pd.pedidos||{}).forEach(function(k){ if((pd.pedidos[k]||0)>0) u[k]=1; }); });
+      sel=Object.keys(u);
+    }
+    if(!sel.length){ alert('⛔ No pude determinar las sucursales del pedido en sesión.'); return false; }
+    if(!confirm('RESCATAR PEDIDO DE SESIÓN\n\n'+numP+'\nSucursales: '+sel.join(', ')+'\nRefs: '+MS.data.length+'\n\nSe guardará como RESERVADO por la vía oficial (reserva inventario incluida). ¿Proceder?')) return false;
+    var ok = msComprometerInventario(numP, sel, MS.data, MS.clientesPorSucursal||{}, MS.moneda||'USD',
+      MS.fechaEmision || new Date().toLocaleDateString('es-VE',{day:'2-digit',month:'2-digit',year:'numeric'}));
+    if(ok===false){ alert('⛔ El guardado oficial rechazó el rescate (mira el motivo en el aviso anterior).'); return false; }
+    if(typeof syncInventoryToProducts==='function') try{ syncInventoryToProducts(); }catch(e){}
+    var quedo = getMsPedidos().some(function(p){return p.numP===numP;});
+    alert(quedo ? ('✅ '+numP+' rescatado: ya está en el Monitor como RESERVADO con su inventario comprometido.')
+                : ('⛔ El rescate corrió pero el pedido NO aparece en la lista — avísale a Claude con esta pantalla.'));
+    if (typeof renderMonitorPedidos==='function') try{ renderMonitorPedidos(); }catch(e){}
+    return quedo;
+  }catch(e){ alert('⛔ Error en el rescate: '+e.message); return false; }
+};
+
+window.farmersAuditoriaIntegral = function(){
+  var H=[];  // hallazgos [gravedad, texto, cura]
+  try{
+    var peds=getMsPedidos(), sales=(typeof getSales==='function')?getSales():[], facs=(typeof cxcFacs==='function')?cxcFacs():[];
+    var comp=(typeof getComprometido==='function')?getComprometido():{};
+    // A. Pedido de sesión no guardado
+    if(window.MS && MS.numPedido && !peds.some(function(p){return p.numP===MS.numPedido;})){
+      H.push(['🔴','El pedido armado en esta pantalla ('+MS.numPedido+') NO está guardado en el Monitor.','farmersRescatarPedidoSesion()']);
+    }
+    // B. Números duplicados
+    var vistos={}; peds.forEach(function(p){ vistos[p.numP]=(vistos[p.numP]||0)+1; });
+    Object.keys(vistos).forEach(function(n){ if(vistos[n]>1) H.push(['🔴','Número de pedido DUPLICADO en la lista: '+n+' ('+vistos[n]+' veces).','avísale a Claude (fusión manual)']); });
+    // C1. Comprometido fantasma (sin pedido)
+    Object.keys(comp).forEach(function(r){
+      ((comp[r]||{}).pedidos||[]).forEach(function(e){
+        if(!vistos[e.numP]) H.push(['🟠',r+' ×'+e.qty+' comprometidas bajo '+e.numP+', que NO existe en el Monitor.',"libLiberarRef('"+r+"',{numP:'"+e.numP+"',qty:"+e.qty+",skipConfirm:true,motivo:'Huérfana (auditoría)'})"]);
+      });
+    });
+    // C2. Pedido RESERVADO sin comprometido
+    peds.forEach(function(p){
+      if(String(p.estado||'').toUpperCase()!=='RESERVADO') return;
+      var falta=[];
+      (p.items||[]).forEach(function(i){
+        var deb=0; Object.keys(i.sucursales||{}).forEach(function(su){ deb+=parseInt((i.sucursales[su]||{}).pide)||0; });
+        var tiene=(((comp[i.ref]||{}).pedidos)||[]).filter(function(x){return x.numP===p.numP;}).reduce(function(a,x){return a+(parseInt(x.qty)||0);},0);
+        if(deb>0 && tiene<deb) falta.push(i.ref+' (reservado '+tiene+'/'+deb+')');
+      });
+      if(falta.length) H.push(['🟠','Pedido RESERVADO '+p.numP+' con reserva de inventario incompleta: '+falta.join(', ')+'.','avísale a Claude']);
+    });
+    // D. DESPACHADO sin venta o sin factura
+    peds.forEach(function(p){
+      if(String(p.estado||'').toUpperCase()!=='DESPACHADO') return;
+      var dF=p.datosFiscales||{}; var fis=Object.keys(dF).map(function(su){return String((dF[su]||{}).nFactura||'').trim();}).filter(Boolean);
+      var v=sales.some(function(x){ if(x.msNumPedido===p.numP)return true; var np=String(x.numpedido||'').trim(); return np.indexOf(p.numP)>=0||fis.indexOf(np)>=0; });
+      var f=facs.some(function(x){ var np=String(x.numpedido||'').trim(),nf=String(x.nFactura||'').trim(); return (np+' '+String(x.notas||'')).indexOf(p.numP)>=0||(fis.length&&(fis.indexOf(np)>=0||fis.indexOf(nf)>=0)); });
+      if(!v) H.push(['🟠','Despachado '+p.numP+' SIN venta registrada.','avísale a Claude']);
+      if(!f) H.push(['🟠','Despachado '+p.numP+' SIN factura CXC.','avísale a Claude']);
+    });
+    // E1. Facturas sin campo saldo (se leen PAGADA y se esconden)
+    facs.forEach(function(f){
+      if(f.saldo===undefined || f.saldo===null){
+        if(((+f.monto)||0)>0 && ((+f.montoPagado)||0)===0)
+          H.push(['🔴','Factura '+(f.nFactura||f.numpedido||'?')+' ('+(f.clienteNombre||'')+', $'+f.monto+') SIN campo saldo → se lee PAGADA y no sale en PENDIENTES.','avísale a Claude (fijar saldo=monto-pagado)']);
+      }
+    });
+    // E2. nFactura repetido
+    var nf={}; facs.forEach(function(f){ var n=String(f.nFactura||'').trim(); if(n) (nf[n]=nf[n]||[]).push(f.numpedido||'?'); });
+    Object.keys(nf).forEach(function(n){ if(nf[n].length>1) H.push(['🟠','Número fiscal '+n+' usado por '+nf[n].length+' facturas ('+nf[n].join(' · ')+').','revisar talonario / avísale a Claude']); });
+  }catch(e){ H.push(['🔴','La auditoría tropezó: '+e.message,'avísale a Claude']); }
+  // Nube v2 (async, reporta aparte)
+  try{ if(typeof farmersMsV2Estado==='function') farmersMsV2Estado().then(function(r){ if(r) console.log('[AUDITORÍA] Nube v2:', r); }); }catch(e){}
+  var txt = H.length
+    ? ('AUDITORÍA INTEGRAL — '+H.length+' hallazgo(s):\n\n'+H.map(function(h,i){return (i+1)+'. '+h[0]+' '+h[1]+'\n   CURA: '+h[2];}).join('\n\n'))
+    : 'AUDITORÍA INTEGRAL — ✅ Sin hallazgos: sesión, pedidos, reservas, despachos y facturas cuadran.';
+  console.log(txt); alert(txt);
+  return H;
+};
 
 /* ═══ v.311 — REPARACIÓN DE DOBLE DESCUENTO ═════════════════════════════════
    Para intentos de despacho ANTERIORES al candado v.311 que descontaron el
