@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.09.24.325">
+<meta name="farmers-version" content="2026.09.24.326">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -56183,6 +56183,30 @@ window.farmersRescatarPedidoSesion = function(){
     if (typeof renderMonitorPedidos==='function') try{ renderMonitorPedidos(); }catch(e){}
     return quedo;
   }catch(e){ alert('⛔ Error en el rescate: '+e.message); return false; }
+};
+
+/* ═══ v.326 — CHEQUEO DE MIGRACIÓN ENTRE EQUIPOS ═════════════════════════════
+   Para el cambio PC → Mac de Omar. Se corre EL MISMO comando en ambos
+   equipos y se comparan los números lado a lado: si coinciden, la nueva
+   máquina tiene todo. Imprime conteos y totales de cada módulo con datos
+   locales (que a su vez vienen de la nube). */
+window.farmersChequeoMigracion = function(){
+  var F=[]; var eq=(navigator.platform||'')+' · '+new Date().toLocaleString('es-VE');
+  function fila(nom,fn){ try{ F.push(nom+': '+fn()); }catch(e){ F.push(nom+': ⛔ '+e.message); } }
+  fila('Productos (catálogo)', function(){ var t=0;(PRODUCTS||[]).forEach(function(p){t+=parseInt(p.s)||0;}); return (PRODUCTS||[]).length+' refs · '+t+' uds'; });
+  fila('Pedidos', function(){ var ps=getMsPedidos(); var r=0,d=0; ps.forEach(function(p){var e=String(p.estado||'').toUpperCase(); if(e==='RESERVADO'||e==='PARCIAL')r++; if(e==='DESPACHADO')d++;}); return ps.length+' (reservados '+r+' · despachados '+d+')'; });
+  fila('Comprometido', function(){ var c=getComprometido(); var refs=0,u=0; Object.keys(c).forEach(function(k){var q=parseInt((c[k]||{}).qty)||0; if(q>0){refs++;u+=q;}}); return refs+' refs · '+u+' uds'; });
+  fila('Ventas', function(){ return getSales().length+' registros'; });
+  fila('Facturas históricas (HCL)', function(){ return (typeof hclGetFacturas==='function'?hclGetFacturas():[]).length+' facturas'; });
+  fila('CXC', function(){ var fs=cxcFacs(); var pend=0; fs.forEach(function(f){ pend+=Math.max(0,(+f.saldo)||0); }); return fs.length+' facturas · $'+pend.toFixed(2)+' por cobrar'; });
+  fila('Órdenes de compra', function(){ return JSON.parse(localStorage.getItem('farmers_ordenes_compra')||'[]').length+' OC'; });
+  fila('Bancos (movimientos)', function(){ return (JSON.parse(localStorage.getItem('farmers_bancos')||'{"movimientos":[]}').movimientos||[]).length+' movimientos'; });
+  fila('Descuentos', function(){ var d=JSON.parse(localStorage.getItem('farmers_descuentos')||'[]'); return (Array.isArray(d)?d.length:Object.keys(d).length)+' registros'; });
+  fila('Pedidos del portal', function(){ return (window.portalPedidos||[]).length+' registrados (abre Portal Cliente si dice 0)'; });
+  var txt='CHEQUEO DE MIGRACIÓN · '+eq+'\n'+('═'.repeat(30))+'\n'+F.join('\n')+'\n'+('═'.repeat(30))+'\nCompara este bloque entre la PC y la Mac: los números deben coincidir (salvo lo que muevas entre corridas).';
+  console.log(txt); alert(txt);
+  try{ if(typeof farmersMsV2Estado==='function') farmersMsV2Estado().then(function(r){ if(r) console.log('[MIGRACIÓN] Nube v2 pedidos:', r); }); }catch(e){}
+  return F;
 };
 
 window.farmersAuditoriaIntegral = function(){
