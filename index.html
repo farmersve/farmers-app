@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.09.24.329">
+<meta name="farmers-version" content="2026.09.24.330">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -55813,6 +55813,22 @@ function msRegistrarVentaYCXC(numP, sel) {
 
 // ── Comprometer inventario al RESERVAR ───────────────────────
 window.msComprometerInventario = function(numP, sel, data, clientesPorSucursal, moneda, fecha) {
+  /* v.330 — CANDADO DE ESPACIO: con el almacenamiento local en zona crítica,
+     un guardado puede fallar a medias (la causa del susto del 24/09). Antes
+     de reservar, se mide; sobre el umbral se BLOQUEA la emisión con
+     instrucciones, en vez de arriesgar una reserva coja. */
+  try {
+    var _uso330 = 0;
+    for (var _i330=0; _i330<localStorage.length; _i330++){ _uso330 += (localStorage.getItem(localStorage.key(_i330))||'').length; }
+    var _mb330 = _uso330/1048576;
+    if (_mb330 > 4.6) {
+      alert('⛔ EMISIÓN BLOQUEADA POR SEGURIDAD (v.330)\n\nAlmacenamiento local: '+_mb330.toFixed(2)+' MB de ~5 MB (crítico).\nEmitir así arriesga guardados a medias como el del 24/09.\n\nLibera espacio primero (limpieza segura con Claude) y vuelve a emitir. El pedido armado en pantalla NO se pierde.');
+      return false;
+    }
+    if (_mb330 > 4.3) {
+      console.warn('[v.330] ⚠ Almacenamiento en '+_mb330.toFixed(2)+' MB — planifica limpieza/migración antes de que bloquee emisiones (umbral: 4.6 MB).');
+    }
+  } catch(e330){}
   /* ═══ v.296 — VALIDACIÓN AL MONTAR EL PEDIDO ══════════════════════════════
      Antes se creaba el pedido con lo que viniera, incluso si `data` llegaba
      vacía o sin sucursales: quedaba un pedido RESERVADO sin líneas, que luego
@@ -56207,6 +56223,55 @@ setTimeout(function(){
 /* v.329 — Reconstruir la reserva de inventario de un pedido RESERVADO desde
    su propio detalle (items.pide por sucursal). Idempotente: solo agrega lo
    que falte. Guarda con verificación por relectura y sube a la nube. */
+/* ═══ v.330 — CUSTODIO DE RESERVAS ═══════════════════════════════════════════
+   Compromiso con Omar (24/09): lo reservado SE MANTIENE reservado.
+   Cada carga (a los 20s) y cada 10 minutos, el custodio recorre todos los
+   pedidos RESERVADO/PARCIAL y compara su detalle contra el comprometido,
+   ref por ref. Si algo se desalineó —por el bug que sea— lo canta con toast
+   rojo persistente y consola, con la reparación a un clic. Avisa una sola
+   vez por pedido por sesión para no ametrallar. */
+window._custodioAvisados330 = {};
+window.farmersCustodioReservas = function(manual){
+  try {
+    var comp = getComprometido();
+    var males = [];
+    getMsPedidos().forEach(function(ped){
+      var e = String(ped.estado||'').toUpperCase();
+      if (e !== 'RESERVADO' && e !== 'PARCIAL') return;
+      var faltantes = 0, refsTot = 0;
+      (ped.items||[]).forEach(function(i){
+        var deb = 0;
+        Object.keys(i.sucursales||{}).forEach(function(su){
+          var sEst = String((ped.sucursalesEstado||{})[su]||'').toUpperCase();
+          if (sEst === 'DESPACHADO') return;  // lo despachado ya no retiene reserva
+          deb += parseInt((i.sucursales[su]||{}).pide)||0;
+        });
+        if (deb <= 0) return;
+        refsTot++;
+        var tiene = (((comp[i.ref]||{}).pedidos)||[]).filter(function(x){return x.numP===ped.numP;})
+                      .reduce(function(a,x){return a+(parseInt(x.qty)||0);},0);
+        if (tiene < deb) faltantes++;
+      });
+      if (faltantes > 0) males.push({numP: ped.numP, faltantes: faltantes, refsTot: refsTot});
+    });
+    if (males.length) {
+      males.forEach(function(m){
+        if (!manual && window._custodioAvisados330[m.numP]) return;
+        window._custodioAvisados330[m.numP] = true;
+        console.error('[CUSTODIO v.330] ⛔ '+m.numP+': reserva INCOMPLETA ('+m.faltantes+' de '+m.refsTot+' refs sin respaldo en comprometido). Repara con: farmersReconstruirReserva(\''+m.numP+'\')');
+        try { if (typeof showToast === 'function') showToast('⛔ CUSTODIO: la reserva del pedido '+m.numP+' está INCOMPLETA ('+m.faltantes+' refs). Corre farmersReconstruirReserva(\''+m.numP+'\') en la consola — o avísale a Claude. (Si liberaste piezas a propósito, ignora este aviso.)','error',{duration:20000,title:'Reserva en riesgo'}); } catch(e2){}
+      });
+    } else if (manual) {
+      alert('✅ CUSTODIO: todas las reservas de pedidos RESERVADOS/PARCIALES están completas y respaldadas en el comprometido.');
+    } else {
+      console.log('[CUSTODIO v.330] ✓ Reservas verificadas: todas completas.');
+    }
+    return males;
+  } catch(e){ console.warn('[CUSTODIO v.330]', e); return null; }
+};
+setTimeout(function(){ try { farmersCustodioReservas(false); } catch(e){} }, 20000);
+setInterval(function(){ try { farmersCustodioReservas(false); } catch(e){} }, 600000);
+
 window.farmersReconstruirReserva = function(numP){
   try{
     var ped=getMsPedidos().find(function(p){return p.numP===numP;});
