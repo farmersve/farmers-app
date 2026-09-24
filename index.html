@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.09.21.324">
+<meta name="farmers-version" content="2026.09.24.325">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -5459,6 +5459,10 @@ function setupStep3() {
   // Busca el último pedido en estado reservado y restaura el botón
   (function msRestaurarPedidoReservado(){
     try {
+      // v.325: si la pantalla YA tiene un pedido en armado (MS.data con
+      // productos), NO adoptar ningún número de la lista — adoptarlo
+      // secuestraba la sesión con pedidos ajenos (TODOHOGAR, o ayer 1128).
+      if (window.MS && Array.isArray(MS.data) && MS.data.length) return;
       // Buscar en farmers_ms_pedidos
       var pedidos = typeof getMsPedidos==='function' ? getMsPedidos() : [];
       var ultimo = pedidos.find(function(p){ return p.estado==='RESERVADO' || p.estado==='PARCIAL'; });
@@ -52302,6 +52306,22 @@ function msMostrarAuditoria(audit, onContinuar, productosNorm) {
 
 // ── Calcular distribución proporcional ───────────
 function msCalcularDistribucion(productos) {
+  /* v.325 — REGLA DE ORO: la sesión JAMÁS apunta a un pedido DESPACHADO.
+     Caso 24/09: la pantalla quedó pegada a MS-260923-1128 (despachado ayer)
+     y el pedido nuevo de hoy aparecía "Despachado" sin siquiera emitirse.
+     Un despachado es inmutable: si la sesión lo trae, se suelta sola. */
+  try {
+    if (MS.numPedido) {
+      var _pedSes325 = getMsPedidos().find(function(p){ return p.numP === MS.numPedido; });
+      if (_pedSes325 && String(_pedSes325.estado||'').toUpperCase() === 'DESPACHADO') {
+        console.warn('[v.325] La sesión apuntaba al pedido DESPACHADO '+MS.numPedido+' — soltado. Este pedido recibirá número propio al emitir.');
+        if (typeof showToast === 'function') showToast('ℹ️ La pantalla apuntaba al pedido ya despachado '+MS.numPedido+'. Se soltó: este pedido nuevo recibirá su propio número al emitir.','info',{duration:8000});
+        MS.numPedido = null; MS.fechaEmision = null; MS.fase = 'borrador'; MS.sucursalesEstado = {};
+        var _b325 = document.getElementById('ms-btn-emitir');
+        if (_b325){ _b325.textContent='📋 Emitir Pedido'; _b325.style.background='#7c3aed'; _b325.disabled=false; }
+      }
+    }
+  } catch(e){}
   MS.data = [];
   // Usar SIEMPRE el inventario real del sistema, no el del Excel
   var invSistema = {};
@@ -56042,6 +56062,7 @@ window.farmersSellarPedido = function(numP, sucsOpc) {
   ped.selladoManual = { fecha: new Date().toISOString(), por: 'OGK', motivo: 'v.312 — falsa alarma DESPACHO INCOMPLETO' };
   peds[idx] = ped;
   saveMsPedidos(peds);
+  try { localStorage.removeItem('ms_reserva_'+numP); } catch(e){}  // v.325: cache muerto tras despachar
   if (typeof window.MS !== 'undefined' && MS.numPedido === numP) { MS.sucursalesEstado = ped.sucursalesEstado; MS.fase = 'despachado'; MS.invDescontadoSucs = lock; }
   console.log('✅ ' + numP + ' sellado como ' + ped.estado + ' (con candado anti-doble-descuento). Verifica en el Monitor.');
   if (typeof showToast === 'function') showToast('✅ ' + numP + ' sellado: ' + ped.estado, 'success');
