@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.09.24.328">
+<meta name="farmers-version" content="2026.09.24.329">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -4642,7 +4642,21 @@ window.getComprometido = function() {
   return {};
 };
 window.saveComprometido = function(comp) {
-  try { localStorage.setItem(COMP_KEY, JSON.stringify(comp)); } catch(e){}
+  /* v.329: guardado VERIFICADO. El 24/09 una reserva de 23.513 uds
+     (MS-260924-1151) se perdió porque este setItem falló en silencio.
+     Ahora: se escribe, se RELEE y se compara; si no quedó igual, se grita. */
+  var _js329 = JSON.stringify(comp);
+  var _ok329 = false;
+  try {
+    localStorage.setItem(COMP_KEY, _js329);
+    _ok329 = (localStorage.getItem(COMP_KEY) === _js329);
+  } catch(e){
+    console.error('[saveComprometido] ⛔ setItem falló: '+(e&&e.name)+' — '+(e&&e.message));
+  }
+  if (!_ok329) {
+    try { alert('⛔ LA RESERVA DE INVENTARIO NO SE PUDO GUARDAR EN ESTE EQUIPO\n\nEl sistema intentó escribir el comprometido y la verificación falló ('+Math.round(_js329.length/1024)+' KB).\n\nNO sigas emitiendo: avísale a Claude con esta pantalla. (v.329)'); } catch(e2){}
+    return false;
+  }
   // v.298: sello de hora — el listener lo usa para no revertir un guardado reciente
   try { localStorage.setItem('farmers_comprometido_savedAt', String(Date.now())); } catch(e){}
   if(window.fbSaveComprometido) window.fbSaveComprometido(comp);
@@ -55886,6 +55900,31 @@ window.msComprometerInventario = function(numP, sel, data, clientesPorSucursal, 
   });
   saveMsPedidos(pedidos);
 
+  /* v.329 — VERIFICACIÓN POST-EMISIÓN. El 24/09 el pedido MS-260924-1151
+     quedó RESERVADO con su reserva de inventario en 0 (guardado silencioso
+     fallido). Ahora, tras cada emisión, el sistema RELEE el comprometido y
+     lo compara con el detalle: si no cuadra, lo grita ahí mismo y ofrece
+     la reconstrucción de un clic. */
+  try {
+    var _cV329 = getComprometido();
+    var _faltan329 = [];
+    data.forEach(function(pd){
+      var deb = 0; sel.forEach(function(su){ deb += parseInt((pd.dist&&pd.dist[su])||0)||0; });
+      if (deb <= 0) return;
+      var tiene = (((_cV329[pd.ref]||{}).pedidos)||[]).filter(function(x){return x.numP===numP;})
+                    .reduce(function(a,x){return a+(parseInt(x.qty)||0);},0);
+      if (tiene < deb) _faltan329.push(pd.ref+' ('+tiene+'/'+deb+')');
+    });
+    if (_faltan329.length) {
+      console.error('[v.329] ⛔ Emisión de '+numP+' con reserva INCOMPLETA: '+_faltan329.join(', '));
+      if (confirm('⛔ ATENCIÓN: el pedido '+numP+' se emitió pero su RESERVA DE INVENTARIO quedó incompleta ('+_faltan329.length+' refs).\n\n¿Reconstruirla ahora mismo? (recomendado)')) {
+        if (typeof farmersReconstruirReserva === 'function') farmersReconstruirReserva(numP);
+      }
+    } else {
+      console.log('[v.329] ✓ Emisión de '+numP+' verificada: reserva completa en comprometido.');
+    }
+  } catch(eV329){ console.warn('[v.329] verificación post-emisión:', eV329); }
+
   // v.69b: Si este pedido vino del Portal Cliente, marcarlo como sincronizado AHORA
   // (solo cuando realmente se reservó en el monitor, no antes).
   if (typeof MS !== 'undefined' && MS._portalPedidoId) {
@@ -56165,6 +56204,40 @@ setTimeout(function(){
      comprometido↔reservas, despachos↔ventas↔facturas, facturas sin saldo
      y números fiscales repetidos. Reporta con el comando de cura exacto
      para cada hallazgo. NO corrige nada por su cuenta. */
+/* v.329 — Reconstruir la reserva de inventario de un pedido RESERVADO desde
+   su propio detalle (items.pide por sucursal). Idempotente: solo agrega lo
+   que falte. Guarda con verificación por relectura y sube a la nube. */
+window.farmersReconstruirReserva = function(numP){
+  try{
+    var ped=getMsPedidos().find(function(p){return p.numP===numP;});
+    if(!ped){ alert('⛔ No existe el pedido '+numP); return false; }
+    var refsQty={};
+    (ped.items||[]).forEach(function(i){
+      var t=0; Object.keys(i.sucursales||{}).forEach(function(su){ t+=parseInt((i.sucursales[su]||{}).pide)||0; });
+      if(t>0) refsQty[i.ref]=t;
+    });
+    var refs=Object.keys(refsQty), tot=refs.reduce(function(a,r){return a+refsQty[r];},0);
+    if(!refs.length){ alert('⛔ '+numP+' no tiene cantidades en su detalle.'); return false; }
+    if(!confirm('RECONSTRUIR RESERVA de '+numP+'\n'+refs.length+' refs · '+tot.toLocaleString()+' uds\n(solo se agrega lo que falte)\n\n¿Proceder?')) return false;
+    var comp=getComprometido(), add=0, ya=0;
+    refs.forEach(function(r){
+      if(!comp[r]||typeof comp[r]!=='object') comp[r]={qty:parseInt(comp[r])||0,pedidos:[]};
+      if(!Array.isArray(comp[r].pedidos)) comp[r].pedidos=[];
+      if(comp[r].pedidos.some(function(x){return x.numP===numP;})){ ya++; return; }
+      comp[r].pedidos.push({numP:numP,qty:refsQty[r],fecha:(ped.fecha||new Date().toLocaleDateString('es-VE'))});
+      comp[r].qty=(parseInt(comp[r].qty)||0)+refsQty[r];
+      add+=refsQty[r];
+    });
+    var okG = saveComprometido(comp);
+    var c2=getComprometido(), vR=0, vU=0;
+    Object.keys(c2).forEach(function(r){ ((c2[r]||{}).pedidos||[]).forEach(function(x){ if(x.numP===numP){vR++;vU+=parseInt(x.qty)||0;} }); });
+    var okTotal = (okG!==false) && vR===refs.length && vU===tot;
+    alert((okTotal?'✅ RESERVA RECONSTRUIDA Y VERIFICADA':'⚠ QUEDÓ PARCIAL — avísale a Claude')+'\n'+numP+': '+vR+'/'+refs.length+' refs · '+vU.toLocaleString()+'/'+tot.toLocaleString()+' uds (agregadas: '+add.toLocaleString()+' · ya estaban: '+ya+')');
+    if (typeof renderMonitorPedidos==='function') try{ renderMonitorPedidos(); }catch(e){}
+    return okTotal;
+  }catch(e){ alert('⛔ Error reconstruyendo: '+e.message); return false; }
+};
+
 window.farmersRescatarPedidoSesion = function(){
   try{
     if(!window.MS || !MS.numPedido){ alert('No hay ningún pedido armado en esta pantalla.'); return false; }
