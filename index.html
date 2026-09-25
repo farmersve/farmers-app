@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.09.25.335">
+<meta name="farmers-version" content="2026.09.25.336">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -56404,6 +56404,34 @@ window.farmersEliminarImagenesLinea = async function(prefijo, opts){
    se trae de la nube al instante (puerta automática). Reversa total:
    farmersRehidratarTodo(). La guardia sagrada en el motor v2 asegura que un
    ligero jamás pise la copia completa de la nube. */
+/* ═══ v.336 — ESTADO DE CUENTA POR WHATSAPP (Nivel 1, semi-automático) ═══════
+   Un clic: genera el PDF del estado de cuenta (la misma vía del botón 📑) y
+   abre el chat de WhatsApp del cliente con el mensaje redactado. El teléfono
+   sale de la ficha CRM (prioridad: contacto de CXC → general → gerente) y se
+   puede corregir antes de abrir. Solo queda adjuntar el PDF con el clip. */
+window.farmersEdoCtaWhatsApp = function(cl, deuda){
+  try {
+    var crm = (typeof buscarClienteCRM === 'function') ? buscarClienteCRM(cl.nombre, cl.rif || '') : null;
+    var telRaw = (crm && (crm.cxcTel || crm.telefono || crm.gerenteTel)) || '';
+    var tel = prompt('Número de WhatsApp de ' + cl.nombre + ':\n(0424xxxxxxx o 58424xxxxxxx — sale de la ficha CRM, corrígelo si hace falta)', telRaw || '');
+    if (tel === null) return;
+    var d = String(tel).replace(/\D/g, '');
+    if (!d) { alert('⛔ Sin número de WhatsApp. Agrégalo en la ficha del cliente (Clientes → contacto CXC) para la próxima.'); return; }
+    if (d.charAt(0) === '0') d = '58' + d.slice(1);
+    else if (d.slice(0,2) !== '58' && d.length <= 10) d = '58' + d;
+    var hoy = new Date().toLocaleDateString('es-VE', { day:'2-digit', month:'2-digit', year:'numeric' });
+    var deudaTxt = (typeof cxcFmt === 'function') ? cxcFmt(deuda) : Number(deuda||0).toFixed(2);
+    var msj = 'Estimados ' + cl.nombre + ',\n\n'
+      + 'Les compartimos su ESTADO DE CUENTA al ' + hoy + '.\n'
+      + 'Saldo pendiente: $' + deudaTxt + '\n\n'
+      + 'Adjuntamos el documento PDF con el detalle de sus facturas. Agradecemos su gestión de pago.\n\n'
+      + 'FARMERS, C.A. · Margarita';
+    try { cxcNotifCliente(cl.id, encodeURIComponent(cl.nombre)); } catch(ePdf) { console.warn('[WA edo cta] PDF:', ePdf); }
+    window.open('https://wa.me/' + d + '?text=' + encodeURIComponent(msj), '_blank');
+    if (typeof showToast === 'function') showToast('📲 Chat abierto y estado de cuenta generado. En la ventana del documento: Imprimir/Guardar PDF → luego adjúntalo en WhatsApp con el clip 📎.','info',{duration:14000});
+  } catch(e){ alert('⛔ ' + (e && e.message)); }
+};
+
 // v.335 — Botón 🪶 ALIGERAR del Monitor: mismo comando, sin consola.
 window.farmersAligerarBoton = async function(btn){
   try {
@@ -65104,6 +65132,14 @@ function cxcRenderEstadoCuenta(body,cl){
       };
     })(cl.id, cl.nombre);
     hdrBtns.appendChild(btnConsol);
+
+    // v.336 — 📲 WhatsApp: PDF del estado de cuenta + chat del cliente con mensaje listo
+    var btnWa = document.createElement('button');
+    btnWa.className = 'cxc-btn cxc-btn-success';
+    btnWa.textContent = '📲 WhatsApp';
+    btnWa.title = 'Genera el PDF del estado de cuenta y abre el chat de WhatsApp del cliente con el mensaje listo (solo adjuntas el PDF)';
+    btnWa.onclick = (function(clObj, deuda){ return function(){ farmersEdoCtaWhatsApp(clObj, deuda); }; })(cl, totalDeuda);
+    hdrBtns.appendChild(btnWa);
 
     var btnNotif = document.createElement('button');
     btnNotif.className = 'cxc-btn cxc-btn-orange';
