@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.09.25.332">
+<meta name="farmers-version" content="2026.09.25.333">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -9778,6 +9778,7 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
       window._fbState.lastSync = fbNow();
       window.fbSetStatus('connected');
       fbLog('✓ Ventas guardadas (' + window._fbState.salesCount + ')', 'ok');
+      try { if (window._salesV2) window._salesV2.save(Array.isArray(v) ? v : []); } catch(e333){}  // v.333: copia v2 doc-por-venta
     } catch(e) {
       window.fbSetStatus('disconnected', 'error guardando');
       fbLog('✗ Error ventas: ' + e.message, 'error');
@@ -10071,6 +10072,80 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
     var msg = ok ? '✅ Migración v2 completa: ' + lista.length + ' pedidos, cada uno como documento propio.' : '⚠ Migración con fallos — revisa la consola.';
     console.log(msg); return msg;
   };
+
+  /* ═══ v.333 — FASE A del ADELGAZAMIENTO: motor v2 genérico ══════════════════
+     Documento-por-registro para VENTAS y HCL, calcado del motor de pedidos
+     (v.312, comprobado en producción). En esta fase el formato viejo sigue
+     siendo la fuente de carga: v2 corre EN PARALELO como copia por registro
+     (inmune al límite de 1024 KB). La Fase B invertirá la preferencia y
+     aligerará lo local, sobre esta fase ya verificada. */
+  function _crearMotorV2(nombre, COL, LS_KEY, getId) {
+    var cache = {}; var api = { activo: false, cache: cache };
+    api.save = async function(arr){
+      var lista = Array.isArray(arr) ? arr : [];
+      var ok = 0, fallos = [], sinCambio = 0, LOTE = 20, vivos = {};
+      for (var i = 0; i < lista.length; i += LOTE) {
+        var trozo = lista.slice(i, i + LOTE);
+        await Promise.all(trozo.map(async function(reg){
+          var rid = getId(reg); if (!rid) return;
+          var id = String(rid).replace(/[\/\s]/g, '_');
+          vivos[id] = true;
+          var str = JSON.stringify(reg);
+          if (cache[id] === str) { sinCambio++; return; }
+          try { await setDoc(doc(db, COL, id), { v: str, updatedAt: Date.now() }); cache[id] = str; ok++; }
+          catch(e) { fallos.push(id); console.error('[' + nombre + 'V2] ✗ ' + id + ':', e && e.message); }
+        }));
+      }
+      var borrar = Object.keys(cache).filter(function(id){ return !vivos[id]; });
+      var permitir = window._farmersPermitirReduccion || (borrar.length < 5 && borrar.length <= Math.max(1, Object.keys(cache).length) * 0.10);
+      if (borrar.length && permitir) {
+        for (var b = 0; b < borrar.length; b++) { try { await deleteDoc(doc(db, COL, borrar[b])); delete cache[borrar[b]]; } catch(eD){} }
+      } else if (borrar.length) {
+        console.error('[' + nombre + 'V2] ⛔ Guardia: borrado de ' + borrar.length + ' documentos omitido. Si es intencional: farmersPermitirReduccion(true) y guarda de nuevo.');
+      }
+      if (ok || borrar.length) console.log('[' + nombre + 'V2] ✓ subidos ' + ok + ' · sin cambio ' + sinCambio + ' · borrados ' + (permitir ? borrar.length : 0) + (fallos.length ? ' · ⚠ fallos: ' + fallos.length : ''));
+      if (fallos.length === 0 && (ok > 0 || sinCambio > 0)) api.activo = true;
+      return fallos.length === 0;
+    };
+    api.get = async function(){
+      try {
+        var snap = await getDocs(collection(db, COL)); var out = [];
+        snap.forEach(function(d){ var dd = d.data() || {}; if (!dd.v) return; try { out.push(JSON.parse(dd.v)); cache[d.id] = dd.v; } catch(e){} });
+        if (out.length) api.activo = true;
+        return out.length ? out : null;
+      } catch(e) { console.warn('[' + nombre + 'V2] lectura:', e && e.message); return null; }
+    };
+    api.estado = async function(){
+      var loc = 0; try { loc = (JSON.parse(localStorage.getItem(LS_KEY)||'[]')).length; } catch(e){}
+      var nuevo = 0; try { var v2 = await api.get(); nuevo = v2 ? v2.length : 0; } catch(e){}
+      var msg = nombre.toUpperCase() + '\n  Local: ' + loc + '\n  Nube v2 (doc por registro): ' + nuevo + '\n\n' +
+        (nuevo === 0 ? '→ Aún sin migrar.' : nuevo === loc ? '✅ v2 al día con lo local.' : '⚠ v2 difiere de local en ' + Math.abs(loc - nuevo) + ' — re-corre la migración.');
+      console.log(msg); return msg;
+    };
+    api.migrar = async function(){
+      var lista = []; try { lista = JSON.parse(localStorage.getItem(LS_KEY)||'[]'); } catch(e){}
+      if (!lista.length) return '⛔ No hay registros locales de ' + nombre + '.';
+      var ids = {}, malos = [];
+      lista.forEach(function(r){ var id = getId(r); if (!id) { malos.push('(sin id)'); return; } if (ids[id]) malos.push(String(id)); ids[id] = 1; });
+      if (malos.length) { var m0 = '⛔ ' + nombre + ': ids ausentes/duplicados (' + malos.slice(0,5).join(', ') + (malos.length>5?'…':'') + ') — avísale a Claude antes de migrar.'; console.error(m0); return m0; }
+      console.log('[' + nombre + 'V2] Migrando ' + lista.length + ' registros…');
+      var ok = await api.save(lista);
+      var msg = ok ? ('✅ Migración ' + nombre + ' v2 completa: ' + lista.length + ' documentos propios en la nube.') : '⚠ Migración de ' + nombre + ' con fallos — revisa la consola.';
+      console.log(msg); return msg;
+    };
+    return api;
+  }
+  window._salesV2 = _crearMotorV2('ventas', 'sales_v2', 'farmers_sales', function(r){ return r && r.id; });
+  window._hclV2   = _crearMotorV2('hcl', 'hcl_v2', 'farmers_hcl_v7_facturas', function(r){
+    if (!r) return null;
+    if (r.id) return r.id;
+    if (r.nroFactura) return 'nf_' + String(r.nroFactura).replace(/\W/g,'') + '_' + String(r.fechaEmision || r.fecha || '').replace(/\W/g,'');
+    return null;
+  });
+  window.farmersSalesV2Estado = function(){ return window._salesV2.estado(); };
+  window.farmersSalesV2Migrar = function(){ return window._salesV2.migrar(); };
+  window.farmersHclV2Estado   = function(){ return window._hclV2.estado(); };
+  window.farmersHclV2Migrar   = function(){ return window._hclV2.migrar(); };
 
   // Escucha en tiempo real del formato v2 (tablet/otra PC), con las mismas
   // guardias v.172/v.199 de ventana de gracia que el formato viejo.
@@ -63940,7 +64015,9 @@ setTimeout(function(){
          Si v2 está activo, el documento único es SOLO cortesía: que engorde
          no es riesgo, y el aviso lo dice así en vez de gritar "migración"
          (verificado 24/09: local 39 · nube v2 39 · ✅ al día). */
-      var esPedidosConV2 = (par[0] === 'farmers_ms_pedidos') && window._msV2Activo;
+      var esPedidosConV2 = ((par[0] === 'farmers_ms_pedidos') && window._msV2Activo) ||
+                           ((par[0] === 'farmers_sales') && window._salesV2 && window._salesV2.activo) ||
+                           ((par[0] === 'farmers_hcl_v7_facturas') && window._hclV2 && window._hclV2.activo);  // v.333
       if (v.length > 900000) {
         if (esPedidosConV2) {
           console.log('[v.328] ℹ ' + par[1] + ' (formato viejo de cortesía): ' + kb + ' KB. Sin riesgo: tu almacén real es v2 (documento por pedido) y está activo. Verifica cuando quieras con farmersMsV2Estado().');
@@ -75443,6 +75520,7 @@ function hclSaveFacturas(facs) {
     // FIX v.98: NO escribir a HCL_LS_KEY (legacy 'farmers_hcl_facturas') — ahorra 929 KB
   } catch(e) { console.error('HCL localStorage error:', e); }
   _hclEspejoIDB(facs);   // v.308 — Fase B
+  try { if (window._hclV2) window._hclV2.save(facs); } catch(e333){}  // v.333: copia v2 doc-por-factura
   // 2. Guardar en Firebase INMEDIATAMENTE — fuente de verdad
   if (window.fbSaveHCL) {
     window.fbSaveHCL(facs).then(function() {
