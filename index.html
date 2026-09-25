@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.09.25.338">
+<meta name="farmers-version" content="2026.09.25.339">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -56470,17 +56470,29 @@ window.farmersAligerarHistorico = async function(dias){
     var mapa = {}; nube.forEach(function(r){ var id = r && (r.id || r.nroFactura); if (id) mapa[String(id)] = r; });
     var arr = []; try { arr = JSON.parse(localStorage.getItem(df.key) || '[]'); } catch(e){}
     var kbA = Math.round((localStorage.getItem(df.key)||'').length/1024);
-    var n = 0;
+    var n = 0, sinFecha = 0, recientes = 0, sinNube = 0;
+    /* v.339 — lector de fecha bilingüe: ISO (2026-09-19) Y venezolano
+       (19/09/2026). Antes solo ISO: la mayoría de las ventas quedaban como
+       "fecha ilegible → no tocar" y el aligerado se quedaba corto. */
+    var _fB2 = function(r){
+      var v = r.fechaISO || r.fecha || r.fechaEmision || '';
+      var t = new Date(v).getTime();
+      if (!isNaN(t)) return t;
+      var m = String(v).match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+      if (m) return new Date(+m[3], +m[2]-1, +m[1]).getTime();
+      return NaN;
+    };
     arr.forEach(function(r){
       if (!r || r._ligero) return;
-      var f = new Date(r.fechaISO || r.fecha || r.fechaEmision || '');
-      if (isNaN(f.getTime()) || f.getTime() > corte) return;
+      var ft = _fB2(r);
+      if (isNaN(ft)) { sinFecha++; return; }
+      if (ft > corte) { recientes++; return; }
       var pesados = window._B2_CAMPOS_PESADOS.filter(function(c){ return Array.isArray(r[c]) && r[c].length; });
       if (!pesados.length) return;
       var full = mapa[String(r.id || r.nroFactura || '')];
-      if (!full) return;
+      if (!full) { sinNube++; return; }
       var tieneDetalle = window._B2_CAMPOS_PESADOS.some(function(c){ return Array.isArray(full[c]) && full[c].length; });
-      if (!tieneDetalle) return;  // la nube no tiene el detalle → intocable
+      if (!tieneDetalle) { sinNube++; return; }  // la nube no tiene el detalle → intocable
       pesados.forEach(function(c){ delete r[c]; });
       r._ligero = true; n++;
     });
@@ -56488,8 +56500,8 @@ window.farmersAligerarHistorico = async function(dias){
       try { localStorage.setItem(df.key, JSON.stringify(arr)); } catch(eW){ resumen.push(df.nom + ': ⛔ guardado falló'); continue; }
       var kbD = Math.round((localStorage.getItem(df.key)||'').length/1024);
       totalLib += (kbA - kbD);
-      resumen.push(df.nom + ': ' + n + ' registros aligerados · ' + kbA + ' → ' + kbD + ' KB');
-    } else resumen.push(df.nom + ': nada nuevo que aligerar');
+      resumen.push(df.nom + ': ' + n + ' aligerados · ' + kbA + ' → ' + kbD + ' KB' + ((sinFecha||sinNube) ? ' (saltados: '+sinFecha+' sin fecha legible · '+sinNube+' sin respaldo nube)' : ''));
+    } else resumen.push(df.nom + ': nada nuevo (recientes: '+recientes+' · sin fecha legible: '+sinFecha+' · sin respaldo nube: '+sinNube+')');
   }
   var msg = 'FASE B2 — HISTÓRICO LIGERO (>'+dias+' días)\n\n' + resumen.join('\n') + (totalLib ? ('\n\nLiberados en total: ~' + totalLib + ' KB') : '');
   console.log('[FaseB2]', msg.replace(/\n/g,' · ')); alert(msg);
