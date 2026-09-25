@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.09.24.330">
+<meta name="farmers-version" content="2026.09.25.332">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -8118,6 +8118,20 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
       await setDoc(doc(db,'data','images_meta'), { total: saved, system: 'per_ref' });
     } catch(e) {}
     console.log('fbSaveImages: guardadas', saved, '| errores:', errors);
+  };
+
+  // v.331 — Borrado de imágenes por lista de refs (colección img/{ref})
+  window.fbDeleteImages = async (refs) => {
+    let ok = 0, err = 0; const fallidas = [];
+    for (const r of (refs||[])) {
+      try { await deleteDoc(doc(db, 'img', String(r))); ok++; }
+      catch(e){ err++; fallidas.push(String(r)); console.warn('fbDeleteImages', r, e); }
+    }
+    try {
+      const snap = await getDocs(collection(db, 'img'));
+      await setDoc(doc(db,'data','images_meta'), { total: snap.size, system: 'per_ref' });
+    } catch(e) {}
+    return { ok, err, fallidas };
   };
 
   // ── Leer imágenes desde Firebase (une todos los chunks) ──
@@ -56230,6 +56244,70 @@ setTimeout(function(){
    ref por ref. Si algo se desalineó —por el bug que sea— lo canta con toast
    rojo persistente y consola, con la reparación a un clic. Avisa una sola
    vez por pedido por sesión para no ametrallar. */
+/* ═══ v.331 — GESTIÓN DE IMÁGENES POR LÍNEA (pedido de Omar: retirar GENIAL) ══
+   Tres comandos, en el orden de uso:
+   1) farmersImagenesLinea('GEN')          → mapa: cuántas, peso, cuáles tienen
+      reserva activa (intocables), stock, o son huérfanas.
+   2) farmersRespaldarImagenesLinea('GEN') → descarga un .json con esas
+      imágenes ANTES de borrar (no están en los respaldos diarios).
+   3) farmersEliminarImagenesLinea('GEN')  → elimina de la nube con
+      confirmación; EXCLUYE automáticamente las refs con reserva activa. */
+window.farmersImagenesLinea = async function(prefijo){
+  prefijo = String(prefijo||'').toUpperCase();
+  if(!prefijo){ alert('Indica el prefijo, ej: farmersImagenesLinea(\'GEN\')'); return null; }
+  var imgs = await fbGetImages();
+  var refs = Object.keys(imgs).filter(function(r){ return r.toUpperCase().indexOf(prefijo)===0; }).sort();
+  var prodSet = {}; (PRODUCTS||[]).forEach(function(p){ prodSet[p.r]=p; });
+  var comp = getComprometido();
+  var kb=0, comprometidas=[], conStock=[], huerf=[], resto=[];
+  refs.forEach(function(r){
+    kb += Math.round(((imgs[r]||'').length)/1024);
+    var cq = parseInt((comp[r]||{}).qty)||0;
+    if (cq>0) comprometidas.push(r+' ('+cq+' uds reservadas)');
+    else if (!prodSet[r]) huerf.push(r);
+    else if ((parseInt(prodSet[r].s)||0)>0) conStock.push(r+' (stock '+prodSet[r].s+')');
+    else resto.push(r);
+  });
+  var txt = 'IMÁGENES DE LA LÍNEA "'+prefijo+'": '+refs.length+' · ~'+kb+' KB en la nube\n\n'
+    + '🔒 Con reserva ACTIVA (se excluyen del borrado): '+(comprometidas.join(', ')||'ninguna')+'\n'
+    + '📦 Con stock: '+(conStock.length? conStock.join(', ') : 'ninguna')+'\n'
+    + '👻 Huérfanas (sin producto en catálogo): '+huerf.length+'\n'
+    + '· Resto (sin stock): '+resto.length;
+  console.log('[imágenes '+prefijo+']', {refs:refs, comprometidas:comprometidas, conStock:conStock, huerf:huerf, resto:resto});
+  alert(txt);
+  return { refs:refs, comprometidas:comprometidas, conStock:conStock, huerf:huerf, resto:resto, kb:kb };
+};
+window.farmersRespaldarImagenesLinea = async function(prefijo){
+  prefijo = String(prefijo||'').toUpperCase();
+  var imgs = await fbGetImages(); var out={};
+  Object.keys(imgs).forEach(function(r){ if(r.toUpperCase().indexOf(prefijo)===0) out[r]=imgs[r]; });
+  var n = Object.keys(out).length;
+  if(!n){ alert('No hay imágenes con prefijo '+prefijo); return 0; }
+  var js = JSON.stringify(out);
+  var a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([js],{type:'application/json'}));
+  a.download = 'respaldo_imagenes_'+prefijo+'_'+new Date().toISOString().slice(0,10)+'.json';
+  document.body.appendChild(a); a.click(); a.remove();
+  alert('💾 Respaldo descargado: '+n+' imágenes (~'+Math.round(js.length/1024)+' KB).\nGuárdalo en lugar seguro ANTES de eliminar — las imágenes NO están en los respaldos diarios.');
+  return n;
+};
+window.farmersEliminarImagenesLinea = async function(prefijo, opts){
+  opts = opts||{};
+  var m = await farmersImagenesLinea(prefijo);
+  if(!m || !m.refs.length){ return null; }
+  var compRefs = m.comprometidas.map(function(x){ return x.split(' ')[0]; });
+  var objetivo = m.refs.filter(function(r){ return opts.incluirComprometidas ? true : compRefs.indexOf(r)<0; });
+  if(!objetivo.length){ alert('Nada que eliminar (todo excluido por reservas activas).'); return null; }
+  if(!confirm('ELIMINAR DE LA NUBE '+objetivo.length+' imagen(es) de la línea "'+String(prefijo).toUpperCase()+'"'
+    + (compRefs.length && !opts.incluirComprometidas ? '\n(EXCLUIDAS por reserva activa: '+compRefs.join(', ')+')' : '')
+    + '\n\n⚠ Sin deshacer automático. ¿Ya descargaste el respaldo con farmersRespaldarImagenesLinea? \n\n¿Proceder?')) return null;
+  var r = await fbDeleteImages(objetivo);
+  alert((r.err? '⚠ PARCIAL' : '✅ ELIMINACIÓN COMPLETA')+'\nEliminadas: '+r.ok+' de '+objetivo.length
+    + (r.err? ('\nFallidas (reintenta luego): '+r.fallidas.join(', ')) : '')
+    + '\n\nVerifica: farmersImagenesLinea(\''+String(prefijo).toUpperCase()+'\') debe mostrar solo lo excluido.');
+  return r;
+};
+
 window._custodioAvisados330 = {};
 window.farmersCustodioReservas = function(manual){
   try {
@@ -79462,20 +79540,20 @@ function debounce(func, wait) {
   };
 }
 
-// 3. Batch operations para localStorage
+// 3. [ELIMINADO en v.332] — Aquí vivía EL VILLANO DE LA SAGA (25/09/2026):
+//    un envoltorio que reemplazaba localStorage.setItem por una cola
+//    diferida 50ms SIN manejo de errores. Causaba:
+//    · pérdida total de guardados si la página recargaba dentro de los 50ms
+//      (pedido MS-260921-1352 emitido y desaparecido, 21/09);
+//    · cola ENVENENADA: si un elemento fallaba (cuota), todo lo encolado
+//      después moría en silencio hasta recargar (reserva del MS-260924-1151
+//      en 0, 24/09);
+//    · toda verificación "escribo-releo" daba falsa alarma, engañando a los
+//      sellos v.323/v.329 (falso "verificación falló (8 KB)", 25/09).
+//    El guardado vuelve a ser NATIVO y SÍNCRONO. La "optimización" no
+//    aportaba nada medible y costó una semana de fantasmas. Nunca más.
 window._batchQueue = [];
 window._batchTimeout = null;
-var originalSetItem = localStorage.setItem;
-localStorage.setItem = function(key, value) {
-  window._batchQueue.push({key: key, value: value});
-  if (window._batchTimeout) clearTimeout(window._batchTimeout);
-  window._batchTimeout = setTimeout(function() {
-    window._batchQueue.forEach(function(item) {
-      originalSetItem.call(localStorage, item.key, item.value);
-    });
-    window._batchQueue = [];
-  }, 50);
-};
 
 // 4. Performance monitoring silencioso
 window._perfMetrics = {
