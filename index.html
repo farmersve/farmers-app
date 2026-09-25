@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.09.25.337">
+<meta name="farmers-version" content="2026.09.25.338">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -10103,6 +10103,7 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
           var rid = getId(reg); if (!rid) return;
           var id = String(rid).replace(/[\/\s]/g, '_');
           vivos[id] = true;
+          if (reg._ligero) return;  // v.338 FASE B2 — GUARDIA SAGRADA: lo aligerado nunca pisa la copia completa de la nube
           var str = JSON.stringify(reg);
           if (cache[id] === str) { sinCambio++; return; }
           try { await setDoc(doc(db, COL, id), { v: str, updatedAt: Date.now() }); cache[id] = str; ok++; }
@@ -56444,11 +56445,110 @@ window.farmersEdoCtaWhatsApp = function(cl, deuda){
   } catch(e){ alert('⛔ ' + (e && e.message)); }
 };
 
+/* ═══ v.338 — FASE B2 DEL ADELGAZAMIENTO: VENTAS + HCL LIGEROS ═══════════════
+   Registros con más de N días (60 por defecto) sueltan localmente sus arrays
+   pesados (items/productos/líneas) conservando TODOS sus campos escalares
+   (números de pedido/factura, cliente, totales, fechas) — así la evidencia,
+   los KPIs y los cuadres siguen exactos. El detalle completo queda en la
+   nube v2 (verificado registro por registro antes de soltar). Al abrir los
+   módulos de análisis profundo (Ventas, Historial Clientes/Reposición IA,
+   Faltantes) el histórico completo se trae solo de la nube — una vez — y el
+   módulo trabaja con datos íntegros. Recoges cuando quieras con 🪶. */
+window._B2_CAMPOS_PESADOS = ['items','productos','lineas','detalle'];
+window.farmersAligerarHistorico = async function(dias){
+  dias = parseInt(dias) || 60;
+  var defs = [
+    { nom:'VENTAS', key:'farmers_sales', motor: window._salesV2 },
+    { nom:'HCL',    key:'farmers_hcl_v7_facturas', motor: window._hclV2 }
+  ];
+  var corte = Date.now() - dias*86400000;
+  var resumen = [], totalLib = 0;
+  for (var di = 0; di < defs.length; di++) {
+    var df = defs[di];
+    var nube = df.motor ? await df.motor.get() : null;
+    if (!nube || !nube.length) { resumen.push(df.nom + ': ⛔ nube v2 no respondió — intocado'); continue; }
+    var mapa = {}; nube.forEach(function(r){ var id = r && (r.id || r.nroFactura); if (id) mapa[String(id)] = r; });
+    var arr = []; try { arr = JSON.parse(localStorage.getItem(df.key) || '[]'); } catch(e){}
+    var kbA = Math.round((localStorage.getItem(df.key)||'').length/1024);
+    var n = 0;
+    arr.forEach(function(r){
+      if (!r || r._ligero) return;
+      var f = new Date(r.fechaISO || r.fecha || r.fechaEmision || '');
+      if (isNaN(f.getTime()) || f.getTime() > corte) return;
+      var pesados = window._B2_CAMPOS_PESADOS.filter(function(c){ return Array.isArray(r[c]) && r[c].length; });
+      if (!pesados.length) return;
+      var full = mapa[String(r.id || r.nroFactura || '')];
+      if (!full) return;
+      var tieneDetalle = window._B2_CAMPOS_PESADOS.some(function(c){ return Array.isArray(full[c]) && full[c].length; });
+      if (!tieneDetalle) return;  // la nube no tiene el detalle → intocable
+      pesados.forEach(function(c){ delete r[c]; });
+      r._ligero = true; n++;
+    });
+    if (n) {
+      try { localStorage.setItem(df.key, JSON.stringify(arr)); } catch(eW){ resumen.push(df.nom + ': ⛔ guardado falló'); continue; }
+      var kbD = Math.round((localStorage.getItem(df.key)||'').length/1024);
+      totalLib += (kbA - kbD);
+      resumen.push(df.nom + ': ' + n + ' registros aligerados · ' + kbA + ' → ' + kbD + ' KB');
+    } else resumen.push(df.nom + ': nada nuevo que aligerar');
+  }
+  var msg = 'FASE B2 — HISTÓRICO LIGERO (>'+dias+' días)\n\n' + resumen.join('\n') + (totalLib ? ('\n\nLiberados en total: ~' + totalLib + ' KB') : '');
+  console.log('[FaseB2]', msg.replace(/\n/g,' · ')); alert(msg);
+  if (typeof window._lsQuotaCheck === 'function') { try { window._lsQuotaCheck(); } catch(e){} }
+  return totalLib;
+};
+window.farmersHidratarHistorico = async function(silencioso){
+  var defs = [
+    { key:'farmers_sales', motor: window._salesV2 },
+    { key:'farmers_hcl_v7_facturas', motor: window._hclV2 }
+  ];
+  var n = 0;
+  for (var di = 0; di < defs.length; di++) {
+    var df = defs[di];
+    var arr = []; try { arr = JSON.parse(localStorage.getItem(df.key) || '[]'); } catch(e){}
+    if (!arr.some(function(r){ return r && r._ligero; })) continue;
+    var nube = df.motor ? await df.motor.get() : null;
+    if (!nube || !nube.length) { console.warn('[FaseB2] hidratar: nube no respondió para ' + df.key); continue; }
+    var mapa = {}; nube.forEach(function(r){ var id = r && (r.id || r.nroFactura); if (id) mapa[String(id)] = r; });
+    arr = arr.map(function(r){
+      if (r && r._ligero) { var full = mapa[String(r.id || r.nroFactura || '')]; if (full) { n++; var c = JSON.parse(JSON.stringify(full)); delete c._ligero; return c; } }
+      return r;
+    });
+    try { localStorage.setItem(df.key, JSON.stringify(arr)); } catch(eW){}
+  }
+  if (n && !silencioso && typeof showToast === 'function') showToast('☁️ Histórico completo traído de la nube: ' + n + ' registro(s) rehidratados. Recoge cuando quieras con 🪶.','info',{duration:8000});
+  console.log('[FaseB2] rehidratados: ' + n);
+  return n;
+};
+// Auto-rehidratación al abrir módulos de análisis profundo (una vez por apertura)
+setTimeout(function(){
+  ['openVentas','openHCL','openFaltantes'].forEach(function(fn){
+    var f = window[fn];
+    if (typeof f !== 'function' || f._faseB2) return;
+    window[fn] = function(){
+      var args = arguments, ctx = this, _orig = f;
+      try {
+        var hayLig = ['farmers_sales','farmers_hcl_v7_facturas'].some(function(k){
+          try { return (JSON.parse(localStorage.getItem(k)||'[]')).some(function(r){ return r && r._ligero; }); } catch(e){ return false; }
+        });
+        if (hayLig) {
+          if (typeof showToast === 'function') showToast('☁️ Trayendo el histórico completo de la nube para el análisis…','info',{duration:6000});
+          farmersHidratarHistorico(true).then(function(){ _orig.apply(ctx, args); },
+                                            function(){ _orig.apply(ctx, args); });
+          return;
+        }
+      } catch(e){}
+      return _orig.apply(ctx, args);
+    };
+    window[fn]._faseB2 = true;
+  });
+}, 3000);
+
 // v.335 — Botón 🪶 ALIGERAR del Monitor: mismo comando, sin consola.
 window.farmersAligerarBoton = async function(btn){
   try {
     if (btn) { btn.disabled = true; btn.textContent = '🪶 ALIGERANDO…'; }
     await window.farmersAligerarPedidos();
+    await window.farmersAligerarHistorico(60);  // v.338: recoge también ventas/HCL viejos
     if (typeof msAbrirMonitor === 'function') { try { msAbrirMonitor(); } catch(e){} }
     if (typeof window._lsQuotaCheck === 'function') { try { window._lsQuotaCheck(); } catch(e){} }
   } catch(e) {
