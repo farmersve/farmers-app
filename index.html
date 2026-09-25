@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.09.25.333">
+<meta name="farmers-version" content="2026.09.25.334">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -10013,6 +10013,10 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
         if (!pd || !pd.numP) return;
         var id = String(pd.numP).replace(/[\/\s]/g, '_');
         vivos[id] = true;
+        /* v.334 FASE B1 — GUARDIA SAGRADA: un pedido ALIGERADO (sin su
+           detalle local) nunca sube a la nube: la nube conserva SIEMPRE la
+           copia completa, que es de donde se rehidrata. */
+        if (pd._ligero) return;
         var str = JSON.stringify(pd);
         if (window._msV2Cache[id] === str) { sinCambio++; return; }
         try {
@@ -10053,6 +10057,15 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
       if (out.length) { window._msV2Activo = true; window._msPedidosRemoteUpdatedAt = maxAt; }
       return out.length ? out : null;
     } catch(e) { console.warn('[MsV2] lectura falló:', e && e.message); return null; }
+  };
+
+  // v.334 — lectura puntual de un pedido v2 (para rehidratación al abrirlo)
+  window.fbGetMsPedidoV2Uno = async function(numP) {
+    try {
+      var d1 = await getDoc(doc(db, MSV2_COL, String(numP).replace(/[\/\s]/g, '_')));
+      if (d1.exists() && d1.data().v) return JSON.parse(d1.data().v);
+    } catch(e) { console.warn('[MsV2] uno:', e && e.message); }
+    return null;
   };
 
   window.farmersMsV2Estado = async function() {
@@ -56382,6 +56395,100 @@ window.farmersEliminarImagenesLinea = async function(prefijo, opts){
     + '\n\nVerifica: farmersImagenesLinea(\''+String(prefijo).toUpperCase()+'\') debe mostrar solo lo excluido.');
   return r;
 };
+
+/* ═══ v.334 — FASE B1 DEL ADELGAZAMIENTO: PEDIDOS LIGEROS ═══════════════════
+   farmersAligerarPedidos(días=30): los DESPACHADOS con más de N días cuyo
+   respaldo COMPLETO está verificado en la nube v2 quedan localmente solo con
+   encabezado + items (se vacía su `data`, el detalle pesado). Sus tarjetas,
+   totales y orden en el Monitor no cambian. Al abrir su DOC/PDF, el detalle
+   se trae de la nube al instante (puerta automática). Reversa total:
+   farmersRehidratarTodo(). La guardia sagrada en el motor v2 asegura que un
+   ligero jamás pise la copia completa de la nube. */
+window.farmersHidratarPedido = async function(numP){
+  try {
+    var full = (window.fbGetMsPedidoV2Uno) ? await fbGetMsPedidoV2Uno(numP) : null;
+    if (!full) { var todos = await fbGetMsPedidosV2(); full = (todos||[]).find(function(p){return p&&p.numP===numP;}); }
+    if (!full || full._ligero || !Array.isArray(full.data) || !full.data.length) return false;
+    var peds = getMsPedidos(); var i = peds.findIndex(function(p){return p.numP===numP;});
+    if (i < 0) return false;
+    delete full._ligero;
+    peds[i] = full;
+    saveMsPedidos(peds);
+    console.log('[FaseB1] ✓ ' + numP + ' rehidratado desde la nube (' + full.data.length + ' refs de detalle)');
+    return true;
+  } catch(e){ console.warn('[FaseB1] hidratar:', e); return false; }
+};
+window.farmersAligerarPedidos = async function(dias){
+  dias = parseInt(dias) || 30;
+  var nube = await fbGetMsPedidosV2();
+  if (!nube || !nube.length) { alert('⛔ La nube v2 no respondió: no se aligera NADA sin respaldo verificado.'); return null; }
+  var mapa = {}; nube.forEach(function(p){ if (p && p.numP) mapa[p.numP] = p; });
+  function fMs(p){
+    var m = String(p.fechaDespacho||'').match(/(\d{2})\/(\d{2})\/(\d{4})/);
+    if (m) return new Date(+m[3], +m[2]-1, +m[1]).getTime();
+    if (p.fechaISO) { var t = new Date(p.fechaISO).getTime(); if (!isNaN(t)) return t; }
+    var n = String(p.numP||'').match(/MS-(\d{2})(\d{2})(\d{2})/);
+    if (n) return new Date(2000 + +n[1], +n[2]-1, +n[3]).getTime();
+    return Date.now();
+  }
+  var corte = Date.now() - dias*86400000;
+  var peds = getMsPedidos(), cand = [];
+  var kbAntes = Math.round((localStorage.getItem('farmers_ms_pedidos')||'').length/1024);
+  peds.forEach(function(p){
+    if (String(p.estado||'').toUpperCase() !== 'DESPACHADO') return;
+    if (p._ligero) return;
+    if (fMs(p) > corte) return;
+    var full = mapa[p.numP];
+    if (!full || full._ligero || !Array.isArray(full.data) || !full.data.length) return; // nube sin detalle completo → intocable
+    cand.push(p.numP);
+  });
+  if (!cand.length) { alert('Nada que aligerar: no hay despachados de más de '+dias+' días con respaldo completo verificado en la nube.'); return null; }
+  if (!confirm('FASE B1 — ALIGERAR '+cand.length+' pedido(s) DESPACHADOS de más de '+dias+' días.\n\n· Sus tarjetas y totales en el Monitor NO cambian\n· Su detalle completo queda en la nube v2 (verificado ahora mismo) y se trae solo al abrir su DOC/PDF\n· Reversa total en cualquier momento: farmersRehidratarTodo()\n\n¿Proceder?')) return null;
+  peds.forEach(function(p){ if (cand.indexOf(p.numP) < 0) return; p._ligero = true; p.data = []; });
+  var okG = saveMsPedidos(peds);
+  var kbDesp = Math.round((localStorage.getItem('farmers_ms_pedidos')||'').length/1024);
+  var msg = (okG === false)
+    ? '⛔ El guardado falló y lo gritó — nada quedó a medias. Avísale a Claude.'
+    : ('✅ FASE B1 APLICADA\nAligerados: '+cand.length+' pedidos\nfarmers_ms_pedidos: '+kbAntes+' KB → '+kbDesp+' KB (liberados ~'+(kbAntes-kbDesp)+' KB)\n\nMonitor intacto; detalle de viejos se trae de la nube al abrirlos.');
+  alert(msg); console.log('[FaseB1]', msg.replace(/\n/g,' · '));
+  return { aligerados: cand, antes: kbAntes, despues: kbDesp };
+};
+window.farmersRehidratarTodo = async function(){
+  var nube = await fbGetMsPedidosV2();
+  if (!nube || !nube.length) { alert('⛔ La nube v2 no respondió.'); return null; }
+  var mapa = {}; nube.forEach(function(p){ if (p && p.numP) mapa[p.numP] = p; });
+  var peds = getMsPedidos(), n = 0;
+  peds.forEach(function(p, i){
+    if (p._ligero && mapa[p.numP] && !mapa[p.numP]._ligero && Array.isArray(mapa[p.numP].data) && mapa[p.numP].data.length) {
+      var f = mapa[p.numP]; delete f._ligero; peds[i] = f; n++;
+    }
+  });
+  saveMsPedidos(peds);
+  alert('✅ REVERSA COMPLETA: '+n+' pedido(s) rehidratados. Lo local vuelve a tener todo el detalle, como antes de la Fase B1.');
+  return n;
+};
+// Puerta automática: DOC/PDF de un pedido ligero → primero se trae de la nube
+setTimeout(function(){
+  try {
+    if (typeof window.msGenerarDocPedido !== 'function' || window.msGenerarDocPedido._faseB1) return;
+    var _origDoc = window.msGenerarDocPedido;
+    window.msGenerarDocPedido = function(numP, sel){
+      try {
+        var ped = getMsPedidos().find(function(p){ return p.numP === numP; });
+        if (ped && ped._ligero) {
+          if (typeof showToast === 'function') showToast('⏬ Trayendo de la nube el detalle de '+numP+'…','info',{duration:5000});
+          farmersHidratarPedido(numP).then(function(ok){
+            if (ok) _origDoc(numP, sel);
+            else alert('⛔ No pude traer el detalle de '+numP+' desde la nube (¿internet?). Reintenta, o corre farmersHidratarPedido(\''+numP+'\').');
+          });
+          return;
+        }
+      } catch(e){}
+      return _origDoc(numP, sel);
+    };
+    window.msGenerarDocPedido._faseB1 = true;
+  } catch(e){}
+}, 3000);
 
 window._custodioAvisados330 = {};
 window.farmersCustodioReservas = function(manual){
