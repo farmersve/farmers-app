@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.09.25.341">
+<meta name="farmers-version" content="2026.09.26.342">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -56661,6 +56661,73 @@ setTimeout(function(){
     window.msGenerarDocPedido._faseB1 = true;
   } catch(e){}
 }, 3000);
+
+/* ═══ v.342 — SEMÁFORO DE RELEVO ENTRE EQUIPOS ═══════════════════════════════
+   Para la vida multi-equipo de Omar (PC ↔ Mac): un chip fijo abajo a la
+   izquierda que dice la verdad sobre la nube:
+   · 🟢 "NUBE AL DÍA — seguro cambiar de equipo": ninguna subida en vuelo y
+     la última confirmación de la nube es posterior al último guardado local.
+   · 🟡 "Subiendo cambios (N)…": hay subidas en vuelo — NO cierres todavía.
+   · 🔴 "Una subida FALLÓ": la nube rechazó algo — no cambies de equipo y
+     revisa (clic en el chip para el detalle).
+   Mecánica: se envuelven todas las funciones fbSave* (y el guardado v2 de
+   pedidos) para contar salidas y confirmaciones. Clic en el chip = detalle. */
+window._relevo342 = { pend: 0, lastLocal: 0, lastCloudOk: 0, lastErr: null, lastErrAt: 0 };
+setTimeout(function(){
+  try {
+    if (!window._farmersEntornoOficial) return;
+    var R = window._relevo342;
+    var envolver = function(nombre){
+      var f = window[nombre];
+      if (typeof f !== 'function' || f._relevo342) return;
+      window[nombre] = function(){
+        R.pend++; R.lastLocal = Date.now();
+        var res;
+        try { res = f.apply(this, arguments); }
+        catch(eS){ R.pend--; R.lastErr = nombre + ': ' + (eS && eS.message); R.lastErrAt = Date.now(); throw eS; }
+        Promise.resolve(res).then(
+          function(ok){ R.pend--; if (ok === false) { R.lastErr = nombre + ' devolvió false'; R.lastErrAt = Date.now(); } else { R.lastCloudOk = Date.now(); } },
+          function(err){ R.pend--; R.lastErr = nombre + ': ' + (err && err.message); R.lastErrAt = Date.now(); }
+        );
+        return res;
+      };
+      window[nombre]._relevo342 = true;
+    };
+    Object.keys(window).forEach(function(k){ if (/^fbSave/.test(k) && typeof window[k] === 'function') envolver(k); });
+    ['fbTriggerPortalSnapshot','_fbBackupColeccion'].forEach(envolver);
+    // Chip visual
+    var chip = document.createElement('div');
+    chip.id = 'farmers-relevo';
+    chip.style.cssText = 'position:fixed;bottom:8px;left:230px;z-index:2147483000;font:800 11px/1.3 Barlow Condensed,sans-serif;letter-spacing:.6px;padding:6px 12px;border-radius:20px;cursor:pointer;user-select:none;transition:background .3s;box-shadow:0 2px 10px rgba(0,0,0,.35);';
+    chip.onclick = function(){
+      var R2 = window._relevo342;
+      alert('SEMÁFORO DE RELEVO\n\nSubidas en vuelo: ' + R2.pend +
+        '\nÚltimo guardado local: ' + (R2.lastLocal ? new Date(R2.lastLocal).toLocaleTimeString('es-VE') : '—') +
+        '\nÚltima confirmación de nube: ' + (R2.lastCloudOk ? new Date(R2.lastCloudOk).toLocaleTimeString('es-VE') : '—') +
+        (R2.lastErr ? ('\n⛔ Último error: ' + R2.lastErr + ' (' + new Date(R2.lastErrAt).toLocaleTimeString('es-VE') + ')') : '') +
+        '\n\nRegla: cambia de equipo solo con el chip en VERDE.');
+    };
+    document.body.appendChild(chip);
+    setInterval(function(){
+      var R2 = window._relevo342;
+      var errFresco = R2.lastErr && (Date.now() - R2.lastErrAt < 300000);
+      if (errFresco) {
+        chip.style.background = '#b91c1c'; chip.style.color = '#fff';
+        chip.textContent = '🔴 UNA SUBIDA FALLÓ — no cambies de equipo (clic)';
+      } else if (R2.pend > 0) {
+        chip.style.background = '#f59e0b'; chip.style.color = '#111';
+        chip.textContent = '🟡 Subiendo cambios (' + R2.pend + ')… espera';
+      } else if (R2.lastLocal > 0 && R2.lastCloudOk < R2.lastLocal) {
+        chip.style.background = '#f59e0b'; chip.style.color = '#111';
+        chip.textContent = '🟡 Esperando confirmación de la nube…';
+      } else {
+        chip.style.background = '#14532d'; chip.style.color = '#86efac';
+        chip.textContent = '🟢 NUBE AL DÍA — seguro cambiar de equipo';
+      }
+    }, 2000);
+  } catch(e){ console.warn('[relevo v.342]', e); }
+}, 4000);
+window.farmersRelevoEstado = function(){ var R = window._relevo342 || {}; console.log('[RELEVO]', R); return R; };
 
 window._custodioAvisados330 = {};
 window.farmersCustodioReservas = function(manual){
