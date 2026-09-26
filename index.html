@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.09.26.344">
+<meta name="farmers-version" content="2026.09.26.345">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -36363,6 +36363,24 @@ window.ptAbrirAuditoriaIntegral = async function() {
     var lc = localCount(f.local);
     var resultadoFb = await fbCount(f.fb, f.nombre);
     var fc = resultadoFb.count;
+
+    /* v.345 — el panel mira el ALMACÉN REAL, no la copia de cortesía.
+       Para colecciones migradas a v2 (documento por registro: pedidos,
+       ventas, HCL), el conteo de Firebase se toma del v2. Antes comparaba
+       contra el documento único viejo, que va un paso atrás por diseño, y
+       pintaba falsos "Local tiene más" (caso 26/09: 40 vs 39). */
+    try {
+      if (f.local === 'farmers_ms_pedidos' && window._msV2Activo) {
+        var _v2p = await fbGetMsPedidosV2();
+        if (_v2p && _v2p.length) { fc = _v2p.length; f.nombre = 'MS_PEDIDOS (pedidos · nube v2)'; }
+      } else if (f.local === 'farmers_sales' && window._salesV2 && window._salesV2.activo) {
+        var _v2s = await window._salesV2.get();
+        if (_v2s && _v2s.length) { fc = _v2s.length; f.nombre = 'SALES (ventas · nube v2)'; }
+      } else if (f.local === 'farmers_hcl_v7_facturas' && window._hclV2 && window._hclV2.activo) {
+        var _v2h = await window._hclV2.get();
+        if (_v2h && _v2h.length) { fc = _v2h.length; f.nombre = 'HCL (historial · nube v2)'; }
+      }
+    } catch(e345){}
 
     var estado = '';
     if (resultadoFb.timeout) {
