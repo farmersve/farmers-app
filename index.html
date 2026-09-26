@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.09.26.342">
+<meta name="farmers-version" content="2026.09.26.344">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -27721,6 +27721,88 @@ function getTasaHoy() {
   var entry = hist.find(function(x){ return x.fecha === hoy; });
   return entry ? entry.tasa : 0;
 }
+
+/* ═══ v.343 — TASA BCV AUTOMÁTICA ════════════════════════════════════════════
+   El sistema consulta solo la tasa oficial BCV publicada por APIs públicas
+   (DolarApi Venezuela y PyDolarVe como respaldo) al cargar y cada 4 horas,
+   y la registra en el MISMO historial que usa toda la casa (getTasaHoy).
+   Guardias: · una tasa puesta A MANO hoy manda — el automático la respeta ·
+   un salto de más de 25% vs la última registrada NO se aplica solo (avisa) ·
+   sin internet o sin fuente, no toca nada y lo dice en consola.
+   Manual cuando quieras: farmersTasaBCVAhora(true). */
+function _tasaRegistrar343(tasa, fuente){
+  var hoy = getTasaFechaKey();
+  var hist = getTasaHistory();
+  var prev = hist.find(function(x){ return x.fecha === hoy; });
+  hist = hist.filter(function(x){ return x.fecha !== hoy; });
+  hist.unshift({ fecha: hoy, tasa: tasa, fuente: fuente, auto: true, at: new Date().toISOString() });
+  saveTasaHistory(hist);
+  return prev ? prev.tasa : null;
+}
+async function _tasaFetch343(){
+  var fuentes = [
+    { n:'DolarApi', u:'https://ve.dolarapi.com/v1/dolares/oficial',
+      p:function(j){ return parseFloat(j && (j.promedio || j.precio || j.price)); } },
+    { n:'PyDolarVe', u:'https://pydolarve.org/api/v1/dollar?monitor=bcv',
+      p:function(j){
+        if (!j) return NaN;
+        if (j.price) return parseFloat(j.price);
+        if (j.monitors) { var m = j.monitors.bcv || j.monitors.usd || j.monitors[Object.keys(j.monitors)[0]]; if (m) return parseFloat(m.price || m.promedio); }
+        return NaN;
+      } }
+  ];
+  for (var i = 0; i < fuentes.length; i++) {
+    try {
+      var r = await fetch(fuentes[i].u, { cache: 'no-store' });
+      if (!r.ok) continue;
+      var j = await r.json();
+      var t = fuentes[i].p(j);
+      // v.344: la tasa se guarda con TODOS los decimales que publica el BCV
+      // (hasta 8), sin recorte — en montos grandes, los decimales son plata.
+      if (t > 0 && isFinite(t)) return { tasa: parseFloat(t.toFixed(8)), fuente: fuentes[i].n };
+    } catch(e){}
+  }
+  return null;
+}
+window.farmersTasaBCVAhora = async function(manual){
+  try {
+    var hoy = getTasaFechaKey();
+    var entHoy = getTasaHistory().find(function(x){ return x.fecha === hoy; });
+    if (entHoy && !entHoy.auto && !manual) {
+      console.log('[tasa v.343] Tasa de hoy puesta A MANO (' + entHoy.tasa + ') — el automático la respeta.');
+      return { tasa: entHoy.tasa, fuente: 'manual' };
+    }
+    var r = await _tasaFetch343();
+    if (!r) {
+      if (manual) alert('⛔ Ninguna fuente de tasa respondió (revisa internet). El historial quedó como estaba.');
+      else console.warn('[tasa v.343] sin respuesta de fuentes — se reintenta en el próximo ciclo.');
+      return null;
+    }
+    var actual = entHoy ? entHoy.tasa : 0;
+    if (actual > 0 && Math.abs(actual - r.tasa) / actual < 0.005) {
+      if (manual) alert('✅ La tasa de hoy ya está al día: ' + actual + ' Bs/$ (fuente ' + r.fuente + ': ' + r.tasa + ').');
+      else console.log('[tasa v.343] ✓ al día (' + actual + ').');
+      return r;
+    }
+    var hist = getTasaHistory();
+    var ult = hist.length ? parseFloat(hist[0].tasa) || 0 : 0;
+    if (ult > 0 && Math.abs(r.tasa - ult) / ult > 0.25) {
+      var msg = '⚠ ' + r.fuente + ' reporta ' + r.tasa + ' Bs/$ — un salto de más de 25% vs la última registrada (' + ult + '). Por seguridad NO se aplicó sola.';
+      console.warn('[tasa v.343] ' + msg);
+      if (manual && confirm(msg + '\n\n¿Aplicarla de todos modos?')) { _tasaRegistrar343(r.tasa, r.fuente); alert('✅ Aplicada: ' + r.tasa + ' Bs/$'); }
+      else if (!manual && typeof showToast === 'function') showToast(msg + ' Revísala y aplícala con farmersTasaBCVAhora(true) si es correcta.','warning',{duration:15000});
+      return r;
+    }
+    var prev = _tasaRegistrar343(r.tasa, r.fuente);
+    var txt = '💱 Tasa BCV ' + (prev ? ('actualizada: ' + prev + ' → ') : 'del día registrada: ') + r.tasa + ' Bs/$ (automático · ' + r.fuente + ')';
+    console.log('[tasa v.343] ' + txt);
+    if (typeof showToast === 'function') showToast(txt, 'success', { duration: 9000 });
+    if (manual) alert('✅ ' + txt);
+    return r;
+  } catch(e){ console.warn('[tasa v.343]', e); return null; }
+};
+setTimeout(function(){ try { if (window._farmersEntornoOficial) farmersTasaBCVAhora(false); } catch(e){} }, 12000);
+setInterval(function(){ try { if (window._farmersEntornoOficial) farmersTasaBCVAhora(false); } catch(e){} }, 14400000);
 
 // ═══ Multi-Pago: obtener tasa BCV para una fecha específica ═══
 // Si la fecha exacta tiene tasa registrada, la devuelve.
