@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.09.26.346">
+<meta name="farmers-version" content="2026.09.28.347">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -56819,6 +56819,49 @@ setTimeout(function(){
   } catch(e){}
 }, 3000);
 
+/* ═══ v.347 — PUENTE DE MATERIALIZACIÓN: Master → Catálogo/Inventario ════════
+   Para refs que viven SOLO en el Master Data (cargadas por su importador o
+   por IA). Un clic: detecta cuáles no existen como producto y descarga el
+   Excel de la plantilla OFICIAL prellenado con todo lo que el Master ya sabe
+   (descripción, marca, barra, cód. proveedor, categoría, medidas, pesos,
+   composición, aduana…). Solo queda escribir USD (precio de venta, que el
+   Master no guarda y no se inventa) y opcionalmente STOCK, e importarlo por
+   la puerta oficial: Inventario → Importar → Excel (v.346), que crea todo y
+   respeta la ficha Master existente. */
+window.farmersMasterPuente = function(){
+  try {
+    if (typeof window.MASTER !== 'object' || !window.MASTER) { alert('⛔ Master Data no está cargado. Abre el módulo Master Data primero.'); return; }
+    if (typeof XLSX === 'undefined') { alert('⛔ La librería de Excel aún no carga — reintenta en unos segundos.'); return; }
+    var refs = Object.keys(window.MASTER).filter(function(r){
+      return r && r.charAt(0) !== '_' && !(window.PRODUCTS||[]).find(function(p){ return p.r === r; });
+    }).sort();
+    if (!refs.length) { alert('✅ Todo materializado: todas las refs del Master ya existen como producto en el catálogo.'); return; }
+    if (!confirm('🧱 MATERIALIZAR MASTER → CATÁLOGO\n\n' + refs.length + ' referencia(s) viven solo en el Master:\n' + refs.slice(0,15).join(', ') + (refs.length>15?'…':'') + '\n\nSe descargará el Excel oficial PRELLENADO con los datos del Master. Tú solo completas la columna USD (precio de venta) y lo importas por Inventario → Importar → Excel.\n\n¿Generar?')) return;
+    var HEADERS = ['REFERENCIA','DESCRIPCION','MARCA','USD','BCV','TF','CODIGO_BARRA','CODIGO','CATEGORIA','COMPOSICION','PAIS_DE_ORIGEN','EMPAQUE','UNIDADES_POR_BULTO','INNER_PACKING','LONGITUD','ANCHO','ALTURA','PESO_BRUTO_KG','PESO_NETO_KG','VOL_FT3_POR_BULTO','COSTO_FOB','FRACCION_ARANCELARIA','PERMISO_TIPO','PERMISO_DETALLE','CERTIFICACIONES','STOCK'];
+    var MAPA = { CODIGO_BARRA:'codigoBarra', CODIGO:'codigoProveedor', CATEGORIA:'categoria', COMPOSICION:'composicion', PAIS_DE_ORIGEN:'paisDeOrigen', EMPAQUE:'empaque', UNIDADES_POR_BULTO:'unidadesPorBulto', INNER_PACKING:'innerPacking', LONGITUD:'longitud', ANCHO:'ancho', ALTURA:'altura', PESO_BRUTO_KG:'pesoBrutoKg', PESO_NETO_KG:'pesoNetoKg', VOL_FT3_POR_BULTO:'volFt3PorBulto', COSTO_FOB:'costo', FRACCION_ARANCELARIA:'fraccionArancelaria', PERMISO_TIPO:'permisoTipo', PERMISO_DETALLE:'permisoDetalle', CERTIFICACIONES:'certificaciones' };
+    var filas = [HEADERS];
+    refs.forEach(function(r){
+      var M = window.MASTER[r] || {};
+      var fila = HEADERS.map(function(h){
+        if (h === 'REFERENCIA') return r;
+        if (h === 'DESCRIPCION') return M.descripcion || '';
+        if (h === 'MARCA') return M.marca || '';
+        if (h === 'USD' || h === 'BCV' || h === 'TF') return '';
+        if (h === 'STOCK') return 0;
+        var campo = MAPA[h]; var v = campo ? M[campo] : '';
+        return (v === undefined || v === null) ? '' : v;
+      });
+      filas.push(fila);
+    });
+    var ws = XLSX.utils.aoa_to_sheet(filas);
+    ws['!cols'] = HEADERS.map(function(h){ return { wch: (h==='DESCRIPCION'?46:(h==='COMPOSICION'?32:14)) }; });
+    var wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'ALTA MASTER');
+    XLSX.writeFile(wb, 'PUENTE_MATERIALIZAR_' + new Date().toISOString().slice(0,10) + '.xlsx');
+    alert('📥 Excel puente descargado: ' + refs.length + ' referencia(s) prellenadas.\n\nPASOS:\n1. Abre el archivo y completa la columna USD (precio de venta) de cada fila. STOCK ya va en 0.\n2. farmersBackupCrear()\n3. Inventario → Importar → Excel → este archivo → confirmar «¿Crearlas como productos nuevos?»\n\nLa ficha Master existente se respeta; nacerán catálogo + inventario + nube + portal.');
+  } catch(e){ alert('⛔ ' + (e && e.message)); }
+};
+
 /* ═══ v.342 — SEMÁFORO DE RELEVO ENTRE EQUIPOS ═══════════════════════════════
    Para la vida multi-equipo de Omar (PC ↔ Mac): un chip fijo abajo a la
    izquierda que dice la verdad sobre la nube:
@@ -84614,6 +84657,9 @@ function pcRenderConfig(body) {
       </button>
       <button class="m-btn-action" onclick="masterAbrirAuditoria()" title="Compará el Master Data contra Inventario y Productos Terminados para detectar diferencias" style="background:#16a34a;">
         🔍 Auditar
+      </button>
+      <button class="m-btn-action" onclick="farmersMasterPuente()" title="Detecta las refs que viven SOLO en el Master y descarga el Excel oficial prellenado (solo te falta el precio USD) para crearlas en catálogo e inventario por la vía oficial" style="background:#c2410c;">
+        🧱 Materializar
       </button>
       <button class="m-btn-action" onclick="mdAbrirCargaIA()" title="Subí una foto, PDF o Excel (con permisos, fracción arancelaria o cualquier otro dato) y la IA lo asigna a cada referencia" style="background:#0d9488;">
         🧠 Cargar con IA
