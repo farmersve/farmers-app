@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.09.26.345">
+<meta name="farmers-version" content="2026.09.26.346">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -44033,7 +44033,7 @@ window.ptImportarCatalogoSimple = function() {
                 c: String(row.CODIGO || '').trim(),
                 d: dN,
                 e: String(row.EMPAQUE || '').trim() || 'PZA.',
-                m: parseInt(row.MEDIDA) || 0,
+                m: parseInt(row.MEDIDA) || parseInt(row.UNIDADES_POR_BULTO) || 0,  // v.346
                 br: String(row.MARCA || '').trim().toUpperCase() || 'VARIOS',
                 exNE: exNE_n,
                 exAN: 0,
@@ -44055,11 +44055,68 @@ window.ptImportarCatalogoSimple = function() {
                 ptData[refN].medidas.volDirecto = volN;
                 ptData[refN].medidas._fuenteVol = 'Excel catálogo simple (creación) ' + new Date().toISOString().slice(0,10);
               }
+              /* ═══ v.346 — ALTA MASTER MASIVA ═══════════════════════════════
+                 El producto nace con su ficha MASTER (fuente única, 22 campos)
+                 en el mismo acto: base desde las columnas ya conocidas + los
+                 campos de aduana/logística nuevos de la plantilla. La
+                 propagación canónica Master→PT corre tras el lote. */
+              if (typeof window.MASTER === 'object' && window.MASTER !== null) {
+                if (!window.MASTER[refN]) window.MASTER[refN] = {};
+                var _M346 = window.MASTER[refN];
+                // base desde columnas clásicas
+                _M346.marca = nuevoP.br; _M346.descripcion = dN;
+                if (nuevoP.b) _M346.codigoBarra = nuevoP.b;
+                if (nuevoP.c) _M346.codigoProveedor = nuevoP.c;
+                if (nuevoP.e) _M346.empaque = nuevoP.e;
+                if (nuevoP.m) _M346.unidadesPorBulto = nuevoP.m;
+                if (!isNaN(volN) && volN > 0) _M346.volFt3PorBulto = volN;
+                if (!isNaN(cfN) && cfN > 0) _M346.costo = cfN;
+                // campos nuevos de la plantilla ALTA MASTER (encabezado → campo MD)
+                var _MAPA346 = {
+                  CATEGORIA:'categoria', COMPOSICION:'composicion',
+                  PAIS_DE_ORIGEN:'paisDeOrigen', PAIS:'paisDeOrigen',
+                  UNIDADES_POR_BULTO:'unidadesPorBulto', INNER_PACKING:'innerPacking',
+                  LONGITUD:'longitud', ANCHO:'ancho', ALTURA:'altura',
+                  PESO_BRUTO_KG:'pesoBrutoKg', PESO_NETO_KG:'pesoNetoKg',
+                  FRACCION_ARANCELARIA:'fraccionArancelaria',
+                  PERMISO_TIPO:'permisoTipo', PERMISO_DETALLE:'permisoDetalle',
+                  CERTIFICACIONES:'certificaciones'
+                };
+                Object.keys(_MAPA346).forEach(function(col){
+                  var v346 = row[col];
+                  if (v346 === undefined || v346 === null || String(v346).trim() === '') return;
+                  var campo346 = _MAPA346[col];
+                  var def346 = (typeof MD_CAMPOS_VALIDOS !== 'undefined') ? MD_CAMPOS_VALIDOS.find(function(m){ return m[0] === campo346; }) : null;
+                  var val346 = (def346 && def346[2] === 'num') ? (parseFloat(v346) || 0) : String(v346).trim();
+                  if (campo346 === 'permisoTipo') { var vU346 = String(val346).toUpperCase().trim(); if (['SENCAMER','COMEX','S/P'].indexOf(vU346) >= 0) val346 = vU346; }
+                  _M346[campo346] = val346;
+                });
+                _M346._updatedAt = Date.now();
+              }
               creados.push(refN);
             });
             // Regla del sistema: orden alfanumérico obligatorio tras importar
             if (creados.length > 0 && typeof sortProducts === 'function') sortProducts();
           }
+        }
+
+        // v.346 — propagación canónica Master → Productos/PT para los recién creados,
+        // por la MISMA vía que usa el módulo Master Data (una sola forma de escribir).
+        if (creados.length > 0 && typeof window.MASTER === 'object' && window.MASTER) {
+          if (typeof window._mdPropagarAProductosPT === 'function') {
+            for (var iC346 = 0; iC346 < creados.length; iC346++) {
+              var rN346 = creados[iC346], M346 = window.MASTER[rN346] || {};
+              var ks346 = Object.keys(M346);
+              for (var kI346 = 0; kI346 < ks346.length; kI346++) {
+                var k346 = ks346[kI346];
+                if (k346.charAt(0) === '_') continue;
+                try { await window._mdPropagarAProductosPT(rN346, k346, M346[k346]); } catch(eP346){}
+              }
+            }
+          }
+          try { localStorage.setItem('farmers_pt_master', JSON.stringify(window.MASTER)); } catch(eM346){}
+          if (typeof window.masterSaveAndSync === 'function') { try { await window.masterSaveAndSync(); } catch(eS346){ console.warn('[v.346] masterSaveAndSync:', eS346); } }
+          console.log('[v.346] ✓ Ficha Master creada y propagada para ' + creados.length + ' producto(s) nuevos.');
         }
 
         // ═══════════════════════════════════════════════════════════
