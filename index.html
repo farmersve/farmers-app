@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.10.01.349">
+<meta name="farmers-version" content="2026.10.01.351">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -56949,7 +56949,7 @@ window.farmersCustodioReservas = function(manual){
         refsTot++;
         var tiene = (((comp[i.ref]||{}).pedidos)||[]).filter(function(x){return x.numP===ped.numP;})
                       .reduce(function(a,x){return a+(parseInt(x.qty)||0);},0);
-        if (tiene < deb) faltantes++;
+        if (tiene !== deb) faltantes++;  /* v.350: también detecta respaldo desfasado (de más o de menos) */
       });
       if (faltantes > 0) males.push({numP: ped.numP, faltantes: faltantes, refsTot: refsTot});
     });
@@ -56957,7 +56957,7 @@ window.farmersCustodioReservas = function(manual){
       males.forEach(function(m){
         if (!manual && window._custodioAvisados330[m.numP]) return;
         window._custodioAvisados330[m.numP] = true;
-        console.error('[CUSTODIO v.330] ⛔ '+m.numP+': reserva INCOMPLETA ('+m.faltantes+' de '+m.refsTot+' refs sin respaldo en comprometido). Repara con: farmersReconstruirReserva(\''+m.numP+'\')');
+        console.error('[CUSTODIO v.350] ⛔ '+m.numP+': reserva DESFASADA ('+m.faltantes+' de '+m.refsTot+' refs con respaldo distinto al pedido). Repara con: farmersReconstruirReserva(\''+m.numP+'\')');
         try { if (typeof showToast === 'function') showToast('⛔ CUSTODIO: la reserva del pedido '+m.numP+' está INCOMPLETA ('+m.faltantes+' refs). Corre farmersReconstruirReserva(\''+m.numP+'\') en la consola — o avísale a Claude. (Si liberaste piezas a propósito, ignora este aviso.)','error',{duration:20000,title:'Reserva en riesgo'}); } catch(e2){}
       });
     } else if (manual) {
@@ -56976,18 +56976,35 @@ window.farmersReconstruirReserva = function(numP){
     var ped=getMsPedidos().find(function(p){return p.numP===numP;});
     if(!ped){ alert('⛔ No existe el pedido '+numP); return false; }
     var refsQty={};
+    /* v.350: lo requerido se calcula SOLO sobre sucursales no despachadas —
+       misma regla que el custodio. Lo ya despachado no retiene reserva. */
     (ped.items||[]).forEach(function(i){
-      var t=0; Object.keys(i.sucursales||{}).forEach(function(su){ t+=parseInt((i.sucursales[su]||{}).pide)||0; });
+      var t=0; Object.keys(i.sucursales||{}).forEach(function(su){
+        var sEst=String((ped.sucursalesEstado||{})[su]||'').toUpperCase();
+        if(sEst==='DESPACHADO') return;
+        t+=parseInt((i.sucursales[su]||{}).pide)||0;
+      });
       if(t>0) refsQty[i.ref]=t;
     });
     var refs=Object.keys(refsQty), tot=refs.reduce(function(a,r){return a+refsQty[r];},0);
     if(!refs.length){ alert('⛔ '+numP+' no tiene cantidades en su detalle.'); return false; }
-    if(!confirm('RECONSTRUIR RESERVA de '+numP+'\n'+refs.length+' refs · '+tot.toLocaleString()+' uds\n(solo se agrega lo que falte)\n\n¿Proceder?')) return false;
-    var comp=getComprometido(), add=0, ya=0;
+    if(!confirm('RECONSTRUIR RESERVA de '+numP+'\n'+refs.length+' refs · '+tot.toLocaleString()+' uds\n(agrega lo que falte y AJUSTA las cantidades anotadas al pedido ACTUAL; lo despachado no se re-reserva)\n\n¿Proceder?')) return false;
+    var comp=getComprometido(), add=0, ya=0, aj=0, ajU=0;
     refs.forEach(function(r){
       if(!comp[r]||typeof comp[r]!=='object') comp[r]={qty:parseInt(comp[r])||0,pedidos:[]};
       if(!Array.isArray(comp[r].pedidos)) comp[r].pedidos=[];
-      if(comp[r].pedidos.some(function(x){return x.numP===numP;})){ ya++; return; }
+      var ent=comp[r].pedidos.find(function(x){return x.numP===numP;});
+      if(ent){
+        /* v.350: entrada existente — CONCILIAR su cantidad con el pedido actual
+           (sube o baja; cubre ediciones tipo 6→5 y escrituras a medias). */
+        var qAct=parseInt(ent.qty)||0, qDebe=refsQty[r];
+        if(qAct!==qDebe){
+          comp[r].qty=Math.max(0,(parseInt(comp[r].qty)||0)-qAct+qDebe);
+          ent.qty=qDebe;
+          aj++; ajU+=(qDebe-qAct);
+        } else { ya++; }
+        return;
+      }
       comp[r].pedidos.push({numP:numP,qty:refsQty[r],fecha:(ped.fecha||new Date().toLocaleDateString('es-VE'))});
       comp[r].qty=(parseInt(comp[r].qty)||0)+refsQty[r];
       add+=refsQty[r];
@@ -56996,7 +57013,7 @@ window.farmersReconstruirReserva = function(numP){
     var c2=getComprometido(), vR=0, vU=0;
     Object.keys(c2).forEach(function(r){ ((c2[r]||{}).pedidos||[]).forEach(function(x){ if(x.numP===numP){vR++;vU+=parseInt(x.qty)||0;} }); });
     var okTotal = (okG!==false) && vR===refs.length && vU===tot;
-    alert((okTotal?'✅ RESERVA RECONSTRUIDA Y VERIFICADA':'⚠ QUEDÓ PARCIAL — avísale a Claude')+'\n'+numP+': '+vR+'/'+refs.length+' refs · '+vU.toLocaleString()+'/'+tot.toLocaleString()+' uds (agregadas: '+add.toLocaleString()+' · ya estaban: '+ya+')');
+    alert((okTotal?'✅ RESERVA RECONSTRUIDA Y VERIFICADA':'⚠ QUEDÓ PARCIAL — avísale a Claude')+'\n'+numP+': '+vR+'/'+refs.length+' refs · '+vU.toLocaleString()+'/'+tot.toLocaleString()+' uds (agregadas: '+add.toLocaleString()+' · ajustadas: '+aj+' ['+(ajU>=0?'+':'')+ajU+' uds] · ya correctas: '+ya+')');
     if (typeof renderMonitorPedidos==='function') try{ renderMonitorPedidos(); }catch(e){}
     return okTotal;
   }catch(e){ alert('⛔ Error reconstruyendo: '+e.message); return false; }
@@ -57040,7 +57057,7 @@ window.farmersRescatarPedidoSesion = function(){
 window.farmersChequeoMigracion = function(){
   var F=[]; var eq=(navigator.platform||'')+' · '+new Date().toLocaleString('es-VE');
   function fila(nom,fn){ try{ F.push(nom+': '+fn()); }catch(e){ F.push(nom+': ⛔ '+e.message); } }
-  fila('Productos (catálogo)', function(){ var t=0;(PRODUCTS||[]).forEach(function(p){t+=parseInt(p.s)||0;}); return (PRODUCTS||[]).length+' refs · '+t+' uds'; });
+  fila('Productos (catálogo)', function(){ var t=0;(PRODUCTS||[]).forEach(function(p){t+=parseInt(p.ex)||0;}); return (PRODUCTS||[]).length+' refs · '+t+' uds'; });  /* v.351: p.ex es la verdad (NE+AN+TF); p.s es legacy congelado de importación */
   fila('Pedidos', function(){ var ps=getMsPedidos(); var r=0,d=0; ps.forEach(function(p){var e=String(p.estado||'').toUpperCase(); if(e==='RESERVADO'||e==='PARCIAL')r++; if(e==='DESPACHADO')d++;}); return ps.length+' (reservados '+r+' · despachados '+d+')'; });
   fila('Comprometido', function(){ var c=getComprometido(); var refs=0,u=0; Object.keys(c).forEach(function(k){var q=parseInt((c[k]||{}).qty)||0; if(q>0){refs++;u+=q;}}); return refs+' refs · '+u+' uds'; });
   fila('Ventas', function(){ return getSales().length+' registros'; });
