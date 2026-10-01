@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.09.30.348">
+<meta name="farmers-version" content="2026.10.01.349">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -57953,9 +57953,15 @@ window.msAbrirMonitor = function() {
 
   // ── TABS (filtros por estado) ─────────────────────────────────
   // Calcular conteos para badges de cada pestaña
+  /* v.349: etapas EXCLUYENTES — RESERVADOS = aún sin empacar nada.
+     En cuanto una sucursal se embala, el pedido pasa a vivir en EMBALADOS. */
   var _cntReservado = pedidos.filter(function(p){
     var e = (p.estado||'').toUpperCase();
-    return e === 'RESERVADO';
+    if (e !== 'RESERVADO') return false;
+    var sucs = p.sucursales || [];
+    return !sucs.some(function(s){
+      return ((p.sucursalesEstado||{})[s]||'').toUpperCase() === 'EMBALADO';
+    });
   }).length;
   // PARCIAL: tiene unas sucursales DESPACHADAS y otras no
   var _cntParcial = pedidos.filter(function(p){
@@ -58098,8 +58104,13 @@ window.msAbrirMonitor = function() {
     // Aplicar filtro
     var pedFiltrados = pedidos.slice();
     if (filtro === 'reservado') {
+      /* v.349: excluyente — sin ninguna sucursal embalada */
       pedFiltrados = pedidos.filter(function(p){
-        return (p.estado||'').toUpperCase() === 'RESERVADO';
+        if ((p.estado||'').toUpperCase() !== 'RESERVADO') return false;
+        var sucs = p.sucursales || [];
+        return !sucs.some(function(s){
+          return ((p.sucursalesEstado||{})[s]||'').toUpperCase() === 'EMBALADO';
+        });
       });
     } else if (filtro === 'embalado') {
       pedFiltrados = pedidos.filter(function(p){
@@ -58123,7 +58134,7 @@ window.msAbrirMonitor = function() {
 
     if(!pedFiltrados.length){
       var msgVacio = {
-        'reservado':   '🔵 No hay pedidos en estado RESERVADO',
+        'reservado':   '🔵 No hay pedidos RESERVADOS por embalar',
         'embalado':    '🟡 No hay pedidos con sucursales EMBALADAS',
         'parcial':     '⚡ No hay pedidos PARCIALES',
         'despachado':  '🟢 No hay pedidos DESPACHADOS',
@@ -58309,7 +58320,22 @@ window.msAbrirMonitor = function() {
     ch.innerHTML=
       '<div style="display:flex;align-items:center;gap:12px;">' +
         '<div style="font-family:\'Barlow Condensed\',sans-serif;font-size:1.65rem;font-weight:900;color:'+WHITE+';letter-spacing:1px;text-shadow:0 1px 4px rgba(0,0,0,.3);">'+ped.numP+'</div>' +
-        '<div style="background:'+estadoBg+';color:'+estadoCol+';font-size:.72rem;font-weight:900;padding:5px 13px;border-radius:20px;text-transform:uppercase;letter-spacing:.8px;border:1.5px solid '+estadoCol+'66;display:flex;align-items:center;gap:5px;">'+estadoIco+' '+ped.estado+'</div>' +
+        (function(){
+          /* v.349: el chip refleja la ETAPA real del flujo.
+             RESERVADO sin embalar → azul RESERVADO.
+             RESERVADO con todas embaladas → ámbar EMBALADO n/n (listo p/ despachar).
+             RESERVADO con avance parcial → azul RESERVADO · n/m emb. */
+          var _txt = ped.estado, _col = estadoCol, _bg = estadoBg, _ico = estadoIco;
+          if (_estU === 'RESERVADO' && sucs.length > 0 && numEmbalados > 0) {
+            if (numEmbalados === sucs.length) {
+              _txt = 'EMBALADO ' + numEmbalados + '/' + sucs.length;
+              _col = AMBER; _bg = AMBERBG; _ico = '🟡';
+            } else {
+              _txt = 'RESERVADO · ' + numEmbalados + '/' + sucs.length + ' emb.';
+            }
+          }
+          return '<div title="Etapa del pedido según avance de empaque por sucursal" style="background:'+_bg+';color:'+_col+';font-size:.72rem;font-weight:900;padding:5px 13px;border-radius:20px;text-transform:uppercase;letter-spacing:.8px;border:1.5px solid '+_col+'66;display:flex;align-items:center;gap:5px;">'+_ico+' '+_txt+'</div>';
+        })() +
         '<div style="font-size:.7rem;color:'+DIM+';background:rgba(255,255,255,.04);padding:3px 10px;border-radius:5px;">{MON}</div>'.replace('{MON}',{USD:'USD $',BCV:'BCV $',TF:'TF $'}[mon]||mon) +
         (sucs.length ? '<div style="display:flex;gap:4px;align-items:center;margin-left:4px;">'
           +(numPendientes>0 ? '<span style="font-size:.65rem;font-weight:800;background:'+AMBERBG+';color:'+AMBER+';border-radius:4px;padding:2px 8px;border:1px solid '+AMBER+'44;">⏳ '+numPendientes+' pend.</span>' : '')
