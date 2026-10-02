@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.10.01.351">
+<meta name="farmers-version" content="2026.10.02.352">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -9910,6 +9910,11 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
   window.fbSavePortalToken = async (token, data) => {
     try { await setDoc(doc(db, 'portal_tokens', token), data); return true; }
     catch(e) { console.error('fbSavePortalToken:', e); return false; }
+  };
+  // v.352 CANDADO: parche parcial del token (merge) — no toca el resto del doc
+  window.fbMergePortalToken = async (token, patchObj) => {
+    try { await setDoc(doc(db, 'portal_tokens', token), patchObj, { merge: true }); return true; }
+    catch(e) { console.error('fbMergePortalToken:', e); return false; }
   };
   // comprometido — publicar a Firestore para que el portal lea el DISPONIBLE real (inv − comprometido)
   // Acepta objeto opcional (o lo lee de localStorage). Serializa a string para consistencia.
@@ -56828,6 +56833,72 @@ setTimeout(function(){
    Master no guarda y no se inventa) y opcionalmente STOCK, e importarlo por
    la puerta oficial: Inventario → Importar → Excel (v.346), que crea todo y
    respeta la ficha Master existente. */
+/* ═══ v.352 — CANDADO DEL PORTAL: sincronización de teléfonos ══════════════
+   El portal exige verificar por SMS el teléfono REGISTRADO de cada cliente.
+   Estas herramientas publican en cada token del portal la HUELLA (SHA-256)
+   del teléfono del cliente — nunca el número legible — más una pista
+   (últimos 2 dígitos). Fuente del teléfono: Clientes (CxC → principal →
+   gerente), la misma cadena de la cobranza WhatsApp.
+   USO:
+     farmersSincronizarTelefonos()  → publica huellas a todos los links
+     farmersCandadoModo('suave')    → sin teléfono registrado ENTRA (default)
+     farmersCandadoModo('estricto') → sin teléfono registrado NO entra
+   Requiere abrir primero el módulo Portal Cliente (carga los links). */
+window.farmersTelNormalizar = function(t){
+  var d = String(t||'').replace(/\D/g,'');
+  if (!d) return '';
+  if (d.slice(0,2) === '58') { /* ok */ }
+  else if (d.charAt(0) === '0') d = '58' + d.slice(1);
+  else if (d.charAt(0) === '4' && d.length === 10) d = '58' + d;
+  return (d.length >= 12 && d.length <= 13 && d.slice(0,2) === '58') ? d : '';
+};
+window.farmersTelHash = async function(t){
+  var n = farmersTelNormalizar(t);
+  if (!n) return null;
+  var buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(n));
+  return Array.from(new Uint8Array(buf)).map(function(b){ return b.toString(16).padStart(2,'0'); }).join('');
+};
+window.farmersSincronizarTelefonos = async function(){
+  try {
+    var tks = (window.portalTokens && window.portalTokens.length) ? window.portalTokens : [];
+    if (!tks.length) { alert('⛔ Abre primero el módulo Portal Cliente (para cargar los links) y vuelve a correr farmersSincronizarTelefonos().'); return false; }
+    var clientes = []; try { clientes = JSON.parse(localStorage.getItem('farmers_clients_v2') || '[]'); } catch(e){}
+    var nr = function(x){ return String(x||'').replace(/\W/g,'').toUpperCase(); };
+    var nn = function(x){ return String(x||'').toUpperCase().replace(/[^A-ZÑ0-9]/g,''); };
+    var ok = [], sinTel = [], sinCliente = [], falloNube = [];
+    for (var i = 0; i < tks.length; i++) {
+      var tk = tks[i];
+      var cl = clientes.find(function(c){ return nr(c.rif) && nr(c.rif) === nr(tk.rifEsperado); })
+            || clientes.find(function(c){ return nn(c.nombre) && nn(c.nombre) === nn(tk.clienteNombre); });
+      if (!cl) { sinCliente.push(tk.clienteNombre || tk.token); continue; }
+      var tel = cl.cxcTel || cl.telefono || cl.gerenteTel || '';
+      var norm = farmersTelNormalizar(tel);
+      if (!norm) { sinTel.push(tk.clienteNombre || tk.token); continue; }
+      var h = await farmersTelHash(norm);
+      var res = await fbMergePortalToken(tk.token, { telHash: h, telHint: norm.slice(-2), telSync: new Date().toISOString().slice(0,10) });
+      if (res) { tk.telHash = h; tk.telHint = norm.slice(-2); ok.push((tk.clienteNombre || tk.token) + ' ••' + norm.slice(-2)); }
+      else falloNube.push(tk.clienteNombre || tk.token);
+    }
+    var R = '📱 SINCRONIZACIÓN DE TELÉFONOS → PORTAL\n\n' +
+      '✅ Con candado activo: ' + ok.length + '\n' + (ok.length ? ok.map(function(x){return '   · '+x;}).join('\n') + '\n' : '') +
+      (sinTel.length ? '\n⚠ SIN TELÉFONO en Clientes (' + sinTel.length + ') — en modo suave entran sin código:\n' + sinTel.map(function(x){return '   · '+x;}).join('\n') + '\n' : '') +
+      (sinCliente.length ? '\n⚠ Link sin cliente CRM vinculable (' + sinCliente.length + '):\n' + sinCliente.map(function(x){return '   · '+x;}).join('\n') + '\n' : '') +
+      (falloNube.length ? '\n⛔ Falló la subida (reintenta): ' + falloNube.join(', ') + '\n' : '');
+    console.log(R); alert(R);
+    return { ok: ok.length, sinTel: sinTel, sinCliente: sinCliente };
+  } catch(e){ alert('⛔ ' + e.message); return false; }
+};
+window.farmersCandadoModo = async function(modo){
+  modo = (modo === 'estricto') ? 'estricto' : 'suave';
+  var tks = (window.portalTokens && window.portalTokens.length) ? window.portalTokens : [];
+  if (!tks.length) { alert('⛔ Abre primero el módulo Portal Cliente y reintenta.'); return false; }
+  if (!confirm('CANDADO DEL PORTAL → modo ' + modo.toUpperCase() + '\n\n' + (modo==='estricto' ? 'Los clientes SIN teléfono registrado NO podrán entrar (verán el aviso de contactar a Farmers).' : 'Los clientes sin teléfono registrado seguirán entrando sin código (transición).') + '\n\n¿Aplicar a los ' + tks.length + ' links?')) return false;
+  var n = 0;
+  for (var i = 0; i < tks.length; i++) { if (await fbMergePortalToken(tks[i].token, { candado: modo })) { tks[i].candado = modo; n++; } }
+  alert('✅ Modo ' + modo.toUpperCase() + ' aplicado a ' + n + '/' + tks.length + ' links.');
+  return n;
+};
+
 window.farmersMasterPuente = function(){
   try {
     if (typeof window.MASTER !== 'object' || !window.MASTER) { alert('⛔ Master Data no está cargado. Abre el módulo Master Data primero.'); return; }
