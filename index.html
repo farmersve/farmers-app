@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.10.02.352">
+<meta name="farmers-version" content="2026.10.03.353">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -11857,6 +11857,11 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
   window.fbSavePortalPedido = async (id, data) => {
     try { await setDoc(doc(db, 'portal_pedidos', id), data); return true; }
     catch(e) { console.error('fbSavePortalPedido:', e); return false; }
+  };
+  // v.353 RASTREO: parche parcial del pedido del portal (merge)
+  window.fbMergePortalPedido = async (id, patchObj) => {
+    try { await setDoc(doc(db, 'portal_pedidos', id), patchObj, { merge: true }); return true; }
+    catch(e) { console.error('fbMergePortalPedido:', e); return false; }
   };
   window.fbGetPortalPedidos = async () => {
     try {
@@ -81303,7 +81308,7 @@ function pcRenderPedidos(body) {
 // Conteo serio: cada pedido con fecha, hora, cliente, estado, productos,
 // unidades y total; más el detalle producto por producto.
 // ════════════════════════════════════════════════════════════════════
-function _pcEstadoTxt(p){ return p.estado==='pendiente'?'PENDIENTE':(p.estado==='rechazado'?'RECHAZADO':'PROCESADO'); }
+function _pcEstadoTxt(p){ return p.estado==='pendiente'?'PENDIENTE':(p.estado==='rechazado'?'RECHAZADO':(p.estado==='embalado'?'EMBALADO':(p.estado==='despachado'?'DESPACHADO':'PROCESADO'))); }
 function _pcPedsOrdenados(){
   return (window.portalPedidos||[]).slice().sort(function(a,b){
     return new Date(b.fechaStr||0) - new Date(a.fechaStr||0);
@@ -81456,7 +81461,12 @@ function pcRenderPedidoCard(p) {
   if (esRechazado) {
     estadoBadge = '<span style="padding:7px 12px;background:#fee2e2;color:#991b1b;border-radius:6px;font-size:.7rem;font-weight:700;">✗ Rechazado</span>';
   } else if (!esPendiente) {
-    estadoBadge = '<span style="padding:7px 12px;background:#f0fdf4;color:#166534;border-radius:6px;font-size:.7rem;font-weight:700;">✓ Procesado</span>';
+    /* v.353 RASTREO: etapa visible + botones — el cliente ve el estado en su portal */
+    var _em353 = { procesado:['#f0fdf4','#166534','✓ Procesado'], embalado:['#fef3c7','#92400e','📦 Embalado'], despachado:['#dbeafe','#1d4ed8','🚚 Despachado'] };
+    var _ev353 = _em353[p.estado] || _em353.procesado;
+    estadoBadge = '<span style="padding:7px 12px;background:'+_ev353[0]+';color:'+_ev353[1]+';border-radius:6px;font-size:.7rem;font-weight:700;">'+_ev353[2]+'</span>' +
+      (p.estado !== 'embalado' && p.estado !== 'despachado' ? '<button data-action="embalado" data-id="' + p.id + '" title="El cliente verá EMBALADO en su portal" style="background:#fde68a;color:#92400e;border:none;border-radius:6px;padding:7px 12px;font-weight:700;font-size:.72rem;cursor:pointer;">📦 Embalado</button>' : '') +
+      (p.estado !== 'despachado' ? '<button data-action="despachado" data-id="' + p.id + '" title="El cliente verá DESPACHADO en su portal" style="background:#1d4ed8;color:#fff;border:none;border-radius:6px;padding:7px 12px;font-weight:700;font-size:.72rem;cursor:pointer;">🚚 Despachado</button>' : '');
   }
 
   return '<div style="background:#fff;border:2px solid ' + borderColor + ';border-radius:10px;padding:14px;margin-bottom:10px;">' +
@@ -81494,9 +81504,23 @@ function pcAttachPedidoHandlers(cont) {
       else if (action === 'editar') pcEditarPedido(id);
       else if (action === 'pdf') pcDescargarPedidoPDF(id);
       else if (action === 'excel') pcDescargarPedidoExcel(id);
+      else if (action === 'embalado' || action === 'despachado') pcMarcarEstadoPortal(id, action);
     });
   });
 }
+
+/* v.353 RASTREO: marcar etapa de un pedido del portal — el cliente lo ve en vivo */
+async function pcMarcarEstadoPortal(id, estado){
+  var pd = (window.portalPedidos || []).find(function(x){ return x.id === id; });
+  var patchObj = { estado: estado };
+  patchObj['fecha_' + estado] = new Date().toISOString();
+  var res = await fbMergePortalPedido(id, patchObj);
+  if (!res) { alert('⛔ No se pudo actualizar el estado. Revisa conexión y reintenta.'); return; }
+  if (pd) pd.estado = estado;
+  try { var b = document.getElementById('pc-body'); if (b && document.querySelector('.pc-tab.active[data-tab="pedidos"]')) pcRenderPedidos(b); } catch(e){}
+  try { if (typeof showToast === 'function') showToast((estado==='embalado'?'📦':'🚚') + ' PORTAL-' + id.substring(0,8).toUpperCase() + ' marcado ' + estado.toUpperCase() + ' — el cliente ya lo ve en su portal', 'ok'); } catch(e){}
+}
+window.farmersPedidoPortalEstado = pcMarcarEstadoPortal;
 
 function pcVerPedido(id) {
   var p = window.portalPedidos.find(function(x){ return x.id === id; });
