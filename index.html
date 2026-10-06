@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.10.06.355">
+<meta name="farmers-version" content="2026.10.06.356">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -26201,6 +26201,7 @@ window._ciBuildData = function() {
     rows.push({
       ref:ref, d:p.d||'', br:p.br||'', disp:disp, ord:ord, venta:venta, mensual:mensual,
       cob:cob, stk:(disp===0 && venta>0), m:parseInt(p.m,10)||0,
+      c:p.c||'', b:p.b||'',
       fob:parseFloat(p.costoFOB)||parseFloat(mi.costoFOB)||parseFloat(mi.costo)||0,
       vol:parseFloat(mi.volFt3PorBulto)||0
     });
@@ -26220,8 +26221,10 @@ window.farmersCompraInteligente = function() {
     var brands = {}; _ciData.forEach(function(r){ if (r.br) brands[r.br]=1; });
     var opts = '<option value="">Todas las marcas</option>';
     Object.keys(brands).sort().forEach(function(b){ opts += '<option value="'+_ciEsc(b)+'">'+_ciEsc(b)+'</option>'; });
+    var fotoBtn = (window._prodImgs && Object.keys(window._prodImgs).length>0) ? '' : '<button onclick="_ciCargarFotos(this)" style="background:rgba(99,102,241,.2);border:1.5px solid rgba(99,102,241,.5);color:#c7d2fe;border-radius:8px;padding:9px 14px;cursor:pointer;font-weight:900;font-size:.7rem;text-transform:uppercase;">🖼 Cargar fotos</button>';
     var prev = document.getElementById('ci-modal'); if (prev) prev.remove();
     var html = ''+
+    '<style>#ci-modal tbody tr:hover{background:rgba(13,148,136,.28)!important;color:#eafffd;}</style>'+
     '<div id="ci-modal" style="position:fixed;inset:0;background:rgba(8,10,30,.88);z-index:99999;display:flex;align-items:center;justify-content:center;padding:14px;">'+
       '<div style="background:#0f1230;border:1.5px solid rgba(13,148,136,.45);border-radius:16px;width:97vw;height:94vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.6);">'+
         '<div style="padding:12px 18px;background:linear-gradient(135deg,#1B1F6B,#0d9488);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">'+
@@ -26235,12 +26238,13 @@ window.farmersCompraInteligente = function() {
           '<label style="font-size:.7rem;color:#99f6e4;font-weight:800;">Solo con cantidad <input id="ci-solo" type="checkbox" onchange="_ciRender()" style="vertical-align:middle;"></label>'+
           '<button onclick="_ciAutofill()" style="background:linear-gradient(135deg,#7c3aed,#6d28d9);color:#fff;border:none;border-radius:8px;padding:9px 14px;cursor:pointer;font-weight:900;font-size:.7rem;text-transform:uppercase;">⚡ Autollenar sugerencia</button>'+
           '<button onclick="_ciLimpiar()" style="background:rgba(220,38,38,.18);border:1.5px solid rgba(220,38,38,.45);color:#fca5a5;border-radius:8px;padding:9px 14px;cursor:pointer;font-weight:900;font-size:.7rem;text-transform:uppercase;">🧹 Limpiar</button>'+
-          '<button onclick="_ciExport()" style="background:linear-gradient(135deg,#16a34a,#15803d);color:#fff;border:none;border-radius:8px;padding:9px 16px;cursor:pointer;font-weight:900;font-size:.7rem;text-transform:uppercase;">📊 Exportar Excel</button>'+
+          '+fotoBtn+'<button onclick="_ciExport()" style="background:linear-gradient(135deg,#16a34a,#15803d);color:#fff;border:none;border-radius:8px;padding:9px 16px;cursor:pointer;font-weight:900;font-size:.7rem;text-transform:uppercase;">📊 Exportar Excel</button>'+
         '</div>'+
         '<div id="ci-tot" style="padding:9px 18px;display:flex;gap:16px;flex-wrap:wrap;align-items:center;background:#131740;border-bottom:1.5px solid rgba(13,148,136,.3);font-size:.78rem;color:#ccfbf1;font-weight:800;"></div>'+
         '<div style="flex:1;overflow:auto;">'+
           '<table style="width:100%;border-collapse:collapse;font-size:.72rem;color:#dbe1ff;">'+
             '<thead><tr style="background:#171b4a;position:sticky;top:0;z-index:5;">'+
+              '<th style="padding:8px;">📷</th>'+
               '<th style="padding:8px 10px;text-align:left;">REF</th><th style="padding:8px;text-align:left;">DESCRIPCIÓN</th>'+
               '<th style="padding:8px;">MARCA</th><th style="padding:8px;">DISP</th><th style="padding:8px;">EN CAMINO</th>'+
               '<th style="padding:8px;">V.90D</th><th style="padding:8px;">COB (m)</th><th style="padding:8px;">UDS/BULTO</th>'+
@@ -26270,6 +26274,7 @@ window._ciRender = function() {
     var cobTxt = r.cob===null ? '—' : _ciR2(r.cob);
     var warn = (r.m<=0?' ⚠m':'')+(r.fob<=0?' ⚠FOB':'')+(r.vol<=0?' ⚠ft³':'');
     out.push('<tr id="ci-r-'+r.ref+'" onclick="_ciFocus(\''+r.ref+'\')" style="border-bottom:1px solid rgba(99,102,241,.12);cursor:pointer;'+(b>0?'background:rgba(13,148,136,.16);':'')+(r.stk?'box-shadow:inset 3px 0 0 #dc2626;':'')+'">'+
+      (function(){var im=window._prodImgs||{};var s=im[r.ref]||im[r.c]||im[r.b]||null;return s? '<td style="padding:3px 5px;"><img src="'+s+'" onclick="event.stopPropagation();_ciZoom(\''+r.ref+'\')" style="width:38px;height:38px;object-fit:cover;border-radius:7px;border:1.5px solid rgba(255,255,255,.4);cursor:zoom-in;background:#fff;display:block;"></td>' : '<td style="padding:3px 5px;text-align:center;color:#3f467f;font-size:.65rem;">·</td>';})()+
       '<td style="padding:6px 10px;font-weight:900;color:#99f6e4;">'+r.ref+(r.stk?' <span style="color:#fca5a5;font-size:.6rem;">STOCKOUT</span>':'')+'</td>'+
       '<td style="padding:6px 8px;color:#c7cdf5;">'+_ciEsc(r.d)+'<span style="color:#fbbf24;font-size:.62rem;">'+warn+'</span></td>'+
       '<td style="padding:6px;text-align:center;color:#a5b4fc;">'+_ciEsc(r.br)+'</td>'+
@@ -26285,10 +26290,33 @@ window._ciRender = function() {
       '<td id="ci-f-'+r.ref+'" style="padding:6px;text-align:right;color:#99f6e4;">'+(ft3? _ciR2(ft3):'')+'</td>'+
     '</tr>');
   });
-  document.getElementById('ci-tbody').innerHTML = out.join('') || '<tr><td colspan="13" style="padding:30px;text-align:center;color:#8891c9;">Sin resultados con ese filtro.</td></tr>';
+  document.getElementById('ci-tbody').innerHTML = out.join('') || '<tr><td colspan="14" style="padding:30px;text-align:center;color:#8891c9;">Sin resultados con ese filtro.</td></tr>';
 };
 
 window._ciFocus = function(ref){ var i=document.getElementById('ci-i-'+ref); if(i){ i.focus(); i.select(); } };
+
+window._ciZoom = function(ref) {
+  var r = _ciByRef[ref] || {};
+  var im = window._prodImgs || {};
+  var s = im[ref] || im[r.c] || im[r.b] || null;
+  if (s && typeof openImgLightbox === 'function') openImgLightbox(s, ref);
+};
+
+window._ciCargarFotos = function(btn) {
+  if (typeof window.fbGetImages !== 'function') { alert('⚠ Cargador de imágenes no disponible.'); return; }
+  btn.disabled = true; btn.textContent = '⏳ Cargando fotos...';
+  window.fbGetImages(function(){}).then(function(imgs){
+    window._prodImgs = imgs || {};
+    var n = Object.keys(window._prodImgs).length;
+    btn.textContent = '✅ ' + n + ' fotos';
+    setTimeout(function(){ btn.remove(); }, 1500);
+    _ciRender();
+  }).catch(function(err){
+    console.error('[CI fotos]', err);
+    btn.disabled = false; btn.textContent = '🖼 Cargar fotos';
+    alert('⚠ No se pudieron cargar las fotos: ' + err.message);
+  });
+};
 
 window._ciSet = function(ref, val) {
   var b = parseInt(val,10)||0;
