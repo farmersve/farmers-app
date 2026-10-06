@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.10.06.354">
+<meta name="farmers-version" content="2026.10.06.355">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -26151,180 +26151,259 @@ window.invDescargarPedidoSucursal = function(sucCod) {
 // ──────────────────────────────────────────────────────────────────
 
 // ══════════════════════════════════════════════════════════════════
-// 🧠 COMPRA INTELIGENTE v2026.10.06.354 — Propuesta de pedido a proveedor
-// Método 5 pasos: ROTACIÓN → POSICIÓN (disp+ordenada) → COBERTURA →
-// NECESIDAD EN BULTOS → RESTRICCIONES (capital FOB + ft³ contenedor).
-// Fuentes canónicas: getSales() · getInventory() · getComprometido() ·
-// farmers_pt_data[ref].exOrdenada (la MISMA ordenada de las OC) ·
-// window.MASTER[ref].volFt3PorBulto · p.costoFOB (fallback MASTER).
-// Regla 14/09: la hoja PARÁMETROS declara la ventana REAL de fechas usada.
+// 🧠 COMPRA INTELIGENTE v2026.10.06.355 — ARMADOR INTERACTIVO de pedido
+// a proveedor. Todas las refs en orden alfanumérico, inteligencia por
+// fila (disp · ordenada · venta90 · cobertura), cantidades en BULTOS,
+// totales en vivo (capital $, ft³, % contenedor), ⚡ autollenado por
+// método 5 pasos, borrador persistente y exportación a Excel.
+// Fuentes: getSales · getInventory · getComprometido · farmers_pt_data
+// .exOrdenada · MASTER.volFt3PorBulto · p.costoFOB (fallback MASTER).
 // ══════════════════════════════════════════════════════════════════
+window._ciData = []; window._ciByRef = {}; window._ciDraft = {}; window._ciMeta = {};
+
+window._ciEsc = function(s){ return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); };
+window._ciR2 = function(x){ return Math.round(x*100)/100; };
+
+window._ciBuildData = function() {
+  var dias = 90;
+  var hoy = new Date(); hoy.setHours(23,59,59,999);
+  var corte = new Date(hoy.getTime() - dias*86400000);
+  var ventas = {}, facUsadas=0, facSinItems=0, minF=null, maxF=null;
+  getSales().forEach(function(fa){
+    var fs = fa.fechaEmision || fa.fecha || fa.fechaFactura || '';
+    var f = fs ? new Date(fs) : null;
+    if (!f || isNaN(f.getTime()) || f < corte || f > hoy) return;
+    var items = fa.items || fa.lineas || [];
+    if (!items.length) { facSinItems++; return; }
+    facUsadas++;
+    if (!minF || f < minF) minF = f;
+    if (!maxF || f > maxF) maxF = f;
+    items.forEach(function(it){
+      var ref = (it.ref||'').trim(); if (!ref) return;
+      ventas[ref] = (ventas[ref]||0) + (parseInt(it.qty,10)||0);
+    });
+  });
+  var inv = getInventory();
+  var comp = (typeof getComprometido === 'function') ? getComprometido() : {};
+  var pt = {}; try { pt = JSON.parse(localStorage.getItem('farmers_pt_data')||'{}'); } catch(e) {}
+  var M = window.MASTER || {};
+  var rows = [];
+  (window.PRODUCTS||[]).forEach(function(p){
+    var ref = p.r; if (!ref) return;
+    var real = (inv[ref]!==undefined) ? (parseInt(inv[ref],10)||0) : (parseInt(p.ex,10)||0);
+    var compQ = (comp[ref] && parseInt(comp[ref].qty,10)) || 0;
+    var disp = Math.max(0, real - compQ);
+    var ord = parseInt((pt[ref]||{}).exOrdenada||0,10)||0;
+    var venta = ventas[ref]||0;
+    var mensual = venta/(dias/30);
+    var cob = mensual>0 ? (disp+ord)/mensual : null;
+    var mi = M[ref]||{};
+    rows.push({
+      ref:ref, d:p.d||'', br:p.br||'', disp:disp, ord:ord, venta:venta, mensual:mensual,
+      cob:cob, stk:(disp===0 && venta>0), m:parseInt(p.m,10)||0,
+      fob:parseFloat(p.costoFOB)||parseFloat(mi.costoFOB)||parseFloat(mi.costo)||0,
+      vol:parseFloat(mi.volFt3PorBulto)||0
+    });
+  });
+  rows.sort(function(a,b){ return a.ref.localeCompare(b.ref, 'es', {numeric:true}); });
+  window._ciData = rows;
+  window._ciByRef = {};
+  rows.forEach(function(r){ window._ciByRef[r.ref] = r; });
+  window._ciMeta = { dias:dias, facUsadas:facUsadas, facSinItems:facSinItems,
+    desde:minF?minF.toISOString().slice(0,10):'—', hasta:maxF?maxF.toISOString().slice(0,10):'—' };
+};
+
 window.farmersCompraInteligente = function() {
   try {
-    if (typeof XLSX === 'undefined') { alert('⚠ Librería Excel no cargada. Recarga la página.'); return; }
+    _ciBuildData();
+    try { window._ciDraft = JSON.parse(localStorage.getItem('farmers_ci_draft')||'{}'); } catch(e) { window._ciDraft = {}; }
+    var brands = {}; _ciData.forEach(function(r){ if (r.br) brands[r.br]=1; });
+    var opts = '<option value="">Todas las marcas</option>';
+    Object.keys(brands).sort().forEach(function(b){ opts += '<option value="'+_ciEsc(b)+'">'+_ciEsc(b)+'</option>'; });
+    var prev = document.getElementById('ci-modal'); if (prev) prev.remove();
+    var html = ''+
+    '<div id="ci-modal" style="position:fixed;inset:0;background:rgba(8,10,30,.88);z-index:99999;display:flex;align-items:center;justify-content:center;padding:14px;">'+
+      '<div style="background:#0f1230;border:1.5px solid rgba(13,148,136,.45);border-radius:16px;width:97vw;height:94vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.6);">'+
+        '<div style="padding:12px 18px;background:linear-gradient(135deg,#1B1F6B,#0d9488);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">'+
+          '<div><div style="font-family:Barlow Condensed,sans-serif;font-weight:900;font-size:1.25rem;color:#fff;letter-spacing:1px;">🧠 COMPRA INTELIGENTE — PEDIDO A PROVEEDOR</div>'+
+          '<div style="font-size:.68rem;color:rgba(255,255,255,.85);">Rotación: últimos 90 días (ventana real '+_ciMeta.desde+' → '+_ciMeta.hasta+' · '+_ciMeta.facUsadas+' facturas) · Cantidades en BULTOS · borrador se guarda solo</div></div>'+
+          '<button onclick="_ciCerrar()" style="background:rgba(255,255,255,.15);border:1.5px solid rgba(255,255,255,.4);color:#fff;border-radius:8px;padding:8px 14px;cursor:pointer;font-weight:900;font-size:.8rem;">✕ Cerrar</button>'+
+        '</div>'+
+        '<div style="padding:10px 18px;display:flex;gap:10px;flex-wrap:wrap;align-items:center;background:rgba(13,148,136,.07);border-bottom:1px solid rgba(13,148,136,.25);">'+
+          '<input id="ci-q" oninput="_ciRender()" placeholder="🔎 Buscar ref o descripción..." style="flex:1;min-width:180px;background:#141840;border:1.5px solid rgba(99,102,241,.35);color:#e5e7ff;border-radius:8px;padding:8px 12px;font-size:.78rem;font-family:inherit;">'+
+          '<select id="ci-brand" onchange="_ciRender()" style="background:#141840;border:1.5px solid rgba(99,102,241,.35);color:#e5e7ff;border-radius:8px;padding:8px 10px;font-size:.74rem;font-family:inherit;">'+opts+'</select>'+
+          '<label style="font-size:.7rem;color:#99f6e4;font-weight:800;">Solo con cantidad <input id="ci-solo" type="checkbox" onchange="_ciRender()" style="vertical-align:middle;"></label>'+
+          '<button onclick="_ciAutofill()" style="background:linear-gradient(135deg,#7c3aed,#6d28d9);color:#fff;border:none;border-radius:8px;padding:9px 14px;cursor:pointer;font-weight:900;font-size:.7rem;text-transform:uppercase;">⚡ Autollenar sugerencia</button>'+
+          '<button onclick="_ciLimpiar()" style="background:rgba(220,38,38,.18);border:1.5px solid rgba(220,38,38,.45);color:#fca5a5;border-radius:8px;padding:9px 14px;cursor:pointer;font-weight:900;font-size:.7rem;text-transform:uppercase;">🧹 Limpiar</button>'+
+          '<button onclick="_ciExport()" style="background:linear-gradient(135deg,#16a34a,#15803d);color:#fff;border:none;border-radius:8px;padding:9px 16px;cursor:pointer;font-weight:900;font-size:.7rem;text-transform:uppercase;">📊 Exportar Excel</button>'+
+        '</div>'+
+        '<div id="ci-tot" style="padding:9px 18px;display:flex;gap:16px;flex-wrap:wrap;align-items:center;background:#131740;border-bottom:1.5px solid rgba(13,148,136,.3);font-size:.78rem;color:#ccfbf1;font-weight:800;"></div>'+
+        '<div style="flex:1;overflow:auto;">'+
+          '<table style="width:100%;border-collapse:collapse;font-size:.72rem;color:#dbe1ff;">'+
+            '<thead><tr style="background:#171b4a;position:sticky;top:0;z-index:5;">'+
+              '<th style="padding:8px 10px;text-align:left;">REF</th><th style="padding:8px;text-align:left;">DESCRIPCIÓN</th>'+
+              '<th style="padding:8px;">MARCA</th><th style="padding:8px;">DISP</th><th style="padding:8px;">EN CAMINO</th>'+
+              '<th style="padding:8px;">V.90D</th><th style="padding:8px;">COB (m)</th><th style="padding:8px;">UDS/BULTO</th>'+
+              '<th style="padding:8px;">FOB $</th><th style="padding:8px;">FT³/B</th>'+
+              '<th style="padding:8px;background:#0d9488;color:#fff;">BULTOS</th><th style="padding:8px;">CAPITAL $</th><th style="padding:8px;">FT³</th>'+
+            '</tr></thead><tbody id="ci-tbody"></tbody>'+
+          '</table>'+
+        '</div>'+
+      '</div>'+
+    '</div>';
+    document.body.insertAdjacentHTML('beforeend', html);
+    _ciRender(); _ciTotals();
+  } catch(err) { console.error('[CI] Error:', err); alert('⚠ Error: ' + err.message); }
+};
 
-    // ── Parámetros editables ──
-    var dias = parseInt(prompt('📅 Días de ventas a analizar (rotación):', '90'), 10);
-    if (!dias || dias <= 0) return;
-    var objetivo = parseFloat(prompt('🎯 Cobertura objetivo en MESES (stock + ordenada + este pedido).\nSugerencia: 4 (cubre tránsito Panamá + colchón):', '4'));
-    if (!objetivo || objetivo <= 0) return;
-    var marca = (prompt('🏷 Filtrar por MARCA (vacío = todas):', '') || '').trim().toUpperCase();
-    var contFt3 = parseFloat(prompt('🚢 Capacidad contenedor en ft³ (20\u2032 ≈ 1100 · 40\u2032HQ ≈ 2200):', '2200')) || 2200;
+window._ciRender = function() {
+  var q = (document.getElementById('ci-q').value||'').trim().toUpperCase();
+  var br = document.getElementById('ci-brand').value;
+  var solo = document.getElementById('ci-solo').checked;
+  var out = [];
+  _ciData.forEach(function(r){
+    if (br && r.br !== br) return;
+    if (solo && !(parseInt(_ciDraft[r.ref],10)>0)) return;
+    if (q && (r.ref+' '+r.d).toUpperCase().indexOf(q)===-1) return;
+    var b = parseInt(_ciDraft[r.ref],10)||0;
+    var cap = b*r.m*r.fob, ft3 = b*r.vol;
+    var cobTxt = r.cob===null ? '—' : _ciR2(r.cob);
+    var warn = (r.m<=0?' ⚠m':'')+(r.fob<=0?' ⚠FOB':'')+(r.vol<=0?' ⚠ft³':'');
+    out.push('<tr id="ci-r-'+r.ref+'" onclick="_ciFocus(\''+r.ref+'\')" style="border-bottom:1px solid rgba(99,102,241,.12);cursor:pointer;'+(b>0?'background:rgba(13,148,136,.16);':'')+(r.stk?'box-shadow:inset 3px 0 0 #dc2626;':'')+'">'+
+      '<td style="padding:6px 10px;font-weight:900;color:#99f6e4;">'+r.ref+(r.stk?' <span style="color:#fca5a5;font-size:.6rem;">STOCKOUT</span>':'')+'</td>'+
+      '<td style="padding:6px 8px;color:#c7cdf5;">'+_ciEsc(r.d)+'<span style="color:#fbbf24;font-size:.62rem;">'+warn+'</span></td>'+
+      '<td style="padding:6px;text-align:center;color:#a5b4fc;">'+_ciEsc(r.br)+'</td>'+
+      '<td style="padding:6px;text-align:center;'+(r.disp===0?'color:#fca5a5;font-weight:900;':'')+'">'+r.disp+'</td>'+
+      '<td style="padding:6px;text-align:center;color:#93c5fd;">'+(r.ord||'')+'</td>'+
+      '<td style="padding:6px;text-align:center;">'+(r.venta||'')+'</td>'+
+      '<td style="padding:6px;text-align:center;'+(r.cob!==null&&r.cob<1?'color:#fbbf24;font-weight:900;':'')+'">'+cobTxt+'</td>'+
+      '<td style="padding:6px;text-align:center;">'+(r.m||'⚠')+'</td>'+
+      '<td style="padding:6px;text-align:center;">'+(r.fob? _ciR2(r.fob):'⚠')+'</td>'+
+      '<td style="padding:6px;text-align:center;">'+(r.vol? _ciR2(r.vol):'⚠')+'</td>'+
+      '<td style="padding:4px;text-align:center;"><input id="ci-i-'+r.ref+'" type="number" min="0" value="'+(b||'')+'" oninput="_ciSet(\''+r.ref+'\', this.value)" onclick="event.stopPropagation()" style="width:62px;background:#0b0e28;border:1.5px solid #0d9488;color:#5eead4;border-radius:6px;padding:5px 6px;font-weight:900;text-align:center;font-family:inherit;"></td>'+
+      '<td id="ci-c-'+r.ref+'" style="padding:6px;text-align:right;color:#86efac;font-weight:800;">'+(cap? '$'+_ciR2(cap).toLocaleString('en-US'):'')+'</td>'+
+      '<td id="ci-f-'+r.ref+'" style="padding:6px;text-align:right;color:#99f6e4;">'+(ft3? _ciR2(ft3):'')+'</td>'+
+    '</tr>');
+  });
+  document.getElementById('ci-tbody').innerHTML = out.join('') || '<tr><td colspan="13" style="padding:30px;text-align:center;color:#8891c9;">Sin resultados con ese filtro.</td></tr>';
+};
 
-    // ── Ventas en ventana (rotación real) ──
-    var hoy = new Date(); hoy.setHours(23,59,59,999);
-    var corte = new Date(hoy.getTime() - dias * 86400000);
-    var sales = getSales();
-    var ventas = {}, facUsadas = 0, facSinItems = 0, facFuera = 0, facSinFecha = 0;
-    var minF = null, maxF = null;
-    sales.forEach(function(fa){
-      var fs = fa.fechaEmision || fa.fecha || fa.fechaFactura || '';
-      var f = fs ? new Date(fs) : null;
-      if (!f || isNaN(f.getTime())) { facSinFecha++; return; }
-      if (f < corte || f > hoy) { facFuera++; return; }
-      var items = fa.items || fa.lineas || [];
-      if (!items.length) { facSinItems++; return; }
-      facUsadas++;
-      if (!minF || f < minF) minF = f;
-      if (!maxF || f > maxF) maxF = f;
-      items.forEach(function(it){
-        var ref = (it.ref || '').trim(); if (!ref) return;
-        ventas[ref] = (ventas[ref] || 0) + (parseInt(it.qty, 10) || 0);
-      });
+window._ciFocus = function(ref){ var i=document.getElementById('ci-i-'+ref); if(i){ i.focus(); i.select(); } };
+
+window._ciSet = function(ref, val) {
+  var b = parseInt(val,10)||0;
+  if (b>0) _ciDraft[ref]=b; else delete _ciDraft[ref];
+  try { localStorage.setItem('farmers_ci_draft', JSON.stringify(_ciDraft)); } catch(e) {}
+  var r = _ciByRef[ref];
+  var cap=b*r.m*r.fob, ft3=b*r.vol;
+  var tc=document.getElementById('ci-c-'+ref), tf=document.getElementById('ci-f-'+ref), tr=document.getElementById('ci-r-'+ref);
+  if (tc) tc.textContent = cap? '$'+_ciR2(cap).toLocaleString('en-US'):'';
+  if (tf) tf.textContent = ft3? _ciR2(ft3):'';
+  if (tr) tr.style.background = b>0? 'rgba(13,148,136,.16)':'';
+  _ciTotals();
+};
+
+window._ciTotals = function() {
+  var refs=0,bultos=0,uds=0,cap=0,ft3=0,sinFOB=0,sinVol=0;
+  Object.keys(_ciDraft).forEach(function(ref){
+    var r=_ciByRef[ref]; if(!r) return;
+    var b=parseInt(_ciDraft[ref],10)||0; if(b<=0) return;
+    refs++; bultos+=b; uds+=b*r.m; cap+=b*r.m*r.fob; ft3+=b*r.vol;
+    if(r.fob<=0) sinFOB++; if(r.vol<=0) sinVol++;
+  });
+  var contEl=document.getElementById('ci-cont');
+  var cont=contEl? (parseFloat(contEl.value)||2200):2200;
+  var pct=_ciR2(ft3/cont*100);
+  document.getElementById('ci-tot').innerHTML =
+    '<span>📦 <span style="color:#fff;">'+refs+'</span> refs</span>'+
+    '<span>🧱 <span style="color:#fff;">'+bultos+'</span> bultos · '+uds.toLocaleString('en-US')+' uds</span>'+
+    '<span>💰 <span style="color:#86efac;font-size:.92rem;">$'+_ciR2(cap).toLocaleString('en-US')+'</span></span>'+
+    '<span>🚢 <span style="color:#99f6e4;">'+_ciR2(ft3).toLocaleString('en-US')+' ft³</span> = <span style="color:'+(pct>100?'#fca5a5':'#fff')+';">'+pct+'%</span> de '+
+    '<input id="ci-cont" type="number" value="'+cont+'" oninput="_ciTotals()" style="width:70px;background:#0b0e28;border:1px solid rgba(99,102,241,.4);color:#e5e7ff;border-radius:6px;padding:3px 6px;font-weight:800;text-align:center;font-family:inherit;"> ft³</span>'+
+    (sinFOB? '<span style="color:#fbbf24;">⚠ '+sinFOB+' sin FOB</span>':'')+
+    (sinVol? '<span style="color:#fbbf24;">⚠ '+sinVol+' sin ft³</span>':'');
+};
+
+window._ciAutofill = function() {
+  var obj = parseFloat(prompt('🎯 Cobertura objetivo en MESES (stock + en camino + este pedido).\nSolo precarga refs con venta en 90 días; luego ajustas a mano:', '4'));
+  if (!obj || obj<=0) return;
+  var n=0;
+  _ciData.forEach(function(r){
+    if (r.venta<=0 || r.m<=0) return;
+    var nec = Math.max(0, obj*r.mensual - (r.disp+r.ord));
+    var b = Math.ceil(nec/r.m);
+    if (b>0) { _ciDraft[r.ref]=b; n++; }
+  });
+  try { localStorage.setItem('farmers_ci_draft', JSON.stringify(_ciDraft)); } catch(e) {}
+  _ciRender(); _ciTotals();
+  alert('⚡ '+n+' referencias precargadas con la sugerencia de '+obj+' meses.\nAjusta las que quieras y exporta.');
+};
+
+window._ciLimpiar = function() {
+  if (!confirm('🧹 ¿Borrar TODAS las cantidades del pedido en construcción?')) return;
+  window._ciDraft = {};
+  try { localStorage.setItem('farmers_ci_draft', '{}'); } catch(e) {}
+  _ciRender(); _ciTotals();
+};
+
+window._ciCerrar = function() { var m=document.getElementById('ci-modal'); if(m) m.remove(); };
+
+window._ciExport = function() {
+  try {
+    if (typeof XLSX==='undefined') { alert('⚠ Librería Excel no cargada.'); return; }
+    var sel = [];
+    _ciData.forEach(function(r){
+      var b=parseInt(_ciDraft[r.ref],10)||0; if(b<=0) return;
+      sel.push({r:r,b:b});
     });
-
-    // ── Posición actual (misma receta que el snapshot/custodio) ──
-    var inv = getInventory();
-    var comp = (typeof getComprometido === 'function') ? getComprometido() : {};
-    var pt = {}; try { pt = JSON.parse(localStorage.getItem('farmers_pt_data') || '{}'); } catch(e) {}
-    var M = window.MASTER || {};
-
-    var filas = [], totCap = 0, totFt3 = 0, totBultos = 0, totUds = 0;
-    var nStockout = 0, nSinFOB = 0, nSinVol = 0, nSinM = 0;
-
-    (window.PRODUCTS || []).forEach(function(p){
-      var ref = p.r; if (!ref) return;
-      if (marca && String(p.br || '').toUpperCase().indexOf(marca) === -1) return;
-      var venta = ventas[ref] || 0;
-      if (venta <= 0) return; // sin rotación probada no hay base de compra
-
-      var real = (inv[ref] !== undefined) ? (parseInt(inv[ref], 10) || 0) : (parseInt(p.ex, 10) || 0);
-      var compQ = (comp[ref] && parseInt(comp[ref].qty, 10)) || 0;
-      var disp = Math.max(0, real - compQ);
-      var ord = parseInt((pt[ref] || {}).exOrdenada || 0, 10) || 0;
-
-      var mensual = venta / (dias / 30);
-      var posicion = disp + ord;
-      var cobertura = mensual > 0 ? (posicion / mensual) : 0;
-      var stockout = (disp === 0);
-      if (stockout) nStockout++;
-
-      var necesidad = Math.max(0, (objetivo * mensual) - posicion);
-      var m = parseInt(p.m, 10) || 0;
-      var mi = M[ref] || {};
-      var fob = parseFloat(p.costoFOB) || parseFloat(mi.costoFOB) || parseFloat(mi.costo) || 0;
-      var vol = parseFloat(mi.volFt3PorBulto) || 0;
-
-      var bultos = 0, uds = 0;
-      if (necesidad > 0 && m > 0) { bultos = Math.ceil(necesidad / m); uds = bultos * m; }
-
-      var alertas = [];
-      if (m <= 0) { alertas.push('SIN UDS/BULTO'); nSinM++; }
-      if (fob <= 0) { alertas.push('SIN COSTO FOB'); nSinFOB++; }
-      if (vol <= 0) { alertas.push('SIN FT3 EN MASTER'); nSinVol++; }
-
-      var capital = uds * fob;
-      var ft3 = bultos * vol;
-      totCap += capital; totFt3 += ft3; totBultos += bultos; totUds += uds;
-
-      filas.push({
-        ref: ref, d: p.d || '', br: p.br || '', real: real, comp: compQ, disp: disp,
-        ord: ord, venta: venta, mensual: mensual, cob: cobertura, stk: stockout,
-        m: m, bultos: bultos, uds: uds, fob: fob, capital: capital, vol: vol,
-        ft3: ft3, alertas: alertas.join(' · ')
-      });
-    });
-
-    if (!filas.length) { alert('Sin referencias con ventas en los últimos ' + dias + ' días' + (marca ? ' para la marca "' + marca + '"' : '') + '.'); return; }
-
-    // Orden: stockouts primero (por venta mensual desc), luego cobertura ascendente
-    filas.sort(function(a, b){
-      if (a.stk !== b.stk) return (b.stk ? 1 : 0) - (a.stk ? 1 : 0);
-      if (a.stk && b.stk) return b.mensual - a.mensual;
-      return a.cob - b.cob;
-    });
-
-    var r2 = function(x){ return Math.round(x * 100) / 100; };
-    var fISO = function(d){ return d ? d.toISOString().slice(0, 10) : '—'; };
-
-    // ── Hoja 1: PROPUESTA ──
-    var aoa = [[
-      'REF','DESCRIPCIÓN','MARCA','STOCK REAL','COMPROMETIDO','DISPONIBLE','ORDENADA (EN CAMINO)',
-      'VENTA ' + dias + 'D (UDS)','VENTA MENSUAL','COBERTURA (MESES)','STOCKOUT',
-      'UDS/BULTO','BULTOS SUGERIDOS (EDITABLE)','UDS A PEDIR','FOB UNIT $','CAPITAL $',
-      'FT3/BULTO','FT3 TOTAL','ALERTAS'
-    ]];
-    filas.forEach(function(f){
-      aoa.push([f.ref, f.d, f.br, f.real, f.comp, f.disp, f.ord, f.venta, r2(f.mensual),
-        r2(f.cob), f.stk ? 'SÍ' : '', f.m, f.bultos, f.uds, r2(f.fob), r2(f.capital),
-        r2(f.vol), r2(f.ft3), f.alertas]);
+    if (!sel.length) { alert('El pedido está vacío. Coloca bultos en al menos una referencia.'); return; }
+    var contEl=document.getElementById('ci-cont');
+    var cont=contEl? (parseFloat(contEl.value)||2200):2200;
+    var aoa=[['REF','DESCRIPCIÓN','MARCA','DISPONIBLE','EN CAMINO','VENTA 90D','VENTA MENSUAL','COBERTURA (MESES)','UDS/BULTO','BULTOS','UDS A PEDIR','FOB UNIT $','CAPITAL $','FT³/BULTO','FT³ TOTAL','ALERTAS']];
+    var tB=0,tU=0,tC=0,tF=0,sinFOB=0,sinVol=0,stk=0;
+    sel.forEach(function(x){
+      var r=x.r,b=x.b,uds=b*r.m,cap=uds*r.fob,ft3=b*r.vol;
+      tB+=b;tU+=uds;tC+=cap;tF+=ft3;
+      if(r.fob<=0)sinFOB++; if(r.vol<=0)sinVol++; if(r.stk)stk++;
+      var al=[]; if(r.m<=0)al.push('SIN UDS/BULTO'); if(r.fob<=0)al.push('SIN COSTO FOB'); if(r.vol<=0)al.push('SIN FT3 EN MASTER');
+      aoa.push([r.ref,r.d,r.br,r.disp,r.ord,r.venta,_ciR2(r.mensual),r.cob===null?'':_ciR2(r.cob),r.m,b,uds,_ciR2(r.fob),_ciR2(cap),_ciR2(r.vol),_ciR2(ft3),al.join(' · ')]);
     });
     aoa.push([]);
-    aoa.push(['TOTALES','','','','','','','','','','','', totBultos, totUds, '', r2(totCap), '', r2(totFt3), '']);
-    aoa.push(['% CONTENEDOR (' + contFt3 + ' ft3)','','','','','','','','','','','','','','','','', r2(totFt3 / contFt3 * 100) + ' %','']);
-
-    // ── Hoja 2: PARÁMETROS (regla de frescura 14/09) ──
-    var par = [
-      ['FARMERS, C.A. — COMPRA INTELIGENTE · PROPUESTA DE PEDIDO A PROVEEDOR'],
+    aoa.push(['TOTALES','','','','','','','','',tB,tU,'',_ciR2(tC),'',_ciR2(tF),'']);
+    aoa.push(['% CONTENEDOR ('+cont+' ft3)','','','','','','','','','','','','','',_ciR2(tF/cont*100)+' %','']);
+    var par=[
+      ['FARMERS, C.A. — PEDIDO A PROVEEDOR (COMPRA INTELIGENTE · armado manual)'],
       ['Generado', new Date().toLocaleString('es-VE')],
-      ['Versión motor', 'v2026.10.06.354'],
+      ['Versión motor','v2026.10.06.355'],
       [],
-      ['Días de análisis solicitados', dias],
-      ['Ventana solicitada', fISO(corte) + ' → ' + fISO(hoy)],
-      ['⚠ VENTANA REAL de facturas usadas', fISO(minF) + ' → ' + fISO(maxF)],
-      ['Facturas usadas (con ítems)', facUsadas],
-      ['Facturas sin ítems (omitidas)', facSinItems],
-      ['Facturas fuera de rango', facFuera],
-      ['Facturas sin fecha legible', facSinFecha],
+      ['Rotación: días analizados', _ciMeta.dias],
+      ['⚠ VENTANA REAL de facturas usadas', _ciMeta.desde+' → '+_ciMeta.hasta],
+      ['Facturas usadas (con ítems)', _ciMeta.facUsadas],
+      ['Facturas sin ítems (omitidas)', _ciMeta.facSinItems],
       [],
-      ['Cobertura objetivo (meses)', objetivo],
-      ['Filtro de marca', marca || '(todas)'],
-      ['Capacidad contenedor (ft3)', contFt3],
+      ['Referencias en el pedido', sel.length],
+      ['De ellas en STOCKOUT', stk],
+      ['Bultos totales', tB],
+      ['Unidades totales', tU],
+      ['Capital total $', _ciR2(tC)],
+      ['Volumen total ft3', _ciR2(tF)],
+      ['Capacidad contenedor ft3', cont],
+      ['% contenedor', _ciR2(tF/cont*100)+' %'],
+      ['⚠ Refs sin costo FOB (capital subestimado)', sinFOB],
+      ['⚠ Refs sin ft3 en Master (volumen subestimado)', sinVol],
       [],
-      ['Referencias en propuesta', filas.length],
-      ['En STOCKOUT con venta probada', nStockout],
-      ['⚠ Sin costo FOB (completar en Master/OC)', nSinFOB],
-      ['⚠ Sin ft3/bulto (completar en Master)', nSinVol],
-      ['⚠ Sin uds/bulto (campo m)', nSinM],
-      [],
-      ['FUENTES', 'Ventas: farmers_sales · Stock: getInventory (fallback p.ex) · Comprometido: getComprometido · Ordenada: farmers_pt_data.exOrdenada (OC) · ft3: MASTER.volFt3PorBulto · FOB: p.costoFOB (fallback MASTER)'],
-      ['NOTA', 'La columna BULTOS SUGERIDOS es editable: ajusta y recalcula capital/ft3 en Excel antes de enviar la OC.']
+      ['FUENTES','Ventas: farmers_sales · Stock: getInventory (fallback p.ex) · Comprometido: getComprometido · En camino: farmers_pt_data.exOrdenada (OC) · ft3: MASTER.volFt3PorBulto · FOB: p.costoFOB (fallback MASTER)']
     ];
-
-    var wb = XLSX.utils.book_new();
-    var ws1 = XLSX.utils.aoa_to_sheet(aoa);
-    ws1['!cols'] = [{wch:9},{wch:42},{wch:11},{wch:10},{wch:12},{wch:11},{wch:12},{wch:11},{wch:11},{wch:11},{wch:9},{wch:9},{wch:13},{wch:10},{wch:10},{wch:11},{wch:9},{wch:10},{wch:22}];
-    XLSX.utils.book_append_sheet(wb, ws1, 'PROPUESTA');
-    var ws2 = XLSX.utils.aoa_to_sheet(par);
-    ws2['!cols'] = [{wch:40},{wch:60}];
-    XLSX.utils.book_append_sheet(wb, ws2, 'PARÁMETROS');
-    XLSX.writeFile(wb, 'FARMERS_COMPRA_INTELIGENTE_' + fISO(new Date()) + '.xlsx');
-
-    var resumen = '🧠 COMPRA INTELIGENTE — Excel generado\n\n' +
-      '📊 ' + filas.length + ' refs con rotación en ' + dias + ' días\n' +
-      '🔴 ' + nStockout + ' en STOCKOUT (venta probada, disponible 0)\n' +
-      '📦 ' + totBultos + ' bultos sugeridos (' + totUds + ' uds)\n' +
-      '💰 Capital estimado: $' + r2(totCap).toLocaleString('en-US') + '\n' +
-      '🚢 Volumen: ' + r2(totFt3) + ' ft3 = ' + r2(totFt3 / contFt3 * 100) + '% del contenedor\n' +
-      (nSinFOB ? '\n⚠ ' + nSinFOB + ' refs SIN costo FOB' : '') +
-      (nSinVol ? '\n⚠ ' + nSinVol + ' refs SIN ft3 en Master' : '') +
-      '\n\nRevisa la hoja PARÁMETROS: ventana REAL de fechas usada.';
-    console.log('[COMPRA INTELIGENTE]', { refs: filas.length, stockouts: nStockout, bultos: totBultos, capital: r2(totCap), ft3: r2(totFt3) });
-    alert(resumen);
-  } catch(err) {
-    console.error('[COMPRA INTELIGENTE] Error:', err);
-    alert('⚠ Error en Compra Inteligente: ' + err.message);
-  }
+    var wb=XLSX.utils.book_new();
+    var ws1=XLSX.utils.aoa_to_sheet(aoa);
+    ws1['!cols']=[{wch:9},{wch:42},{wch:11},{wch:11},{wch:10},{wch:10},{wch:12},{wch:12},{wch:10},{wch:8},{wch:11},{wch:10},{wch:12},{wch:9},{wch:10},{wch:22}];
+    XLSX.utils.book_append_sheet(wb,ws1,'PEDIDO');
+    var ws2=XLSX.utils.aoa_to_sheet(par);
+    ws2['!cols']=[{wch:42},{wch:60}];
+    XLSX.utils.book_append_sheet(wb,ws2,'PARÁMETROS');
+    XLSX.writeFile(wb,'FARMERS_PEDIDO_PROVEEDOR_'+new Date().toISOString().slice(0,10)+'.xlsx');
+    console.log('[CI EXPORT]',{refs:sel.length,bultos:tB,capital:_ciR2(tC),ft3:_ciR2(tF)});
+  } catch(err) { console.error('[CI] Export error:', err); alert('⚠ Error exportando: '+err.message); }
 };
 
 // SUB-VISTA: MI REPOSICIÓN (lista de compras Farmers)
@@ -26341,7 +26420,6 @@ window.invSubMiReposicion = function() {
   html += '<div style="background:linear-gradient(135deg,rgba(168,85,247,.12),rgba(147,51,234,.05));border:1.5px solid rgba(168,85,247,.3);border-radius:12px;padding:14px 18px;margin-bottom:14px;">';
   html += '<div style="font-family:Barlow Condensed,sans-serif;font-weight:900;font-size:1.3rem;color:#d8b4fe;text-transform:uppercase;letter-spacing:1px;">📦 Mi Reposición Farmers</div>';
   html += '<div style="font-size:.78rem;color:rgba(243,232,255,.7);margin-top:3px;">Productos donde el cliente NO tiene stock Y tampoco tienes para reponer · y oportunidades nuevas de venta</div>';
-  html += '<button onclick="farmersCompraInteligente()" style="margin-top:10px;background:linear-gradient(135deg,#1B1F6B,#0d9488);color:#fff;border:none;border-radius:9px;padding:10px 18px;cursor:pointer;font-weight:900;font-size:.76rem;font-family:Barlow Condensed,sans-serif;text-transform:uppercase;letter-spacing:.6px;box-shadow:0 2px 10px rgba(13,148,136,.35);">🧠 COMPRA INTELIGENTE · Pedido a Proveedor (Excel)</button>';
   html += '</div>';
 
   // ── SECCIÓN A: REPOSICIÓN ──
@@ -64468,7 +64546,7 @@ window.coDescargarExcel = function() {
       <div class="oc-header-actions">
         <button class="oc-btn" onclick="ocImportarFacturaClick()" style="background:rgba(252,165,165,0.2);border-color:rgba(252,165,165,0.4);">📥 Importar Factura</button>
         <button class="oc-btn" onclick="window.coAbrir()" style="background:rgba(216,180,254,0.2);border-color:rgba(216,180,254,0.4);">🧠 Compra Orgánica IA</button>
-        <button class="oc-btn oc-btn-primary" onclick="ocNuevaClick()">＋ Nueva OC</button>
+        <button class="oc-btn" onclick="farmersCompraInteligente()" style="background:linear-gradient(135deg,#1B1F6B,#0d9488);color:#fff;border:none;font-weight:900;letter-spacing:.4px;">🧠 Compra Inteligente</button> <button class="oc-btn oc-btn-primary" onclick="ocNuevaClick()">＋ Nueva OC</button>
         <button class="oc-btn-close" onclick="closeOrdenesCompra()">✕</button>
       </div>
     </div>
