@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.10.07.363">
+<meta name="farmers-version" content="2026.10.07.364">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -8053,10 +8053,12 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
   window.fbSaveInventory = async (v) => {
     await _fbEsperarSyncListo('inventario'); // v.262: candado — espera confirmación de carga antes de subir
     var payload = v || {};
+    if (!(await _gmeOkEscribir('inventory', 'inventario'))) return { ok: false, bloqueado: 'guardia-v364' };
     await _fbConReintento(function(){ return setDoc(doc(db,'data','inventory'), {
       v: JSON.stringify(payload),
       updatedAt: Date.now()
     }); }, 30000, 'inventario', 3);
+    _gmeStamp('inventory');   // v.364
     return { ok: true };
   };
 
@@ -8080,7 +8082,7 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
   };
 
   window.fbGetInventory = async () => {
-    try { const d = await getDoc(doc(db,'data','inventory')); return d.exists() ? JSON.parse(d.data().v) : null; } catch(e) { if(window._farmersFalloLectura) window._farmersFalloLectura('Inventory', e); return null; }
+    try { const d = await getDoc(doc(db,'data','inventory')); if (d.exists()) { _gmeStamp('inventory', (d.data()||{}).updatedAt); return JSON.parse(d.data().v); } return null; } catch(e) { if(window._farmersFalloLectura) window._farmersFalloLectura('Inventory', e); return null; }
   };
 
   // v.139 — Traslados entre depósitos (NE ↔ TF)
@@ -8174,6 +8176,7 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
     try {
   // ── onSnapshot inventario: siempre acepta cambios del servidor ──
       onSnapshot(doc(db,'data','inventory'), s => {
+        try { if (s && s.exists && s.exists()) _gmeStamp('inventory', (s.data()||{}).updatedAt); } catch(eG364){}
         if (s.exists()) {
           localStorage.setItem('farmers_inv', s.data().v);
           // Cuando el cambio viene de Firebase: propaga inv → p.exNE
@@ -8619,12 +8622,48 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
 
       // ── PRODUCTS (catálogo principal) — persistencia real a Firebase ──
       // v.65: incluye count + updatedAt para validación + propaga errores reales
+      /* ═══ v.364 — GUARDIA MULTI-EQUIPO (frescura antes que fórmula) ═══════
+         Cada máquina recuerda el updatedAt MÁS RECIENTE de la nube que ha
+         visto ('farmers_fresh_<col>', sellado al leer, al recibir snapshot
+         y al guardar). Antes de ESCRIBIR productos/inventario/ordenada/
+         Master, se consulta la nube: si ella es MÁS NUEVA que lo visto por
+         esta máquina (otra PC guardó después), el guardado se BLOQUEA con
+         aviso — nunca más una máquina desactualizada pisa datos frescos
+         (incidente Mac 07/10). Escape consciente: farmersPermitirPisar(min).
+         Si el chequeo mismo falla (sin red), se permite: no brickear. */
+      window._farmersPisarHasta = 0;
+      window.farmersPermitirPisar = function(min){
+        var m = parseInt(min, 10) || 5;
+        window._farmersPisarHasta = Date.now() + m * 60000;
+        var tx = '🔓 Guardia multi-equipo ABIERTA por ' + m + ' min en esta máquina: los guardados PISARÁN la nube aunque sea más nueva.';
+        console.warn('[v.364] ' + tx); alert(tx); return true;
+      };
+      function _gmeStamp(col, ts){ try { localStorage.setItem('farmers_fresh_' + col, String(parseInt(ts,10) || Date.now())); } catch(e){} }
+      window._gmeStamp = _gmeStamp;
+      async function _gmeOkEscribir(col, nombre){
+        try {
+          if (Date.now() < (window._farmersPisarHasta || 0)) return true;
+          var visto = parseInt(localStorage.getItem('farmers_fresh_' + col) || '0', 10) || 0;
+          var sG = await getDoc(doc(db, 'data', col));
+          var nube = (sG.exists() && sG.data()) ? (parseInt(sG.data().updatedAt, 10) || 0) : 0;
+          if (nube > visto + 8000) {
+            var tx = '⛔ GUARDIA MULTI-EQUIPO (' + nombre + '): la nube tiene datos MÁS NUEVOS que lo visto por esta máquina (otra PC guardó después). NO se subió nada.\n→ Recarga la página para traer lo nuevo y reintenta.\n→ Solo si estás SEGURO de pisar la nube: farmersPermitirPisar(5) y reintenta.';
+            console.error('[v.364] ' + tx);
+            try { if (typeof showToast === 'function') showToast('⛔ ' + nombre + ': otra máquina guardó algo más reciente. Recarga antes de guardar (guardia multi-equipo v.364).', 'error', { duration: 16000 }); } catch(e2){}
+            return false;
+          }
+          return true;
+        } catch(e) { console.warn('[v.364 guardia] chequeo falló — se permite para no bloquear:', e && e.message); return true; }
+      }
+      window._gmeOkEscribir = _gmeOkEscribir;
+
       window.fbSaveProducts = async (arr) => {
         await _fbEsperarSyncListo('catálogo'); // v.262: candado
         var payload = Array.isArray(arr) ? arr : (typeof PRODUCTS !== 'undefined' ? PRODUCTS : []);
         if (!Array.isArray(payload) || payload.length === 0) {
           throw new Error('fbSaveProducts: payload vacío, no se guarda para evitar borrar Firebase');
         }
+        if (!(await _gmeOkEscribir('products', 'catálogo/productos'))) throw new Error('Guardia multi-equipo v.364: la nube de productos es más nueva — recarga antes de guardar.');
         // ── FIX #5 v.112: Registrar timestamp + count del write propio ──
         // El onSnapshot usa esto para detectar y rechazar ecos de writes propios
         // que llegan con datos pre-write (race condition de Firebase).
@@ -8643,6 +8682,7 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
           count: payload.length,
           updatedAt: Date.now()
         }));
+        _gmeStamp('products');   // v.364: este write pasa a ser lo más fresco visto
         // ── FIX #4 v.111: BACKUP AUTOMÁTICO DIARIO ─────────────────────────
         // Dispara una vez por día (per dispositivo) un snapshot del catálogo
         // a 'data/products_backup_YYYYMMDD'. No bloquea el save principal.
@@ -8764,7 +8804,7 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
       };
 
       window.fbGetProducts = async () => {
-        try { var s = await getDoc(doc(db,'data','products')); if (s.exists()) return JSON.parse(s.data().v); } catch(e) { if(window._farmersFalloLectura) window._farmersFalloLectura('Products', e); }
+        try { var s = await getDoc(doc(db,'data','products')); if (s.exists()) { _gmeStamp('products', s.data().updatedAt); return JSON.parse(s.data().v); } } catch(e) { if(window._farmersFalloLectura) window._farmersFalloLectura('Products', e); }
         return null;
       };
 
@@ -8975,6 +9015,7 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
       // significa que nuestro save local todavía no se propagó completo.
       // No pisamos en ese caso para evitar regresión transitoria.
       onSnapshot(doc(db,'data','products'), function(s) {
+        try { if (s && s.exists && s.exists()) _gmeStamp('products', (s.data()||{}).updatedAt); } catch(eG364){}
         try {
           if (!s.exists()) {
             console.log('[onSnapshot products v.101] Firebase no tiene documento. Esperando que primer save lo cree.');
@@ -9431,6 +9472,7 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
       // ── PT_DATA (Ordenada, fichas extendidas, dimensiones) ──
       // FIX v.97: lockout post-escritura para no pisar ediciones locales recientes
       onSnapshot(doc(db,'data','pt_data'), function(s) {
+        try { if (s && s.exists && s.exists()) _gmeStamp('pt_data', (s.data()||{}).updatedAt); } catch(eG364){}
         try {
           // PROTECCIÓN — si acabamos de guardar localmente, ignorar este snapshot
           // (es el eco de nuestra propia escritura volviendo desde Firebase con datos viejos)
@@ -9955,7 +9997,9 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
       Object.keys(parsed).forEach(function(r){
         if (parsed[r] && parseInt(parsed[r].exOrdenada || 0) > 0) conOrd++;
       });
+      if (!(await _gmeOkEscribir('pt_data', 'ordenada (pt_data)'))) return false;
       await setDoc(doc(db, 'data', 'pt_data'), { v: ptString, updatedAt: Date.now(), totalRefs: totalRefs, conOrdenada: conOrd });
+      _gmeStamp('pt_data');   // v.364
       console.log('[fbSavePT] ✓ pt_data publicado: ' + totalRefs + ' refs, ' + conOrd + ' con Ordenada > 0');
       return true;
     } catch(e) { console.error('[fbSavePT] ✗ error:', e); return false; }
@@ -10232,11 +10276,13 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
           })();
       var s = JSON.stringify(obj);
       var totalRefs = Object.keys(obj).length;
+      if (!(await _gmeOkEscribir('pt_master', 'Master Data'))) return false;
       await setDoc(doc(db, 'data', 'pt_master'), {
         v: s,
         updatedAt: Date.now(),
         totalRefs: totalRefs
       });
+      _gmeStamp('pt_master');   // v.364
       console.log('[fbSaveMaster] ✓ Master publicado: ' + totalRefs + ' refs');
       return true;
     } catch(e) {
@@ -10248,6 +10294,7 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
     try {
       var snap = await getDoc(doc(db, 'data', 'pt_master'));
       if (!snap.exists() || !snap.data().v) return {};
+      _gmeStamp('pt_master', snap.data().updatedAt);   // v.364
       return JSON.parse(snap.data().v);
     } catch(e) {
       console.error('[fbGetMaster] ✗ error:', e);
@@ -10283,6 +10330,7 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
       var snap = await getDoc(doc(db, 'data', 'pt_data'));
       if (!snap.exists() || !snap.data().v) return { exists: false, data: {}, updatedAt: null };
       var data = JSON.parse(snap.data().v);
+      _gmeStamp('pt_data', snap.data().updatedAt);   // v.364
       return { exists: true, data: data, updatedAt: snap.data().updatedAt || null };
     } catch(e) { console.error('[fbGetPT] ✗ error:', e); return { exists: false, data: {}, error: e.message }; }
   };
