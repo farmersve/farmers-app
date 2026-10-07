@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.10.07.362">
+<meta name="farmers-version" content="2026.10.07.363">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -12399,6 +12399,21 @@ async function loadFromFirebase() {
     }
     if (window.fbGetSales) {
       var s = await window.fbGetSales();
+      /* v.363 — ANTÍDOTO MULTI-EQUIPO: el doc único de ventas (data/sales) ronda
+         el límite de 1MB y puede quedarse viejo. Si la nube v2 (un doc por venta)
+         trae IGUAL o MÁS registros, ella manda al hidratar. Así otra PC nunca
+         arranca con ventas desactualizadas. */
+      try {
+        if (window._salesV2) {
+          var s2 = await window._salesV2.get();
+          if (s2 && s2.length && (!s || s2.length >= s.length)) {
+            s = s2;
+            console.log('[loadFromFirebase] ✓ SALES hidratado desde nube v2 (doc por venta): ' + s2.length + ' ventas');
+          } else if (s && s2 && s2.length < s.length) {
+            console.warn('[loadFromFirebase] ⚠ Nube v2 trae ' + s2.length + ' ventas vs ' + s.length + ' del doc único — se usó el doc único. Revisa farmersSalesV2Estado().');
+          }
+        }
+      } catch(e363) { console.warn('[loadFromFirebase] sales v2:', e363 && e363.message); }
       if (s && s.length) {
         localStorage.setItem('farmers_sales', JSON.stringify(s));
         if (typeof renderHistorial === 'function') renderHistorial();
