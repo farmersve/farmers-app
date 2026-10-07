@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.10.06.358">
+<meta name="farmers-version" content="2026.10.07.359">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -80941,6 +80941,7 @@ window.pcAbrirModulo = async function() {
   tabs.innerHTML =
     '<button class="pc-tab active" data-tab="tokens" style="flex:1;padding:12px;border:none;background:#fff;font-weight:700;font-size:.78rem;color:#1B1F6B;border-bottom:3px solid #1B1F6B;cursor:pointer;">🔗 Links por cliente</button>' +
     '<button class="pc-tab" data-tab="pedidos" style="flex:1;padding:12px;border:none;background:#f1f5f9;font-weight:700;font-size:.78rem;color:#475569;border-bottom:3px solid transparent;cursor:pointer;">📥 Pedidos entrantes <span id="pc-pedidos-badge" style="background:#F47B3E;color:#fff;border-radius:999px;padding:0 7px;font-size:.65rem;margin-left:4px;display:none;">0</span></button>' +
+    '<button class="pc-tab" data-tab="reactivacion" style="flex:1;padding:12px;border:none;background:#f1f5f9;font-weight:700;font-size:.78rem;color:#475569;border-bottom:3px solid transparent;cursor:pointer;">📣 Reactivación</button>' +
     '<button class="pc-tab" data-tab="actividad" style="flex:1;padding:12px;border:none;background:#f1f5f9;font-weight:700;font-size:.78rem;color:#475569;border-bottom:3px solid transparent;cursor:pointer;">📡 Actividad en vivo</button>' +
     '<button class="pc-tab" data-tab="config" style="flex:1;padding:12px;border:none;background:#f1f5f9;font-weight:700;font-size:.78rem;color:#475569;border-bottom:3px solid transparent;cursor:pointer;">⚙️ Configuración</button>';
   box.appendChild(tabs);
@@ -81008,6 +81009,8 @@ function pcRenderTab(tabName) {
     pcRenderTokens(body);
   } else if (tabName === 'pedidos') {
     pcRenderPedidos(body);
+  } else if (tabName === 'reactivacion') {
+    pcRenderReactivacion(body);
   } else if (tabName === 'actividad') {
     pcRenderActividad(body); // v.189
   } else if (tabName === 'config') {
@@ -81642,6 +81645,179 @@ async function pcToggleToken(token) {
   } catch(e) {
     alert('Error: ' + e.message);
   }
+}
+
+// ══════════════════════════════════════════════════════════════════
+// 📣 REACTIVACIÓN DE CLIENTES v2026.10.07.359 — WhatsApp semi-automático
+// Por cada link del portal: última compra REAL (facturas del sistema +
+// pedidos del portal), días sin comprar, semáforo, teléfono del CRM, y
+// mensaje personalizado listo → 📲 abre WhatsApp con el texto montado.
+// Plantilla editable ({nombre} {dias} {link}) en farmers_react_msg.
+// Registro de envíos en farmers_react_log (no spamear al mismo cliente).
+// WhatsApp no permite envío automático sin su API de pago: el sistema
+// prepara TODO y el click final es humano — eso también te protege.
+// ══════════════════════════════════════════════════════════════════
+window._RX_MSG_DEFAULT = 'Hola {nombre} 👋 ¡Saludos del equipo FARMERS!\n\nNos está llegando mercancía nueva y no queremos que te quedes sin ver las novedades. Ya tienes {dias} sin hacer tu pedido — tu catálogo personalizado está siempre abierto aquí:\n\n{link}\n\nHaz tu pedido por el portal y lo preparamos de una vez. ¡Quedamos atentos! 🚛📦';
+
+window._rxNr = function(x){ return String(x||'').replace(/\W/g,'').toUpperCase(); };
+window._rxNn = function(x){ return String(x||'').toUpperCase().replace(/[^A-ZÑ0-9]/g,''); };
+
+window._rxTelCliente = function(cl){
+  if (!cl) return '';
+  var cand = [cl.cxcTel, cl.gerenteTel, cl.asistenteTel, cl.tel, cl.telefono];
+  (cl.sucursales||[]).forEach(function(s){ cand.push(s.telefono); });
+  for (var i=0;i<cand.length;i++){
+    var n = (typeof farmersTelNormalizar==='function') ? farmersTelNormalizar(cand[i]) : '';
+    if (n) return n;
+  }
+  return '';
+};
+
+window._rxUltimaCompra = function(tk, clientes){
+  var rifT = _rxNr(tk.rifEsperado), nomT = _rxNn(tk.clienteNombre);
+  var cl = clientes.find(function(c){ return rifT && _rxNr(c.rif) === rifT; })
+        || clientes.find(function(c){ return nomT && _rxNn(c.nombre) === nomT; }) || null;
+  var best = null;
+  (typeof getSales==='function' ? getSales() : []).forEach(function(fa){
+    var fr = _rxNr(fa.rif), fn = _rxNn(fa.clienteNombre || fa.cliente || fa.razonSocial || '');
+    var match = (rifT && fr && fr === rifT) || (nomT && fn && fn === nomT);
+    if (!match && cl) match = (_rxNr(cl.rif) && fr === _rxNr(cl.rif)) || (fn && fn === _rxNn(cl.nombre));
+    if (!match) return;
+    var f = new Date(fa.fechaEmision || fa.fecha || fa.fechaFactura || '');
+    if (!isNaN(f.getTime()) && (!best || f > best)) best = f;
+  });
+  (window.portalPedidos||[]).forEach(function(p){
+    if (p.token !== tk.token) return;
+    var f = new Date(p.fechaStr || p.ts || '');
+    if (!isNaN(f.getTime()) && (!best || f > best)) best = f;
+  });
+  return { cliente: cl, fecha: best, tel: _rxTelCliente(cl) };
+};
+
+window._rxLog = function(){ try { return JSON.parse(localStorage.getItem('farmers_react_log')||'{}'); } catch(e){ return {}; } };
+window._rxDias = function(d){ return Math.floor((Date.now() - d.getTime()) / 86400000); };
+
+window._rxMsgPara = function(tk, dias){
+  var tpl = localStorage.getItem('farmers_react_msg') || _RX_MSG_DEFAULT;
+  var link = getPortalBaseUrl() + '?token=' + tk.token;
+  var diasTxt = (dias === null) ? 'un tiempito' : (dias + (dias === 1 ? ' día' : ' días'));
+  return tpl.split('{nombre}').join(tk.clienteNombre || 'estimado cliente')
+            .split('{dias}').join(diasTxt)
+            .split('{link}').join(link);
+};
+
+window._rxRegistrar = function(token){
+  var log = _rxLog(); log[token] = new Date().toISOString();
+  try { localStorage.setItem('farmers_react_log', JSON.stringify(log)); } catch(e){}
+  var body = document.getElementById('pc-body');
+  if (body) pcRenderReactivacion(body);
+};
+
+window._rxEnviar = function(token, tel){
+  var tk = (window.portalTokens||[]).find(function(t){ return t.token === token; }); if (!tk) return;
+  var dias = tk._rxDiasCache !== undefined ? tk._rxDiasCache : null;
+  var url = 'https://wa.me/' + tel + '?text=' + encodeURIComponent(_rxMsgPara(tk, dias));
+  window.open(url, '_blank');
+  _rxRegistrar(token);
+};
+
+window._rxCopiar = function(token){
+  var tk = (window.portalTokens||[]).find(function(t){ return t.token === token; }); if (!tk) return;
+  var msg = _rxMsgPara(tk, tk._rxDiasCache !== undefined ? tk._rxDiasCache : null);
+  var fin = function(ok){ alert(ok ? '📋 Mensaje copiado — pégalo en WhatsApp.' : '⚠ No pude copiar. Mensaje en consola.'); if(!ok) console.log(msg); _rxRegistrar(token); };
+  if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(msg).then(function(){fin(true);},function(){fin(false);});
+  else fin(false);
+};
+
+window._rxGuardarTpl = function(v){ try { localStorage.setItem('farmers_react_msg', v); } catch(e){} };
+window._rxResetTpl = function(){
+  if (!confirm('¿Volver a la plantilla original de Farmers?')) return;
+  try { localStorage.removeItem('farmers_react_msg'); } catch(e){}
+  var body = document.getElementById('pc-body'); if (body) pcRenderReactivacion(body);
+};
+window._rxFiltro = window._rxFiltro || 'accion';
+window._rxSetFiltro = function(v){ window._rxFiltro = v; var body = document.getElementById('pc-body'); if (body) pcRenderReactivacion(body); };
+
+function pcRenderReactivacion(body) {
+  var tks = (window.portalTokens||[]).filter(function(t){ return t.activo !== false; });
+  var clientes = []; try { clientes = JSON.parse(localStorage.getItem('farmers_clients_v2')||'[]'); } catch(e){}
+  var log = _rxLog();
+  var hoy = new Date();
+
+  var filas = tks.map(function(tk){
+    var info = _rxUltimaCompra(tk, clientes);
+    var dias = info.fecha ? _rxDias(info.fecha) : null;
+    tk._rxDiasCache = dias;
+    var env = log[tk.token] ? new Date(log[tk.token]) : null;
+    var dEnv = env ? _rxDias(env) : null;
+    return { tk: tk, info: info, dias: dias, dEnv: dEnv };
+  });
+
+  // Orden: nunca compraron primero, luego más días sin comprar
+  filas.sort(function(a,b){
+    var da = a.dias === null ? 99999 : a.dias, db = b.dias === null ? 99999 : b.dias;
+    return db - da;
+  });
+
+  var f = window._rxFiltro;
+  var vis = filas.filter(function(x){
+    if (f === 'accion') return (x.dias === null || x.dias >= 8) && (x.dEnv === null || x.dEnv >= 3);
+    if (f === 'riesgo') return x.dias === null || x.dias >= 8;
+    return true;
+  });
+
+  var nRojo = filas.filter(function(x){ return x.dias !== null && x.dias > 14; }).length;
+  var nAmar = filas.filter(function(x){ return x.dias !== null && x.dias >= 8 && x.dias <= 14; }).length;
+  var nNunca = filas.filter(function(x){ return x.dias === null; }).length;
+  var nHoy = filas.filter(function(x){ return x.dEnv === 0; }).length;
+
+  var tpl = localStorage.getItem('farmers_react_msg') || _RX_MSG_DEFAULT;
+
+  var html = '';
+  html += '<div style="background:linear-gradient(135deg,rgba(27,31,107,.06),rgba(13,148,136,.06));border:1.5px solid #c7d2fe;border-radius:12px;padding:14px 18px;margin-bottom:14px;">';
+  html += '<div style="font-size:.92rem;font-weight:800;color:#1B1F6B;">📣 Reactivación por WhatsApp <span style="font-weight:600;color:#475569;font-size:.7rem;">· rutina sugerida: martes y jueves, media mañana</span></div>';
+  html += '<div style="font-size:.72rem;color:#475569;margin-top:4px;">El sistema vigila la última compra de cada cliente (facturas + pedidos del portal), arma el mensaje con su nombre y su link, y tú solo das el click de envío. 🔴 +14 días: <strong>' + nRojo + '</strong> · 🟡 8–14: <strong>' + nAmar + '</strong> · ⚪ sin compras: <strong>' + nNunca + '</strong> · 📲 enviados hoy: <strong>' + nHoy + '</strong></div>';
+  html += '</div>';
+
+  html += '<details style="margin-bottom:14px;background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:10px 14px;"><summary style="cursor:pointer;font-weight:800;font-size:.75rem;color:#1B1F6B;">✍️ Plantilla del mensaje (se guarda sola) — comodines: {nombre} · {dias} · {link}</summary>';
+  html += '<textarea oninput="_rxGuardarTpl(this.value)" style="width:100%;min-height:120px;margin-top:10px;border:1.5px solid #cbd5e1;border-radius:8px;padding:10px;font-size:.76rem;font-family:inherit;color:#0f172a;box-sizing:border-box;resize:vertical;">' + tpl.replace(/&/g,'&amp;').replace(/</g,'&lt;') + '</textarea>';
+  html += '<button onclick="_rxResetTpl()" style="margin-top:6px;background:#fef2f2;color:#b91c1c;border:1px solid #fecaca;border-radius:7px;padding:5px 10px;font-size:.68rem;font-weight:800;cursor:pointer;">↺ Restaurar original</button></details>';
+
+  html += '<div style="display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap;">';
+  [['accion','🎯 Para accionar hoy'],['riesgo','🟡🔴 En riesgo y dormidos'],['todos','📋 Todos']].forEach(function(op){
+    var on = f === op[0];
+    html += '<button onclick="_rxSetFiltro(\'' + op[0] + '\')" style="border-radius:20px;padding:7px 14px;font-size:.7rem;font-weight:800;cursor:pointer;border:1.5px solid ' + (on?'#1B1F6B':'#cbd5e1') + ';background:' + (on?'#1B1F6B':'#fff') + ';color:' + (on?'#fff':'#475569') + ';">' + op[1] + '</button>';
+  });
+  html += '<span style="font-size:.66rem;color:#94a3b8;align-self:center;">“Para accionar” = 8+ días sin comprar (o nunca) y sin mensaje en los últimos 3 días</span></div>';
+
+  if (!tks.length) { body.innerHTML = html + '<div style="padding:30px;text-align:center;color:#94a3b8;">No hay links de portal creados todavía.</div>'; return; }
+  if (!vis.length) { body.innerHTML = html + '<div style="padding:30px;text-align:center;color:#16a34a;font-weight:700;">✅ Nada pendiente con este filtro — todos atendidos.</div>'; return; }
+
+  html += '<table style="width:100%;border-collapse:collapse;font-size:.74rem;background:#fff;border-radius:10px;overflow:hidden;box-shadow:0 1px 4px rgba(0,0,0,.06);">';
+  html += '<thead><tr style="background:#1B1F6B;color:#fff;"><th style="padding:9px 12px;text-align:left;">CLIENTE</th><th style="padding:9px;">ÚLTIMA COMPRA</th><th style="padding:9px;">DÍAS</th><th style="padding:9px;">ESTADO</th><th style="padding:9px;">TELÉFONO</th><th style="padding:9px;">ÚLT. MENSAJE</th><th style="padding:9px;">ACCIÓN</th></tr></thead><tbody>';
+
+  vis.forEach(function(x){
+    var tk = x.tk, dias = x.dias;
+    var chip = dias === null ? '<span style="background:#f1f5f9;color:#64748b;border-radius:12px;padding:2px 9px;font-weight:800;font-size:.64rem;">⚪ SIN COMPRAS</span>'
+      : dias <= 7 ? '<span style="background:#dcfce7;color:#166534;border-radius:12px;padding:2px 9px;font-weight:800;font-size:.64rem;">🟢 ACTIVO</span>'
+      : dias <= 14 ? '<span style="background:#fef9c3;color:#854d0e;border-radius:12px;padding:2px 9px;font-weight:800;font-size:.64rem;">🟡 EN RIESGO</span>'
+      : '<span style="background:#fee2e2;color:#991b1b;border-radius:12px;padding:2px 9px;font-weight:800;font-size:.64rem;">🔴 DORMIDO</span>';
+    var envTxt = x.dEnv === null ? '<span style="color:#cbd5e1;">—</span>' : (x.dEnv === 0 ? '<span style="color:#16a34a;font-weight:800;">✅ hoy</span>' : 'hace ' + x.dEnv + 'd');
+    var accion = x.info.tel
+      ? '<button onclick="_rxEnviar(\'' + tk.token + '\',\'' + x.info.tel + '\')" style="background:linear-gradient(135deg,#16a34a,#15803d);color:#fff;border:none;border-radius:8px;padding:7px 12px;font-weight:800;font-size:.68rem;cursor:pointer;">📲 WhatsApp</button>'
+      : '<button onclick="_rxCopiar(\'' + tk.token + '\')" style="background:#eef2ff;color:#1B1F6B;border:1px solid #c7d2fe;border-radius:8px;padding:7px 12px;font-weight:800;font-size:.68rem;cursor:pointer;" title="Sin teléfono en el CRM — copia y pega">📋 Copiar</button>';
+    html += '<tr style="border-bottom:1px solid #f1f5f9;' + (x.dEnv === 0 ? 'opacity:.55;' : '') + '">' +
+      '<td style="padding:8px 12px;font-weight:800;color:#1B1F6B;">' + (tk.clienteNombre || tk.token) + (x.info.tel ? '' : ' <span style="color:#f59e0b;font-size:.6rem;" title="Agrega el teléfono en Clientes">⚠ sin tel</span>') + '</td>' +
+      '<td style="padding:8px;text-align:center;color:#475569;">' + (x.info.fecha ? x.info.fecha.toLocaleDateString('es-VE') : '—') + '</td>' +
+      '<td style="padding:8px;text-align:center;font-weight:900;color:' + (dias===null?'#94a3b8':dias>14?'#dc2626':dias>7?'#d97706':'#16a34a') + ';">' + (dias===null?'—':dias) + '</td>' +
+      '<td style="padding:8px;text-align:center;">' + chip + '</td>' +
+      '<td style="padding:8px;text-align:center;color:#475569;">' + (x.info.tel ? '••' + x.info.tel.slice(-4) : '—') + '</td>' +
+      '<td style="padding:8px;text-align:center;font-size:.68rem;">' + envTxt + '</td>' +
+      '<td style="padding:8px;text-align:center;">' + accion + '</td></tr>';
+  });
+  html += '</tbody></table>';
+  html += '<div style="font-size:.64rem;color:#94a3b8;margin-top:10px;">💡 Un cliente contactado se atenúa y sale de “Para accionar” por 3 días — así nadie recibe doble mensaje en la misma semana. El envío queda registrado en este equipo.</div>';
+  body.innerHTML = html;
 }
 
 function pcRenderPedidos(body) {
