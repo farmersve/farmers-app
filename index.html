@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.10.07.360">
+<meta name="farmers-version" content="2026.10.07.361">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -10101,6 +10101,7 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
      aligerará lo local, sobre esta fase ya verificada. */
   function _crearMotorV2(nombre, COL, LS_KEY, getId) {
     var cache = {}; var api = { activo: false, cache: cache };
+    try { if (localStorage.getItem('farmers_v2_ok_' + COL) === '1') api.activo = true; } catch(eM361){}  // v.361: el interruptor v2 RECUERDA entre sesiones — silencia la alarma v.312 obsoleta desde el arranque
     api.save = async function(arr){
       var lista = Array.isArray(arr) ? arr : [];
       var ok = 0, fallos = [], sinCambio = 0, LOTE = 20, vivos = {};
@@ -10125,7 +10126,7 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
         console.error('[' + nombre + 'V2] ⛔ Guardia: borrado de ' + borrar.length + ' documentos omitido. Si es intencional: farmersPermitirReduccion(true) y guarda de nuevo.');
       }
       if (ok || borrar.length) console.log('[' + nombre + 'V2] ✓ subidos ' + ok + ' · sin cambio ' + sinCambio + ' · borrados ' + (permitir ? borrar.length : 0) + (fallos.length ? ' · ⚠ fallos: ' + fallos.length : ''));
-      if (fallos.length === 0 && (ok > 0 || sinCambio > 0)) api.activo = true;
+      if (fallos.length === 0 && (ok > 0 || sinCambio > 0)) { api.activo = true; try { localStorage.setItem('farmers_v2_ok_' + COL, '1'); } catch(eM361){} }
       return fallos.length === 0;
     };
     api.get = async function(fresco){
@@ -10137,7 +10138,7 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
       try {
         var snap = await getDocs(collection(db, COL)); var out = [];
         snap.forEach(function(d){ var dd = d.data() || {}; if (!dd.v) return; try { out.push(JSON.parse(dd.v)); cache[d.id] = dd.v; } catch(e){} });
-        if (out.length) { api.activo = true; api._ultGet = out; api._ultGetAt = AHORA; }
+        if (out.length) { api.activo = true; try { localStorage.setItem('farmers_v2_ok_' + COL, '1'); } catch(eM361){} api._ultGet = out; api._ultGetAt = AHORA; }
         return out.length ? out : null;
       } catch(e) { console.warn('[' + nombre + 'V2] lectura:', e && e.message); return null; }
     };
