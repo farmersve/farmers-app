@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.10.07.365">
+<meta name="farmers-version" content="2026.10.07.366">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -8638,7 +8638,7 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
         var tx = '🔓 Guardia multi-equipo ABIERTA por ' + m + ' min en esta máquina: los guardados PISARÁN la nube aunque sea más nueva.';
         console.warn('[v.364] ' + tx); alert(tx); return true;
       };
-      function _gmeStamp(col, ts){ try { localStorage.setItem('farmers_fresh_' + col, String(parseInt(ts,10) || Date.now())); } catch(e){} }
+      function _gmeStamp(col, ts){ try { localStorage.setItem('farmers_fresh_' + col, String(parseInt(ts,10) || Date.now())); } catch(e){} if (col === 'products') window._farmersCatalogoDeNube = true; /* v.366 */ }
       window._gmeStamp = _gmeStamp;
       async function _gmeOkEscribir(col, nombre){
         try {
@@ -8646,6 +8646,7 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
           var visto = parseInt(localStorage.getItem('farmers_fresh_' + col) || '0', 10) || 0;
           var sG = await getDoc(doc(db, 'data', col));
           var nube = (sG.exists() && sG.data()) ? (parseInt(sG.data().updatedAt, 10) || 0) : 0;
+          if (col === 'products' && sG.exists() && sG.data()) { try { window._farmersNubeProdCount = parseInt(sG.data().count, 10) || JSON.parse(sG.data().v).length; window._farmersCatalogoDeNube = true; } catch(eC){} } // v.366
           if (nube > visto + 8000) {
             var tx = '⛔ GUARDIA MULTI-EQUIPO (' + nombre + '): la nube tiene datos MÁS NUEVOS que lo visto por esta máquina (otra PC guardó después). NO se subió nada.\n→ Recarga la página para traer lo nuevo y reintenta.\n→ Solo si estás SEGURO de pisar la nube: farmersPermitirPisar(5) y reintenta.';
             console.error('[v.364] ' + tx);
@@ -8664,6 +8665,26 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
           throw new Error('fbSaveProducts: payload vacío, no se guarda para evitar borrar Firebase');
         }
         if (!(await _gmeOkEscribir('products', 'catálogo/productos'))) throw new Error('Guardia multi-equipo v.364: la nube de productos es más nueva — recarga antes de guardar.');
+        // ── v.366 (07/10/2026) CANDADO ANTI-CATÁLOGO-VIEJO ─────────────────
+        // Incidente Mac 07/10: un equipo que NUNCA leyó el catálogo de la nube
+        // (canal en vivo con error 400) subió el catálogo de fábrica (883 refs,
+        // precios viejos) y pisó el bueno (918). Reglas, salvo farmersPermitirPisar(min):
+        //   A) Esta sesión debe haber leído el catálogo de la nube al menos una vez.
+        //   B) Nunca se sube un catálogo con MENOS referencias que la nube (tolerancia 3).
+        if (Date.now() >= (window._farmersPisarHasta || 0)) {
+          var _v366msg = '';
+          if (!window._farmersCatalogoDeNube) {
+            _v366msg = '⛔ CANDADO v.366: este equipo todavía NO ha cargado el catálogo desde la nube, así que NO se sube nada (evita pisar el catálogo bueno con uno viejo).\n→ Recarga la página (Ctrl+Shift+R) y espera a que cargue.';
+          } else if (window._farmersNubeProdCount && payload.length < window._farmersNubeProdCount - 3) {
+            _v366msg = '⛔ CANDADO v.366: este equipo intenta subir ' + payload.length + ' productos pero la nube tiene ' + window._farmersNubeProdCount + '. NO se subió nada (sería borrar referencias).\n→ Recarga la página (Ctrl+Shift+R).';
+          }
+          if (_v366msg) {
+            console.error('[v.366] ' + _v366msg);
+            try { if (typeof showToast === 'function') showToast(_v366msg.split('\n')[0], 'error', { duration: 16000 }); } catch(eT){}
+            if (!window._v366Avisado) { window._v366Avisado = true; try { alert(_v366msg); } catch(eA){} }
+            throw new Error('Candado v.366: guardado de catálogo bloqueado');
+          }
+        }
         // ── FIX #5 v.112: Registrar timestamp + count del write propio ──
         // El onSnapshot usa esto para detectar y rechazar ecos de writes propios
         // que llegan con datos pre-write (race condition de Firebase).
@@ -9039,6 +9060,7 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
       setTimeout(function(){ _hidratarCatalogoDirecto('reintento 25s'); }, 25000);
 
       onSnapshot(doc(db,'data','products'), function(s) {
+        try { if (s && s.exists && s.exists()) { var _d366 = s.data()||{}; if (_d366.count) window._farmersNubeProdCount = parseInt(_d366.count,10)||window._farmersNubeProdCount; } } catch(e366){}
         try { if (s && s.exists && s.exists()) _gmeStamp('products', (s.data()||{}).updatedAt); } catch(eG364){}
         try {
           if (!s.exists()) {
@@ -9200,15 +9222,10 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
                   var _aceptar = window.confirm(_msg);
                   if (!_aceptar) {
                     console.warn('[v.153] 🛡️ Sobrescritura masiva RECHAZADA por el usuario (' + _cambiosClave + ' cambios clave). Catálogo local conservado.');
-                    // Re-subir el catálogo LOCAL a Firebase para corregir el dato viejo del otro dispositivo
-                    if (typeof window.fbSaveProducts === 'function') {
-                      setTimeout(function(){
-                        try {
-                          window.fbSaveProducts(PRODUCTS);
-                          console.log('[v.153] ✓ Catálogo local re-subido a Firebase para corregir el dato viejo.');
-                        } catch(eRe){ console.warn('[v.153] re-subida:', eRe); }
-                      }, 1000);
-                    }
+                    // v.366: YA NO se re-sube el catálogo local automáticamente
+                    // (sospechoso del re-envenenamiento del 07/10). La nube queda
+                    // intacta; si de verdad hay que pisarla: farmersPermitirPisar(5).
+                    try { alert('Se CONSERVÓ el catálogo de esta pantalla, pero NO se subió nada a la nube.\nSi tienes dudas, recarga (Ctrl+Shift+R) y avísale a soporte.'); } catch(eAv){}
                     return; // NO aplicar el snapshot viejo
                   }
                   console.log('[v.153] Usuario ACEPTÓ el cambio masivo de ' + _cambiosClave + ' campos. Aplicando.');
