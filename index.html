@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.10.07.359">
+<meta name="farmers-version" content="2026.10.07.360">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -76556,7 +76556,7 @@ function hclGetFacturas() {
     var r = localStorage.getItem(HCL_STORAGE_KEY) || localStorage.getItem(HCL_LS_KEY);
     if (r) return JSON.parse(r);
   } catch(e) {}
-  return [];
+  return window._hclCache || [];   // v.360 FASE C: modo liberado — el HCL vive en IndexedDB
 }
 
 /* ═══ v.308 — FASE B: ESPEJO DUAL HACIA IndexedDB ══════════════════════════
@@ -76600,10 +76600,7 @@ window.farmersFaseBVerificar = async function(){
 
 function hclSaveFacturas(facs) {
   // 1. Guardar en localStorage inmediatamente
-  try {
-    localStorage.setItem(HCL_STORAGE_KEY, JSON.stringify(facs));
-    // FIX v.98: NO escribir a HCL_LS_KEY (legacy 'farmers_hcl_facturas') — ahorra 929 KB
-  } catch(e) { console.error('HCL localStorage error:', e); }
+  _hclGuardarLocal(facs);   // v.360: cache + localStorage o IndexedDB según modo
   _hclEspejoIDB(facs);   // v.308 — Fase B
   try { if (window._hclV2) window._hclV2.save(facs); } catch(e333){}  // v.333: copia v2 doc-por-factura
   // 2. Guardar en Firebase INMEDIATAMENTE — fuente de verdad
@@ -76617,6 +76614,94 @@ function hclSaveFacturas(facs) {
     console.warn('HCL: fbSaveHCL no disponible aún');
   }
 }
+
+/* ═══ v.360 — FASE C: HCL EN INDEXEDDB (liberar el localStorage) ═══════════
+   El localStorage del navegador es un cajón de ~5-10MB compartido por TODO.
+   IndexedDB (motor v.308) aguanta cientos de MB. Este bloque permite que el
+   libro HCL viva allá y el cajón quede libre para operar.
+   · farmersEspacio()            → mapa de qué ocupa cuánto
+   · farmersHclLiberarEspacio()  → verifica copia en IndexedDB y libera
+   · farmersHclVolverALocal()    → camino de regreso
+   · Si el navegador se queda sin espacio al guardar, la migración ocurre
+     SOLA (con aviso) — nunca más una carga de facturas rebotada por falta
+     de espacio. La nube (Firebase) sigue intacta como respaldo maestro. */
+function _hclGuardarLocal(facs) {
+  window._hclCache = facs;
+  if (localStorage.getItem('farmers_hcl_en_idb') === '1') {
+    if (typeof fdbGuardar === 'function') fdbGuardar('hcl_facturas', facs).catch(function(e){ console.warn('HCL→IDB:', e && e.message); });
+    return true;  // modo liberado: el bloque gigante NO toca localStorage
+  }
+  try {
+    localStorage.setItem(HCL_STORAGE_KEY, JSON.stringify(facs));
+    return true;
+  } catch(e) {
+    console.error('HCL localStorage error:', e);
+    var esQuota = e && (String(e.name).indexOf('uota') >= 0 || String(e.message || '').indexOf('uota') >= 0);
+    if (esQuota) {
+      try {
+        localStorage.removeItem(HCL_STORAGE_KEY); localStorage.removeItem(HCL_LS_KEY);
+        localStorage.setItem('farmers_hcl_en_idb', '1');
+        if (typeof fdbGuardar === 'function') fdbGuardar('hcl_facturas', facs).catch(function(e2){ console.warn('HCL→IDB:', e2 && e2.message); });
+        console.warn('📦 HCL: sin espacio local — migrado AUTOMÁTICAMENTE a IndexedDB (modo liberado). Nada se perdió.');
+        if (typeof showToast === 'function') showToast('📦 HCL migró a IndexedDB: el navegador se quedó sin espacio local. Nada se perdió — todo sigue normal.', 'warning', { duration: 14000 });
+        return true;
+      } catch(e3) {}
+    }
+    return false;
+  }
+}
+
+// Hidratación al arrancar: en modo liberado, cargar el HCL a memoria desde IndexedDB
+window._hclHidratarIDB = function(intento) {
+  if (localStorage.getItem('farmers_hcl_en_idb') !== '1') return;
+  if (localStorage.getItem(HCL_STORAGE_KEY)) return;  // si reapareció local, manda local
+  if (typeof fdbLeer !== 'function') { if ((intento || 0) < 20) setTimeout(function(){ window._hclHidratarIDB((intento || 0) + 1); }, 700); return; }
+  fdbLeer('hcl_facturas').then(function(arr){
+    if (arr && arr.length) {
+      window._hclCache = arr;
+      console.log('📦 HCL hidratado desde IndexedDB: ' + arr.length + ' facturas (localStorage liberado).');
+    } else {
+      console.warn('📦 HCL en modo liberado pero IndexedDB vacío — al abrir el módulo HCL se recargará desde la nube.');
+    }
+  }).catch(function(e){ console.warn('📦 HCL hidratación IDB:', e && e.message); });
+};
+setTimeout(function(){ window._hclHidratarIDB(0); }, 400);
+
+// Liberación manual, con verificación antes de borrar (nunca a ciegas)
+window.farmersHclLiberarEspacio = async function() {
+  try {
+    var facs = hclGetFacturas();
+    if (!facs.length) { alert('⛔ HCL vacío — nada que liberar.'); return false; }
+    if (typeof fdbGuardar !== 'function' || typeof fdbLeer !== 'function') { alert('⛔ Motor IndexedDB no disponible en este navegador.'); return false; }
+    await fdbGuardar('hcl_facturas', facs);
+    var enIDB = await fdbLeer('hcl_facturas');
+    if (!enIDB || enIDB.length < facs.length) {
+      alert('⛔ Verificación FALLÓ: IndexedDB devolvió ' + (enIDB ? enIDB.length : 0) + ' de ' + facs.length + ' facturas. NO se liberó nada.');
+      return false;
+    }
+    var kb = Math.round(((localStorage.getItem(HCL_STORAGE_KEY) || '').length * 2) / 1024);
+    window._hclCache = facs;
+    localStorage.removeItem(HCL_STORAGE_KEY);
+    localStorage.removeItem(HCL_LS_KEY);
+    localStorage.setItem('farmers_hcl_en_idb', '1');
+    var msg = '✅ HCL LIBERADO\n\n· ' + facs.length + ' facturas VERIFICADAS en IndexedDB (' + enIDB.length + ')\n· localStorage liberado: ~' + kb + ' KB\n· Firebase sigue intacto como respaldo maestro\n\nReportes, HCL y cargas nuevas siguen funcionando igual — ahora con espacio de sobra.';
+    alert(msg); console.log(msg);
+    return { facturas: facs.length, liberadoKB: kb };
+  } catch(e) { alert('⛔ Error liberando: ' + e.message + ' — no se borró nada.'); return false; }
+};
+
+// Camino de regreso (por si algún día lo quieres de vuelta en localStorage)
+window.farmersHclVolverALocal = async function() {
+  try {
+    var facs = (window._hclCache && window._hclCache.length) ? window._hclCache : await fdbLeer('hcl_facturas');
+    if (!facs || !facs.length) { alert('⛔ No hay facturas en memoria ni en IndexedDB.'); return false; }
+    try { localStorage.setItem(HCL_STORAGE_KEY, JSON.stringify(facs)); }
+    catch(e) { alert('⛔ No caben en localStorage (' + (e.message || e) + ') — se mantiene el modo liberado.'); return false; }
+    localStorage.removeItem('farmers_hcl_en_idb');
+    alert('✅ HCL de vuelta en localStorage: ' + facs.length + ' facturas. Modo liberado desactivado.');
+    return true;
+  } catch(e) { alert('⛔ ' + e.message); return false; }
+};
 
 async function hclSyncToFirebase(facs) {
   if (!window.fbSaveHCL) return;
@@ -76639,8 +76724,7 @@ async function hclLoadFromFirebase() {
     var local = hclGetFacturas();
     // Usar Firebase si tiene más facturas (siempre es la fuente de verdad)
     if (fbData.length >= local.length) {
-      localStorage.setItem(HCL_STORAGE_KEY, JSON.stringify(fbData));
-      // FIX v.98: NO escribir a HCL_LS_KEY (legacy duplicado, ahorra 929 KB)
+      _hclGuardarLocal(fbData);   // v.360
       console.log('HCL cargado desde Firebase:', fbData.length, 'facturas');
       return true;
     }
@@ -76963,10 +77047,7 @@ function openHCL() {
     window.fbGetHCL().then(function(fbData) {
       if (fbData && fbData.length > 0) {
         // Guardar en localStorage (solo la clave v7 — legacy eliminada en FIX v.98)
-        try {
-          localStorage.setItem(HCL_STORAGE_KEY, JSON.stringify(fbData));
-          // FIX v.98: NO escribir a HCL_LS_KEY (legacy duplicado, ahorra 929 KB)
-        } catch(e) {}
+        try { _hclGuardarLocal(fbData); } catch(e) {}   // v.360
         console.log('HCL: cargado desde Firebase:', fbData.length, 'facturas');
       } else {
         console.log('HCL: Firebase vacío, usando localStorage:', hclGetFacturas().length, 'facturas');
