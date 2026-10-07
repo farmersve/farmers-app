@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.10.07.364">
+<meta name="farmers-version" content="2026.10.07.365">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -9014,6 +9014,30 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
       // Si IndexedDB local tiene un updatedAt MÁS RECIENTE que Firebase,
       // significa que nuestro save local todavía no se propagó completo.
       // No pisamos en ese caso para evitar regresión transitoria.
+      /* ═══ v.365 — HIDRATACIÓN DIRECTA DEL CATÁLOGO (cura raíz incidente Mac) ═
+         El catálogo dependía SOLO del canal en vivo (onSnapshot/Listen). Si ese
+         canal falla en una máquina (los famosos 400 de Listen/channel), esa
+         máquina se queda para siempre con el catálogo horneado del HTML: precios
+         viejos y sin los productos nuevos. Este respaldo espera 7s; si el canal
+         aún no entregó su primer snapshot, baja el catálogo por lectura directa
+         (vía que funciona aunque Listen falle) y lo aplica por el MISMO camino
+         seguro de siempre (_aplicarSnapshotProducts: guardas v.108/153/185).
+         Reintento único a los 25s por si la red tardó. */
+      function _hidratarCatalogoDirecto(etiqueta){
+        return getDoc(doc(db,'data','products')).then(function(s){
+          if (window._farmersProductsSnapSeen) return;           // el canal en vivo llegó primero: perfecto
+          if (!s.exists() || !s.data() || !s.data().v) { console.log('[v.365] ' + etiqueta + ': nube sin documento de catálogo.'); return; }
+          var arr; try { arr = JSON.parse(s.data().v); } catch(ePj){ return; }
+          if (!Array.isArray(arr) || arr.length === 0) return;
+          _gmeStamp('products', s.data().updatedAt);
+          console.log('[v.365] ⚡ ' + etiqueta + ': canal en vivo sin snapshot aún — hidratación directa del catálogo: ' + arr.length + ' refs (updatedAt ' + new Date(s.data().updatedAt||0).toLocaleTimeString('es-VE') + ')');
+          _aplicarSnapshotProducts(arr, s.data().updatedAt || 0);
+        }).catch(function(e){ console.warn('[v.365] ' + etiqueta + ':', e && e.message); });
+      }
+      window._hidratarCatalogoDirecto = _hidratarCatalogoDirecto;
+      setTimeout(function(){ _hidratarCatalogoDirecto('respaldo 7s'); }, 7000);
+      setTimeout(function(){ _hidratarCatalogoDirecto('reintento 25s'); }, 25000);
+
       onSnapshot(doc(db,'data','products'), function(s) {
         try { if (s && s.exists && s.exists()) _gmeStamp('products', (s.data()||{}).updatedAt); } catch(eG364){}
         try {
