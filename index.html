@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.10.08.367">
+<meta name="farmers-version" content="2026.10.08.368">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -5257,6 +5257,156 @@ function sortProducts() {
   });
 }
 sortProducts(); // Orden inicial al cargar
+
+// ═══════════════════════════════════════════════════════════════════════
+// v.368 (08/10/2026) — CATÁLOGO POR CATEGORÍA DENTRO DE CADA MARCA
+// Orden: MARCA → CATEGORÍA (A→Z) → TIPO (orden lógico) → TAMAÑO (menor→mayor) → REF.
+// La categoría se deduce de la descripción (sin guardar nada: igual en todos
+// los equipos). Toggle 🗂 Por categoría / 🔤 Por código (farmers_cat_por_categoria).
+// ═══════════════════════════════════════════════════════════════════════
+(function(){
+  function _norm(t){
+    return String(t || '').toUpperCase()
+      .replace(/[ÁÀÄ]/g,'A').replace(/[ÉÈË]/g,'E').replace(/[ÍÌÏ]/g,'I').replace(/[ÓÒÖ]/g,'O').replace(/[ÚÙÜ]/g,'U')
+      .replace(/\s+/g,' ').trim();
+  }
+  // Plural/variante → clave canónica
+  var _SIN = {
+    'CUCHILLOS':'CUCHILLO','GUANTES':'GUANTE','PANOS':'PANO','PAÑOS':'PAÑO','PINCHOS':'PINCHO','TAZAS':'TAZA',
+    'CUCHARAS':'CUCHARA','PLATOS':'PLATO','PROTECTORES':'PROTECTOR','MANTAS':'MANTA','ALMOHADAS':'ALMOHADA',
+    'BABEROS':'BABERO','ESPATULAS':'ESPATULA','CORTADORES':'CORTADOR','CORTADORA':'CORTADOR','FILTROS':'FILTRO',
+    'BOLAS':'BOLA','PASTILLAS':'PASTILLA','CAMBIADORES':'CAMBIADOR','CORTAUNAS':'CORTAUÑAS','LIMAS':'LIMA',
+    'MAMADERA':'BIBERON','BIBERONES':'BIBERON','BIBERON/VASO':'BIBERON','BLANDADOR':'ABLANDADOR',
+    'ALFOMBRILAA':'ALFOMBRILLA','TRAPERO':'TRAPEADOR','PICADORA':'PICADOR','BASCULA':'BALANZA',
+    'PRENSA':'PRENSADOR','TETINA':'TETINAS','TOALLITA':'TOALLITAS','HISOPO':'HISOPOS','CHUPETES':'CHUPETE',
+    'TENEDORES':'TENEDOR','CUBIERTO':'CUBIERTOS','PELADORES':'PELADOR','DISPENSADORES':'DISPENSADOR',
+    'JUGUETES':'JUGUETE','BOWL':'BOWL','CEPILLOS':'CEPILLO','ALFILERES':'ALFILER','CLIPS':'CLIP',
+    'ALMOHADA/POSICIONADOR':'ALMOHADA','BATA/TOALLA':'TOALLA','CARGADOR/PORTABEBE':'PORTABEBE',
+    'CUNA/MOISES':'CUNA','TABURETE/BANCO':'TABURETE','VASOS':'VASO','MOLDES':'MOLDE','SARTENES':'SARTEN'
+  };
+  // Etiqueta a mostrar
+  var _LBL = {
+    'TABLA':'TABLAS DE PICAR','CUCHILLO':'CUCHILLOS','ENCENDEDOR':'ENCENDEDORES','SACACORCHOS':'SACACORCHOS',
+    'GUANTE':'GUANTES','PAÑO':'PAÑOS','PANO':'PAÑOS','BIBERON':'BIBERONES','SARTEN':'SARTENES','ESPATULA':'ESPÁTULAS',
+    'CUCHARON':'CUCHARONES','TERMOMETRO':'TERMÓMETROS','LAMPARA':'LÁMPARAS','CUIDADO':'CUIDADO DEL BEBÉ',
+    'ALIMENTACION':'SETS DE ALIMENTACIÓN','REGALO':'SETS DE REGALO','UTENSILIOS':'UTENSILIOS','CUBIERTOS':'CUBIERTOS',
+    'GAS':'GAS BUTANO','SOPLETE':'SOPLETES','PIEDRA':'AFILADORES','AFILADOR':'AFILADORES','CORTAUÑAS':'CORTAUÑAS',
+    'BARBACOA':'BARBACOA','MANICURE':'CUIDADO DEL BEBÉ','VAJILLA':'VAJILLA','LETRAS':'JUGUETES','JUGUETE':'JUGUETES',
+    'TETINAS':'TETINAS','TOALLITAS':'TOALLITAS','HISOPOS':'HISOPOS','CALCETINES':'CALCETINES','ABRELATAS':'ABRELATAS',
+    'HORQUILLAS':'HORQUILLAS','PALILLOS':'PALILLOS','BOLSAS':'BOLSAS','BOWL':'BOWLS','BUMPER':'BUMPERS','CLIP':'CLIPS',
+    'GEL':'GEL','MAYA':'MALLAS','PORTA':'PORTA UTENSILIOS','CUBRE':'CUBRE ALIMENTOS','MAQUINA':'MÁQUINAS',
+    'BEBE':'CONJUNTOS DE BEBÉ','OTROS':'OTROS','ESCOBA':'ESCOBAS','MORDEDOR':'MORDEDORES'
+  };
+  var _PREFIJOS = /^(SET|JUEGO|KIT|CONJUNTO|MINI)\b/;
+  var _STOP = { 'DE':1,'PARA':1,'EL':1,'LA':1,'LAS':1,'LOS':1,'Y':1,'CON':1,'ESENCIAL':1,'|':1 };
+
+  function _plural(w){
+    if (/S$/.test(w)) return w;
+    if (/[AEIOU]$/.test(w)) return w + 'S';
+    if (/Z$/.test(w)) return w.slice(0,-1) + 'CES';
+    return w + 'ES';
+  }
+
+  function _medida(D){
+    var m;
+    if ((m = D.match(/(\d+(?:[.,]\d+)?)\s*(?:"|''|PLG|PULG)/))) return { g:1, v:parseFloat(m[1].replace(',','.')) };
+    if ((m = D.match(/(\d+(?:[.,]\d+)?)\s*(?:CM)?\s*[X×]\s*(\d+(?:[.,]\d+)?)/))) return { g:2, v:parseFloat(m[1].replace(',','.')) * parseFloat(m[2].replace(',','.')) };
+    if ((m = D.match(/(\d+(?:[.,]\d+)?)\s+(\d+(?:[.,]\d+)?)\s*CM\b/))) return { g:2, v:parseFloat(m[1].replace(',','.')) * parseFloat(m[2].replace(',','.')) };
+    if ((m = D.match(/(\d+(?:[.,]\d+)?)\s*CM\b/))) return { g:2, v:parseFloat(m[1].replace(',','.')) };
+    if ((m = D.match(/(\d+(?:[.,]\d+)?)\s*ML\b/))) return { g:3, v:parseFloat(m[1].replace(',','.')) };
+    if ((m = D.match(/(\d+(?:[.,]\d+)?)\s*OZ\b/))) return { g:3, v:parseFloat(m[1].replace(',','.')) * 29.57 };
+    if ((m = D.match(/(\d+(?:[.,]\d+)?)\s*(?:L|LT|LTS|LITROS?)\b/))) return { g:3, v:parseFloat(m[1].replace(',','.')) * 1000 };
+    return { g:9, v:0 };
+  }
+
+  // Tipos con orden lógico (rango, etiqueta)
+  function _tipoCuchillo(D, esSet){
+    if (esSet) return [90,'Sets y juegos'];
+    if (/PELADOR/.test(D)) return [10,'Pelador'];
+    if (/FRUTA|VERDULERO|VEGETAL/.test(D)) return [20,'Frutas y vegetales'];
+    if (/MULTIUSO/.test(D)) return [30,'Multiuso'];
+    if (/DESHUESAR/.test(D)) return [50,'Deshuesar'];
+    if (/CARNICERO/.test(D)) return [60,'Carnicero'];
+    if (/SIERRA|PAN\b/.test(D)) return [70,'De sierra'];
+    if (/CERAMICA/.test(D)) return [75,'Cerámica'];
+    if (/MESA/.test(D)) return [80,'De mesa'];
+    if (/COCINA|CHEF/.test(D)) return [40,'De cocina'];
+    return [85,'Otros'];
+  }
+  function _tipoEncendedor(D){
+    if (/REPUESTO|RECARGADOR/.test(D)) return [90,'Repuestos y recargas'];
+    if (/JET|TURBO|ANTIVIENTO|SOPLETE/.test(D)) return [30,'Soplete'];
+    if (/MANGO LARGO|MULTIPROPOSITO/.test(D)) return [40,'Mango largo'];
+    if (/USB|RECARGABLE|CHISPERO|ELECTRICO/.test(D) && !/ESTUFA/.test(D)) return [50,'Eléctrico recargable'];
+    if (/ESTUFA/.test(D)) return [10,'De estufa'];
+    return [20,'Clásico'];
+  }
+
+  window.catClasificar = function(p){
+    var D = _norm(p && p.d);
+    var palabras = D.replace(/[|()]/g,' ').split(' ').filter(Boolean);
+    var esSet = _PREFIJOS.test(D) && !/^MINI\b/.test(D);
+    var i = 0;
+    if (_PREFIJOS.test(D)) { i = 1; while (i < palabras.length && _STOP[palabras[i]]) i++; }
+    var w = palabras[i] || palabras[0] || 'OTROS';
+    if (/^[A-Z]{2,4}\d{2,4}$/.test(w)) w = 'OTROS';             // descripción vacía (solo la ref)
+    w = _SIN[w] || w;
+    // Reglas especiales por contenido
+    var key = w;
+    if (/MORDEDOR/.test(D) && w === 'GUANTE') key = 'MORDEDOR';
+    if (w === 'CHISPERO' || w === 'RECARGADOR' || (w === 'REPUESTO' && /ENCENDEDOR/.test(D))) key = 'ENCENDEDOR';
+    if (w === 'SOPLETE' && !/COCINA/.test(D)) key = 'ENCENDEDOR';
+    if (w === 'REPUESTO' && /ESCOBA/.test(D)) key = 'ESCOBA';
+    if (w === 'MANGO' && /ESCOBA/.test(D)) key = 'ESCOBA';
+    if (w === 'PIEDRA' && /AFILA/.test(D)) key = 'AFILADOR';
+    if (w === 'UTENSILIOS' && /BARBACOA/.test(D)) key = 'BARBACOA';
+    if (w === 'CUIDADO' || w === 'MANICURE') key = 'CUIDADO';
+    var cat = _LBL[key] || _plural(key);
+    var tipo = [50,''];
+    if (key === 'CUCHILLO') tipo = _tipoCuchillo(D, esSet);
+    else if (key === 'ENCENDEDOR') tipo = _tipoEncendedor(D);
+    else if (esSet) tipo = [90,'Sets y juegos'];
+    var med = _medida(D);
+    return { cat: cat, tipoRank: tipo[0], tipo: tipo[1], medG: med.g, medV: med.v };
+  };
+
+  window.catPorCategoriaActivo = function(){
+    try { return localStorage.getItem('farmers_cat_por_categoria') !== '0'; } catch(e){ return true; }
+  };
+  window.catSetPorCategoria = function(on){
+    try { localStorage.setItem('farmers_cat_por_categoria', on ? '1' : '0'); } catch(e){}
+    if (typeof doRefSearch === 'function') doRefSearch();
+  };
+
+  function _ordenMarcas(){
+    var o = [];
+    try { o = JSON.parse(localStorage.getItem('farmers_cat_orden_marcas') || '[]') || []; } catch(e){}
+    return Array.isArray(o) ? o : [];
+  }
+
+  // Ordena una copia (no toca PRODUCTS). Si el modo está apagado → orden por REF.
+  window.catOrdenarPorCategoria = function(arr, forzar){
+    var lista = (arr || []).slice();
+    var porRef = function(a,b){ return String(a.r||'').localeCompare(String(b.r||''), 'es', { numeric:true, sensitivity:'base' }); };
+    if (!forzar && !window.catPorCategoriaActivo()) return lista.sort(porRef);
+    var om = _ordenMarcas();
+    var rankMarca = function(br){ var k = om.indexOf(br); return k < 0 ? 999 : k; };
+    var info = {};
+    lista.forEach(function(p){ info[p.r] = window.catClasificar(p); });
+    return lista.sort(function(a,b){
+      var ra = rankMarca(a.br), rb = rankMarca(b.br);
+      if (ra !== rb) return ra - rb;
+      if ((a.br||'') !== (b.br||'')) return String(a.br||'').localeCompare(String(b.br||''), 'es');
+      var A = info[a.r], B = info[b.r];
+      if (A.cat !== B.cat) return A.cat.localeCompare(B.cat, 'es');
+      if (A.tipoRank !== B.tipoRank) return A.tipoRank - B.tipoRank;
+      if (A.medG !== B.medG) return A.medG - B.medG;
+      if (A.medV !== B.medV) return A.medV - B.medV;
+      return porRef(a,b);
+    });
+  };
+})();
+
 
 // ═══ FUNCIÓN PARA OBTENER UNIDADES POR BULTO ═══
 // Usa directamente el campo 'm' de PRODUCTS (fuente de verdad)
@@ -32618,6 +32768,8 @@ function catDownloadExcel(monedasParam) {
       return pasa;
     });
 
+    if (typeof window.catOrdenarPorCategoria === 'function') prods = window.catOrdenarPorCategoria(prods); // v.368
+
     // Diagnóstico: log de productos filtrados
     console.log('[Excel] Filtros activos:', Array.from(filtroStock).join(','));
     console.log('[Excel] Productos incluidos: ' + prods.length + ' / Excluidos: ' + _excluidos.length);
@@ -34195,6 +34347,7 @@ function _catDownloadPDFWithImgs(_prodImgsLocal) {
     }
   }
 
+  if (typeof window.catOrdenarPorCategoria === 'function') pool = window.catOrdenarPorCategoria(pool); // v.368
   var porMarca = {};
   pool.forEach(function(p){ if(!porMarca[p.br]) porMarca[p.br]=[]; porMarca[p.br].push(p); });
 
@@ -35504,10 +35657,14 @@ function doRefSearch() {
 
   var results = pool;
 
-  // ── ORDEN ALFANUMÉRICO A→Z por REF (regla del sistema) ──
-  results.sort(function(a, b){
-    return String(a.r||'').localeCompare(String(b.r||''), 'es', { numeric: true, sensitivity: 'base' });
-  });
+  // ── ORDEN: v.368 por MARCA → CATEGORÍA → TIPO → TAMAÑO (toggle) · si está apagado, A→Z por REF ──
+  if (typeof window.catOrdenarPorCategoria === 'function') {
+    results = window.catOrdenarPorCategoria(results);
+  } else {
+    results.sort(function(a, b){
+      return String(a.r||'').localeCompare(String(b.r||''), 'es', { numeric: true, sensitivity: 'base' });
+    });
+  }
 
   // Counter
   var total = PRODUCTS.length;
@@ -36008,6 +36165,7 @@ function doRefSearch() {
     }
     p._imgNode = null;
 
+    card._catP = p; // v.368: para títulos de categoría
     cards.push(card);
   });
 
@@ -36153,7 +36311,49 @@ function doRefSearch() {
   // ── Grid de tarjetas ──
   var grid = document.createElement('div');
   grid.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:16px;';
-  cards.forEach(function(c){ grid.appendChild(c); });
+  // v.368: barra para elegir el orden + títulos de categoría y tipo
+  var _porCat368 = (typeof window.catPorCategoriaActivo === 'function') && window.catPorCategoriaActivo();
+  (function(){
+    var bar = document.createElement('div');
+    bar.style.cssText = 'display:flex;align-items:center;gap:8px;margin:0 0 12px;flex-wrap:wrap;';
+    var mk = function(on, txt, val){
+      return '<button onclick="catSetPorCategoria(' + val + ')" style="border:1.5px solid ' + (on ? '#1a2050' : '#cbd5e1') + ';background:' + (on ? '#1a2050' : '#fff') + ';color:' + (on ? '#fff' : '#475569') + ';border-radius:8px;padding:6px 12px;font-weight:800;font-size:.78rem;cursor:pointer;">' + txt + '</button>';
+    };
+    bar.innerHTML = '<span style="font-size:.72rem;font-weight:800;color:#64748b;text-transform:uppercase;letter-spacing:.5px;">Orden:</span>' +
+      mk(_porCat368, '🗂 Por categoría', 'true') + mk(!_porCat368, '🔤 Por código', 'false');
+    resultsEl.appendChild(bar);
+  })();
+  if (_porCat368 && typeof window.catClasificar === 'function') {
+    var _cnt368 = {};
+    cards.forEach(function(c){ if (!c._catP) return; var k = c._catP.br + '|' + window.catClasificar(c._catP).cat; _cnt368[k] = (_cnt368[k] || 0) + 1; });
+    var _prevCat368 = null, _prevTipo368 = null;
+    cards.forEach(function(c){
+      if (c._catP) {
+        var ci = window.catClasificar(c._catP);
+        var k = c._catP.br + '|' + ci.cat;
+        if (k !== _prevCat368) {
+          var bc = (typeof brandColors !== 'undefined' && brandColors[c._catP.br]) || '#1a2050';
+          var h = document.createElement('div');
+          h.style.cssText = 'grid-column:1/-1;display:flex;align-items:center;gap:10px;margin-top:' + (_prevCat368 ? '10px' : '0') + ';padding:8px 14px;border-left:5px solid ' + bc + ';background:#f8fafc;border-radius:6px;';
+          h.innerHTML = '<span style="font-family:Barlow Condensed,sans-serif;font-weight:900;font-size:1.15rem;letter-spacing:.8px;color:' + bc + ';">' + ci.cat + '</span>' +
+            '<span style="font-size:.72rem;font-weight:700;color:#64748b;">' + _cnt368[k] + ' ref' + (_cnt368[k] === 1 ? '' : 's') + '</span>' +
+            (_refBrandFilter === 'ALL' ? '<span style="margin-left:auto;font-size:.68rem;font-weight:800;color:#fff;background:' + bc + ';border-radius:5px;padding:2px 8px;">' + c._catP.br + '</span>' : '');
+          grid.appendChild(h);
+          _prevCat368 = k; _prevTipo368 = null;
+        }
+        if (ci.tipo && ci.tipo !== _prevTipo368) {
+          var st = document.createElement('div');
+          st.style.cssText = 'grid-column:1/-1;font-size:.78rem;font-weight:800;color:#475569;padding:2px 4px 0 18px;text-transform:uppercase;letter-spacing:.6px;';
+          st.textContent = '› ' + ci.tipo;
+          grid.appendChild(st);
+          _prevTipo368 = ci.tipo;
+        }
+      }
+      grid.appendChild(c);
+    });
+  } else {
+    cards.forEach(function(c){ grid.appendChild(c); });
+  }
   resultsEl.appendChild(grid);
 
   // Restaurar checkboxes si había selección previa
