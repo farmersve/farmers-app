@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.10.07.366">
+<meta name="farmers-version" content="2026.10.08.367">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -15439,6 +15439,7 @@ function ocRenderFicha(oc) {
 
           // ═══ GRUPO 2: EDICIÓN ═══
           '<button onclick="ocEditarItemsClick(\'' + oc.id + '\')" style="background:#ddd6fe;color:#5b21b6;border:1.5px solid #c4b5fd;border-radius:7px;padding:7px 12px;font-weight:800;cursor:pointer;font-size:0.75rem;" title="Editar cada línea de producto: ref, descripción, cantidad, precio, etc">📋 Items</button>' +
+          '<button onclick="ocOrdenadaIgualAOC(\'' + oc.id + '\')" style="background:#dbeafe;color:#1e40af;border:1.5px solid #93c5fd;border-radius:7px;padding:7px 12px;font-weight:800;cursor:pointer;font-size:0.75rem;" title="Poner la Existencia Ordenada de estas refs igual a lo que realmente viene (OCs abiertas)">📦 Ordenada</button>' +
           '<button onclick="ocEditarTotalesClick(\'' + oc.id + '\')" style="background:#fef3c7;color:#78350f;border:1.5px solid #fcd34d;border-radius:7px;padding:7px 12px;font-weight:800;cursor:pointer;font-size:0.75rem;" title="Editar manualmente totales, ajustes, volumen, peso, fechas">✏️ Totales</button>' +
           '<button onclick="ocRecalcularVolPeso(\'' + oc.id + '\')" style="background:#e0e7ff;color:#4338ca;border:1.5px solid #c7d2fe;border-radius:7px;padding:7px 12px;font-weight:800;cursor:pointer;font-size:0.75rem;" title="Recalcula volumen y peso desde las medidas del catálogo">📐 Recalc</button>' +
 
@@ -20796,6 +20797,9 @@ window.ocEditItemsGuardar = function() {
     if (!confirm('La OC quedará SIN items. ¿Seguro que quieres guardar?')) return;
   }
 
+  // v.367: foto de los items ANTES de editar (para ajustar la Existencia Ordenada)
+  var _itemsAntes367 = JSON.parse(JSON.stringify(oc.items || []));
+
   // Aplicar cambios
   oc.items = itemsValidos;
 
@@ -20817,6 +20821,9 @@ window.ocEditItemsGuardar = function() {
 
   saveOrdenesCompraDB(_ocDB);
 
+  // v.367: si la OC ya estaba sumada a la Ordenada, ajustar por la diferencia
+  try { _ocAjustarOrdenadaPorEdicion(oc, _itemsAntes367); } catch(e367){ console.warn('[v.367] ajuste ordenada:', e367); }
+
   // Cerrar modal
   ocEditItemsCancel();
 
@@ -20827,6 +20834,91 @@ window.ocEditItemsGuardar = function() {
   if (typeof showToast === 'function') {
     showToast('📋 Items actualizados · ' + oc.items.length + ' refs · Subtotal $' + (oc.totales.subtotal||0).toLocaleString('en-US',{maximumFractionDigits:2,minimumFractionDigits:2}), 'success');
   }
+};
+
+// ═══════════════════════════════════════════════════════════════════════
+// v.367 (08/10/2026) — EXISTENCIA ORDENADA SIGUE A LA OC
+// Problema: el proveedor cambia cantidades después de registrar la OC; al
+// editar los items la Ordenada (farmers_pt_data.exOrdenada) quedaba con las
+// cantidades viejas. Ahora:
+//   A) Al guardar items de una OC ya sumada → se ajusta por la DIFERENCIA.
+//   B) Botón "📦 Ordenada" en la ficha → la Ordenada de las refs de esta OC
+//      queda igual a lo pendiente por llegar en TODAS las OC abiertas.
+// ═══════════════════════════════════════════════════════════════════════
+var _OC_ESTADOS_SIN_PENDIENTE_367 = ['RECIBIDA_TOTAL', 'CERRADA', 'CANCELADA'];
+function _ocPendientePorRef367(items) {
+  var m = {};
+  (items || []).forEach(function(it){
+    if (!it || !it.refFarmers) return;
+    var p = Math.max(0, (parseInt(it.cantidad) || 0) - (parseInt(it.cantidadRecibida) || 0));
+    m[it.refFarmers] = (m[it.refFarmers] || 0) + p;
+  });
+  return m;
+}
+function _ocAjustarOrdenadaPorEdicion(oc, itemsAntes) {
+  if (!oc || _OC_ESTADOS_SIN_PENDIENTE_367.indexOf(oc.estado) >= 0) return;
+  var sumada = oc.sumadaAOrdenada || oc.modoOrdenada === 'sumar' || oc.modoOrdenada === 'reemplazar';
+  if (!sumada) {
+    if (typeof showToast === 'function') showToast('ℹ Esta OC no estaba sumada a la Existencia Ordenada. Si quieres que la Ordenada refleje lo que viene, usa el botón 📦 Ordenada de la OC.', 'info', { duration: 9000 });
+    return;
+  }
+  var A = _ocPendientePorRef367(itemsAntes), B = _ocPendientePorRef367(oc.items);
+  var refs = {}; Object.keys(A).forEach(function(r){ refs[r] = 1; }); Object.keys(B).forEach(function(r){ refs[r] = 1; });
+  var pt = ptGetData(), cambios = [];
+  Object.keys(refs).sort().forEach(function(r){
+    var d = (B[r] || 0) - (A[r] || 0);
+    if (!d) return;
+    var prev = parseInt((pt[r] || {}).exOrdenada) || 0;
+    cambios.push({ r: r, d: d, prev: prev, nuevo: Math.max(0, prev + d) });
+  });
+  if (!cambios.length) return;
+  var lineas = cambios.slice(0, 20).map(function(c){ return c.r + ':  ' + c.prev + ' → ' + c.nuevo + '   (' + (c.d > 0 ? '+' : '') + c.d + ')'; }).join('\n');
+  if (cambios.length > 20) lineas += '\n… y ' + (cambios.length - 20) + ' refs más';
+  if (!confirm('📦 AJUSTAR EXISTENCIA ORDENADA\nCambiaste cantidades de la OC ' + oc.numero + '. La Ordenada quedaría así:\n\n' + lineas + '\n\n¿Aplicar? (Cancelar = la Ordenada no se toca)')) return;
+  oc.ordenadaSumada = oc.ordenadaSumada || {};
+  cambios.forEach(function(c){
+    if (!pt[c.r]) pt[c.r] = { exOrdenada: 0 };
+    pt[c.r].exOrdenada = c.nuevo;
+    oc.ordenadaSumada[c.r] = (parseInt(oc.ordenadaSumada[c.r]) || 0) + c.d;
+  });
+  ptSaveData(pt);
+  saveOrdenesCompraDB(_ocDB);
+  alert('✅ Existencia Ordenada actualizada en ' + cambios.length + ' ref(s) según la OC ' + oc.numero + '.');
+}
+window._ocAjustarOrdenadaPorEdicion = _ocAjustarOrdenadaPorEdicion;
+
+window.ocOrdenadaIgualAOC = function(id) {
+  var oc = _ocDB.find(function(x){ return x.id === id; });
+  if (!oc) { alert('OC no encontrada'); return; }
+  if (_OC_ESTADOS_SIN_PENDIENTE_367.indexOf(oc.estado) >= 0) { alert('Esta OC está ' + oc.estado + ': no tiene mercancía por llegar.'); return; }
+  var propia = _ocPendientePorRef367(oc.items);
+  var refs = Object.keys(propia);
+  if (!refs.length) { alert('Esta OC no tiene items con ref Farmers.'); return; }
+  // Lo que viene por llegar en TODAS las OC abiertas (no recibidas total / cerradas / canceladas)
+  var total = {};
+  (getOrdenesCompraDB() || []).forEach(function(o){
+    if (!o || _OC_ESTADOS_SIN_PENDIENTE_367.indexOf(o.estado) >= 0) return;
+    var m = _ocPendientePorRef367(o.items);
+    Object.keys(m).forEach(function(r){ total[r] = (total[r] || 0) + m[r]; });
+  });
+  var pt = ptGetData(), cambios = [];
+  refs.sort().forEach(function(r){
+    var prev = parseInt((pt[r] || {}).exOrdenada) || 0, nuevo = total[r] || 0;
+    if (prev !== nuevo) cambios.push({ r: r, prev: prev, nuevo: nuevo });
+  });
+  if (!cambios.length) { alert('✅ La Existencia Ordenada de las ' + refs.length + ' refs de la OC ' + oc.numero + ' ya coincide con lo que viene. No hay nada que cambiar.'); return; }
+  var lineas = cambios.slice(0, 20).map(function(c){ return c.r + ':  ' + c.prev + ' → ' + c.nuevo; }).join('\n');
+  if (cambios.length > 20) lineas += '\n… y ' + (cambios.length - 20) + ' refs más';
+  if (!confirm('📦 ORDENADA = LO QUE VIENE (OC ' + oc.numero + ')\nLa Existencia Ordenada de estas refs quedará igual a lo pendiente por llegar en las OC abiertas:\n\n' + lineas + '\n\n¿Aplicar?')) return;
+  cambios.forEach(function(c){ if (!pt[c.r]) pt[c.r] = { exOrdenada: 0 }; pt[c.r].exOrdenada = c.nuevo; });
+  oc.sumadaAOrdenada = true;
+  oc.modoOrdenada = 'sumar';
+  oc.ordenadaSumada = propia;            // para revertir bien si se elimina la OC
+  delete oc.ordenadaReemplazoAnterior;
+  ptSaveData(pt);
+  saveOrdenesCompraDB(_ocDB);
+  try { ocRenderFicha(oc); } catch(eR){}
+  alert('✅ Existencia Ordenada actualizada en ' + cambios.length + ' ref(s). Ahora refleja lo que realmente viene.');
 };
 
 window.ocEditarTotalesClick = function(id) {
