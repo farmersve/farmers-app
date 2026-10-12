@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.10.08.368">
+<meta name="farmers-version" content="2026.10.12.370">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -5408,6 +5408,252 @@ sortProducts(); // Orden inicial al cargar
 })();
 
 
+// ═══════════════════════════════════════════════════════════════════════
+// v.369 (12/10/2026) — COMPARACIÓN DE COSTO FOB (anterior vs nuevo)
+// Al actualizar costos FOB se muestra, producto por producto: FOB anterior,
+// FOB nuevo, diferencia en $ y en %, y si SUBIÓ, BAJÓ o quedó IGUAL.
+//   • Importación de catálogo (Excel) y Sincronizar OC → lista completa
+//     (incluye los que quedaron iguales).
+//   • Cualquier otro cambio de FOB (Master Data, edición en vivo, etc.) →
+//     se detecta al guardar en la nube y se muestran los que cambiaron.
+// ═══════════════════════════════════════════════════════════════════════
+(function(){
+  function _n(v){ var x = parseFloat(v); return isFinite(x) ? x : 0; }
+  function _fmt(v){
+    var a = Math.abs(v);
+    var s = a === 0 ? '0.00' : (a < 1 ? v.toFixed(4) : v.toFixed(2));
+    if (a < 1 && a !== 0) s = s.replace(/0{1,2}$/, '');
+    return s;
+  }
+  function _esc(s){ return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+  function _clasificar(x){
+    var antes = _n(x.antes), ahora = _n(x.ahora), dif = ahora - antes;
+    var estado, pct = null;
+    if (x.nuevo || (!antes && ahora && x.sinAntes)) estado = 'NUEVO';
+    else if (Math.abs(dif) < 0.00005) { estado = 'IGUAL'; dif = 0; pct = 0; }
+    else estado = dif > 0 ? 'SUBIO' : 'BAJO';
+    if (estado !== 'NUEVO' && estado !== 'IGUAL') pct = antes > 0 ? (dif / antes * 100) : null;
+    return { ref: x.ref, d: x.d || '', antes: antes, ahora: ahora, dif: dif, pct: pct, estado: estado };
+  }
+
+  var _EST = {
+    SUBIO: { txt: '⬆ SUBIÓ', col: '#b91c1c', bg: '#fee2e2' },
+    BAJO:  { txt: '⬇ BAJÓ',  col: '#15803d', bg: '#dcfce7' },
+    IGUAL: { txt: '= IGUAL', col: '#475569', bg: '#f1f5f9' },
+    NUEVO: { txt: '🆕 NUEVO', col: '#1d4ed8', bg: '#dbeafe' }
+  };
+
+  window._fobCmpState = { filas: [], filtro: 'TODOS', origen: '' };
+
+  window.fobMostrarComparacion = function(lista, origen, opts){
+    var vistos = {}, filas = [];
+    (lista || []).forEach(function(x){ if (!x || !x.ref || vistos[x.ref]) return; vistos[x.ref] = 1; filas.push(_clasificar(x)); });
+    if (!filas.length) return;
+    var ord = { SUBIO: 0, BAJO: 1, NUEVO: 2, IGUAL: 3 };
+    filas.sort(function(a,b){
+      if (ord[a.estado] !== ord[b.estado]) return ord[a.estado] - ord[b.estado];
+      if (a.estado === 'SUBIO') return (b.pct || 0) - (a.pct || 0);
+      if (a.estado === 'BAJO') return (a.pct || 0) - (b.pct || 0);
+      return String(a.ref).localeCompare(String(b.ref), 'es', { numeric: true });
+    });
+    window._fobCmpState = { filas: filas, filtro: 'TODOS', origen: origen || '', opts: opts || {} }; // cambios primero, iguales al final
+    window._fobCmpRender();
+  };
+
+  window._fobCmpRender = function(){
+    var st = window._fobCmpState, filas = st.filas;
+    var c = { SUBIO: [], BAJO: [], IGUAL: [], NUEVO: [] };
+    filas.forEach(function(f){ c[f.estado].push(f); });
+    var prom = function(arr){ var v = arr.filter(function(f){ return f.pct !== null; }); if (!v.length) return ''; var s = v.reduce(function(t,f){ return t + f.pct; }, 0) / v.length; return ' · prom. ' + (s > 0 ? '+' : '') + s.toFixed(1) + '%'; };
+    var visibles = filas.filter(function(f){
+      if (st.filtro === 'TODOS') return true;
+      if (st.filtro === 'CAMBIOS') return f.estado !== 'IGUAL';
+      return f.estado === st.filtro;
+    });
+    var chip = function(key, label, n, col, extra){
+      var on = st.filtro === key;
+      return '<button onclick="window._fobCmpState.filtro=\'' + key + '\';window._fobCmpRender()" style="border:2px solid ' + col + ';background:' + (on ? col : '#fff') + ';color:' + (on ? '#fff' : col) + ';border-radius:9px;padding:8px 12px;font-weight:900;font-size:.8rem;cursor:pointer;">' + label + ' <span style="font-size:1rem;">' + n + '</span>' + (extra ? '<span style="font-weight:700;font-size:.7rem;opacity:.9;">' + extra + '</span>' : '') + '</button>';
+    };
+    var filasHTML = visibles.map(function(f){
+      var e = _EST[f.estado];
+      var difTxt = f.estado === 'NUEVO' ? '—' : ((f.dif > 0 ? '+' : f.dif < 0 ? '−' : '') + '$ ' + _fmt(Math.abs(f.dif)));
+      var pctTxt = f.estado === 'NUEVO' ? '—' : (f.pct === null ? 'n/d' : ((f.pct > 0 ? '+' : f.pct < 0 ? '−' : '') + Math.abs(f.pct).toFixed(1) + '%'));
+      var fuerte = f.pct !== null && Math.abs(f.pct) >= 20 ? ' ⚠' : '';
+      return '<tr style="border-bottom:1px solid #eef2f7;">' +
+        '<td style="padding:7px 8px;font-family:monospace;font-weight:900;color:#1a2050;white-space:nowrap;">' + _esc(f.ref) + '</td>' +
+        '<td style="padding:7px 8px;font-size:.74rem;color:#334155;">' + _esc(String(f.d).substring(0, 70)) + '</td>' +
+        '<td style="padding:7px 8px;text-align:right;font-variant-numeric:tabular-nums;color:#64748b;">' + (f.estado === 'NUEVO' ? '—' : '$ ' + _fmt(f.antes)) + '</td>' +
+        '<td style="padding:7px 8px;text-align:right;font-variant-numeric:tabular-nums;font-weight:900;color:#0f172a;">$ ' + _fmt(f.ahora) + '</td>' +
+        '<td style="padding:7px 8px;text-align:right;font-variant-numeric:tabular-nums;font-weight:800;color:' + e.col + ';">' + difTxt + '</td>' +
+        '<td style="padding:7px 8px;text-align:right;font-variant-numeric:tabular-nums;font-weight:900;color:' + e.col + ';">' + pctTxt + fuerte + '</td>' +
+        '<td style="padding:7px 8px;text-align:center;"><span style="background:' + e.bg + ';color:' + e.col + ';border-radius:6px;padding:3px 8px;font-weight:900;font-size:.7rem;white-space:nowrap;">' + e.txt + '</span></td>' +
+      '</tr>';
+    }).join('');
+    var html = '<div id="fob-cmp-ov" style="position:fixed;inset:0;z-index:100050;background:rgba(0,0,0,.82);display:flex;align-items:center;justify-content:center;padding:16px;">' +
+      '<div style="background:#fff;border-radius:14px;width:100%;max-width:1150px;max-height:94vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.5);">' +
+        '<div style="padding:16px 22px;background:linear-gradient(135deg,#0f172a,#1e3a8a);color:#fff;border-radius:14px 14px 0 0;display:flex;justify-content:space-between;align-items:center;gap:10px;">' +
+          '<div><div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;font-size:1.45rem;letter-spacing:1px;">💰 COMPARACIÓN DE COSTO FOB</div>' +
+          '<div style="font-size:.8rem;opacity:.85;margin-top:2px;">' + _esc(st.origen) + ' · ' + filas.length + ' producto(s) evaluado(s)</div></div>' +
+          '<div style="display:flex;gap:8px;">' +
+            ((st.opts && st.opts.acciones) || []).map(function(a){ return '<button onclick="' + a.fn + '" style="background:#f59e0b;border:0;color:#111827;border-radius:8px;padding:8px 12px;font-weight:900;cursor:pointer;">' + a.label + '</button>'; }).join('') +
+            '<button onclick="window._fobCmpCopiar()" style="background:#16a34a;border:0;color:#fff;border-radius:8px;padding:8px 12px;font-weight:900;cursor:pointer;">📋 Copiar</button>' +
+            '<button onclick="window._fobCmpExcel()" style="background:#0d9488;border:0;color:#fff;border-radius:8px;padding:8px 12px;font-weight:900;cursor:pointer;">📥 Excel</button>' +
+            '<button onclick="var o=document.getElementById(\'fob-cmp-ov\');if(o)o.remove();" style="background:rgba(255,255,255,.15);border:1.5px solid rgba(255,255,255,.35);color:#fff;border-radius:8px;padding:8px 12px;font-weight:900;cursor:pointer;">✕ Cerrar</button>' +
+          '</div>' +
+        '</div>' +
+        '<div style="padding:12px 22px;background:#f8fafc;border-bottom:1px solid #e2e8f0;display:flex;gap:8px;flex-wrap:wrap;">' +
+          chip('SUBIO', '⬆ Subieron', c.SUBIO.length, '#b91c1c', prom(c.SUBIO)) +
+          chip('BAJO', '⬇ Bajaron', c.BAJO.length, '#15803d', prom(c.BAJO)) +
+          chip('IGUAL', '= Iguales', c.IGUAL.length, '#475569') +
+          (c.NUEVO.length ? chip('NUEVO', '🆕 Nuevos', c.NUEVO.length, '#1d4ed8') : '') +
+          chip('CAMBIOS', 'Solo cambios', c.SUBIO.length + c.BAJO.length + c.NUEVO.length, '#7c3aed') +
+          chip('TODOS', 'Todos', filas.length, '#0f172a') +
+        '</div>' +
+        '<div style="flex:1;overflow:auto;">' +
+          (visibles.length ? '<table style="width:100%;border-collapse:collapse;font-size:.8rem;">' +
+            '<thead><tr style="position:sticky;top:0;background:#1e293b;color:#fff;font-size:.68rem;text-transform:uppercase;letter-spacing:.5px;">' +
+              '<th style="padding:8px;text-align:left;">Ref</th><th style="padding:8px;text-align:left;">Descripción</th>' +
+              '<th style="padding:8px;text-align:right;">' + _esc((st.opts && st.opts.colA) || 'FOB anterior') + '</th><th style="padding:8px;text-align:right;">' + _esc((st.opts && st.opts.colB) || 'FOB nuevo') + '</th>' +
+              '<th style="padding:8px;text-align:right;">Diferencia $</th><th style="padding:8px;text-align:right;">Diferencia %</th><th style="padding:8px;">Estado</th>' +
+            '</tr></thead><tbody>' + filasHTML + '</tbody></table>'
+          : '<div style="padding:40px;text-align:center;color:#94a3b8;font-weight:700;">Nada en este filtro</div>') +
+        '</div>' +
+        '<div style="padding:9px 22px;font-size:.7rem;color:#64748b;border-top:1px solid #e2e8f0;">' +
+          (window._fobMasterUlt && (Date.now() - window._fobMasterUlt.at) < 180000 && !(st.opts && st.opts.colA) ? '<span style="color:#15803d;font-weight:900;">🔗 Master Data actualizado automáticamente: ' + window._fobMasterUlt.n + ' costo(s) FOB.</span> &nbsp; ' : '') +
+          '⚠ = variación de 20% o más. Diferencia % = (' + _esc((st.opts && st.opts.colB) || 'nuevo') + ' − ' + _esc((st.opts && st.opts.colA) || 'anterior') + ') ÷ ' + _esc((st.opts && st.opts.colA) || 'anterior') + '.</div>' +
+      '</div></div>';
+    var prev = document.getElementById('fob-cmp-ov'); if (prev) prev.remove();
+    document.body.insertAdjacentHTML('beforeend', html);
+  };
+
+  function _texto(){
+    var st = window._fobCmpState;
+    var lineas = ['COMPARACIÓN COSTO FOB · ' + st.origen + ' · ' + new Date().toLocaleString('es-VE')];
+    st.filas.forEach(function(f){
+      lineas.push(f.ref + ' | ' + (f.estado === 'NUEVO' ? 'nuevo' : '$' + _fmt(f.antes)) + ' → $' + _fmt(f.ahora) + ' | ' +
+        (f.estado === 'NUEVO' ? 'NUEVO' : ((f.dif >= 0 ? '+' : '−') + '$' + _fmt(Math.abs(f.dif)) + ' (' + (f.pct === null ? 'n/d' : ((f.pct >= 0 ? '+' : '−') + Math.abs(f.pct).toFixed(1) + '%')) + ') ' + _EST[f.estado].txt)));
+    });
+    return lineas.join('\n');
+  }
+  window._fobCmpCopiar = function(){
+    var t = _texto();
+    try { navigator.clipboard.writeText(t).then(function(){ alert('✅ Comparación copiada (' + window._fobCmpState.filas.length + ' productos). Pégala donde quieras con Ctrl+V.'); }, function(){ prompt('Copia este texto:', t); }); }
+    catch(e){ prompt('Copia este texto:', t); }
+  };
+  window._fobCmpExcel = function(){
+    if (typeof XLSX === 'undefined') { alert('La librería de Excel no está cargada.'); return; }
+    var st = window._fobCmpState;
+    var data = [['REFERENCIA','DESCRIPCION','FOB ANTERIOR','FOB NUEVO','DIFERENCIA $','DIFERENCIA %','ESTADO']];
+    st.filas.forEach(function(f){
+      data.push([f.ref, f.d, f.estado === 'NUEVO' ? '' : +f.antes.toFixed(4), +f.ahora.toFixed(4), f.estado === 'NUEVO' ? '' : +f.dif.toFixed(4), f.pct === null ? '' : +(f.pct/100).toFixed(4), _EST[f.estado].txt.replace(/^[^A-Z]+/,'')]);
+    });
+    var ws = XLSX.utils.aoa_to_sheet(data);
+    ws['!cols'] = [{wch:12},{wch:55},{wch:13},{wch:13},{wch:13},{wch:13},{wch:10}];
+    for (var i = 2; i <= data.length; i++) { var cel = ws['F' + i]; if (cel && cel.t === 'n') cel.z = '0.0%'; }
+    var wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'FOB');
+    XLSX.writeFile(wb, 'COMPARACION_FOB_' + new Date().toISOString().slice(0,10) + '.xlsx');
+  };
+
+  // Detección genérica (al guardar en la nube): compara el catálogo de la nube
+  // ANTES del guardado contra lo que se va a guardar. Solo los que cambiaron.
+  window._fobCmpDesdeNube = function(nubeV, payload){
+    try {
+      if (!nubeV || !Array.isArray(payload)) return;
+      var nube = JSON.parse(nubeV), mapa = {};
+      (nube || []).forEach(function(p){ if (p && p.r) mapa[p.r] = p; });
+      var lista = [];
+      payload.forEach(function(p){
+        if (!p || !p.r) return;
+        var a = mapa[p.r];
+        if (!a) return; // producto nuevo: lo reportan sus propios flujos
+        var va = _n(a.costoFOB), vn = _n(p.costoFOB);
+        if (Math.abs(va - vn) >= 0.00005) lista.push({ ref: p.r, d: p.d, antes: va, ahora: vn });
+      });
+      if (!lista.length) return;
+      // v.370: el Master Data sigue al catálogo — mismo costo FOB en ambos lados
+      try { window._fobSyncMaster(lista); } catch(eM){ console.warn('[v.370] FOB→Master:', eM); }
+      if (Date.now() < (window._fobCmpSuprimirHasta || 0)) return; // el reporte completo lo muestra su propio flujo
+      var etq = window._fobOrigenEtiqueta || 'Cambio de costo FOB guardado';
+      window._fobOrigenEtiqueta = null;
+      window.fobMostrarComparacion(lista, etq);
+    } catch(e){ console.warn('[v.369] comparación FOB:', e); }
+  };
+
+  // ═══ v.370 — SINCRONÍA COSTO FOB ↔ MASTER DATA ═══════════════════════════
+  // Regla: catálogo (costoFOB) y Master Data (costo) SIEMPRE iguales.
+  //   • FOB cambia en catálogo (Excel, OC, edición) → se copia al Master.
+  //   • Costo cambia en Master (edición o importación Excel) → se copia al catálogo.
+  //   • Diferencias viejas → botón "💰 FOB ↔ Catálogo" en Master Data.
+  window._fobSyncMaster = function(lista){
+    var M = window.MASTER;
+    if (!M || typeof M !== 'object') return 0;
+    var n = 0, ts = Date.now();
+    (lista || []).forEach(function(x){
+      var m = M[x.ref];
+      if (!m) return;
+      if (Math.abs(_n(m.costo) - _n(x.ahora)) < 0.00005) return;
+      m.costo = _n(x.ahora);
+      m._updatedAt = ts;
+      n++;
+    });
+    if (!n) return 0;
+    window._fobMasterUlt = { n: n, at: ts };
+    Promise.resolve(typeof window.masterSaveAndSync === 'function' ? window.masterSaveAndSync() : true).then(function(ok){
+      if (ok === false) {
+        try { if (typeof showToast === 'function') showToast('⚠ El costo FOB se guardó en el catálogo pero el Master Data no pudo subir a la nube. Recarga y usa "💰 FOB ↔ Catálogo" en Master Data.', 'error', { duration: 14000 }); } catch(e){}
+      } else {
+        try { if (typeof showToast === 'function') showToast('🔗 Master Data actualizado: ' + n + ' costo(s) FOB', 'success'); } catch(e){}
+      }
+      try { if (document.getElementById('master-modal') && document.getElementById('master-modal').style.display === 'block' && typeof window.masterRenderTabla === 'function') window.masterRenderTabla(); } catch(e){}
+    });
+    return n;
+  };
+
+  // Revisión de diferencias existentes entre Master Data y catálogo
+  window.fobRevisarMaster = function(){
+    var M = window.MASTER || {}, lista = [], total = 0;
+    (typeof PRODUCTS !== 'undefined' ? PRODUCTS : []).forEach(function(p){
+      var m = p && M[p.r];
+      if (!m) return;
+      total++;
+      var a = _n(m.costo), b = _n(p.costoFOB);
+      if (Math.abs(a - b) >= 0.00005) lista.push({ ref: p.r, d: p.d, antes: a, ahora: b });
+    });
+    if (!lista.length) { alert('✅ Master Data y catálogo tienen el MISMO costo FOB en las ' + total + ' referencias. No hay nada que igualar.'); return; }
+    window.fobMostrarComparacion(lista, 'Diferencias de costo FOB: Master Data vs Catálogo (' + lista.length + ' de ' + total + ' refs)', {
+      colA: 'Master Data', colB: 'Catálogo',
+      acciones: [
+        { label: '⬅ Catálogo → Master', fn: "window._fobIgualar('C2M')" },
+        { label: 'Master → Catálogo ➡', fn: "window._fobIgualar('M2C')" }
+      ]
+    });
+  };
+
+  window._fobIgualar = async function(dir){
+    var filas = ((window._fobCmpState || {}).filas || []).filter(function(f){ return f.estado !== 'IGUAL'; });
+    if (!filas.length) return;
+    var txt = dir === 'C2M'
+      ? 'Se copiará el costo FOB del CATÁLOGO al MASTER DATA en ' + filas.length + ' referencia(s).\n(Usa esta opción si actualizaste FOB por Excel de catálogo o por OC.)'
+      : 'Se copiará el costo del MASTER DATA al CATÁLOGO en ' + filas.length + ' referencia(s).\n(Usa esta opción si actualizaste costos en Master Data.)';
+    if (!confirm(txt + '\n\n¿Continuar?')) return;
+    var M = window.MASTER || {}, ts = Date.now(), n = 0;
+    if (dir === 'C2M') {
+      filas.forEach(function(f){ var m = M[f.ref]; if (!m) return; m.costo = f.ahora; m._updatedAt = ts; n++; });
+      var ok = typeof window.masterSaveAndSync === 'function' ? await window.masterSaveAndSync() : true;
+      alert((ok === false ? '⚠ Master actualizado en este equipo pero NO subió a la nube. Recarga y repite.' : '✅ Master Data actualizado') + ': ' + n + ' costo(s) FOB copiados del catálogo.');
+    } else {
+      filas.forEach(function(f){ var p = PRODUCTS.find(function(x){ return x.r === f.ref; }); if (!p) return; p.costoFOB = f.antes; n++; });
+      window._fobCmpSuprimirHasta = Date.now() + 60000;
+      try {
+        if (typeof saveProducts === 'function') await saveProducts(); else if (typeof window.fbSaveProducts === 'function') await window.fbSaveProducts(PRODUCTS);
+        alert('✅ Catálogo actualizado: ' + n + ' costo(s) FOB copiados del Master Data.');
+      } catch(e){ alert('⚠ No se pudo guardar el catálogo: ' + (e && e.message)); }
+    }
+    var o = document.getElementById('fob-cmp-ov'); if (o) o.remove();
+  };
+})();
+
 // ═══ FUNCIÓN PARA OBTENER UNIDADES POR BULTO ═══
 // Usa directamente el campo 'm' de PRODUCTS (fuente de verdad)
 // Elimina mapeo manual - todos los datos ya están correctos en la estructura
@@ -8796,7 +9042,7 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
           var visto = parseInt(localStorage.getItem('farmers_fresh_' + col) || '0', 10) || 0;
           var sG = await getDoc(doc(db, 'data', col));
           var nube = (sG.exists() && sG.data()) ? (parseInt(sG.data().updatedAt, 10) || 0) : 0;
-          if (col === 'products' && sG.exists() && sG.data()) { try { window._farmersNubeProdCount = parseInt(sG.data().count, 10) || JSON.parse(sG.data().v).length; window._farmersCatalogoDeNube = true; } catch(eC){} } // v.366
+          if (col === 'products' && sG.exists() && sG.data()) { try { window._farmersNubeProdCount = parseInt(sG.data().count, 10) || JSON.parse(sG.data().v).length; window._farmersCatalogoDeNube = true; window._gmeNubeProdV = sG.data().v; /* v.369 */ } catch(eC){} } // v.366
           if (nube > visto + 8000) {
             var tx = '⛔ GUARDIA MULTI-EQUIPO (' + nombre + '): la nube tiene datos MÁS NUEVOS que lo visto por esta máquina (otra PC guardó después). NO se subió nada.\n→ Recarga la página para traer lo nuevo y reintenta.\n→ Solo si estás SEGURO de pisar la nube: farmersPermitirPisar(5) y reintenta.';
             console.error('[v.364] ' + tx);
@@ -8814,6 +9060,7 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
         if (!Array.isArray(payload) || payload.length === 0) {
           throw new Error('fbSaveProducts: payload vacío, no se guarda para evitar borrar Firebase');
         }
+        window._gmeNubeProdV = null; // v.369: se llena con la lectura de la guardia
         if (!(await _gmeOkEscribir('products', 'catálogo/productos'))) throw new Error('Guardia multi-equipo v.364: la nube de productos es más nueva — recarga antes de guardar.');
         // ── v.366 (07/10/2026) CANDADO ANTI-CATÁLOGO-VIEJO ─────────────────
         // Incidente Mac 07/10: un equipo que NUNCA leyó el catálogo de la nube
@@ -8854,6 +9101,8 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
           updatedAt: Date.now()
         }));
         _gmeStamp('products');   // v.364: este write pasa a ser lo más fresco visto
+        try { if (window._fobCmpDesdeNube) window._fobCmpDesdeNube(window._gmeNubeProdV, payload); } catch(eF369){} // v.369
+        window._gmeNubeProdV = null;
         // ── FIX #4 v.111: BACKUP AUTOMÁTICO DIARIO ─────────────────────────
         // Dispara una vez por día (per dispositivo) un snapshot del catálogo
         // a 'data/products_backup_YYYYMMDD'. No bloquea el save principal.
@@ -18635,6 +18884,11 @@ window.ocSyncAplicar = function() {
   msg += '\n¿Continuar?';
   if (!confirm(msg)) return;
 
+  // v.369: FOB de cada producto ANTES de sincronizar
+  var _fobAntes369 = {};
+  PRODUCTS.forEach(function(p){ if (p && p.r) _fobAntes369[p.r] = parseFloat(p.costoFOB) || 0; });
+  window._fobCmpSuprimirHasta = Date.now() + 120000;
+
   // ─── LOG DETALLADO ─── Captura cada cambio por ref, agrupado por campo
   var reporteCambios = {
     ocNumero: '',
@@ -18802,6 +19056,20 @@ window.ocSyncAplicar = function() {
 
     // ─── MOSTRAR REPORTE DETALLADO ───
     _ocSyncMostrarReporte(reporteCambios);
+    // v.369: comparación FOB anterior vs nuevo de TODOS los items de la OC
+    try {
+      if (oc && Array.isArray(oc.items) && window.fobMostrarComparacion) {
+        var _l369 = [];
+        oc.items.forEach(function(it){
+          if (!it || !it.refFarmers || !(parseFloat(it.precioFOB) > 0)) return;
+          var p369 = PRODUCTS.find(function(pp){ return pp.r === it.refFarmers; });
+          if (!p369) return;
+          var esNuevo = !Object.prototype.hasOwnProperty.call(_fobAntes369, it.refFarmers);
+          _l369.push({ ref: it.refFarmers, d: p369.d, antes: esNuevo ? 0 : _fobAntes369[it.refFarmers], ahora: parseFloat(p369.costoFOB) || 0, nuevo: esNuevo });
+        });
+        if (_l369.length) window.fobMostrarComparacion(_l369, 'Sincronizar OC ' + (oc.numero || '') + ' · ' + (oc.proveedorNombre || ''));
+      }
+    } catch(eF369){ console.warn('[v.369] FOB OC:', eF369); }
   } catch(err) {
     alert('Error al aplicar sincronización: ' + err.message);
     console.error(err);
@@ -44485,6 +44753,10 @@ window.ptImportarCatalogoSimple = function() {
         var nuevosCrear = [];   // v.265: filas del Excel con refs que no existen → candidatas a crear
         var cambios = [];
         var alertasComp = []; // refs donde el nuevo stock < comprometido
+        // v.369: lista FOB anterior/nuevo + foto del catálogo para revertir si se cancela
+        var _fobCmp369 = [];
+        var _snapProd369 = JSON.stringify(PRODUCTS);
+        var _restaurarProd369 = function(){ try { var a369 = JSON.parse(_snapProd369); PRODUCTS.length = 0; a369.forEach(function(x){ PRODUCTS.push(x); }); console.log('[v.369] Importación cancelada: catálogo en memoria restaurado.'); } catch(eR369){ console.warn('[v.369] restaurar:', eR369); } };
 
         rows.forEach(function(row){
           var ref = String(row.REFERENCIA || '').trim().toUpperCase();
@@ -44659,6 +44931,7 @@ window.ptImportarCatalogoSimple = function() {
                      : '';
           if (fobRaw !== '' && fobRaw !== null) {
             var nuevoFOB = parseFloat(String(fobRaw).replace(',','.'));
+            if (!isNaN(nuevoFOB) && nuevoFOB >= 0) _fobCmp369.push({ ref: ref, d: prod.d, antes: parseFloat(prod.costoFOB) || 0, ahora: parseFloat(nuevoFOB.toFixed(4)) }); // v.369
             if (!isNaN(nuevoFOB) && nuevoFOB >= 0 && Math.abs(nuevoFOB - (parseFloat(prod.costoFOB)||0)) > 0.0001) {
               prod.costoFOB = parseFloat(nuevoFOB.toFixed(4));
               camposCambiados.push('FOB');
@@ -44748,6 +45021,7 @@ window.ptImportarCatalogoSimple = function() {
             window._ptAuditDecision = null;
 
             if (!aprobado) {
+              _restaurarProd369();
               document.body.removeChild(input);
               return;
             }
@@ -44757,6 +45031,7 @@ window.ptImportarCatalogoSimple = function() {
             console.warn('[Audit v.100] Error en módulo de auditoría, cayendo a flujo legacy:', eAudit);
             // Caer al confirm() tradicional
             if (!confirm(msg)) {
+              _restaurarProd369();
               document.body.removeChild(input);
               return;
             }
@@ -44764,11 +45039,13 @@ window.ptImportarCatalogoSimple = function() {
         } else {
           // Módulo de auditoría no cargado — usar confirm() legacy
           if (!confirm(msg)) {
+            _restaurarProd369();
             document.body.removeChild(input);
             return;
           }
         }
 
+        if (_fobCmp369.length) window._fobCmpSuprimirHasta = Date.now() + 120000; // v.369: el reporte completo sale al final
         // Confirmación adicional si hay alertas de comprometido
         if (alertasComp.length > 0) {
           if (!confirm(
@@ -44778,6 +45055,7 @@ window.ptImportarCatalogoSimple = function() {
             'Si continúas, los despachos de esos pedidos podrían fallar.\n\n' +
             '¿Realmente quieres aplicar estos cambios?'
           )) {
+            _restaurarProd369();
             document.body.removeChild(input);
             return;
           }
@@ -44953,6 +45231,7 @@ window.ptImportarCatalogoSimple = function() {
           (alertasComp.length > 0 ? '\n⚠ ' + alertasComp.length + ' productos quedaron con stock < comprometido — revisa monitor de pedidos.' : '') +
           (saveResult === false ? '\n\n⚠ NOTA TÉCNICA: localStorage rechazó el guardado (catálogo muy grande o encoding).\nLos cambios SÍ están en Firebase y se restaurarán al recargar.' : '');
         alert(alertaTexto);
+        if (_fobCmp369.length && window.fobMostrarComparacion) window.fobMostrarComparacion(_fobCmp369, 'Importación de catálogo (Excel)'); // v.369
 
         if (noEncontrados.length > 0) {
           console.log('[ptImportarCatalogoSimple] Refs no encontradas:', noEncontrados);
@@ -85856,6 +86135,9 @@ function pcRenderConfig(body) {
       <button class="m-btn-action" onclick="masterAbrirAuditoria()" title="Compará el Master Data contra Inventario y Productos Terminados para detectar diferencias" style="background:#16a34a;">
         🔍 Auditar
       </button>
+      <button class="m-btn-action" onclick="fobRevisarMaster()" title="v.370: compara el costo FOB del Master Data contra el del catálogo y permite igualarlos" style="background:#b45309;">
+        💰 FOB ↔ Catálogo
+      </button>
       <button class="m-btn-action" onclick="farmersMasterPuente()" title="Detecta las refs que viven SOLO en el Master y descarga el Excel oficial prellenado (solo te falta el precio USD) para crearlas en catálogo e inventario por la vía oficial" style="background:#c2410c;">
         🧱 Materializar
       </button>
@@ -89697,6 +89979,23 @@ function pcRenderConfig(body) {
       // Guardar y sincronizar
       window.masterSaveLS();
       var okSync = await window.masterSaveAndSync();
+
+      // v.370: el costo del Master pasa al catálogo (costoFOB) → sale la comparación FOB
+      try {
+        var _nFob370 = 0;
+        var _refs370 = diff.nuevos.map(function(p){ return p.referencia; }).concat(diff.modificados.map(function(m){ return m.ref; }));
+        _refs370.forEach(function(r){
+          var mm = window.MASTER[r]; if (!mm || mm.costo === undefined || mm.costo === null || mm.costo === '') return;
+          var pp = (typeof PRODUCTS !== 'undefined') ? PRODUCTS.find(function(x){ return x.r === r; }) : null; if (!pp) return;
+          var nv = parseFloat(mm.costo); if (!isFinite(nv)) return;
+          if (Math.abs((parseFloat(pp.costoFOB) || 0) - nv) < 0.00005) return;
+          pp.costoFOB = nv; _nFob370++;
+        });
+        if (_nFob370 > 0) {
+          window._fobOrigenEtiqueta = 'Importación Master Data (Excel)';
+          if (typeof saveProducts === 'function') await saveProducts(); else if (typeof window.fbSaveProducts === 'function') await window.fbSaveProducts(PRODUCTS);
+        }
+      } catch(eF370){ console.warn('[v.370] Master→catálogo FOB:', eF370); }
 
       var resumen = '✓ Importación completada:\n\n' +
                     '  • ' + nuevosN + ' productos nuevos\n' +
