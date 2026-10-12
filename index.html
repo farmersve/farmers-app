@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.10.12.371">
+<meta name="farmers-version" content="2026.10.12.373">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -9082,6 +9082,31 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
             throw new Error('Candado v.366: guardado de catálogo bloqueado');
           }
         }
+        // ── v.373: ÚLTIMA BARRERA — el Código Interno nunca puede quedar igual al
+        // código de barra. Venga de donde venga el cambio (OC, Excel, edición),
+        // si en este guardado un producto pasaría a tener Código Interno = código
+        // de barra (o un número de 8-14 dígitos) y en la nube tenía uno distinto,
+        // se conserva el de la nube.
+        try {
+          if (window._gmeNubeProdV) {
+            var _nube373 = {}, _rev373 = [];
+            JSON.parse(window._gmeNubeProdV).forEach(function(q){ if (q && q.r) _nube373[q.r] = q; });
+            payload.forEach(function(p){
+              if (!p || !p.r) return;
+              var c = String(p.c == null ? '' : p.c).trim();
+              if (!c || !(c === String(p.b == null ? '' : p.b).trim() || /^\d{8,14}$/.test(c))) return;
+              var q = _nube373[p.r]; if (!q) return;
+              var cq = String(q.c == null ? '' : q.c).trim();
+              if (!cq || cq === c || cq === String(q.b == null ? '' : q.b).trim() || /^\d{8,14}$/.test(cq)) return;
+              _rev373.push(p.r + ' (' + c + ' → se mantiene ' + cq + ')');
+              p.c = q.c;
+            });
+            if (_rev373.length) {
+              console.warn('[v.373] Código Interno protegido en ' + _rev373.length + ' ref(s):', _rev373);
+              try { if (typeof showToast === 'function') showToast('🛡️ Se evitó poner el código de barra como Código Interno en ' + _rev373.length + ' producto(s): ' + _rev373.slice(0, 5).join(', '), 'warning', { duration: 14000 }); } catch(eT373){}
+            }
+          }
+        } catch(e373){ console.warn('[v.373] barrera código interno:', e373); }
         // ── FIX #5 v.112: Registrar timestamp + count del write propio ──
         // El onSnapshot usa esto para detectar y rechazar ecos de writes propios
         // que llegan con datos pre-write (race condition de Firebase).
@@ -18217,7 +18242,7 @@ window.ocSincronizarInventarioClick = function(ocId) {
 
       analisis.fields = [
         { campo: 'b',  labelUI: 'Código barra',     valorActual: null, valorNuevo: item.codigoBarra || '',       aplicar: !!item.codigoBarra },
-        { campo: 'c',  labelUI: 'Ref proveedor',    valorActual: null, valorNuevo: item.refProveedor || '',       aplicar: !!item.refProveedor },
+        { campo: 'c',  labelUI: 'Ref proveedor',    valorActual: null, valorNuevo: (window._esCodBarra372 && window._esCodBarra372(item.refProveedor, item.codigoBarra)) ? '' : (item.refProveedor || ''),       aplicar: !!item.refProveedor && !(window._esCodBarra372 && window._esCodBarra372(item.refProveedor, item.codigoBarra)) },
         { campo: 'd',  labelUI: 'Descripción',      valorActual: null, valorNuevo: descNueva,                     aplicar: !!descNueva, sugerenciaRefInterna: null },
         { campo: 'e',  labelUI: 'Unidad',           valorActual: null, valorNuevo: item.unidad || 'UNIDAD',       aplicar: !!item.unidad },
         { campo: 'm',  labelUI: 'Uds/bulto',        valorActual: null, valorNuevo: parseInt(item.unidadesPorBulto)||0, aplicar: !!item.unidadesPorBulto },
@@ -18353,7 +18378,7 @@ window.ocSincronizarInventarioClick = function(ocId) {
 
     var fieldsCandidatos = [
       cmp('b',  'Código barra',    prod.b,  item.codigoBarra,      'str'),
-      cmp('c',  'Ref proveedor',   prod.c,  item.refProveedor,     'str'),
+      (window._esCodBarra372 && window._esCodBarra372(item.refProveedor, item.codigoBarra, prod.b)) ? null : cmp('c',  'Ref proveedor',   prod.c,  item.refProveedor,     'str'), // v.372: nunca un código de barra como Código Interno
       cmp('d',  'Descripción',     prod.d,  descItemConRef,        'str'),
       cmp('e',  'Unidad',          prod.e,  item.unidad,           'str'),
       cmp('m',  'Uds/bulto',       prod.m,  item.unidadesPorBulto, 'int'),
@@ -21506,6 +21531,69 @@ window._ocP371Aplicar = async function(){
   try { if (typeof ptRender === 'function') ptRender(); } catch(e){}
   if (typeof cb === 'function') { try { cb(); } catch(e){} }
 };
+
+// ═══════════════════════════════════════════════════════════════════════
+// v.372 (12/10/2026) — CÓDIGO INTERNO ≠ CÓDIGO DE BARRA
+// Incidente 12/10: "🔄 Sincronizar" de una OC copió la columna "Ref proveedor"
+// de la OC (que traía el CÓDIGO DE BARRA) al Código Interno del catálogo.
+// • El sincronizador ya NO propone un Código Interno que parezca código de barra.
+// • farmersRepararCodigosInternos(): devuelve el Código Interno desde el Master Data.
+// ═══════════════════════════════════════════════════════════════════════
+window._esCodBarra372 = function(v, cb1, cb2){
+  var x = String(v == null ? '' : v).trim();
+  if (!x) return false;
+  if (/^\d{8,14}$/.test(x)) return true;
+  if (cb1 && x === String(cb1).trim()) return true;
+  if (cb2 && x === String(cb2).trim()) return true;
+  return false;
+};
+
+window.farmersRepararCodigosInternos = async function(silencioso){
+  var M = window.MASTER || {}, malos = [], sinRespaldo = [];
+  (typeof PRODUCTS !== 'undefined' ? PRODUCTS : []).forEach(function(p){
+    if (!p || !p.r) return;
+    var c = String(p.c == null ? '' : p.c).trim(), b = String(p.b == null ? '' : p.b).trim();
+    var dañado = c && (c === b || /^\d{8,14}$/.test(c));
+    if (!dañado) return;
+    var cm = String(((M[p.r] || {}).codigoProveedor) || '').trim();
+    if (cm && !window._esCodBarra372(cm, b)) malos.push({ ref: p.r, antes: c, ahora: cm });
+    else sinRespaldo.push(p.r);
+  });
+  if (!malos.length) {
+    if (!silencioso) alert('✅ No hay productos con el Código Interno igual al código de barra' + (sinRespaldo.length ? '.\n\n⚠ ' + sinRespaldo.length + ' ref(s) tienen un código numérico y el Master no tiene otro para devolver: ' + sinRespaldo.slice(0, 20).join(', ') : '.'));
+    return { reparados: 0, sinRespaldo: sinRespaldo };
+  }
+  var lista = malos.slice(0, 25).map(function(m){ return m.ref + ':  ' + m.antes + '  →  ' + m.ahora; }).join('\n');
+  if (!confirm('🧹 REPARAR CÓDIGO INTERNO (v.372)\n\n' + malos.length + ' producto(s) tienen el CÓDIGO DE BARRA puesto como Código Interno.\nSe devolverá el Código Interno correcto desde el Master Data:\n\n' + lista + (malos.length > 25 ? '\n… y ' + (malos.length - 25) + ' más' : '') + '\n\n¿Reparar ahora?')) return { reparados: 0, cancelado: true };
+  malos.forEach(function(m){ var p = PRODUCTS.find(function(x){ return x.r === m.ref; }); if (p) p.c = m.ahora; });
+  var ok = true;
+  try {
+    if (typeof saveProducts === 'function') await saveProducts();
+    else if (typeof window.fbSaveProducts === 'function') await window.fbSaveProducts(PRODUCTS);
+  } catch(e){ ok = false; console.error('[v.372] guardar:', e); }
+  try { if (typeof renderTable === 'function') renderTable(); } catch(e){}
+  try { if (typeof ptRender === 'function') ptRender(); } catch(e){}
+  if (window.fbTriggerPortalSnapshot) { try { window.fbTriggerPortalSnapshot('reparar-codigos-v372'); } catch(e){} }
+  var R = (ok ? '✅ CÓDIGOS REPARADOS: ' : '⚠ Reparados en pantalla pero NO se confirmó la nube (recarga y repite): ') + malos.length + ' ref(s) · ' +
+          malos.map(function(m){ return m.ref + ' ' + m.antes + '→' + m.ahora; }).join(' | ') +
+          (sinRespaldo.length ? ' · SIN RESPALDO EN MASTER: ' + sinRespaldo.join(', ') : '');
+  window.R = R;
+  alert(R.substring(0, 1500) + (R.length > 1500 ? '…' : '') + '\n\nHaz clic en el botón verde para copiar el resultado.');
+  var bt = document.createElement('button'); bt.textContent = '📋 CLIC PARA COPIAR RESULTADO';
+  bt.style.cssText = 'position:fixed;top:40%;left:50%;transform:translateX(-50%);z-index:999999;padding:24px 34px;font-size:20px;background:#0a7d32;color:#fff;border:0;border-radius:14px;cursor:pointer';
+  bt.onclick = function(){ navigator.clipboard.writeText(R).then(function(){ alert('✅ Copiado. Pégamelo en el chat.'); bt.remove(); }); };
+  document.body.appendChild(bt);
+  return { reparados: malos.length, sinRespaldo: sinRespaldo, ok: ok };
+};
+
+// Revisión automática una vez cargado el catálogo de la nube (una vez por sesión)
+setTimeout(function(){
+  try {
+    if (!window._farmersCatalogoDeNube || !window.MASTER) return;
+    var hay = (PRODUCTS || []).some(function(p){ var c = String(p.c || '').trim(); return c && (c === String(p.b || '').trim() || /^\d{8,14}$/.test(c)) && ((window.MASTER[p.r] || {}).codigoProveedor); });
+    if (hay) window.farmersRepararCodigosInternos(true);
+  } catch(e){ console.warn('[v.372] revisión códigos:', e); }
+}, 30000);
 
 window.ocEditarTotalesClick = function(id) {
   var oc = _ocDB.find(function(x){ return x.id === id; });
@@ -86307,6 +86395,9 @@ function pcRenderConfig(body) {
       </button>
       <button class="m-btn-action" onclick="masterAbrirAuditoria()" title="Compará el Master Data contra Inventario y Productos Terminados para detectar diferencias" style="background:#16a34a;">
         🔍 Auditar
+      </button>
+      <button class="m-btn-action" onclick="farmersRepararCodigosInternos()" title="v.372: devuelve el Código Interno desde el Master Data cuando quedó igual al código de barra" style="background:#be123c;">
+        🧹 Reparar Cód. Interno
       </button>
       <button class="m-btn-action" onclick="fobRevisarMaster()" title="v.370: compara el costo FOB del Master Data contra el del catálogo y permite igualarlos" style="background:#b45309;">
         💰 FOB ↔ Catálogo
