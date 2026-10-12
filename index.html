@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.10.12.370">
+<meta name="farmers-version" content="2026.10.12.371">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -15838,6 +15838,7 @@ function ocRenderFicha(oc) {
 
           // ═══ GRUPO 2: EDICIÓN ═══
           '<button onclick="ocEditarItemsClick(\'' + oc.id + '\')" style="background:#ddd6fe;color:#5b21b6;border:1.5px solid #c4b5fd;border-radius:7px;padding:7px 12px;font-weight:800;cursor:pointer;font-size:0.75rem;" title="Editar cada línea de producto: ref, descripción, cantidad, precio, etc">📋 Items</button>' +
+          '<button onclick="ocPreciosAbrir(\'' + oc.id + '\')" style="background:#dcfce7;color:#166534;border:1.5px solid #86efac;border-radius:7px;padding:7px 12px;font-weight:800;cursor:pointer;font-size:0.75rem;" title="Calcular FOB y precios USD/BCV/TF con el FOB de esta OC (flete $15/ft³, 40% s/venta, ×1.6, ×1.2)">💲 Precios</button>' +
           '<button onclick="ocOrdenadaIgualAOC(\'' + oc.id + '\')" style="background:#dbeafe;color:#1e40af;border:1.5px solid #93c5fd;border-radius:7px;padding:7px 12px;font-weight:800;cursor:pointer;font-size:0.75rem;" title="Poner la Existencia Ordenada de estas refs igual a lo que realmente viene (OCs abiertas)">📦 Ordenada</button>' +
           '<button onclick="ocEditarTotalesClick(\'' + oc.id + '\')" style="background:#fef3c7;color:#78350f;border:1.5px solid #fcd34d;border-radius:7px;padding:7px 12px;font-weight:800;cursor:pointer;font-size:0.75rem;" title="Editar manualmente totales, ajustes, volumen, peso, fechas">✏️ Totales</button>' +
           '<button onclick="ocRecalcularVolPeso(\'' + oc.id + '\')" style="background:#e0e7ff;color:#4338ca;border:1.5px solid #c7d2fe;border-radius:7px;padding:7px 12px;font-weight:800;cursor:pointer;font-size:0.75rem;" title="Recalcula volumen y peso desde las medidas del catálogo">📐 Recalc</button>' +
@@ -21339,6 +21340,173 @@ window.ocOrdenadaIgualAOC = function(id) {
   alert('✅ Existencia Ordenada actualizada en ' + cambios.length + ' ref(s). Ahora refleja lo que realmente viene.');
 };
 
+// ═══════════════════════════════════════════════════════════════════════
+// v.371 (12/10/2026) — PRECIOS AUTOMÁTICOS DESDE EL FOB DE LA OC
+// Regla de precios Farmers (confirmada 26/09/2026, cuadra con 915/915 refs):
+//   flete/ud  = $15 × ft³ del bulto ÷ unidades por bulto
+//   costo     = FOB + flete/ud
+//   USD       = costo ÷ (1 − 40%)      (40% sobre la venta)
+//   BCV       = USD × 1,60
+//   TF        = BCV × 1,20
+// Regla DOC: si la línea de la OC viene por DOCENA, el FOB se pasa a PIEZA (÷12).
+// Se abre solo al registrar una recepción (con las refs recibidas) y con el
+// botón "💲 Precios" de la OC. Nada se cambia sin tu confirmación.
+// ═══════════════════════════════════════════════════════════════════════
+var FARMERS_PRECIO_REGLA = { fletePorFt3: 15, margenVenta: 0.40, factorBCV: 1.60, factorTF: 1.20 };
+window.FARMERS_PRECIO_REGLA = FARMERS_PRECIO_REGLA;
+
+window.farmersCalcularPrecios = function(fob, volFt3Bulto, udsBulto){
+  var R = FARMERS_PRECIO_REGLA;
+  var f = parseFloat(fob) || 0, v = parseFloat(volFt3Bulto) || 0, n = parseFloat(udsBulto) || 0;
+  if (!(f > 0) || !(v > 0) || !(n > 0)) return null;
+  var flete = R.fletePorFt3 * v / n;
+  var costo = f + flete;
+  var u = costo / (1 - R.margenVenta);
+  var bv = u * R.factorBCV;
+  var t = bv * R.factorTF;
+  return { fob: f, flete: flete, costo: costo, u: u, bv: bv, t: t };
+};
+
+var _ocPrecios371 = null;
+
+function _ocP371Datos(oc, refsFiltro){
+  var M = window.MASTER || {}, pt = {};
+  try { pt = JSON.parse(localStorage.getItem('farmers_pt_data') || '{}'); } catch(e){}
+  var filtro = null;
+  if (Array.isArray(refsFiltro) && refsFiltro.length) { filtro = {}; refsFiltro.forEach(function(r){ filtro[r] = 1; }); }
+  var vistos = {}, filas = [];
+  (oc.items || []).forEach(function(it){
+    var r = it && it.refFarmers;
+    if (!r || vistos[r] || (filtro && !filtro[r])) return;
+    var p = PRODUCTS.find(function(x){ return x.r === r; });
+    if (!p) return;
+    vistos[r] = 1;
+    var m = M[r] || {};
+    var esDoc = /^DOC/i.test(String(it.unidad || ''));
+    var fobOC = (parseFloat(it.precioFOB) || 0) / (esDoc ? 12 : 1);
+    var vol = parseFloat(m.volFt3PorBulto) || parseFloat(((pt[r] || {}).medidas || {}).volDirecto) || 0;
+    var uds = parseFloat(m.unidadesPorBulto) || parseFloat(p.m) || 0;
+    var calc = window.farmersCalcularPrecios(fobOC, vol, uds);
+    var falta = !(fobOC > 0) ? 'sin FOB en la OC' : !(vol > 0) ? 'sin volumen (ft³/bulto)' : !(uds > 0) ? 'sin uds/bulto' : '';
+    filas.push({
+      ref: r, d: p.d || '', esDoc: esDoc,
+      fobAct: parseFloat(p.costoFOB) || 0, fobOC: fobOC, vol: vol, uds: uds,
+      uAct: parseFloat(p.u) || 0, bvAct: parseFloat(p.bv) || 0, tAct: parseFloat(p.t) || 0,
+      calc: calc, falta: falta, aplicar: !!calc
+    });
+  });
+  return filas;
+}
+
+function _p371(v, d){ v = parseFloat(v) || 0; return '$' + v.toFixed(d == null ? (Math.abs(v) < 1 ? 3 : 2) : d); }
+function _pct371(a, b){
+  if (!(a > 0)) return '';
+  var x = (b - a) / a * 100;
+  if (Math.abs(x) < 0.05) return '<span style="color:#64748b;font-weight:800;">= 0%</span>';
+  return '<span style="color:' + (x > 0 ? '#b91c1c' : '#15803d') + ';font-weight:900;">' + (x > 0 ? '⬆ +' : '⬇ −') + Math.abs(x).toFixed(1) + '%</span>';
+}
+
+window.ocPreciosAbrir = function(ocId, refsFiltro, alCerrar){
+  var oc = (_ocDB || []).find(function(x){ return x.id === ocId; });
+  if (!oc) { alert('OC no encontrada'); if (alCerrar) alCerrar(); return; }
+  var filas = _ocP371Datos(oc, refsFiltro);
+  if (!filas.length) { if (alCerrar) alCerrar(); else alert('Esta OC no tiene items con ref Farmers en el catálogo.'); return; }
+  _ocPrecios371 = { ocId: ocId, filas: filas, alCerrar: alCerrar || null, recep: !!(refsFiltro && refsFiltro.length) };
+  _ocP371Render();
+};
+
+function _ocP371Render(){
+  var st = _ocPrecios371; if (!st) return;
+  var oc = (_ocDB || []).find(function(x){ return x.id === st.ocId; }) || {};
+  var R = FARMERS_PRECIO_REGLA;
+  var nSel = st.filas.filter(function(f){ return f.aplicar && f.calc; }).length;
+  var rows = st.filas.map(function(f, i){
+    var c = f.calc;
+    var chk = c ? '<input type="checkbox" ' + (f.aplicar ? 'checked' : '') + ' onchange="_ocPrecios371.filas[' + i + '].aplicar=this.checked;_ocP371Render()" style="width:17px;height:17px;cursor:pointer;">' : '<span title="' + f.falta + '">⛔</span>';
+    return '<tr style="border-bottom:1px solid #eef2f7;' + (c ? '' : 'background:#fff7ed;') + '">' +
+      '<td style="padding:6px;text-align:center;">' + chk + '</td>' +
+      '<td style="padding:6px;font-family:monospace;font-weight:900;color:#1a2050;white-space:nowrap;">' + f.ref + '</td>' +
+      '<td style="padding:6px;font-size:.7rem;color:#334155;max-width:260px;">' + String(f.d).substring(0, 60) + (f.esDoc ? ' <span style="background:#fef3c7;color:#92400e;border-radius:4px;padding:0 4px;font-weight:800;">DOC→PZA ÷12</span>' : '') + '</td>' +
+      '<td style="padding:6px;text-align:right;color:#64748b;">' + _p371(f.fobAct, 4) + '</td>' +
+      '<td style="padding:6px;text-align:right;font-weight:900;">' + (f.fobOC > 0 ? _p371(f.fobOC, 4) : '—') + '<div style="font-size:.66rem;">' + _pct371(f.fobAct, f.fobOC) + '</div></td>' +
+      (c ? (
+        '<td style="padding:6px;text-align:right;color:#475569;font-size:.72rem;">' + _p371(c.flete, 4) + '<div style="font-size:.6rem;color:#94a3b8;">' + f.vol + ' ft³ ÷ ' + f.uds + '</div></td>' +
+        '<td style="padding:6px;text-align:right;color:#475569;">' + _p371(c.costo, 4) + '</td>' +
+        '<td style="padding:6px;text-align:right;"><span style="color:#94a3b8;">' + _p371(f.uAct) + '</span> → <strong>' + _p371(c.u) + '</strong><div style="font-size:.66rem;">' + _pct371(f.uAct, c.u) + '</div></td>' +
+        '<td style="padding:6px;text-align:right;"><span style="color:#94a3b8;">' + _p371(f.bvAct) + '</span> → <strong>' + _p371(c.bv) + '</strong></td>' +
+        '<td style="padding:6px;text-align:right;"><span style="color:#94a3b8;">' + _p371(f.tAct) + '</span> → <strong>' + _p371(c.t) + '</strong></td>'
+      ) : '<td colspan="5" style="padding:6px;color:#c2410c;font-weight:800;font-size:.74rem;">⚠ No se puede calcular: ' + f.falta + '</td>') +
+    '</tr>';
+  }).join('');
+  var html = '<div id="oc-p371-ov" style="position:fixed;inset:0;z-index:100040;background:rgba(0,0,0,.85);display:flex;align-items:center;justify-content:center;padding:14px;">' +
+    '<div style="background:#fff;border-radius:14px;width:100%;max-width:1400px;max-height:95vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.5);">' +
+      '<div style="padding:15px 22px;background:linear-gradient(135deg,#065f46,#047857);color:#fff;border-radius:14px 14px 0 0;display:flex;justify-content:space-between;align-items:center;gap:10px;">' +
+        '<div><div style="font-family:\'Barlow Condensed\',sans-serif;font-weight:900;font-size:1.4rem;letter-spacing:1px;">💲 ACTUALIZAR FOB Y PRECIOS ' + (st.recep ? '· MERCANCÍA RECIBIDA' : '') + '</div>' +
+        '<div style="font-size:.78rem;opacity:.9;">OC ' + (oc.numero || '') + ' · ' + (oc.proveedorNombre || '') + ' · Regla: flete $' + R.fletePorFt3 + '/ft³ · USD = costo ÷ ' + (1 - R.margenVenta).toFixed(2) + ' (' + Math.round(R.margenVenta * 100) + '% s/venta) · BCV = USD × ' + R.factorBCV.toFixed(2) + ' · TF = BCV × ' + R.factorTF.toFixed(2) + '</div></div>' +
+        '<button onclick="_ocP371Cerrar()" style="background:rgba(255,255,255,.15);border:1.5px solid rgba(255,255,255,.35);color:#fff;border-radius:8px;padding:8px 12px;font-weight:900;cursor:pointer;">✕ Ahora no</button>' +
+      '</div>' +
+      '<div style="flex:1;overflow:auto;">' +
+        '<table style="width:100%;border-collapse:collapse;font-size:.78rem;">' +
+          '<thead><tr style="position:sticky;top:0;background:#1e293b;color:#fff;font-size:.64rem;text-transform:uppercase;letter-spacing:.4px;">' +
+            '<th style="padding:7px;"><input type="checkbox" onchange="_ocPrecios371.filas.forEach(function(f){ if(f.calc) f.aplicar=this.checked; }, this);_ocP371Render()" ' + (nSel ? 'checked' : '') + '></th>' +
+            '<th style="padding:7px;text-align:left;">Ref</th><th style="padding:7px;text-align:left;">Descripción</th>' +
+            '<th style="padding:7px;text-align:right;">FOB actual</th><th style="padding:7px;text-align:right;">FOB OC</th>' +
+            '<th style="padding:7px;text-align:right;">Flete/ud</th><th style="padding:7px;text-align:right;">Costo</th>' +
+            '<th style="padding:7px;text-align:right;">USD</th><th style="padding:7px;text-align:right;">BCV</th><th style="padding:7px;text-align:right;">TF</th>' +
+          '</tr></thead><tbody>' + rows + '</tbody></table>' +
+      '</div>' +
+      '<div style="padding:12px 22px;border-top:1px solid #e2e8f0;display:flex;justify-content:space-between;align-items:center;gap:10px;background:#f8fafc;border-radius:0 0 14px 14px;">' +
+        '<div style="font-size:.74rem;color:#475569;">Se actualiza <strong>FOB + USD + BCV + TF</strong> en catálogo; el Master Data toma el mismo FOB. Los marcados con ⛔ no tienen datos para calcular.</div>' +
+        '<button onclick="_ocP371Aplicar()" ' + (nSel ? '' : 'disabled') + ' style="background:' + (nSel ? 'linear-gradient(135deg,#166534,#15803d)' : '#cbd5e1') + ';color:#fff;border:0;border-radius:9px;padding:11px 24px;font-weight:900;font-size:.9rem;cursor:' + (nSel ? 'pointer' : 'not-allowed') + ';">✅ Aplicar a ' + nSel + ' producto(s)</button>' +
+      '</div>' +
+    '</div></div>';
+  var prev = document.getElementById('oc-p371-ov'); if (prev) prev.remove();
+  document.body.insertAdjacentHTML('beforeend', html);
+}
+window._ocP371Render = _ocP371Render;
+
+window._ocP371Cerrar = function(){
+  var o = document.getElementById('oc-p371-ov'); if (o) o.remove();
+  var cb = _ocPrecios371 && _ocPrecios371.alCerrar;
+  _ocPrecios371 = null;
+  if (typeof cb === 'function') { try { cb(); } catch(e){ console.warn('[v.371] alCerrar:', e); } }
+};
+
+window._ocP371Aplicar = async function(){
+  var st = _ocPrecios371; if (!st) return;
+  var oc = (_ocDB || []).find(function(x){ return x.id === st.ocId; }) || {};
+  var sel = st.filas.filter(function(f){ return f.aplicar && f.calc; });
+  if (!sel.length) return;
+  if (!confirm('Se actualizarán FOB y precios (USD, BCV, TF) de ' + sel.length + ' producto(s) con el FOB de la OC ' + (oc.numero || '') + '.\n\n¿Continuar?')) return;
+  var cmp = [], ahora = new Date().toISOString();
+  sel.forEach(function(f){
+    var p = PRODUCTS.find(function(x){ return x.r === f.ref; }); if (!p) return;
+    var antes = parseFloat(p.costoFOB) || 0;
+    cmp.push({ ref: f.ref, d: p.d, antes: antes, ahora: f.calc.fob });
+    if (Math.abs(antes - f.calc.fob) >= 0.00005) {
+      if (!Array.isArray(p.costoFOBHistorial)) p.costoFOBHistorial = [];
+      p.costoFOBHistorial.push({ fecha: ahora, oc: oc.numero || '', proveedor: oc.proveedorNombre || '', valorAnterior: antes, valorNuevo: f.calc.fob, origen: 'precios-v371' });
+      if (p.costoFOBHistorial.length > 50) p.costoFOBHistorial = p.costoFOBHistorial.slice(-50);
+    }
+    p.costoFOB = f.calc.fob;
+    p.u = f.calc.u; p.bv = f.calc.bv; p.t = f.calc.t;
+  });
+  window._fobCmpSuprimirHasta = Date.now() + 120000; // esta pantalla ya mostró la comparación
+  var okNube = true;
+  try {
+    if (typeof saveProducts === 'function') await saveProducts();
+    else if (typeof window.fbSaveProducts === 'function') await window.fbSaveProducts(PRODUCTS);
+  } catch(e){ okNube = false; console.error('[v.371] guardar:', e); }
+  if (window.fbTriggerPortalSnapshot) { try { window.fbTriggerPortalSnapshot('precios-oc-v371'); } catch(e){} }
+  alert((okNube ? '✅ ' : '⚠ ') + sel.length + ' producto(s) actualizados: FOB + USD + BCV + TF.' + (okNube ? '' : '\nNo se confirmó el guardado en la nube: recarga y revisa.'));
+  var o = document.getElementById('oc-p371-ov'); if (o) o.remove();
+  var cb = st.alCerrar; _ocPrecios371 = null;
+  try { if (window.fobMostrarComparacion) window.fobMostrarComparacion(cmp, 'Precios desde OC ' + (oc.numero || '') + ' · ' + (oc.proveedorNombre || '')); } catch(e){}
+  try { if (typeof renderTable === 'function') renderTable(); } catch(e){}
+  try { if (typeof ptRender === 'function') ptRender(); } catch(e){}
+  if (typeof cb === 'function') { try { cb(); } catch(e){} }
+};
+
 window.ocEditarTotalesClick = function(id) {
   var oc = _ocDB.find(function(x){ return x.id === id; });
   if (!oc) return;
@@ -22419,9 +22587,14 @@ window._ocRecepGuardar = function(ocId) {
       showToast(msg, 'success');
     }
 
-    // ═══ Abrir modal CIF automáticamente (opcional, se puede saltar) ═══
+    // ═══ v.371: primero FOB + precios de lo recibido; al cerrar, el modal CIF (opcional) ═══
     setTimeout(function(){
-      ocCIFAbrir(oc.id, recepcion.id, true);
+      var _refsRec371 = recepcion.items.map(function(ri){ return ri.refFarmers; });
+      if (typeof window.ocPreciosAbrir === 'function') {
+        window.ocPreciosAbrir(oc.id, _refsRec371, function(){ ocCIFAbrir(oc.id, recepcion.id, true); });
+      } else {
+        ocCIFAbrir(oc.id, recepcion.id, true);
+      }
     }, 400);
 
   } catch(err) {
