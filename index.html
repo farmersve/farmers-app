@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.10.15.379">
+<meta name="farmers-version" content="2026.10.15.380">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -4642,6 +4642,9 @@ window.getComprometido = function() {
   return {};
 };
 window.saveComprometido = function(comp) {
+  /* v.380: las PREVENTAS activas forman parte del comprometido. Se re-inyectan aquí
+     (fuente: farmers_preventas) para que ninguna reconstrucción o limpieza las borre. */
+  if (typeof window._pvInyectarComp === 'function') { try { comp = window._pvInyectarComp(comp); } catch(ePv){ console.warn('[v.380] inyectar preventas:', ePv); } }
   /* v.329: guardado VERIFICADO. El 24/09 una reserva de 23.513 uds
      (MS-260924-1151) se perdió porque este setItem falló en silencio.
      Ahora: se escribe, se RELEE y se compara; si no quedó igual, se grita. */
@@ -4900,8 +4903,8 @@ window.libModalLiberar = function(ref, opts) {
       numP: pc.numP,
       qty: pc.qty,
       fecha: pc.fecha || (pedido ? pedido.fecha : ''),
-      cliente: pedido ? (pedido.cliente || pedido.clienteNombre || '—') : '⚠ Pedido huérfano (no existe)',
-      esHuerfano: !pedido
+      cliente: pedido ? (pedido.cliente || pedido.clienteNombre || '—') : ((pc.preventa || /^PV-/.test(String(pc.numP))) ? '🕒 PREVENTA · ' + (pc.cliente || '') : '⚠ Pedido huérfano (no existe)'),
+      esHuerfano: !pedido && !(pc.preventa || /^PV-/.test(String(pc.numP)))
     };
   });
 
@@ -5036,8 +5039,10 @@ window.libAbrirPanelAuditoria = function() {
     var disponible = Math.max(0, stock - qtyComp);
     var pedidos = (comp[r].pedidos||[]).map(function(pc){
       var p = pedidosMap[pc.numP];
-      return { numP: pc.numP, qty: pc.qty, fecha: pc.fecha, cliente: p?(p.cliente||p.clienteNombre||'—'):'⚠ HUÉRFANO', esHuerfano: !p };
+      var _pv380 = !p && (pc.preventa || /^PV-/.test(String(pc.numP)));
+      return { numP: pc.numP, qty: pc.qty, fecha: pc.fecha, cliente: p?(p.cliente||p.clienteNombre||'—'):(_pv380 ? '🕒 PREVENTA · ' + (pc.cliente||'') : '⚠ HUÉRFANO'), esHuerfano: !p && !_pv380, preventa: _pv380 };
     });
+    var _qtyPv380 = pedidos.reduce(function(a, pi){ return a + (pi.preventa ? (parseInt(pi.qty)||0) : 0); }, 0);
     return {
       ref: r,
       desc: prod ? (prod.d||'') : '—',
@@ -5046,7 +5051,7 @@ window.libAbrirPanelAuditoria = function() {
       qtyComp: qtyComp,
       disponible: disponible,
       pedidos: pedidos,
-      problematico: stock < qtyComp,  // stock real menor que comprometido = problema serio
+      problematico: stock < (qtyComp - _qtyPv380),  // stock real menor que comprometido = problema serio (v.380: la preventa espera mercancía en camino)
       huerfanoTotal: pedidos.every(function(pi){ return pi.esHuerfano; })
     };
   }).sort(function(a,b){
@@ -9762,6 +9767,7 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
           var arr = JSON.parse(s.data().v);
           if (!Array.isArray(arr)) return;
           localStorage.setItem('farmers_preventas', JSON.stringify(arr));
+          try { if (typeof window.pvSyncComprometido === 'function') window.pvSyncComprometido(); } catch(eS){}
           if (document.getElementById('pv-ov') && typeof window.pvAbrir === 'function') window.pvAbrir();
         } catch(e) { console.warn('onSnapshot preventas:', e); }
       });
@@ -27268,6 +27274,7 @@ window._ciBuildData = function() {
   var pt = {}; try { pt = JSON.parse(localStorage.getItem('farmers_pt_data') || '{}'); } catch(e) {}
   var M = window.MASTER || {};
   var camino = _ciEnCamino();
+  var _pvPendCI380 = {}; try { _pvPendCI380 = (typeof window.pvPendientePorRef === 'function') ? window.pvPendientePorRef() : {}; } catch(ePv){}
   var pendVivos = hist.pendientes || {};
   // Clasificación ABC por valor vendido en la ventana
   var valor = [], totalV = 0;
@@ -27280,7 +27287,7 @@ window._ciBuildData = function() {
   (window.PRODUCTS || []).forEach(function(p){
     var ref = p.r; if (!ref) return;
     var real = (inv[ref] !== undefined) ? (parseInt(inv[ref], 10) || 0) : (parseInt(p.ex, 10) || 0);
-    var compQ = (comp[ref] && parseInt(comp[ref].qty, 10)) || 0;
+    var compQ = Math.max(0, ((comp[ref] && parseInt(comp[ref].qty, 10)) || 0) - (_pvPendCI380[ref] || 0)); // v.380
     var disp = Math.max(0, real - compQ);
     var ordOC = camino[ref] || 0;
     var ord = ordOC > 0 ? ordOC : (parseInt((pt[ref] || {}).exOrdenada || 0, 10) || 0);
@@ -27531,6 +27538,7 @@ window._ciMarcasExcl = _ciMarcasExcl;
         try { if (typeof showToast === 'function') showToast('⚠ Preventa guardada en este equipo pero NO en la nube: ' + (e && e.message), 'error', { duration: 12000 }); } catch(x){}
       });
     }
+    try { window.pvSyncComprometido(); } catch(e){}   // v.380: la preventa es comprometido
     try { if (window.fbTriggerPortalSnapshot) window.fbTriggerPortalSnapshot('preventas'); } catch(e){}
     return true;
   };
@@ -27545,6 +27553,62 @@ window._ciMarcasExcl = _ciMarcasExcl;
     });
     return m;
   };
+
+  // v.380 — la preventa es COMPROMETIDO: entradas {numP:'PV-…', qty, preventa:true} dentro de farmers_inv_comprometido
+  window._pvInyectarComp = function(comp){
+    if (!comp || typeof comp !== 'object') return comp;
+    var pend = {};
+    pvGet().forEach(function(pv){
+      if (!ACTIVOS[pv.estado]) return;
+      (pv.items || []).forEach(function(it){
+        var q = i0(it.qty) - i0(it.convertido); if (q <= 0 || !it.ref) return;
+        (pend[it.ref] = pend[it.ref] || []).push({ numP: pv.id, qty: q, fecha: String(pv.fecha || '').slice(0, 10), cliente: pv.clienteNombre || '', preventa: true });
+      });
+    });
+    Object.keys(comp).forEach(function(r){
+      var e = comp[r];
+      if (!e || typeof e !== 'object' || !Array.isArray(e.pedidos)) return;
+      var pvq = 0;
+      e.pedidos = e.pedidos.filter(function(p){ var es = p && (p.preventa || /^PV-/.test(String(p.numP))); if (es) pvq += i0(p.qty); return !es; });
+      if (pvq) e.qty = Math.max(0, i0(e.qty) - pvq);
+      if (i0(e.qty) <= 0 && !e.pedidos.length) delete comp[r];
+    });
+    Object.keys(pend).forEach(function(r){
+      var e = comp[r];
+      if (!e || typeof e !== 'object') e = comp[r] = { qty: i0(e), pedidos: [] };
+      if (!Array.isArray(e.pedidos)) e.pedidos = [];
+      pend[r].forEach(function(x){ e.qty = i0(e.qty) + x.qty; e.pedidos.push(x); });
+    });
+    return comp;
+  };
+  // Re-sincroniza el comprometido con las preventas (solo escribe si cambió algo)
+  window.pvSyncComprometido = function(){
+    try {
+      if (typeof getComprometido !== 'function' || typeof saveComprometido !== 'function') return false;
+      var antes = JSON.stringify(getComprometido());
+      var despues = JSON.stringify(_pvInyectarComp(JSON.parse(antes)));
+      if (antes === despues) return false;
+      saveComprometido(JSON.parse(despues));
+      try { if (typeof syncInventoryToProducts === 'function') syncInventoryToProducts(); } catch(e){}
+      return true;
+    } catch(e){ console.warn('[v.380] pvSyncComprometido:', e); return false; }
+  };
+  // Existencia real (misma fuente que getDisponible)
+  function pvReal(ref){
+    var p = prod(ref), real = 0;
+    if (p) real = i0(p.exNE) + i0(p.exAN) + i0(p.exTF);
+    if (real === 0) { try { real = i0((getInventory() || {})[ref]); } catch(e){} }
+    return real;
+  }
+  function compQty(ref){ try { var e = (getComprometido() || {})[ref]; return e ? (typeof e === 'object' ? i0(e.qty) : i0(e)) : 0; } catch(e){ return 0; } }
+  // Disponible para ESTA preventa = real − (comprometido − lo que esta misma preventa tiene apartado)
+  window.pvDispPara = function(pvId, ref){
+    var own = 0;
+    pvGet().forEach(function(pv){ if (pv.id !== pvId || !ACTIVOS[pv.estado]) return; (pv.items || []).forEach(function(it){ if (it.ref === ref) own += Math.max(0, i0(it.qty) - i0(it.convertido)); }); });
+    return Math.max(0, pvReal(ref) - (compQty(ref) - own));
+  };
+  // Lo que se puede vender HOY de una ref sin contar preventas (para la regla "solo sin inventario")
+  window.pvDispSinPreventas = function(ref){ return Math.max(0, pvReal(ref) - (compQty(ref) - (pvPendientePorRef()[ref] || 0))); };
 
   // Lo que viene en camino por referencia (OC abiertas; si no hay OC, la Ordenada cargada)
   window.pvEnCamino = function(){
@@ -27593,7 +27657,7 @@ window._ciMarcasExcl = _ciMarcasExcl;
     if (filtro) window._pvFiltro = filtro;
     var lista = pvGet(), camino = pvEnCamino();
     var dispCache = {};
-    var disp = function(r){ if (dispCache[r] === undefined) { try { dispCache[r] = (typeof getDisponible === 'function') ? getDisponible(r) : 0; } catch(e){ dispCache[r] = 0; } } return dispCache[r]; };
+    var disp = function(r, pvId){ var k = pvId + '|' + r; if (dispCache[k] === undefined) { try { dispCache[k] = pvDispPara(pvId, r); } catch(e){ dispCache[k] = 0; } } return dispCache[k]; };
     var vis = lista.filter(function(pv){
       if (window._pvFiltro === 'ACTIVAS') return !!ACTIVOS[pv.estado];
       if (window._pvFiltro === 'CONVERTIDAS') return pv.estado === 'CONVERTIDA';
@@ -27605,7 +27669,7 @@ window._ciMarcasExcl = _ciMarcasExcl;
     var filas = vis.map(function(pv){
       var tot = 0, totSis = 0, listo = 0, faltan = 0;
       var lineas = (pv.items || []).map(function(it){
-        var pend = i0(it.qty) - i0(it.convertido), d = ACTIVOS[pv.estado] ? disp(it.ref) : 0;
+        var pend = i0(it.qty) - i0(it.convertido), d = ACTIVOS[pv.estado] ? disp(it.ref, pv.id) : 0;
         tot += n0(it.precio) * i0(it.qty); totSis += n0(it.precioSistema) * i0(it.qty);
         if (pend > 0 && d > 0) listo++;
         if (pend > 0) faltan++;
@@ -27616,7 +27680,7 @@ window._ciMarcasExcl = _ciMarcasExcl;
           '<span style="flex:1;min-width:170px;color:#cbd5ff;">' + esc((prod(it.ref) || {}).d || it.desc || '') + '</span>' +
           '<span>' + i0(it.qty).toLocaleString('en-US') + ' uds' + (i0(it.convertido) ? ' <span style="color:#86efac;">(' + i0(it.convertido) + ' ya en pedido)</span>' : '') + '</span>' +
           '<span>pactado <b style="color:#fff;">' + fmt$(it.precio, pv.moneda) + '</b> <span style="color:' + (dif < 0 ? '#fca5a5' : '#86efac') + ';">(' + (dif >= 0 ? '+' : '') + dif.toFixed(1) + '% vs sistema ' + fmt$(it.precioSistema, pv.moneda) + ')</span></span>' +
-          (ACTIVOS[pv.estado] && pend > 0 ? '<span style="color:' + (d > 0 ? '#4ade80' : '#a5b4fc') + ';font-weight:800;">' + (d > 0 ? '✅ disponible ' + d : '🚢 en camino ' + (cm ? cm.q + (cm.ocs.length ? ' (' + cm.ocs.map(function(o){ return o.num; }).join(', ') + ')' : '') : '0')) + '</span>' : '') +
+          (ACTIVOS[pv.estado] && pend > 0 ? '<span style="color:' + (d > 0 ? '#4ade80' : '#a5b4fc') + ';font-weight:800;">🔒 comprometido ' + pend + ' · ' + (d > 0 ? '✅ llegó: ' + Math.min(d, pend) + ' listo para pedido' : '🚢 en camino ' + (cm ? cm.q + (cm.ocs.length ? ' (' + cm.ocs.map(function(o){ return o.num; }).join(', ') + ')' : '') : '0')) + '</span>' : '') +
         '</div>';
       }).join('');
       if (listo) nListas++;
@@ -27700,8 +27764,10 @@ window._ciMarcasExcl = _ciMarcasExcl;
       var viene = cm ? cm.q : 0, yaRes = otras[it.ref] || 0, libre = Math.max(0, viene - yaRes);
       var dif = ps > 0 && n0(it.precio) > 0 ? (n0(it.precio) - ps) / ps * 100 : null;
       tot += n0(it.precio) * i0(it.qty); totSis += ps * i0(it.qty);
+      var dispHoy = it.ref && p ? pvDispSinPreventas(it.ref) : 0;
       var aviso = !it.ref ? '' : (!p ? '<span style="color:#fca5a5;">⚠ referencia no existe en el catálogo</span>' :
-        (!viene ? '<span style="color:#fbbf24;">⚠ no viene en ninguna OC abierta</span>' :
+        (dispHoy > 0 ? '<span style="color:#fca5a5;">⛔ tiene ' + dispHoy + ' disponible en el depósito: véndelo con un pedido normal (la preventa es solo para mercancía en camino sin inventario)</span>' :
+        !viene ? '<span style="color:#fca5a5;">⛔ no viene en ninguna OC abierta</span>' :
         'Vienen <b>' + viene.toLocaleString('en-US') + '</b>' + (cm.ocs.length ? ' en ' + cm.ocs.map(function(o){ return esc(o.num) + (o.eta ? ' (llega ~' + esc(o.eta) + ')' : ''); }).join(', ') : ' (Ordenada)') + ' · apartado en otras preventas ' + yaRes + ' · <b style="color:' + (i0(it.qty) > libre ? '#fca5a5' : '#86efac') + ';">libre ' + libre.toLocaleString('en-US') + '</b>' + (i0(it.qty) > libre ? ' ⚠ pides más de lo libre' : '')));
       return '<tr style="border-top:1px solid rgba(255,255,255,.08);">' +
         '<td style="padding:6px 4px;">' + inp('ref' + i, it.ref, "pvFSet('ref',this.value," + i + ")", '100%', 'text-transform:uppercase;" list="pv-refs') + '</td>' +
@@ -27716,7 +27782,7 @@ window._ciMarcasExcl = _ciMarcasExcl;
     var html = '<div id="pvf-ov" style="position:fixed;inset:0;z-index:100040;background:rgba(5,6,20,.85);display:flex;align-items:center;justify-content:center;padding:12px;">' + dl +
       '<div style="background:#12153a;border:1.5px solid #7c3aed;border-radius:14px;max-width:980px;width:100%;max-height:94vh;overflow:auto;color:#e5e7ff;">' +
         '<div style="padding:13px 18px;background:linear-gradient(135deg,#4c1d95,#7c3aed);border-radius:14px 14px 0 0;"><div style="font-family:Barlow Condensed,sans-serif;font-weight:900;font-size:1.2rem;letter-spacing:1px;">' + (F.id ? '✏ EDITAR ' + esc(F.id) : '＋ NUEVA PREVENTA') + '</div>' +
-        '<div style="font-size:.7rem;opacity:.9;">El precio que pongas aquí es SOLO para esta venta. El catálogo y los demás clientes siguen con el precio del sistema.</div></div>' +
+        '<div style="font-size:.7rem;opacity:.9;">Solo para mercancía EN CAMINO que hoy no tienes en el depósito. Queda COMPROMETIDA desde ya. El precio pactado es SOLO para esta venta.</div></div>' +
         '<div style="padding:12px 18px;display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;font-size:.72rem;font-weight:800;">' +
           '<label style="flex:2;min-width:240px;">Cliente<br><select data-k="cli" onchange="pvFSet(\'clienteId\',this.value)" style="width:100%;background:#0b0e28;border:1.5px solid #7c3aed;color:#e9d5ff;border-radius:6px;padding:7px;font-weight:800;font-family:inherit;"><option value="">— Elige el cliente —</option>' +
             clis.map(function(c){ return '<option value="' + esc(c.id) + '"' + (c.id === F.clienteId ? ' selected' : '') + '>' + esc(c.nombre) + (c.rif ? ' · ' + esc(c.rif) : '') + '</option>'; }).join('') + '</select></label>' +
@@ -27759,7 +27825,12 @@ window._ciMarcasExcl = _ciMarcasExcl;
       if (!(i0(it.qty) > 0)) errores.push((it.ref || '?') + ': falta la cantidad');
       if (!(n0(it.precio) > 0)) errores.push((it.ref || '?') + ': falta el precio pactado');
       var libre = Math.max(0, ((camino[it.ref] || {}).q || 0) - (otras[it.ref] || 0));
-      if (prod(it.ref) && i0(it.qty) > libre) avisos.push(it.ref + ': pides ' + i0(it.qty) + ' y lo libre en camino es ' + libre);
+      if (prod(it.ref)) {
+        var dHoy = pvDispSinPreventas(it.ref);
+        if (dHoy > 0) errores.push(it.ref + ': tiene ' + dHoy + ' disponible en el depósito. Véndelo con un pedido normal: la preventa es solo para mercancía en camino sin inventario');
+        else if (!((camino[it.ref] || {}).q > 0)) errores.push(it.ref + ': no viene en ninguna orden de compra abierta');
+        else if (i0(it.qty) > libre) errores.push(it.ref + ': pides ' + i0(it.qty) + ' pero lo libre en camino es ' + libre);
+      }
     });
     if (!items.length) errores.push('Agrega al menos una referencia.');
     if (errores.length) { alert('⚠ Revisa antes de guardar:\n\n• ' + errores.join('\n• ')); return; }
@@ -27785,7 +27856,7 @@ window._ciMarcasExcl = _ciMarcasExcl;
     window._pvF = null;
     pvAbrir('ACTIVAS');
     alert('🕒 PREVENTA ' + F.id + ' GUARDADA\n\n' + F.clienteNombre + ' · ' + F.moneda + '\n' + F.items.map(function(it){ return it.ref + ': ' + it.qty + ' uds a ' + fmt$(it.precio, F.moneda) + ' (sistema ' + fmt$(it.precioSistema, F.moneda) + ')'; }).join('\n') +
-      '\n\nQueda apartada de lo que viene en camino. Cuando llegue, el sistema te avisa para convertirla en pedido reservado con este precio.');
+      '\n\nQueda COMPROMETIDA desde ya (catálogo, inventario y portal). Cuando llegue la mercancía sigue apartada para este cliente y el sistema te avisa para convertirla en pedido con este precio.');
   };
 
   window.pvCancelar = function(id){
@@ -27804,7 +27875,7 @@ window._ciMarcasExcl = _ciMarcasExcl;
     var plan = [];
     pv.items.forEach(function(it){
       var pend = i0(it.qty) - i0(it.convertido); if (pend <= 0) return;
-      var d = 0; try { d = getDisponible(it.ref); } catch(e){}
+      var d = 0; try { d = pvDispPara(pv.id, it.ref); } catch(e){}
       var q = Math.min(pend, Math.max(0, d));
       plan.push({ it: it, pend: pend, disp: d, q: q });
     });
@@ -27824,12 +27895,20 @@ window._ciMarcasExcl = _ciMarcasExcl;
         estado: 'completo', totalPedido: x.q, precioPedido: x.it.precio, _precioCliente: x.it.precio, precioOverride: 'cliente', preventaId: pv.id };
     });
     var cps = {}; cps[suc] = pv.clienteId;
+    // v.380: primero se libera lo convertido de la preventa (deja de estar comprometido como preventa)…
+    conQ.forEach(function(x){ x.it.convertido = i0(x.it.convertido) + x.q; });
+    pvSave(arr);
+    // …y en el mismo paso queda comprometido por el pedido.
     var MSg = window.MS = window.MS || {}, monAntes = MSg.moneda, ok;
     try { MSg.moneda = pv.moneda; ok = window.msComprometerInventario(numP, [suc], data, cps, pv.moneda, hoyDMY()); }
     catch(e){ ok = false; console.error('[v.379] convertir preventa:', e); }
     finally { MSg.moneda = monAntes; }
     var peds2 = getMsPedidos(), ped = peds2.find(function(p){ return p.numP === numP; });
-    if (ok === false || !ped) { alert('⛔ No se pudo crear el pedido. La preventa sigue intacta.\n\nRevisa el aviso anterior del Monitor (por ejemplo, almacenamiento lleno) y vuelve a intentar.'); return; }
+    if (ok === false || !ped) {
+      conQ.forEach(function(x){ x.it.convertido = Math.max(0, i0(x.it.convertido) - x.q); });
+      pvSave(arr); // vuelve a quedar comprometido como preventa
+      alert('⛔ No se pudo crear el pedido. La preventa sigue intacta y comprometida.\n\nRevisa el aviso anterior del Monitor (por ejemplo, almacenamiento lleno) y vuelve a intentar.'); return;
+    }
     // Congelar el precio PACTADO en la moneda del pedido (por si el congelado tomó el del catálogo)
     var campo = 'precioCongelado_' + monKey(pv.moneda);
     ped.origen = 'PREVENTA'; ped.preventaId = pv.id;
@@ -27839,7 +27918,6 @@ window._ciMarcasExcl = _ciMarcasExcl;
     });
     saveMsPedidos(peds2);
     try { if (typeof syncInventoryToProducts === 'function') syncInventoryToProducts(); } catch(e){}
-    conQ.forEach(function(x){ x.it.convertido = i0(x.it.convertido) + x.q; });
     pv.conversiones = pv.conversiones || [];
     pv.conversiones.push({ numP: numP, fecha: new Date().toISOString(), items: conQ.map(function(x){ return { ref: x.it.ref, q: x.q }; }) });
     pv.estado = pv.items.every(function(it){ return i0(it.convertido) >= i0(it.qty); }) ? 'CONVERTIDA' : 'PARCIAL';
@@ -27859,7 +27937,7 @@ window._ciMarcasExcl = _ciMarcasExcl;
       (pv.items || []).forEach(function(it){
         if (refs && refs.indexOf(it.ref) < 0) return;
         var pend = i0(it.qty) - i0(it.convertido); if (pend <= 0) return;
-        var d = 0; try { d = getDisponible(it.ref); } catch(e){}
+        var d = 0; try { d = pvDispPara(pv.id, it.ref); } catch(e){}
         if (d > 0) lineas.push(it.ref + ' ×' + Math.min(pend, d));
       });
       if (lineas.length) lista.push(pv.clienteNombre + ': ' + lineas.join(', '));
@@ -27873,7 +27951,8 @@ window._ciMarcasExcl = _ciMarcasExcl;
       '<button onclick="document.getElementById(\'pv-aviso\').remove()" style="background:transparent;border:1px solid #86efac;color:#dcfce7;border-radius:7px;padding:7px 10px;font-weight:800;cursor:pointer;">Luego</button></div></div>');
     return lista.length;
   };
-  // Al cargar (por si la mercancía se recibió en otro equipo)
+  // Al cargar: comprometido al día con las preventas (v.380) y aviso si ya llegó mercancía
+  setTimeout(function(){ try { pvSyncComprometido(); } catch(e){} }, 22000);
   setTimeout(function(){ try { pvRevisarListas(null, 'Hay preventas con mercancía disponible'); } catch(e){} }, 30000);
 })();
 
@@ -35416,10 +35495,12 @@ function catAbrirComprometidoDetallado() {
         numP: pc.numP,
         qty: pc.qty,
         fecha: pc.fecha || (p ? (p.fecha||'') : ''),
-        cliente: p ? (p.cliente || p.clienteNombre || '—') : '⚠ HUÉRFANO',
-        esHuerfano: !p
+        cliente: p ? (p.cliente || p.clienteNombre || '—') : ((pc.preventa || /^PV-/.test(String(pc.numP))) ? '🕒 PREVENTA · ' + (pc.cliente || '') : '⚠ HUÉRFANO'),
+        esHuerfano: !p && !(pc.preventa || /^PV-/.test(String(pc.numP))),
+        preventa: !p && !!(pc.preventa || /^PV-/.test(String(pc.numP)))
       };
     });
+    var _qtyPvB380 = pedidos.reduce(function(a, pi){ return a + (pi.preventa ? (parseInt(pi.qty)||0) : 0); }, 0);
     return {
       ref: r,
       desc: prod ? (prod.d || '') : '—',
@@ -35429,7 +35510,7 @@ function catAbrirComprometidoDetallado() {
       qtyComp: qtyComp,
       disponible: disponible,
       pedidos: pedidos,
-      problematico: stockReal < qtyComp,
+      problematico: stockReal < (qtyComp - _qtyPvB380),
       huerfanoTotal: pedidos.length > 0 && pedidos.every(function(pi){ return pi.esHuerfano; }),
       // Para ordenar por antigüedad: tomar el pedido más antiguo
       fechaMasAntigua: pedidos.reduce(function(min, pi){
@@ -60029,6 +60110,7 @@ window.msLimpiarComprometidoHuerfano = function(opts) {
     entry.pedidos.forEach(function(pe){
       var estado = pedMap[pe.numP];
       var qtyPe = parseInt(pe.qty || 0) || 0;
+      if (pe && (pe.preventa || /^PV-/.test(String(pe.numP)))) { pedidosValidos.push(pe); qtySumaPedidos += qtyPe; return; } // v.380: preventa
       // Huérfano si:
       //   - no existe el pedido en farmers_ms_pedidos
       //   - O el pedido está despachado/cancelado
