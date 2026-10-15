@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.10.14.378">
+<meta name="farmers-version" content="2026.10.15.379">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -9747,6 +9747,25 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
         } catch(e) { console.warn('onSnapshot proveedores:', e); }
       });
 
+      // ── v.379 Preventas (mercancía en camino) ──
+      window.fbSavePreventas = async (arr) => {
+        var payload = Array.isArray(arr) ? arr : [];
+        await setDoc(doc(db,'data','preventas'), { v: JSON.stringify(payload), count: payload.length, updatedAt: Date.now() });
+        return true;
+      };
+      onSnapshot(doc(db,'data','preventas'), function(s) {
+        try {
+          if (!s.exists()) return;
+          var rAt = s.data().updatedAt || 0, lAt = parseInt(localStorage.getItem('farmers_preventas_savedAt') || '0') || 0;
+          if (rAt && lAt && rAt < lAt) return;                                  // eco viejo de mi propio guardado
+          if (lAt && (Date.now() - lAt) < 15000 && !(rAt && rAt > lAt)) return; // guardado local recién hecho
+          var arr = JSON.parse(s.data().v);
+          if (!Array.isArray(arr)) return;
+          localStorage.setItem('farmers_preventas', JSON.stringify(arr));
+          if (document.getElementById('pv-ov') && typeof window.pvAbrir === 'function') window.pvAbrir();
+        } catch(e) { console.warn('onSnapshot preventas:', e); }
+      });
+
       // ── v.378 Cuenta Argelia (Compra Inteligente) ──
       window.fbSaveCiCuenta = async (c) => {
         await setDoc(doc(db,'data','ci_cuenta'), { v: JSON.stringify(c || {}), updatedAt: Date.now() });
@@ -10885,13 +10904,14 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
       var snapshot = {};
       var stats = { totalRefs: 0, conStock: 0, bajoStock: 0, agotados: 0, conOrdenada: 0 };
 
+      var _pvRes379 = {}; try { _pvRes379 = (typeof window.pvPendientePorRef === 'function') ? window.pvPendientePorRef() : {}; } catch(ePv){}
       products.forEach(function(p){
         var ref = p.r;
         if (!ref) return;
         var real = (inv[ref] !== undefined) ? (parseInt(inv[ref]) || 0) : (parseInt(p.ex) || 0);
         var comp = _getCompQty(ref);
         var disp = Math.max(0, real - comp);
-        var ord  = parseInt((ptData[ref] || {}).exOrdenada || 0) || 0;
+        var ord  = Math.max(0, (parseInt((ptData[ref] || {}).exOrdenada || 0) || 0) - (_pvRes379[ref] || 0)); // v.379: ordenada LIBRE
 
         snapshot[ref] = { real: real, comprometido: comp, disponible: disp, ordenada: ord };
         stats.totalRefs++;
@@ -22696,6 +22716,8 @@ window._ocRecepGuardar = function(ocId) {
       showToast(msg, 'success');
     }
 
+    // v.379: si llegó mercancía apartada en preventas, avisar para convertirlas en pedido
+    try { var _refsPv379 = recepcion.items.map(function(ri){ return ri.refFarmers; }); setTimeout(function(){ try { if (typeof window.pvRevisarListas === 'function') window.pvRevisarListas(_refsPv379); } catch(e){} }, 1500); } catch(ePv){}
     // ═══ v.371: primero FOB + precios de lo recibido; al cerrar, el modal CIF (opcional) ═══
     setTimeout(function(){
       var _refsRec371 = recepcion.items.map(function(ri){ return ri.refFarmers; });
@@ -27191,6 +27213,8 @@ function _ciHistorial(W){
       if (vivo) { var rr = _ciAliasRef(it.ref); pend[rr] = (pend[rr] || 0) + falta; }
     });
   });
+  // v.379: preventas activas = clientes esperando mercancía → por cubrir
+  try { var _pv379 = (typeof window.pvPendientePorRef === 'function') ? window.pvPendientePorRef() : {}; Object.keys(_pv379).forEach(function(r){ var rr = _ciAliasRef(r); pend[rr] = (pend[rr] || 0) + _pv379[r]; }); } catch(ePv){}
   // v.376: solo lo PERDIDO NETO (sin lo que se le surtió después ni lo que el cliente volvió a pedir)
   try { _ciFaltAnalisis().lineas.forEach(function(l){ if (l.perdidoNeto > 0) sumar(l.ref, l.perdidoNeto, l.f, 'pedido'); }); } catch(eF){ console.warn('[v.376] faltantes:', eF); }
   try {
@@ -27469,6 +27493,390 @@ function _ciMarcasExcl(P){
   return String(P.excluir || '').toUpperCase().split(/[,;]+/).map(function(x){ return x.trim(); }).filter(Boolean);
 }
 window._ciMarcasExcl = _ciMarcasExcl;
+
+// ═══════════════════════════════════════════════════════════════════════
+// v.379 (15/10/2026) — PREVENTAS: reservar mercancía que viene en camino
+// Pedido de Omar: un cliente quiere apartar un producto que todavía no llega,
+// a un precio pactado SOLO para esa venta (el resto sigue con el precio del
+// sistema).
+//   • La preventa aparta de lo ORDENADO (OC en camino), no del disponible.
+//   • Precio pactado por línea, en la moneda de la venta; se congela al
+//     convertir (precioOverride 'cliente' + precioNegociado).
+//   • Al llegar la mercancía: "✅ Convertir" crea el pedido RESERVADO en el
+//     Monitor por la vía oficial (msComprometerInventario). Si llegó menos,
+//     convierte lo que hay y el resto sigue en preventa.
+//   • Compra Inteligente la cuenta como demanda de clientes por cubrir.
+//   • El portal ve la Ordenada LIBRE (ordenada − preventas).
+// Guardado: este equipo (farmers_preventas) + nube (data/preventas).
+// ═══════════════════════════════════════════════════════════════════════
+(function(){
+  var KEY = 'farmers_preventas';
+  var ACTIVOS = { ACTIVA: 1, PARCIAL: 1 };
+  function esc(s){ return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+  function n0(v){ var x = parseFloat(v); return isFinite(x) ? x : 0; }
+  function i0(v){ var x = parseInt(v, 10); return isFinite(x) ? x : 0; }
+  function fmt$(v, mon){ var s = (Math.round(n0(v) * 100) / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); return (mon === 'USD' || !mon ? '$' : mon + ' ') + s; }
+  function hoyDMY(){ return new Date().toLocaleDateString('es-VE', { day: '2-digit', month: '2-digit', year: 'numeric' }); }
+  function fDMY(iso){ try { var d = new Date(iso); return ('0' + d.getDate()).slice(-2) + '/' + ('0' + (d.getMonth() + 1)).slice(-2) + '/' + d.getFullYear(); } catch(e){ return ''; } }
+  function prod(ref){ return (window.PRODUCTS || []).find(function(p){ return p && p.r === ref; }) || null; }
+  function monKey(m){ m = String(m || 'USD').toUpperCase(); return (m === 'TF' || m === 'TIERRA FIRME') ? 'TF' : (m === 'BCV' ? 'BCV' : 'USD'); }
+
+  // ── Datos ──────────────────────────────────────────────────────────────
+  window.pvGet = function(){ try { var a = JSON.parse(localStorage.getItem(KEY) || '[]'); return Array.isArray(a) ? a : []; } catch(e){ return []; } };
+  window.pvSave = function(arr){
+    try { localStorage.setItem(KEY, JSON.stringify(arr)); localStorage.setItem(KEY + '_savedAt', String(Date.now())); }
+    catch(e){ alert('⛔ No se pudo guardar la preventa en este equipo: ' + (e && e.message)); return false; }
+    if (typeof window.fbSavePreventas === 'function') {
+      Promise.resolve(window.fbSavePreventas(arr)).catch(function(e){
+        try { if (typeof showToast === 'function') showToast('⚠ Preventa guardada en este equipo pero NO en la nube: ' + (e && e.message), 'error', { duration: 12000 }); } catch(x){}
+      });
+    }
+    try { if (window.fbTriggerPortalSnapshot) window.fbTriggerPortalSnapshot('preventas'); } catch(e){}
+    return true;
+  };
+  function cliente(id){ try { return (getClientsDB() || []).find(function(c){ return c.id === id; }) || null; } catch(e){ return null; } }
+
+  // Pendiente por referencia en preventas activas (lo que está apartado de lo que viene)
+  window.pvPendientePorRef = function(excluirId){
+    var m = {};
+    pvGet().forEach(function(pv){
+      if (!ACTIVOS[pv.estado] || pv.id === excluirId) return;
+      (pv.items || []).forEach(function(it){ var q = i0(it.qty) - i0(it.convertido); if (q > 0 && it.ref) m[it.ref] = (m[it.ref] || 0) + q; });
+    });
+    return m;
+  };
+
+  // Lo que viene en camino por referencia (OC abiertas; si no hay OC, la Ordenada cargada)
+  window.pvEnCamino = function(){
+    var m = {}, ocs = [];
+    try { ocs = (typeof getOrdenesCompraDB === 'function') ? (getOrdenesCompraDB() || []) : []; } catch(e){}
+    ocs.forEach(function(o){
+      if (!o || ['RECIBIDA_TOTAL', 'CERRADA', 'CANCELADA', 'BORRADOR'].indexOf(o.estado) >= 0) return;
+      var rec = {}; try { rec = (typeof ocCalcularRecibidoTotal === 'function') ? ocCalcularRecibidoTotal(o) : {}; } catch(e){}
+      var porRef = {};
+      (o.items || []).forEach(function(it){ if (it && it.refFarmers) porRef[it.refFarmers] = (porRef[it.refFarmers] || 0) + i0(it.cantidad); });
+      Object.keys(porRef).forEach(function(r){
+        var p = Math.max(0, porRef[r] - i0(rec[r]));
+        if (p <= 0) return;
+        var e = m[r] || (m[r] = { q: 0, ocs: [] });
+        e.q += p; e.ocs.push({ id: o.id, num: o.numero || o.id, q: p, eta: o.fechaEstimadaLlegada || '' });
+      });
+    });
+    var pt = {}; try { pt = JSON.parse(localStorage.getItem('farmers_pt_data') || '{}') || {}; } catch(e){}
+    Object.keys(pt).forEach(function(r){
+      if (m[r]) return;
+      var q = i0((pt[r] || {}).exOrdenada); if (q > 0) m[r] = { q: q, ocs: [], soloOrdenada: true };
+    });
+    return m;
+  };
+
+  function precioSistema(ref, mon, cli){
+    var p = prod(ref); if (!p) return 0;
+    var k = monKey(mon), base = k === 'TF' ? n0(p.t) : (k === 'BCV' ? n0(p.bv) : n0(p.u));
+    try { if (cli && typeof ajustarPrecioCliente === 'function') return ajustarPrecioCliente(base, ref, cli, k); } catch(e){}
+    return base;
+  }
+  window.pvPrecioSistema = precioSistema;
+
+  // Códigos de sucursal usados antes con este cliente en el Monitor (para que la factura salga igual)
+  function sucursalesDe(cli){
+    var out = [], seen = {};
+    var add = function(s){ s = String(s || '').trim(); if (s && !seen[s]) { seen[s] = 1; out.push(s); } };
+    try { (getMsPedidos() || []).forEach(function(p){ Object.keys(p.clientesPorSucursal || {}).forEach(function(s){ if (p.clientesPorSucursal[s] === cli.id) add(s); }); }); } catch(e){}
+    add(cli.nombre);
+    return out;
+  }
+
+  // ── Panel ──────────────────────────────────────────────────────────────
+  window._pvFiltro = 'ACTIVAS';
+  window.pvAbrir = function(filtro){
+    if (filtro) window._pvFiltro = filtro;
+    var lista = pvGet(), camino = pvEnCamino();
+    var dispCache = {};
+    var disp = function(r){ if (dispCache[r] === undefined) { try { dispCache[r] = (typeof getDisponible === 'function') ? getDisponible(r) : 0; } catch(e){ dispCache[r] = 0; } } return dispCache[r]; };
+    var vis = lista.filter(function(pv){
+      if (window._pvFiltro === 'ACTIVAS') return !!ACTIVOS[pv.estado];
+      if (window._pvFiltro === 'CONVERTIDAS') return pv.estado === 'CONVERTIDA';
+      if (window._pvFiltro === 'CANCELADAS') return pv.estado === 'CANCELADA';
+      return true;
+    }).sort(function(a, b){ return String(b.fecha).localeCompare(String(a.fecha)); });
+    var nAct = lista.filter(function(p){ return ACTIVOS[p.estado]; }).length;
+    var nListas = 0;
+    var filas = vis.map(function(pv){
+      var tot = 0, totSis = 0, listo = 0, faltan = 0;
+      var lineas = (pv.items || []).map(function(it){
+        var pend = i0(it.qty) - i0(it.convertido), d = ACTIVOS[pv.estado] ? disp(it.ref) : 0;
+        tot += n0(it.precio) * i0(it.qty); totSis += n0(it.precioSistema) * i0(it.qty);
+        if (pend > 0 && d > 0) listo++;
+        if (pend > 0) faltan++;
+        var cm = camino[it.ref];
+        var dif = n0(it.precioSistema) > 0 ? (n0(it.precio) - n0(it.precioSistema)) / n0(it.precioSistema) * 100 : 0;
+        return '<div style="display:flex;gap:10px;flex-wrap:wrap;font-size:.72rem;padding:3px 0;border-top:1px dashed rgba(255,255,255,.08);">' +
+          '<b style="color:#fde68a;min-width:62px;">' + esc(it.ref) + '</b>' +
+          '<span style="flex:1;min-width:170px;color:#cbd5ff;">' + esc((prod(it.ref) || {}).d || it.desc || '') + '</span>' +
+          '<span>' + i0(it.qty).toLocaleString('en-US') + ' uds' + (i0(it.convertido) ? ' <span style="color:#86efac;">(' + i0(it.convertido) + ' ya en pedido)</span>' : '') + '</span>' +
+          '<span>pactado <b style="color:#fff;">' + fmt$(it.precio, pv.moneda) + '</b> <span style="color:' + (dif < 0 ? '#fca5a5' : '#86efac') + ';">(' + (dif >= 0 ? '+' : '') + dif.toFixed(1) + '% vs sistema ' + fmt$(it.precioSistema, pv.moneda) + ')</span></span>' +
+          (ACTIVOS[pv.estado] && pend > 0 ? '<span style="color:' + (d > 0 ? '#4ade80' : '#a5b4fc') + ';font-weight:800;">' + (d > 0 ? '✅ disponible ' + d : '🚢 en camino ' + (cm ? cm.q + (cm.ocs.length ? ' (' + cm.ocs.map(function(o){ return o.num; }).join(', ') + ')' : '') : '0')) + '</span>' : '') +
+        '</div>';
+      }).join('');
+      if (listo) nListas++;
+      var col = pv.estado === 'CONVERTIDA' ? '#4ade80' : (pv.estado === 'CANCELADA' ? '#94a3b8' : (listo ? '#4ade80' : '#a78bfa'));
+      return '<div style="background:#0f1338;border:1.5px solid ' + col + '55;border-left:5px solid ' + col + ';border-radius:10px;padding:10px 14px;margin-bottom:10px;">' +
+        '<div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:center;">' +
+          '<div><b style="color:#fff;">' + esc(pv.id) + '</b> · ' + fDMY(pv.fecha) + ' · <b style="color:#fde68a;">' + esc(pv.clienteNombre) + '</b>' + (pv.suc && pv.suc !== pv.clienteNombre ? ' <span style="color:#a5b4fc;">(' + esc(pv.suc) + ')</span>' : '') + ' · ' + esc(pv.moneda) +
+            '<div style="font-size:.68rem;color:#8891c9;">Total pactado <b style="color:#fff;">' + fmt$(tot, pv.moneda) + '</b> · a precio sistema ' + fmt$(totSis, pv.moneda) + ' · diferencia <b style="color:' + (tot - totSis < 0 ? '#fca5a5' : '#86efac') + ';">' + fmt$(tot - totSis, pv.moneda) + '</b>' +
+            (pv.conversiones && pv.conversiones.length ? ' · pedidos: ' + pv.conversiones.map(function(c){ return esc(c.numP); }).join(', ') : '') + (pv.notas ? ' · 📝 ' + esc(pv.notas) : '') + '</div></div>' +
+          '<div style="display:flex;gap:6px;align-items:center;">' +
+            '<span style="font-size:.66rem;font-weight:900;color:' + col + ';">' + (pv.estado === 'PARCIAL' ? 'PARCIAL' : pv.estado) + (ACTIVOS[pv.estado] && listo ? ' · LISTA PARA PEDIDO' : '') + '</span>' +
+            (ACTIVOS[pv.estado] && listo ? '<button onclick="pvConvertir(\'' + pv.id + '\')" style="background:linear-gradient(135deg,#16a34a,#15803d);color:#fff;border:0;border-radius:7px;padding:7px 12px;font-weight:900;cursor:pointer;font-size:.7rem;">✅ Convertir en pedido</button>' : '') +
+            (ACTIVOS[pv.estado] && !(pv.items || []).some(function(it){ return i0(it.convertido) > 0; }) ? '<button onclick="pvForm(\'' + pv.id + '\')" style="background:rgba(99,102,241,.25);border:1px solid #6366f1;color:#c7d2fe;border-radius:7px;padding:7px 10px;font-weight:800;cursor:pointer;font-size:.7rem;">✏ Editar</button>' +
+              '' : '') + (ACTIVOS[pv.estado] ? '<button onclick="pvCancelar(\'' + pv.id + '\')" style="background:rgba(220,38,38,.2);border:1px solid #dc2626;color:#fca5a5;border-radius:7px;padding:7px 10px;font-weight:800;cursor:pointer;font-size:.7rem;">✖ Cancelar</button>' : '') +
+          '</div>' +
+        '</div>' + lineas + '</div>';
+    }).join('');
+    var tab = function(k, t){ return '<button onclick="pvAbrir(\'' + k + '\')" style="background:' + (window._pvFiltro === k ? '#7c3aed' : 'transparent') + ';border:1px solid #7c3aed;color:#e9d5ff;border-radius:7px;padding:6px 12px;font-weight:800;cursor:pointer;font-size:.7rem;">' + t + '</button>'; };
+    var html = '<div id="pv-ov" style="position:fixed;inset:0;z-index:100030;background:rgba(5,6,20,.85);display:flex;align-items:center;justify-content:center;padding:12px;">' +
+      '<div style="background:#12153a;border:1.5px solid #7c3aed;border-radius:14px;max-width:1100px;width:100%;max-height:94vh;display:flex;flex-direction:column;color:#e5e7ff;">' +
+        '<div style="padding:13px 18px;background:linear-gradient(135deg,#4c1d95,#7c3aed);border-radius:14px 14px 0 0;display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;">' +
+          '<div><div style="font-family:Barlow Condensed,sans-serif;font-weight:900;font-size:1.3rem;letter-spacing:1px;">🕒 PREVENTAS · MERCANCÍA EN CAMINO</div>' +
+          '<div style="font-size:.72rem;opacity:.9;">Aparta lo que viene en las OC para un cliente, a un precio pactado solo para esa venta. Al llegar, se convierte en pedido reservado.</div></div>' +
+          '<div style="display:flex;gap:8px;"><button onclick="pvForm()" style="background:#fff;color:#4c1d95;border:0;border-radius:8px;padding:9px 14px;font-weight:900;cursor:pointer;">＋ Nueva preventa</button>' +
+          '<button onclick="document.getElementById(\'pv-ov\').remove()" style="background:rgba(255,255,255,.15);border:1px solid rgba(255,255,255,.4);color:#fff;border-radius:8px;padding:9px 12px;font-weight:900;cursor:pointer;">✕</button></div>' +
+        '</div>' +
+        '<div style="padding:10px 18px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;border-bottom:1px solid rgba(124,58,237,.35);">' +
+          tab('ACTIVAS', 'Activas (' + nAct + ')') + tab('CONVERTIDAS', 'Convertidas') + tab('CANCELADAS', 'Canceladas') + tab('TODAS', 'Todas') +
+          (nListas ? '<span style="margin-left:auto;font-size:.74rem;font-weight:900;color:#4ade80;">✅ ' + nListas + ' preventa(s) con mercancía disponible: conviértelas para que nadie más se la lleve</span>' : '') +
+        '</div>' +
+        '<div style="flex:1;overflow:auto;padding:12px 18px;">' + (filas || '<div style="padding:40px;text-align:center;color:#8891c9;">No hay preventas en esta vista.</div>') + '</div>' +
+      '</div></div>';
+    var prev = document.getElementById('pv-ov'); if (prev) prev.remove();
+    document.body.insertAdjacentHTML('beforeend', html);
+  };
+
+  // ── Formulario ─────────────────────────────────────────────────────────
+  window._pvF = null;
+  window.pvForm = function(id){
+    if (id) {
+      var pv = pvGet().find(function(x){ return x.id === id; });
+      if (!pv) return;
+      if (pv.items.some(function(it){ return i0(it.convertido) > 0; })) { alert('Esta preventa ya tiene una parte convertida en pedido. Solo puedes cancelarla o convertir lo que falta.'); return; }
+      window._pvF = JSON.parse(JSON.stringify(pv));
+    } else {
+      window._pvF = { id: null, clienteId: '', clienteNombre: '', suc: '', moneda: 'USD', items: [{ ref: '', qty: 0, precio: 0 }], notas: '' };
+    }
+    pvFormRender();
+  };
+  window.pvFSet = function(campo, val, i){
+    var F = window._pvF;
+    if (i !== undefined && i !== null && i !== '') {
+      var it = F.items[+i];
+      if (campo === 'ref') {
+        it.ref = String(val || '').trim().toUpperCase();
+        var cli = cliente(F.clienteId), ps = precioSistema(it.ref, F.moneda, cli);
+        if (!n0(it.precio) && ps) it.precio = Math.round(ps * 100) / 100;
+      } else if (campo === 'qty') it.qty = Math.max(0, i0(val));
+      else if (campo === 'precio') it.precio = Math.max(0, n0(String(val).replace(',', '.')));
+    } else if (campo === 'clienteId') {
+      F.clienteId = val; var c = cliente(val);
+      F.clienteNombre = c ? c.nombre : ''; F.suc = c ? (sucursalesDe(c)[0] || c.nombre) : '';
+      if (c) { var tp = String(c.tipoPrecio || '').toUpperCase(); F.moneda = tp.indexOf('TIERRA') >= 0 || tp === 'TF' ? 'TF' : (tp === 'BCV' ? 'BCV' : 'USD'); }
+    } else F[campo] = val;
+    setTimeout(pvFormRender, 0);
+  };
+  window.pvFAdd = function(){ window._pvF.items.push({ ref: '', qty: 0, precio: 0 }); pvFormRender(); };
+  window.pvFDel = function(i){ window._pvF.items.splice(+i, 1); if (!window._pvF.items.length) window._pvF.items.push({ ref: '', qty: 0, precio: 0 }); pvFormRender(); };
+
+  window.pvFormRender = function(){
+    var F = window._pvF; if (!F) return;
+    var act = (document.activeElement && document.activeElement.getAttribute) ? document.activeElement.getAttribute('data-k') : null;
+    var clis = []; try { clis = (getClientsDB() || []).slice().sort(function(a, b){ return String(a.nombre).localeCompare(String(b.nombre)); }); } catch(e){}
+    var cli = cliente(F.clienteId), camino = pvEnCamino(), otras = pvPendientePorRef(F.id);
+    var inp = function(k, v, onch, w, extra){ return '<input data-k="' + k + '" value="' + esc(v) + '" onchange="' + onch + '" style="width:' + w + ';box-sizing:border-box;background:#0b0e28;border:1.5px solid #7c3aed;color:#e9d5ff;border-radius:6px;padding:6px;font-weight:800;font-family:inherit;font-size:.76rem;' + (extra || '') + '">'; };
+    var refsCamino = Object.keys(camino).sort();
+    var dl = '<datalist id="pv-refs">' + refsCamino.map(function(r){ return '<option value="' + esc(r) + '">' + esc(((prod(r) || {}).d || '').slice(0, 60)) + ' · vienen ' + camino[r].q + '</option>'; }).join('') + '</datalist>';
+    var tot = 0, totSis = 0;
+    var filas = F.items.map(function(it, i){
+      var p = prod(it.ref), cm = camino[it.ref], ps = it.ref ? precioSistema(it.ref, F.moneda, cli) : 0;
+      var viene = cm ? cm.q : 0, yaRes = otras[it.ref] || 0, libre = Math.max(0, viene - yaRes);
+      var dif = ps > 0 && n0(it.precio) > 0 ? (n0(it.precio) - ps) / ps * 100 : null;
+      tot += n0(it.precio) * i0(it.qty); totSis += ps * i0(it.qty);
+      var aviso = !it.ref ? '' : (!p ? '<span style="color:#fca5a5;">⚠ referencia no existe en el catálogo</span>' :
+        (!viene ? '<span style="color:#fbbf24;">⚠ no viene en ninguna OC abierta</span>' :
+        'Vienen <b>' + viene.toLocaleString('en-US') + '</b>' + (cm.ocs.length ? ' en ' + cm.ocs.map(function(o){ return esc(o.num) + (o.eta ? ' (llega ~' + esc(o.eta) + ')' : ''); }).join(', ') : ' (Ordenada)') + ' · apartado en otras preventas ' + yaRes + ' · <b style="color:' + (i0(it.qty) > libre ? '#fca5a5' : '#86efac') + ';">libre ' + libre.toLocaleString('en-US') + '</b>' + (i0(it.qty) > libre ? ' ⚠ pides más de lo libre' : '')));
+      return '<tr style="border-top:1px solid rgba(255,255,255,.08);">' +
+        '<td style="padding:6px 4px;">' + inp('ref' + i, it.ref, "pvFSet('ref',this.value," + i + ")", '100%', 'text-transform:uppercase;" list="pv-refs') + '</td>' +
+        '<td style="padding:6px 4px;font-size:.7rem;color:#cbd5ff;">' + esc(p ? p.d : '') + '<div style="font-size:.66rem;color:#a5b4fc;margin-top:2px;">' + aviso + '</div></td>' +
+        '<td style="padding:6px 4px;">' + inp('qty' + i, it.qty || '', "pvFSet('qty',this.value," + i + ")", '100%', 'text-align:right;') + '</td>' +
+        '<td style="padding:6px 4px;">' + inp('pr' + i, it.precio || '', "pvFSet('precio',this.value," + i + ")", '100%', 'text-align:right;') +
+          '<div style="font-size:.64rem;color:#a5b4fc;margin-top:2px;">sistema ' + fmt$(ps, F.moneda) + (dif != null ? ' · <b style="color:' + (dif < 0 ? '#fca5a5' : '#86efac') + ';">' + (dif >= 0 ? '+' : '') + dif.toFixed(1) + '%</b>' : '') + '</div></td>' +
+        '<td style="padding:6px 4px;text-align:right;font-weight:900;font-size:.74rem;">' + fmt$(n0(it.precio) * i0(it.qty), F.moneda) + '</td>' +
+        '<td><button onclick="pvFDel(' + i + ')" style="background:none;border:0;color:#fca5a5;cursor:pointer;font-weight:900;">✕</button></td></tr>';
+    }).join('');
+    var sucs = cli ? sucursalesDe(cli) : [];
+    var html = '<div id="pvf-ov" style="position:fixed;inset:0;z-index:100040;background:rgba(5,6,20,.85);display:flex;align-items:center;justify-content:center;padding:12px;">' + dl +
+      '<div style="background:#12153a;border:1.5px solid #7c3aed;border-radius:14px;max-width:980px;width:100%;max-height:94vh;overflow:auto;color:#e5e7ff;">' +
+        '<div style="padding:13px 18px;background:linear-gradient(135deg,#4c1d95,#7c3aed);border-radius:14px 14px 0 0;"><div style="font-family:Barlow Condensed,sans-serif;font-weight:900;font-size:1.2rem;letter-spacing:1px;">' + (F.id ? '✏ EDITAR ' + esc(F.id) : '＋ NUEVA PREVENTA') + '</div>' +
+        '<div style="font-size:.7rem;opacity:.9;">El precio que pongas aquí es SOLO para esta venta. El catálogo y los demás clientes siguen con el precio del sistema.</div></div>' +
+        '<div style="padding:12px 18px;display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;font-size:.72rem;font-weight:800;">' +
+          '<label style="flex:2;min-width:240px;">Cliente<br><select data-k="cli" onchange="pvFSet(\'clienteId\',this.value)" style="width:100%;background:#0b0e28;border:1.5px solid #7c3aed;color:#e9d5ff;border-radius:6px;padding:7px;font-weight:800;font-family:inherit;"><option value="">— Elige el cliente —</option>' +
+            clis.map(function(c){ return '<option value="' + esc(c.id) + '"' + (c.id === F.clienteId ? ' selected' : '') + '>' + esc(c.nombre) + (c.rif ? ' · ' + esc(c.rif) : '') + '</option>'; }).join('') + '</select></label>' +
+          '<label style="flex:1;min-width:170px;">Sucursal / código en el pedido<br>' + inp('suc', F.suc, "pvFSet('suc',this.value)", '100%', '" list="pv-sucs') + '<datalist id="pv-sucs">' + sucs.map(function(s){ return '<option value="' + esc(s) + '">'; }).join('') + '</datalist></label>' +
+          '<label>Moneda<br><select data-k="mon" onchange="pvFSet(\'moneda\',this.value)" style="background:#0b0e28;border:1.5px solid #7c3aed;color:#e9d5ff;border-radius:6px;padding:7px;font-weight:800;font-family:inherit;">' +
+            ['USD', 'BCV', 'TF'].map(function(m){ return '<option' + (F.moneda === m ? ' selected' : '') + '>' + m + '</option>'; }).join('') + '</select></label>' +
+        '</div>' +
+        '<div style="padding:0 18px;"><table style="width:100%;border-collapse:collapse;table-layout:fixed;min-width:0;"><colgroup><col style="width:12%"><col style="width:41%"><col style="width:11%"><col style="width:15%"><col style="width:16%"><col style="width:5%"></colgroup>' +
+          '<thead><tr style="font-size:.64rem;color:#a5b4fc;text-align:left;"><th style="padding:6px 4px;">REF</th><th style="padding:6px 4px;">DESCRIPCIÓN · LO QUE VIENE</th><th style="padding:6px 4px;">UNIDADES</th><th style="padding:6px 4px;">PRECIO PACTADO (' + esc(F.moneda) + ')</th><th style="padding:6px 4px;text-align:right;">TOTAL</th><th></th></tr></thead><tbody>' + filas + '</tbody></table>' +
+          '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;flex-wrap:wrap;gap:8px;">' +
+            '<button onclick="pvFAdd()" style="background:rgba(124,58,237,.25);border:1.5px solid #7c3aed;color:#e9d5ff;border-radius:7px;padding:6px 12px;cursor:pointer;font-weight:800;font-size:.72rem;">＋ Otra referencia</button>' +
+            '<div style="font-size:.78rem;font-weight:900;">Total pactado ' + fmt$(tot, F.moneda) + ' <span style="color:#a5b4fc;font-weight:700;">· a precio sistema ' + fmt$(totSis, F.moneda) + ' · diferencia <span style="color:' + (tot - totSis < 0 ? '#fca5a5' : '#86efac') + ';">' + fmt$(tot - totSis, F.moneda) + '</span></span></div>' +
+          '</div>' +
+          '<label style="display:block;margin-top:10px;font-size:.72rem;font-weight:800;">Notas<br>' + inp('notas', F.notas, "pvFSet('notas',this.value)", '100%') + '</label>' +
+        '</div>' +
+        '<div style="padding:12px 18px;display:flex;justify-content:flex-end;gap:8px;border-top:1px solid rgba(124,58,237,.4);margin-top:12px;">' +
+          '<button onclick="document.getElementById(\'pvf-ov\').remove()" style="background:transparent;border:1.5px solid rgba(255,255,255,.3);color:#c7d2fe;border-radius:8px;padding:9px 14px;cursor:pointer;font-weight:800;">Cancelar</button>' +
+          '<button onclick="pvGuardar()" style="background:linear-gradient(135deg,#16a34a,#15803d);color:#fff;border:0;border-radius:8px;padding:10px 20px;cursor:pointer;font-weight:900;">💾 Guardar preventa</button>' +
+        '</div>' +
+      '</div></div>';
+    var prev = document.getElementById('pvf-ov'), sc = prev ? prev.lastChild.scrollTop : 0;
+    if (prev) prev.remove();
+    document.body.insertAdjacentHTML('beforeend', html);
+    try { if (sc) document.getElementById('pvf-ov').lastChild.scrollTop = sc; } catch(e){}
+    try { if (act) { var nx = document.querySelector('#pvf-ov [data-k="' + act + '"]'); if (nx) nx.focus(); } } catch(e){}
+  };
+
+  window.pvGuardar = function(){
+    var F = window._pvF; if (!F) return;
+    var cli = cliente(F.clienteId);
+    if (!cli) { alert('Elige el cliente.'); return; }
+    if (!String(F.suc || '').trim()) F.suc = cli.nombre;
+    var items = F.items.filter(function(it){ return it.ref || i0(it.qty) || n0(it.precio); });
+    var errores = [], avisos = [], vistos = {};
+    var camino = pvEnCamino(), otras = pvPendientePorRef(F.id);
+    items.forEach(function(it){
+      if (!prod(it.ref)) errores.push((it.ref || '(sin ref)') + ': no existe en el catálogo');
+      else if (vistos[it.ref]) errores.push(it.ref + ': está repetida, súmala en una sola línea');
+      vistos[it.ref] = 1;
+      if (!(i0(it.qty) > 0)) errores.push((it.ref || '?') + ': falta la cantidad');
+      if (!(n0(it.precio) > 0)) errores.push((it.ref || '?') + ': falta el precio pactado');
+      var libre = Math.max(0, ((camino[it.ref] || {}).q || 0) - (otras[it.ref] || 0));
+      if (prod(it.ref) && i0(it.qty) > libre) avisos.push(it.ref + ': pides ' + i0(it.qty) + ' y lo libre en camino es ' + libre);
+    });
+    if (!items.length) errores.push('Agrega al menos una referencia.');
+    if (errores.length) { alert('⚠ Revisa antes de guardar:\n\n• ' + errores.join('\n• ')); return; }
+    if (avisos.length && !confirm('⚠ Estás apartando más de lo que viene libre en camino:\n\n• ' + avisos.join('\n• ') + '\n\n¿Guardar de todas formas?')) return;
+    var arr = pvGet(), ahora = new Date();
+    if (!F.id) {
+      var base = 'PV-' + String(ahora.getFullYear()).slice(-2) + ('0' + (ahora.getMonth() + 1)).slice(-2) + ('0' + ahora.getDate()).slice(-2) + '-' + ('0' + ahora.getHours()).slice(-2) + ('0' + ahora.getMinutes()).slice(-2);
+      var nid = base, k = 1; while (arr.some(function(x){ return x.id === nid; })) nid = base + '-' + (++k);
+      F.id = nid; F.fecha = ahora.toISOString(); F.estado = 'ACTIVA'; F.conversiones = [];
+      F.usuario = (typeof CURRENT_USER !== 'undefined' && CURRENT_USER) ? CURRENT_USER : 'OGK';
+    }
+    F.clienteNombre = cli.nombre; F.rif = cli.rif || '';
+    F.items = items.map(function(it){
+      return { ref: it.ref, desc: (prod(it.ref) || {}).d || '', qty: i0(it.qty), precio: Math.round(n0(it.precio) * 10000) / 10000,
+        precioSistema: Math.round(precioSistema(it.ref, F.moneda, cli) * 10000) / 10000, convertido: i0(it.convertido),
+        ocs: ((camino[it.ref] || {}).ocs || []).map(function(o){ return o.num; }) };
+    });
+    F.updatedAt = Date.now();
+    var idx = arr.findIndex(function(x){ return x.id === F.id; });
+    if (idx >= 0) arr[idx] = F; else arr.push(F);
+    if (!pvSave(arr)) return;
+    var ov = document.getElementById('pvf-ov'); if (ov) ov.remove();
+    window._pvF = null;
+    pvAbrir('ACTIVAS');
+    alert('🕒 PREVENTA ' + F.id + ' GUARDADA\n\n' + F.clienteNombre + ' · ' + F.moneda + '\n' + F.items.map(function(it){ return it.ref + ': ' + it.qty + ' uds a ' + fmt$(it.precio, F.moneda) + ' (sistema ' + fmt$(it.precioSistema, F.moneda) + ')'; }).join('\n') +
+      '\n\nQueda apartada de lo que viene en camino. Cuando llegue, el sistema te avisa para convertirla en pedido reservado con este precio.');
+  };
+
+  window.pvCancelar = function(id){
+    var arr = pvGet(), pv = arr.find(function(x){ return x.id === id; }); if (!pv) return;
+    if (!confirm('¿Cancelar la preventa ' + id + ' de ' + pv.clienteNombre + '?\n\nLo que no se ha convertido en pedido vuelve a quedar libre.' + (pv.conversiones && pv.conversiones.length ? '\n(Los pedidos ya creados NO se tocan: ' + pv.conversiones.map(function(c){ return c.numP; }).join(', ') + ')' : ''))) return;
+    pv.estado = (pv.conversiones && pv.conversiones.length) ? 'CONVERTIDA' : 'CANCELADA';
+    pv.canceladaEl = new Date().toISOString(); pv.updatedAt = Date.now();
+    pvSave(arr); pvAbrir();
+  };
+
+  // ── Convertir en pedido reservado (Monitor de Pedidos) ─────────────────
+  window.pvConvertir = function(id){
+    var arr = pvGet(), pv = arr.find(function(x){ return x.id === id; });
+    if (!pv || !ACTIVOS[pv.estado]) { alert('La preventa no está activa.'); return; }
+    if (typeof window.msComprometerInventario !== 'function') { alert('⛔ El Monitor de Pedidos no está cargado. Recarga la página.'); return; }
+    var plan = [];
+    pv.items.forEach(function(it){
+      var pend = i0(it.qty) - i0(it.convertido); if (pend <= 0) return;
+      var d = 0; try { d = getDisponible(it.ref); } catch(e){}
+      var q = Math.min(pend, Math.max(0, d));
+      plan.push({ it: it, pend: pend, disp: d, q: q });
+    });
+    var conQ = plan.filter(function(x){ return x.q > 0; });
+    if (!conQ.length) { alert('Todavía no hay disponible para esta preventa.\n\n' + plan.map(function(x){ return x.it.ref + ': faltan ' + x.pend + ' · disponible ' + x.disp; }).join('\n')); return; }
+    var suc = String(pv.suc || pv.clienteNombre);
+    if (!confirm('✅ CONVERTIR ' + pv.id + ' EN PEDIDO RESERVADO\n\nCliente: ' + pv.clienteNombre + (suc !== pv.clienteNombre ? ' (' + suc + ')' : '') + ' · ' + pv.moneda + '\n\n' +
+      plan.map(function(x){ return x.it.ref + ': ' + (x.q > 0 ? 'reservar ' + x.q + (x.q < x.pend ? ' de ' + x.pend + ' (solo hay ' + x.disp + ' disponible; el resto sigue en preventa)' : '') + ' a ' + fmt$(x.it.precio, pv.moneda) : 'sin disponible todavía (' + x.pend + ' siguen en preventa)'); }).join('\n') +
+      '\n\nSe crea en el Monitor de Pedidos con el PRECIO PACTADO congelado.')) return;
+    var peds = getMsPedidos(), d = new Date();
+    var base = 'MS-' + String(d.getFullYear()).slice(-2) + ('0' + (d.getMonth() + 1)).slice(-2) + ('0' + d.getDate()).slice(-2) + '-' + ('0' + d.getHours()).slice(-2) + ('0' + d.getMinutes()).slice(-2);
+    var numP = base, k = 0, letras = 'BCDEFGHIJK';
+    while (peds.some(function(p){ return p.numP === numP; })) numP = base + '-' + letras.charAt(k++);
+    var data = conQ.map(function(x){
+      var o = {}; o[suc] = x.q;
+      return { ref: x.it.ref, desc: (prod(x.it.ref) || {}).d || x.it.desc || '', stock: x.disp, enSistema: true, pedidos: o, dist: JSON.parse(JSON.stringify(o)),
+        estado: 'completo', totalPedido: x.q, precioPedido: x.it.precio, _precioCliente: x.it.precio, precioOverride: 'cliente', preventaId: pv.id };
+    });
+    var cps = {}; cps[suc] = pv.clienteId;
+    var MSg = window.MS = window.MS || {}, monAntes = MSg.moneda, ok;
+    try { MSg.moneda = pv.moneda; ok = window.msComprometerInventario(numP, [suc], data, cps, pv.moneda, hoyDMY()); }
+    catch(e){ ok = false; console.error('[v.379] convertir preventa:', e); }
+    finally { MSg.moneda = monAntes; }
+    var peds2 = getMsPedidos(), ped = peds2.find(function(p){ return p.numP === numP; });
+    if (ok === false || !ped) { alert('⛔ No se pudo crear el pedido. La preventa sigue intacta.\n\nRevisa el aviso anterior del Monitor (por ejemplo, almacenamiento lleno) y vuelve a intentar.'); return; }
+    // Congelar el precio PACTADO en la moneda del pedido (por si el congelado tomó el del catálogo)
+    var campo = 'precioCongelado_' + monKey(pv.moneda);
+    ped.origen = 'PREVENTA'; ped.preventaId = pv.id;
+    (ped.data || []).forEach(function(l){
+      var x = conQ.find(function(y){ return y.it.ref === (l.ref || l.r); }); if (!x) return;
+      l[campo] = x.it.precio; l.precioOverride = 'cliente'; l.precioNegociado = x.it.precio; l.preventaId = pv.id;
+    });
+    saveMsPedidos(peds2);
+    try { if (typeof syncInventoryToProducts === 'function') syncInventoryToProducts(); } catch(e){}
+    conQ.forEach(function(x){ x.it.convertido = i0(x.it.convertido) + x.q; });
+    pv.conversiones = pv.conversiones || [];
+    pv.conversiones.push({ numP: numP, fecha: new Date().toISOString(), items: conQ.map(function(x){ return { ref: x.it.ref, q: x.q }; }) });
+    pv.estado = pv.items.every(function(it){ return i0(it.convertido) >= i0(it.qty); }) ? 'CONVERTIDA' : 'PARCIAL';
+    pv.updatedAt = Date.now();
+    pvSave(arr);
+    pvAbrir();
+    alert('✅ PEDIDO ' + numP + ' CREADO Y RESERVADO\n\n' + pv.clienteNombre + ' · ' + pv.moneda + '\n' + conQ.map(function(x){ return x.it.ref + ': ' + x.q + ' uds a ' + fmt$(x.it.precio, pv.moneda); }).join('\n') +
+      '\n\nEstá en el Monitor de Pedidos con el precio pactado. ' + (pv.estado === 'PARCIAL' ? 'Lo que falta sigue en la preventa.' : 'La preventa quedó completa.'));
+  };
+
+  // ── Aviso cuando llega mercancía de una preventa ───────────────────────
+  window.pvRevisarListas = function(refs, motivo){
+    var lista = [];
+    pvGet().forEach(function(pv){
+      if (!ACTIVOS[pv.estado]) return;
+      var lineas = [];
+      (pv.items || []).forEach(function(it){
+        if (refs && refs.indexOf(it.ref) < 0) return;
+        var pend = i0(it.qty) - i0(it.convertido); if (pend <= 0) return;
+        var d = 0; try { d = getDisponible(it.ref); } catch(e){}
+        if (d > 0) lineas.push(it.ref + ' ×' + Math.min(pend, d));
+      });
+      if (lineas.length) lista.push(pv.clienteNombre + ': ' + lineas.join(', '));
+    });
+    if (!lista.length) return 0;
+    var prev = document.getElementById('pv-aviso'); if (prev) prev.remove();
+    document.body.insertAdjacentHTML('beforeend', '<div id="pv-aviso" style="position:fixed;left:18px;bottom:18px;z-index:100050;max-width:420px;background:#14532d;border:2px solid #4ade80;border-radius:12px;padding:12px 14px;color:#dcfce7;box-shadow:0 12px 40px rgba(0,0,0,.5);font-size:.76rem;">' +
+      '<div style="font-weight:900;font-size:.86rem;margin-bottom:4px;">🕒 ' + (motivo || 'Llegó mercancía apartada en preventa') + '</div>' +
+      '<div style="line-height:1.45;">' + lista.slice(0, 6).map(esc).join('<br>') + (lista.length > 6 ? '<br>… y ' + (lista.length - 6) + ' más' : '') + '</div>' +
+      '<div style="margin-top:8px;display:flex;gap:8px;"><button onclick="document.getElementById(\'pv-aviso\').remove();pvAbrir(\'ACTIVAS\')" style="background:#4ade80;color:#052e16;border:0;border-radius:7px;padding:7px 12px;font-weight:900;cursor:pointer;">Convertir en pedidos</button>' +
+      '<button onclick="document.getElementById(\'pv-aviso\').remove()" style="background:transparent;border:1px solid #86efac;color:#dcfce7;border-radius:7px;padding:7px 10px;font-weight:800;cursor:pointer;">Luego</button></div></div>');
+    return lista.length;
+  };
+  // Al cargar (por si la mercancía se recibió en otro equipo)
+  setTimeout(function(){ try { pvRevisarListas(null, 'Hay preventas con mercancía disponible'); } catch(e){} }, 30000);
+})();
+
 
 // ═══════════════════════════════════════════════════════════════════════
 // v.378 (14/10/2026) — DÓNDE ESTAMOS PARADOS, EN VIVO (crédito · monto · tiempo · espacio)
@@ -60226,6 +60634,7 @@ window.msAbrirMonitor = function() {
       '</div>' +
       '<div style="display:flex;gap:8px;align-items:center;">' +
         '<button onclick="farmersAligerarBoton(this)" title="Suelta el detalle local de los despachados de más de 30 días (queda completo en la nube y se trae al abrirlos)" style="background:rgba(129,140,248,.12);color:#a5b4fc;border:1px solid #a5b4fc44;border-radius:8px;padding:7px 14px;cursor:pointer;font-weight:800;font-size:.65rem;font-family:inherit;text-transform:uppercase;">🪶 ALIGERAR</button>' +
+        '<button onclick="pvAbrir(\'ACTIVAS\')" title="Reservar mercancía que viene en camino a un precio pactado" style="background:rgba(124,58,237,.18);color:#c4b5fd;border:1px solid #a78bfa66;border-radius:8px;padding:7px 14px;cursor:pointer;font-weight:800;font-size:.65rem;font-family:inherit;text-transform:uppercase;">🕒 Preventas</button>' +
         '<button onclick="msAbrirMonitor()" style="background:'+TEALBG+';color:'+TEAL+';border:1px solid '+TEAL+'44;border-radius:8px;padding:7px 14px;cursor:pointer;font-weight:800;font-size:.65rem;font-family:inherit;text-transform:uppercase;">↺ ACTUALIZAR</button>' +
         '<button id="ms-mon-close" style="background:rgba(255,255,255,.07);border:1px solid '+BORDER+';color:'+WHITE+';width:36px;height:36px;border-radius:9px;cursor:pointer;font-size:1rem;">✕</button>' +
       '</div>' +
@@ -66526,6 +66935,7 @@ window.coDescargarExcel = function() {
       <div class="oc-header-actions">
         <button class="oc-btn" onclick="ocImportarFacturaClick()" style="background:rgba(252,165,165,0.2);border-color:rgba(252,165,165,0.4);">📥 Importar Factura</button>
         <button class="oc-btn" onclick="window.coAbrir()" style="background:rgba(216,180,254,0.2);border-color:rgba(216,180,254,0.4);">🧠 Compra Orgánica IA</button>
+        <button class="oc-btn" onclick="pvAbrir('ACTIVAS')" title="Reservar mercancía en camino para un cliente a precio pactado" style="background:rgba(196,181,253,0.2);border-color:rgba(196,181,253,0.5);">🕒 Preventas</button>
         <button class="oc-btn" onclick="farmersCompraInteligente()" style="background:linear-gradient(135deg,#1B1F6B,#0d9488);color:#fff;border:none;font-weight:900;letter-spacing:.4px;">🧠 Compra Inteligente</button> <button class="oc-btn oc-btn-primary" onclick="ocNuevaClick()">＋ Nueva OC</button>
         <button class="oc-btn-close" onclick="closeOrdenesCompra()">✕</button>
       </div>
