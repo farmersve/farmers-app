@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.10.12.373">
+<meta name="farmers-version" content="2026.10.14.378">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -9745,6 +9745,27 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
             provRenderList();
           }
         } catch(e) { console.warn('onSnapshot proveedores:', e); }
+      });
+
+      // ── v.378 Cuenta Argelia (Compra Inteligente) ──
+      window.fbSaveCiCuenta = async (c) => {
+        await setDoc(doc(db,'data','ci_cuenta'), { v: JSON.stringify(c || {}), updatedAt: Date.now() });
+        return true;
+      };
+      window.fbGetCiCuenta = async () => {
+        try { var s = await getDoc(doc(db,'data','ci_cuenta')); if (s.exists()) return JSON.parse(s.data().v); } catch(e) { console.warn('[v.378] ci_cuenta:', e); }
+        return null;
+      };
+      onSnapshot(doc(db,'data','ci_cuenta'), function(s) {
+        try {
+          if (!s.exists()) return;
+          var rc = JSON.parse(s.data().v);
+          if (!rc || !Array.isArray(rc.facturas)) return;
+          var loc = null; try { loc = JSON.parse(localStorage.getItem('farmers_ci_cuenta') || 'null'); } catch(eL){}
+          if (loc && (+loc.updatedAt || 0) >= (+rc.updatedAt || 0)) return; // lo local es igual o más nuevo
+          localStorage.setItem('farmers_ci_cuenta', JSON.stringify(rc));
+          if (document.getElementById('ci-modal') && typeof window._ciTotals === 'function') window._ciTotals();
+        } catch(e) { console.warn('onSnapshot ci_cuenta:', e); }
       });
 
       // ── Órdenes de Compra (módulo Compras) ──
@@ -27040,49 +27061,231 @@ window._ciData = []; window._ciByRef = {}; window._ciDraft = {}; window._ciMeta 
 window._ciEsc = function(s){ return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); };
 window._ciR2 = function(x){ return Math.round(x*100)/100; };
 
+// ═══════════════════════════════════════════════════════════════════════
+// v.374 (14/10/2026) — MOTOR DE REPOSICIÓN QUIRÚRGICA (Compra Inteligente)
+// ───────────────────────────────────────────────────────────────────────
+// CORRIGE 2 errores del motor anterior (v.354-358): leía it.ref/it.qty (las
+// ventas guardan it.r/it.orden → TODO salía en 0) y leía fechas dd/mm/aaaa
+// como mm/dd (03/10 = 10-mar). Resultado: la sugerencia anterior no servía.
+//
+// HISTORIAL DE VENTAS (sin duplicar):
+//   • Despachos del sistema (farmers_sales, fuente ms_despachado)
+//   • Facturas cargadas por foto/PDF (Historial de Clientes)
+//   • Facturas importadas a ventas (hcl_import)
+//   Una misma factura se cuenta UNA sola vez (por N° de factura).
+//   Equivalencias de referencias (MAT28→MAT028) aplicadas.
+//
+// POLÍTICA POR REFERENCIA (revisión periódica, "order-up-to"):
+//   demanda diaria  = 60% ritmo últimos 90 días + 40% ritmo 180 días
+//                     (historia < 60 días se estira a 60 para no inflar)
+//   base            = demanda diaria × (lead time + días hasta el próximo pedido)
+//   respaldo (SS)   = z × desviación mensual × √((L+R)/30), tope 50% de la base
+//                     z por clase ABC (A 1.65 · B 1.28 · C 0.84)
+//   STOCKOUT        → respaldo × 1.5 + demanda no atendida registrada (120 días)
+//   objetivo        = base + respaldo
+//   posición        = disponible (real − comprometido) + en camino (OC abiertas)
+//   pedir           = objetivo − posición → redondeado a BULTOS completos
+//                     (si falta < 30% de un bulto y no hay stockout → 0)
+//   Esporádico (< 3 facturas en 180 días): sin respaldo, máximo = la mayor
+//   compra observada → se marca "revisar".
+// ═══════════════════════════════════════════════════════════════════════
+var CI_PARAMS_DEF = { L: 45, R: 45, W: 180, zA: 1.65, zB: 1.28, zC: 0.84, capSS: 0.5, boost: 1.5, minFrac: 0.3, exclGenial: true,
+  excluir: 'GENIAL, MAXKILLER, CORONA', presupuesto: 35000, credito: 100000, deuda: 0, contFt3: 1000, costoFijo: 6750, extraA: 15, maxCobA: 150, // v.377
+  estricto: false, cont40Ft3: 2000, costoFijo40: 0, fleteArg: 3000, fleteArg40: 0, transito: 21, aviso: 90 }; // v.378
+function _ciParams(){
+  var p = {}; try { p = JSON.parse(localStorage.getItem('farmers_ci_params') || '{}') || {}; } catch(e){}
+  var o = {}; Object.keys(CI_PARAMS_DEF).forEach(function(k){ o[k] = (p[k] !== undefined && p[k] !== null && p[k] !== '') ? p[k] : CI_PARAMS_DEF[k]; });
+  return o;
+}
+window._ciParams = _ciParams;
+
+function _ciFecha(x){
+  if (!x) return null;
+  if (x instanceof Date) return isNaN(x.getTime()) ? null : x;
+  var s = String(x).trim(), m;
+  if ((m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/))) return new Date(+m[3], +m[2] - 1, +m[1]);
+  if ((m = s.match(/^(\d{4})-(\d{2})-(\d{2})/))) return new Date(+m[1], +m[2] - 1, +m[3]);
+  var d = new Date(s); return isNaN(d.getTime()) ? null : d;
+}
+window._ciFecha = _ciFecha;
+function _ciNumFac(x){ return String(x == null ? '' : x).replace(/\D/g, '').replace(/^0+/, ''); }
+function _ciAliasRef(r){
+  var x = String(r == null ? '' : r).trim().toUpperCase().replace(/\s+/g, '');
+  try { if (typeof refAliasResolver === 'function') return refAliasResolver(x); } catch(e){}
+  return x;
+}
+
+// Historial deduplicado → { ref: {mb:[6 meses de 30 días], tot, nfac, maxQ, first(Date) } }
+function _ciHistorial(W){
+  var hoy = new Date(); hoy.setHours(23, 59, 59, 999);
+  var docs = {}, orden = [];
+  function add(k, f, items, src){ if (docs[k]) return; docs[k] = { f: f, items: items, src: src }; orden.push(k); }
+  var ventas = []; try { ventas = (typeof getSales === 'function') ? (getSales() || []) : []; } catch(e){}
+  var hcl = []; try { hcl = (typeof hclGetFacturas === 'function') ? (hclGetFacturas() || []) : []; } catch(e){}
+  var itV = function(it){ return { r: it.r || it.ref || it.referencia, q: (it.orden !== undefined ? it.orden : (it.qty !== undefined ? it.qty : it.cantidad)) }; };
+  var itH = function(it){ return { r: it.ref || it.referencia || it.r, q: (it.cantidad !== undefined ? it.cantidad : (it.qty !== undefined ? it.qty : it.orden)) }; };
+  ventas.forEach(function(s){
+    if (!s || s.fuente !== 'ms_despachado') return;
+    var n = _ciNumFac(s.nFactura);
+    add(n ? 'F' + n : 'MS' + s.id, _ciFecha(s.fecha || s.fechaEmision), (s.items || []).map(itV), 'despacho');
+  });
+  hcl.forEach(function(h){
+    if (!h) return;
+    var n = _ciNumFac(h.nroFactura);
+    add(n ? 'F' + n : 'H' + (h.id || orden.length), _ciFecha(h.fechaEmision || h.fecha || h.fechaFactura), (h.items || h.lineas || []).map(itH), 'factura');
+  });
+  ventas.forEach(function(s){
+    if (!s || s.fuente === 'ms_despachado') return;
+    var n = _ciNumFac(s.nroFacturaExternal || s.nFactura);
+    add(n ? 'F' + n : 'O' + s.id, _ciFecha(s.fecha || s.fechaEmision), (s.items || []).map(itV), 'importada');
+  });
+  var H = {}, usados = 0, minF = null, maxF = null, fuentes = { despacho: 0, factura: 0, importada: 0 };
+  orden.forEach(function(k){
+    var d = docs[k]; if (!d.f) return;
+    var edad = Math.floor((hoy - d.f) / 86400000);
+    var enVentana = edad >= 0 && edad < W;
+    if (enVentana) { usados++; fuentes[d.src]++; if (!minF || d.f < minF) minF = d.f; if (!maxF || d.f > maxF) maxF = d.f; }
+    var vistos = {};
+    d.items.forEach(function(it){
+      var r = _ciAliasRef(it.r), q = parseFloat(it.q) || 0;
+      if (!r || q <= 0) return;
+      var h = H[r] || (H[r] = { mb: [0, 0, 0, 0, 0, 0], tot: 0, nfac: 0, maxQ: 0, first: d.f, facQ: {} });
+      if (d.f < h.first) h.first = d.f;
+      if (!enVentana) return;
+      var b = Math.min(5, Math.floor(edad / 30));
+      h.mb[b] += q; h.tot += q;
+      h.facQ[k] = (h.facQ[k] || 0) + q;
+      if (!vistos[r]) { h.nfac++; vistos[r] = 1; }
+    });
+  });
+  Object.keys(H).forEach(function(r){ var h = H[r]; Object.keys(h.facQ).forEach(function(k){ if (h.facQ[k] > h.maxQ) h.maxQ = h.facQ[k]; }); delete h.facQ; });
+
+  // v.375: LO QUE TE PIDIERON Y NO PUDISTE DESPACHAR también es demanda.
+  //   • Pedidos de clientes (Monitor de Pedidos): pide − despachado en pedidos ya despachados.
+  //   • Pedidos VIVOS (reservado/parcial): lo pendiente va aparte como "pedidos por cubrir".
+  //   • Demanda no atendida registrada a mano.
+  var pend = {}, nPed = 0, nPedVivos = 0, uPerdida = 0;
+  var sumar = function(r, q, f, tipo){
+    r = _ciAliasRef(r); if (!r || !(q > 0) || !f) return;
+    var edad = Math.floor((hoy - f) / 86400000); if (edad < 0 || edad >= W) return;
+    var h = H[r] || (H[r] = { mb: [0, 0, 0, 0, 0, 0], tot: 0, nfac: 0, maxQ: 0, first: f });
+    if (f < h.first) h.first = f;
+    h.mb[Math.min(5, Math.floor(edad / 30))] += q; h.tot += q;
+    h.perdida = (h.perdida || 0) + q;
+    if (tipo === 'pedido') h.perdPed = (h.perdPed || 0) + q; else h.perdMan = (h.perdMan || 0) + q;
+    uPerdida += q;
+  };
+  var peds = []; try { peds = (typeof getMsPedidos === 'function') ? (getMsPedidos() || []) : []; } catch(e){}
+  peds.forEach(function(p){
+    if (!p) return;
+    var est = String(p.estado || 'RESERVADO').toUpperCase();
+    if (est === 'CANCELADO' || est === 'ANULADO') return;
+    var vivo = (est === 'RESERVADO' || est === 'PARCIAL');
+    var f = _ciFecha(p.fechaISO) || _ciFecha(p.fecha);
+    if (vivo) nPedVivos++; else nPed++;
+    (p.items || []).forEach(function(it){
+      if (!it || !it.ref || !it.sucursales) return;
+      var falta = 0;
+      Object.keys(it.sucursales).forEach(function(sk){ var dt = it.sucursales[sk] || {}; falta += Math.max(0, (parseInt(dt.pide, 10) || 0) - (parseInt(dt.desp, 10) || 0)); });
+      if (falta <= 0) return;
+      if (vivo) { var rr = _ciAliasRef(it.ref); pend[rr] = (pend[rr] || 0) + falta; }
+    });
+  });
+  // v.376: solo lo PERDIDO NETO (sin lo que se le surtió después ni lo que el cliente volvió a pedir)
+  try { _ciFaltAnalisis().lineas.forEach(function(l){ if (l.perdidoNeto > 0) sumar(l.ref, l.perdidoNeto, l.f, 'pedido'); }); } catch(eF){ console.warn('[v.376] faltantes:', eF); }
+  try {
+    (typeof getDemandaNA === 'function' ? getDemandaNA() : []).forEach(function(x){
+      if (x) sumar(x.ref, parseInt(x.cantidad, 10) || 0, _ciFecha(x.fecha), 'manual');
+    });
+  } catch(e){}
+  return { porRef: H, pendientes: pend, meta: { usados: usados, fuentes: fuentes, desde: minF, hasta: maxF, pedidos: nPed, pedidosVivos: nPedVivos, udsPerdidas: uPerdida } };
+}
+window._ciHistorial = _ciHistorial;
+
+// Lead time y ciclo entre pedidos medidos de tus OC
+function _ciMedirOC(){
+  var ocs = []; try { ocs = (typeof getOrdenesCompraDB === 'function') ? (getOrdenesCompraDB() || []) : []; } catch(e){}
+  var leads = [], fechas = [];
+  ocs.forEach(function(o){
+    var fe = _ciFecha(o && o.fechaEmision); if (!fe) return;
+    fechas.push(fe);
+    var r1 = null;
+    (o.recepciones || []).forEach(function(r){ var fr = _ciFecha(r.fecha); if (fr && (!r1 || fr < r1)) r1 = fr; });
+    if (r1) { var d = Math.round((r1 - fe) / 86400000); if (d > 5 && d < 200) leads.push(d); }
+  });
+  fechas.sort(function(a, b){ return a - b; });
+  var ciclos = []; for (var i = 1; i < fechas.length; i++) { var c = Math.round((fechas[i] - fechas[i - 1]) / 86400000); if (c > 7) ciclos.push(c); }
+  var prom = function(a){ return a.length ? Math.round(a.reduce(function(s, x){ return s + x; }, 0) / a.length) : null; };
+  return { lead: prom(leads), nLead: leads.length, ciclo: prom(ciclos), nCiclo: ciclos.length };
+}
+window._ciMedirOC = _ciMedirOC;
+
+function _ciEnCamino(){
+  var ocs = []; try { ocs = (typeof getOrdenesCompraDB === 'function') ? (getOrdenesCompraDB() || []) : []; } catch(e){}
+  var m = {};
+  ocs.forEach(function(o){
+    if (!o || ['RECIBIDA_TOTAL', 'CERRADA', 'CANCELADA'].indexOf(o.estado) >= 0) return;
+    (o.items || []).forEach(function(it){
+      if (!it || !it.refFarmers) return;
+      var p = Math.max(0, (parseInt(it.cantidad, 10) || 0) - (parseInt(it.cantidadRecibida, 10) || 0));
+      if (p > 0) m[it.refFarmers] = (m[it.refFarmers] || 0) + p;
+    });
+  });
+  return m;
+}
+
 window._ciBuildData = function() {
-  var dias = 90;
-  var hoy = new Date(); hoy.setHours(23,59,59,999);
-  var corte = new Date(hoy.getTime() - dias*86400000);
-  var ventas = {}, facUsadas=0, facSinItems=0, minF=null, maxF=null;
-  getSales().forEach(function(fa){
-    var fs = fa.fechaEmision || fa.fecha || fa.fechaFactura || '';
-    var f = fs ? new Date(fs) : null;
-    if (!f || isNaN(f.getTime()) || f < corte || f > hoy) return;
-    var items = fa.items || fa.lineas || [];
-    if (!items.length) { facSinItems++; return; }
-    facUsadas++;
-    if (!minF || f < minF) minF = f;
-    if (!maxF || f > maxF) maxF = f;
-    items.forEach(function(it){
-      var ref = (it.ref||'').trim(); if (!ref) return;
-      ventas[ref] = (ventas[ref]||0) + (parseInt(it.qty,10)||0);
-    });
-  });
-  var inv = getInventory();
+  var P = _ciParams();
+  var W = parseInt(P.W, 10) || 180;
+  var hist = _ciHistorial(W), H = hist.porRef;
+  var hoy = new Date(); hoy.setHours(23, 59, 59, 999);
+  var inv = {}; try { inv = getInventory(); } catch(e){}
   var comp = (typeof getComprometido === 'function') ? getComprometido() : {};
-  var pt = {}; try { pt = JSON.parse(localStorage.getItem('farmers_pt_data')||'{}'); } catch(e) {}
+  var pt = {}; try { pt = JSON.parse(localStorage.getItem('farmers_pt_data') || '{}'); } catch(e) {}
   var M = window.MASTER || {};
+  var camino = _ciEnCamino();
+  var pendVivos = hist.pendientes || {};
+  // Clasificación ABC por valor vendido en la ventana
+  var valor = [], totalV = 0;
+  (window.PRODUCTS || []).forEach(function(p){ var h = H[p.r]; if (!h || h.tot <= 0) return; var v = h.tot * (parseFloat(p.u) || 0); valor.push([p.r, v]); totalV += v; });
+  valor.sort(function(a, b){ return b[1] - a[1]; });
+  var abc = {}, acc = 0;
+  valor.forEach(function(x){ acc += x[1]; abc[x[0]] = acc <= 0.80 * totalV ? 'A' : (acc <= 0.95 * totalV ? 'B' : 'C'); });
+
   var rows = [];
-  (window.PRODUCTS||[]).forEach(function(p){
+  (window.PRODUCTS || []).forEach(function(p){
     var ref = p.r; if (!ref) return;
-    var real = (inv[ref]!==undefined) ? (parseInt(inv[ref],10)||0) : (parseInt(p.ex,10)||0);
-    var compQ = (comp[ref] && parseInt(comp[ref].qty,10)) || 0;
+    var real = (inv[ref] !== undefined) ? (parseInt(inv[ref], 10) || 0) : (parseInt(p.ex, 10) || 0);
+    var compQ = (comp[ref] && parseInt(comp[ref].qty, 10)) || 0;
     var disp = Math.max(0, real - compQ);
-    var ord = parseInt((pt[ref]||{}).exOrdenada||0,10)||0;
-    var venta = ventas[ref]||0;
-    var mensual = venta/(dias/30);
-    var cob = mensual>0 ? (disp+ord)/mensual : null;
-    var mi = M[ref]||{};
+    var ordOC = camino[ref] || 0;
+    var ord = ordOC > 0 ? ordOC : (parseInt((pt[ref] || {}).exOrdenada || 0, 10) || 0);
+    var h = H[ref] || { mb: [0, 0, 0, 0, 0, 0], tot: 0, nfac: 0, maxQ: 0, first: null };
+    var pendQ = pendVivos[ref] || 0;
+    var porCubrir = Math.max(0, pendQ - compQ); // lo pedido por clientes que NO está reservado con stock
+    var dias = h.first ? Math.min(W, Math.floor((hoy - h.first) / 86400000) + 1) : 0;
+    var dW = h.tot / Math.max(dias, 60);
+    var d90 = (h.mb[0] + h.mb[1] + h.mb[2]) / Math.max(Math.min(90, dias), 60);
+    var diaria = h.tot > 0 ? (dias >= 90 ? 0.6 * d90 + 0.4 * dW : dW) : 0;
+    var nMes = Math.max(1, Math.min(6, Math.ceil(dias / 30)));
+    var mm = h.mb.slice(0, nMes), media = mm.reduce(function(s, x){ return s + x; }, 0) / nMes;
+    var sd = nMes > 1 ? Math.sqrt(mm.reduce(function(s, x){ return s + (x - media) * (x - media); }, 0) / nMes) : 0;
+    var mensual = diaria * 30;
+    var cob = mensual > 0 ? (disp + ord) / mensual : null;
+    var mi = M[ref] || {};
     rows.push({
-      ref:ref, d:p.d||'', br:p.br||'', disp:disp, ord:ord, venta:venta, mensual:mensual,
-      cob:cob, stk:(disp===0 && venta>0), m:parseInt(p.m,10)||0,
-      c:p.c||'', b:p.b||'',
-      fob:parseFloat(p.costoFOB)||parseFloat(mi.costoFOB)||parseFloat(mi.costo)||0,
-      vol:parseFloat(mi.volFt3PorBulto)||0
+      ref: ref, d: p.d || '', br: p.br || '', disp: disp, real: real, comp: compQ, ord: ord, ordFuente: ordOC > 0 ? 'OC' : 'ordenada',
+      venta: Math.round(h.mb[0] + h.mb[1] + h.mb[2]), ventaW: Math.round(h.tot), mensual: mensual, diaria: diaria, sdMes: sd,
+      nfac: h.nfac, maxQ: h.maxQ, dias: dias, abc: abc[ref] || '', dna: 0,
+      perdida: Math.round(h.perdida || 0), perdPed: Math.round(h.perdPed || 0), perdMan: Math.round(h.perdMan || 0), pendVivo: pendQ, porCubrir: porCubrir,
+      cob: cob, stk: (disp === 0 && h.tot > 0), m: parseInt(p.m, 10) || parseInt(mi.unidadesPorBulto, 10) || 0,
+      c: p.c || '', b: p.b || '',
+      fob: parseFloat(p.costoFOB) || parseFloat(mi.costoFOB) || parseFloat(mi.costo) || 0,
+      vol: parseFloat(mi.volFt3PorBulto) || 0,
+      desc: (typeof window.esDescontinuado === 'function') ? !!window.esDescontinuado(ref) : false
     });
   });
-  rows.sort(function(a,b){ return a.ref.localeCompare(b.ref, 'es', {numeric:true}); });
+  rows.sort(function(a, b){ return a.ref.localeCompare(b.ref, 'es', { numeric: true }); });
   window._ciData = rows;
   window._ciByRef = {};
   rows.forEach(function(r){ window._ciByRef[r.ref] = r; });
@@ -27091,13 +27294,724 @@ window._ciBuildData = function() {
     [r.ref, r.c, r.b].forEach(function(k){
       var n = _ciNorm(k); if (!n) return;
       if (!window._ciIdx[n]) window._ciIdx[n] = r.ref;
-      var sg = n.replace(/-/g,'');
+      var sg = n.replace(/-/g, '');
       if (sg && sg !== n && !window._ciIdx[sg]) window._ciIdx[sg] = r.ref;
     });
   });
-  window._ciMeta = { dias:dias, facUsadas:facUsadas, facSinItems:facSinItems,
-    desde:minF?minF.toISOString().slice(0,10):'—', hasta:maxF?maxF.toISOString().slice(0,10):'—' };
+  var fmt = function(d){ return d ? d.toISOString().slice(0, 10) : '—'; };
+  window._ciMeta = { dias: W, facUsadas: hist.meta.usados, facSinItems: 0, fuentes: hist.meta.fuentes,
+    desde: fmt(hist.meta.desde), hasta: fmt(hist.meta.hasta), pedidos: hist.meta.pedidos, pedidosVivos: hist.meta.pedidosVivos, udsPerdidas: Math.round(hist.meta.udsPerdidas || 0) };
 };
+
+// Cálculo de la sugerencia para UNA referencia (puro, sin efectos)
+function _ciSugerir(r, P){
+  var L = +P.L, R = +P.R;
+  var out = { b: 0, uds: 0, estado: '', icono: '', motivo: '', objetivo: 0, posicion: r.disp + r.ord, base: 0, ss: 0 };
+  if (_ciMarcasExcl(P).indexOf(String(r.br).toUpperCase().trim()) >= 0) { out.estado = 'EXCLUIDA'; out.icono = '⛔'; out.motivo = 'Marca ' + r.br + ' en depuración: no se repone'; return out; }
+  if (r.desc) { out.estado = 'DESCONTINUADA'; out.icono = '⛔'; out.motivo = 'Descontinuada'; return out; }
+  if (!(r.diaria > 0) && !(r.porCubrir > 0)) {
+    out.estado = r.disp > 0 ? 'SIN ROTACIÓN' : 'SIN VENTAS';
+    out.icono = r.disp > 0 ? '💤' : '·';
+    out.motivo = r.disp > 0 ? ('Sin ventas en ' + P.W + ' días y tienes ' + r.disp + ' uds → no pedir') : 'Sin ventas registradas';
+    return out;
+  }
+  var z = r.abc === 'A' ? +P.zA : (r.abc === 'B' ? +P.zB : +P.zC);
+  var extra = (r.abc === 'A') ? (+P.extraA || 0) : 0; // v.377: más profundidad en las TOP
+  var base = r.diaria * (L + R + extra);
+  var ss = Math.min(z * r.sdMes * Math.sqrt((L + R) / 30), (+P.capSS) * base);
+  var esporadico = r.nfac < 3;
+  if (esporadico) ss = 0;
+  if (r.stk) ss = ss * (+P.boost);
+  var objetivo = base + ss;
+  if (esporadico) objetivo = Math.min(objetivo, Math.max(r.maxQ, r.perdida || 0, 0));
+  objetivo += (r.porCubrir || 0); // v.375: lo que los clientes ya pidieron y no tienes reservado SIEMPRE se cubre
+  var pos = r.disp + r.ord;
+  var falta = objetivo - pos;
+  var b = 0;
+  if (falta > 0 && r.m > 0) {
+    b = Math.ceil(falta / r.m);
+    if (!r.stk && !(r.porCubrir > 0) && falta < (+P.minFrac) * r.m) b = 0;
+  }
+  var diasCob = r.diaria > 0 ? r.disp / r.diaria : null;
+  var estado, icono;
+  if (r.m <= 0 && falta > 0) { estado = 'FALTA UDS/BULTO'; icono = '⚠'; }
+  else if (r.porCubrir > 0 && b > 0) { estado = 'PEDIDOS DE CLIENTES SIN STOCK'; icono = '🔴'; }
+  else if (r.stk) { estado = 'STOCKOUT'; icono = '🔴'; }
+  else if (b > 0 && diasCob !== null && diasCob < L) { estado = 'SE AGOTA ANTES DE QUE LLEGUE'; icono = '🟠'; }
+  else if (b > 0) { estado = 'REPONER LO VENDIDO'; icono = '🟢'; }
+  else if (pos >= 2 * objetivo) { estado = 'SOBRE STOCK'; icono = '🟣'; }
+  else { estado = 'CUBIERTO'; icono = '✅'; }
+  if (esporadico && b > 0) { estado += ' · ESPORÁDICO (revisar)'; }
+  if (r.dias < 60) { estado += ' · POCA HISTORIA'; }
+  var f1 = function(x){ return Math.round(x).toLocaleString('en-US'); };
+  var motivo = 'Demanda ~' + f1(r.mensual) + '/mes (' + (r.abc || '—') + ', ' + r.nfac + ' fact.' + (r.perdida ? ', incluye ' + f1(r.perdida) + ' pedidas y nunca surtidas' : '') + ')' +
+    (r.porCubrir ? ' · ⚠ clientes esperan ' + f1(r.porCubrir) + ' sin stock reservado' : '') +
+    ' · tienes ' + f1(r.disp) + (diasCob !== null ? ' (≈' + Math.round(diasCob) + ' días)' : '') +
+    (r.ord ? ' + ' + f1(r.ord) + ' en camino' : '') +
+    ' · objetivo ' + f1(objetivo) + ' (' + (L + R + extra) + ' días' + (ss > 0 ? ' + respaldo ' + f1(ss) : '') + (r.porCubrir ? ' + pedidos por cubrir ' + f1(r.porCubrir) : '') + ')' +
+    (b > 0 ? ' → pedir ' + b + ' bulto' + (b > 1 ? 's' : '') + ' (' + f1(b * r.m) + ' uds)' : (falta > 0 && r.m > 0 ? ' → falta menos de ' + Math.round(P.minFrac * 100) + '% de un bulto: no pedir' : ' → no pedir'));
+  out.b = b; out.uds = b * r.m; out.estado = estado; out.icono = icono; out.motivo = motivo;
+  out.objetivo = objetivo; out.posicion = pos; out.base = base; out.ss = ss; out.diasCob = diasCob;
+  return out;
+}
+window._ciSugerir = _ciSugerir;
+// ═══════════════════════════════════════════════════════════════════════
+// v.377 (14/10/2026) — PRESUPUESTO + CRÉDITO + CONTENEDOR
+// Datos de Omar (14/10/2026): pedido normal $30–40k · crédito Argelia $100k a
+// 60 días · contenedor 20' (tus OC llenas: 943–1.005 ft³) · flete Panamá→
+// Guamache ≈ $3.000 + puesta en depósito $3.500–4.000 · pedidos de 1–2 meses ·
+// depurar MAXKILLER y CORONA (y GENIAL) · más profundidad en las top.
+// Asignación cuando no alcanza el dinero o el espacio:
+//   FASE 1 (lo urgente, para no quebrar hasta que llegue): pedidos de clientes
+//          sin stock → stockout → se agota antes de llegar → resto; dentro de
+//          cada grupo, primero A, luego B, luego C, y el de más venta $/mes.
+//   FASE 2 (completar hasta el objetivo con respaldo): A → B → C por venta $/mes.
+// Tope = el menor entre presupuesto y crédito disponible; y la capacidad en ft³.
+// ═══════════════════════════════════════════════════════════════════════
+function _ciLimiteDinero(P){
+  // v.378: deuda real = Cuenta Argelia (estado de cuenta + movimientos posteriores)
+  var E = (typeof _ciCuentaEstado === 'function') ? _ciCuentaEstado() : { deuda: +P.deuda || 0, limite: +P.credito || 0 };
+  var credDisp = Math.max(0, (E.limite || 0) - (E.deuda || 0));
+  if (!P.estricto) return { tope: Infinity, credDisp: credDisp, deuda: E.deuda, limite: E.limite, flexible: true };
+  var tope = +P.presupuesto || 0;
+  if (E.limite > 0) tope = Math.min(tope, credDisp); // estricto de verdad: sin cupo → tope 0 (v.377 lo ignoraba)
+  return { tope: tope, credDisp: credDisp, deuda: E.deuda, limite: E.limite };
+}
+
+function _ciAsignar(P){
+  var lim = _ciLimiteDinero(P), cap = P.estricto ? (+P.contFt3 || 1000) : Infinity; // v.378: flexible = sin recorte
+  var lineas = [];
+  window._ciPrecioU = {}; (window.PRODUCTS || []).forEach(function(p){ window._ciPrecioU[p.r] = parseFloat(p.u) || 0; });
+  _ciData.forEach(function(r){
+    var s = (window._ciSug || {})[r.ref]; if (!s) return;
+    s.bSug = s.b; s.recorte = '';
+    if (window._ciCliSet && !window._ciCliSet[r.ref]) { s.b = 0; return; }
+    if (!(s.b > 0)) return;
+    // Mínimo urgente: cubrir hasta la llegada (lead time) + pedidos por cubrir
+    var urgente = r.diaria * (+P.L) + (r.porCubrir || 0) - (r.disp + r.ord);
+    var bMin = (urgente > 0 && r.m > 0) ? Math.min(s.b, Math.ceil(urgente / r.m)) : 0;
+    var tier = (r.porCubrir > 0) ? 0 : (r.stk ? 1 : (s.icono === '🟠' ? 2 : 3));
+    var abcR = r.abc === 'A' ? 0 : (r.abc === 'B' ? 1 : 2);
+    var valMes = r.mensual * ((window._ciPrecioU || {})[r.ref] || r.fob * 2);
+    lineas.push({ r: r, s: s, bMin: bMin, tier: tier, abcR: abcR, valMes: valMes, costoB: r.m * r.fob, ft3B: r.vol, asig: 0 });
+  });
+  var gasto = 0, ft3 = 0, fueraDinero = 0, fueraEspacio = 0;
+  var cabe = function(l){ return (gasto + l.costoB <= lim.tope + 0.01) && (ft3 + l.ft3B <= cap + 0.01); };
+  var fase = function(lista, hasta){
+    lista.forEach(function(l){
+      var meta = hasta(l);
+      while (l.asig < meta) {
+        if (!cabe(l)) { if (gasto + l.costoB > lim.tope + 0.01) { fueraDinero++; l.razon = 'presupuesto'; } else { fueraEspacio++; l.razon = 'espacio del contenedor'; } break; }
+        l.asig++; gasto += l.costoB; ft3 += l.ft3B;
+      }
+    });
+  };
+  var f1 = lineas.slice().sort(function(a, b){ return a.tier - b.tier || a.abcR - b.abcR || b.valMes - a.valMes; });
+  fase(f1, function(l){ return l.bMin; });
+  var f2 = lineas.slice().sort(function(a, b){ return a.abcR - b.abcR || a.tier - b.tier || b.valMes - a.valMes; });
+  fase(f2, function(l){ return l.s.bSug; });
+  window._ciDraft = {};
+  var nRec = 0, bRec = 0, capRec = 0;
+  lineas.forEach(function(l){
+    l.s.b = l.asig; l.s.uds = l.asig * l.r.m;
+    if (l.asig > 0) _ciDraft[l.r.ref] = l.asig;
+    if (l.asig < l.s.bSug) {
+      nRec++; bRec += (l.s.bSug - l.asig); capRec += (l.s.bSug - l.asig) * l.costoB;
+      l.s.recorte = (l.asig === 0 ? '✂ quedó FUERA' : '✂ recortado a ' + l.asig + ' de ' + l.s.bSug + ' bultos') + ' por ' + (l.razon || 'presupuesto');
+    }
+  });
+  var costoFt3 = ft3 > 0 ? (+P.costoFijo || 0) / ft3 : 0;
+  window._ciPlan = { tope: lim.tope, credDisp: lim.credDisp, gasto: gasto, ft3: ft3, cap: cap, costoFt3: costoFt3,
+    nRec: nRec, bRec: bRec, capRec: capRec };
+  return window._ciPlan;
+}
+window._ciAsignar = _ciAsignar;
+
+// Completar el contenedor con más profundidad en las TOP (clase A con buena rotación)
+window._ciCompletar = function(){
+  var P = _ciParams(), lim = _ciLimiteDinero(P), cap = +P.contFt3 || 1000;
+  if (!window._ciData || !window._ciData.length) { alert('Primero calcula el pedido con 🎯 Reposición quirúrgica.'); return; }
+  var gasto = 0, ft3 = 0;
+  Object.keys(_ciDraft).forEach(function(k){ var r = _ciByRef[k]; if (!r) return; var b = parseInt(_ciDraft[k], 10) || 0; gasto += b * r.m * r.fob; ft3 += b * r.vol; });
+  var _cont378 = (typeof _ciContenedor === 'function') ? _ciContenedor(ft3, P) : { tipo: "20'", cap: cap };
+  if (!P.estricto) cap = _cont378.cap; // v.378: llena el 20' (o el 40' si ya no cabe en 20')
+  var maxDias = +P.maxCobA || 150;
+  var cands = _ciData.filter(function(r){
+    var s = (window._ciSug || {})[r.ref] || {};
+    if (r.abc !== 'A' || !(r.diaria > 0) || r.m <= 0 || r.fob <= 0 || r.vol <= 0) return false;
+    if (s.estado && /EXCLUIDA|DESCONTINUADA/.test(s.estado)) return false;
+    if (r.nfac < 3) return false;
+    if (window._ciCliSet && !window._ciCliSet[r.ref]) return false;
+    return true;
+  }).sort(function(a, b){ return (b.mensual * b.fob) - (a.mensual * a.fob); });
+  var añadidos = {}, n = 0, sigue = true;
+  while (sigue) {
+    sigue = false;
+    for (var i = 0; i < cands.length; i++) {
+      var r = cands[i], b = parseInt(_ciDraft[r.ref], 10) || 0;
+      var cobDias = (r.disp + r.ord + b * r.m) / r.diaria;
+      if (cobDias + (r.m / r.diaria) > maxDias) continue;
+      var cB = r.m * r.fob;
+      if (gasto + cB > lim.tope + 0.01 || ft3 + r.vol > cap + 0.01) continue;
+      _ciDraft[r.ref] = b + 1; gasto += cB; ft3 += r.vol; añadidos[r.ref] = (añadidos[r.ref] || 0) + 1; n++; sigue = true;
+    }
+  }
+  try { localStorage.setItem('farmers_ci_draft', JSON.stringify(_ciDraft)); } catch(e){}
+  Object.keys(añadidos).forEach(function(k){ var s = (window._ciSug || {})[k]; if (s) s.recorte = (s.recorte ? s.recorte + ' · ' : '') + '🧱 +' + añadidos[k] + ' bulto(s) para completar contenedor (top A, máx ' + maxDias + ' días)'; });
+  _ciRender(); _ciTotals();
+  var R_ = '🧱 COMPLETAR CONTENEDOR\n\n' + (n ? '+' + n + ' bultos en ' + Object.keys(añadidos).length + ' referencias TOP (clase A, sin pasar de ' + maxDias + ' días de inventario).' : 'No se agregó nada: ya no cabe más, se acabó el presupuesto o las TOP ya tienen ' + maxDias + ' días.') +
+    '\n\nPedido: $' + Math.round(gasto).toLocaleString('en-US') + (isFinite(lim.tope) ? ' de $' + Math.round(lim.tope).toLocaleString('en-US') : '') + ' · ' + Math.round(ft3).toLocaleString('en-US') + ' de ' + Math.round(cap).toLocaleString('en-US') + ' ft³ (' + Math.round(ft3 / cap * 100) + '%' + (P.estricto ? '' : ' de un ' + _cont378.tipo) + ')' +
+    (typeof _ciEstadoPedido === 'function' ? (function(){ var S = _ciEstadoPedido(gasto, ft3); return '\nCrédito: deuda + este pedido = $' + Math.round(S.deudaCon).toLocaleString('en-US') + ' (' + Math.round(S.pctLim) + '% del límite' + (S.exceso > 0 ? ', +$' + Math.round(S.exceso).toLocaleString('en-US') + ' por encima: aviso, no bloquea' : '') + ')'; })() : '');
+  window.R = R_; alert(R_);
+};
+
+function _ciMarcasExcl(P){
+  return String(P.excluir || '').toUpperCase().split(/[,;]+/).map(function(x){ return x.trim(); }).filter(Boolean);
+}
+window._ciMarcasExcl = _ciMarcasExcl;
+
+// ═══════════════════════════════════════════════════════════════════════
+// v.378 (14/10/2026) — DÓNDE ESTAMOS PARADOS, EN VIVO (crédito · monto · tiempo · espacio)
+// Omar: el límite real con Argelia es $100k, pero el proveedor está apostando
+// más por Farmers → el sistema AVISA cuando nos acercamos o pasamos, NO bloquea.
+// Contenedor: 20' normalmente; si el pedido no cabe, se pide un 40'.
+//   • Cuenta Argelia: estado de cuenta (corte) + abonos/facturas posteriores.
+//     Se guarda en este equipo y en la nube (data/ci_cuenta).
+//   • Modo FLEXIBLE (por defecto): presupuesto, crédito y contenedor son
+//     referencias; nada se recorta. Modo ESTRICTO: se recorta como en v.377.
+// ═══════════════════════════════════════════════════════════════════════
+var CI_CUENTA_SEED = {
+  proveedor: 'ARGELIA INTERNACIONAL S.A', cuenta: 'VE-906', limite: 100000,
+  corte: '2026-10-08', saldoCorte: 116429.79, creditoSinAplicar: 833,
+  facturas: [
+    { n: '92802', fecha: '2025-10-02', vence: '2025-12-01', saldo: 13926.79 },
+    { n: '94866', fecha: '2026-04-10', vence: '2026-06-09', saldo: 23073.16 },
+    { n: '95966', fecha: '2026-07-20', vence: '2026-09-18', saldo: 34094.66 },
+    { n: '96881', fecha: '2026-10-01', vence: '2026-11-30', saldo: 46168.18 }
+  ],
+  movs: [], updatedAt: 0
+};
+
+function _ccISO(d){ return d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2) + '-' + ('0' + d.getDate()).slice(-2); }
+function _ccDate(s){ if (!s) return null; var m = String(s).match(/^(\d{4})-(\d{2})-(\d{2})/); if (!m) return null; return new Date(+m[1], +m[2] - 1, +m[3]); }
+function _ccFmt(s){ var d = (s instanceof Date) ? s : _ccDate(s); if (!d) return '—'; return ('0' + d.getDate()).slice(-2) + '/' + ('0' + (d.getMonth() + 1)).slice(-2) + '/' + d.getFullYear(); }
+function _ccMas(d, dias){ var x = new Date(d.getTime()); x.setDate(x.getDate() + dias); return x; }
+function _ccHoy(){ var d = new Date(); d.setHours(0, 0, 0, 0); return d; }
+function _cc$(v){ return '$' + (Math.round((+v || 0) * 100) / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+function _cc$0(v){ return '$' + Math.round(+v || 0).toLocaleString('en-US'); }
+function _ccR2(v){ return Math.round((+v || 0) * 100) / 100; }
+
+function _ciCuenta(){
+  var c = null;
+  try { c = JSON.parse(localStorage.getItem('farmers_ci_cuenta') || 'null'); } catch(e){}
+  if (!c || !Array.isArray(c.facturas)) c = JSON.parse(JSON.stringify(CI_CUENTA_SEED));
+  if (!Array.isArray(c.movs)) c.movs = [];
+  return c;
+}
+window._ciCuenta = _ciCuenta;
+
+// Estado de la cuenta a hoy: saldo + facturas abiertas (abonos posteriores aplicados FIFO, como Argelia)
+function _ciCuentaEstado(c){
+  c = c || _ciCuenta();
+  var hoy = _ccHoy();
+  var facts = (c.facturas || []).map(function(f){ return { n: f.n, fecha: f.fecha, vence: f.vence, saldo: +f.saldo || 0 }; });
+  var abonos = 0, nAb = 0, nFa = 0;
+  (c.movs || []).forEach(function(m){
+    var monto = +m.monto || 0; if (!(monto > 0)) return;
+    if (m.tipo === 'factura') {
+      var fe = _ccDate(m.fecha) || hoy;
+      facts.push({ n: m.nota || ('F-' + _ccFmt(fe)), fecha: _ccISO(fe), vence: _ccISO(_ccMas(fe, 60)), saldo: monto, nueva: true });
+      nFa++;
+    } else { abonos += monto; nAb++; }
+  });
+  facts.sort(function(a, b){ return String(a.fecha).localeCompare(String(b.fecha)); });
+  var resto = abonos;
+  facts.forEach(function(f){ var ap = Math.min(f.saldo, resto); f.saldo = _ccR2(f.saldo - ap); resto = _ccR2(resto - ap); });
+  var abiertas = facts.filter(function(f){ return f.saldo > 0.004; });
+  // Deuda = saldo al corte − abonos posteriores + facturas posteriores
+  var deuda = _ccR2((+c.saldoCorte || 0) - abonos + (c.movs || []).reduce(function(s, m){ return s + (m.tipo === 'factura' ? (+m.monto || 0) : 0); }, 0));
+  var vencido = 0, nVenc = 0, prox = null;
+  abiertas.forEach(function(f){
+    var v = _ccDate(f.vence); f.dias = v ? Math.round((v - hoy) / 86400000) : null;
+    if (v && v < hoy) { vencido += f.saldo; nVenc++; }
+    else if (v && (!prox || v < _ccDate(prox.vence))) prox = f;
+  });
+  return { deuda: deuda, limite: +c.limite || 100000, abiertas: abiertas, vencido: _ccR2(vencido), nVenc: nVenc, prox: prox,
+    corte: c.corte, nAb: nAb, nFa: nFa, abonos: _ccR2(abonos), creditoSinAplicar: +c.creditoSinAplicar || 0 };
+}
+window._ciCuentaEstado = _ciCuentaEstado;
+
+// Contenedor que hace falta para un volumen dado
+function _ciContenedor(ft3, P){
+  P = P || _ciParams();
+  var c20 = +P.contFt3 || 1000, c40 = +P.cont40Ft3 || 2000;
+  if (ft3 <= c20 + 0.01) return { tipo: "20'", cap: c20, n: 1, costo: +P.costoFijo || 0, flete: +P.fleteArg || 0 };
+  if (ft3 <= c40 + 0.01) return { tipo: "40'", cap: c40, n: 1, costo: +P.costoFijo40 || 0, flete: +P.fleteArg40 || 0, pasa20: _ccR2(ft3 - c20) };
+  var n = Math.ceil(ft3 / c40);
+  return { tipo: n + " × 40'", cap: c40 * n, n: n, costo: (+P.costoFijo40 || 0) * n, flete: (+P.fleteArg40 || 0) * n, pasa20: _ccR2(ft3 - c20) };
+}
+window._ciContenedor = _ciContenedor;
+
+// Foto completa del pedido en armado
+function _ciEstadoPedido(cap, ft3){
+  var P = _ciParams(), E = _ciCuentaEstado(), C = _ciContenedor(ft3, P), hoy = _ccHoy();
+  var factura = cap + (cap > 0 ? C.flete : 0);
+  var deudaCon = E.deuda + factura, pctLim = E.limite ? deudaCon / E.limite * 100 : 0;
+  var aviso = +P.aviso || 90;
+  var credNivel = pctLim > 100.0001 ? 'sobre' : (pctLim >= aviso ? 'cerca' : 'ok');
+  var vence = _ccMas(hoy, 60), llega = _ccMas(hoy, +P.transito || 21);
+  return { P: P, E: E, C: C, cap: cap, ft3: ft3, factura: factura, deudaCon: deudaCon, pctLim: pctLim, credNivel: credNivel,
+    exceso: Math.max(0, deudaCon - E.limite), libre: Math.max(0, E.limite - deudaCon),
+    presu: +P.presupuesto || 0, pctPresu: (+P.presupuesto || 0) ? cap / P.presupuesto * 100 : 0,
+    caja: cap > 0 ? Math.max(0, C.costo - C.flete) : 0,
+    vence: vence, llega: llega, diasVenta: 60 - (+P.transito || 21), cubreHasta: _ccMas(hoy, (+P.L || 45) + (+P.R || 45)),
+    pctCont: C.cap ? ft3 / C.cap * 100 : 0, costoFt3: (ft3 > 0 && C.costo > 0) ? C.costo / ft3 : null };
+}
+window._ciEstadoPedido = _ciEstadoPedido;
+
+function _ciBarra(pct, color, marca){
+  var w = Math.max(0, Math.min(100, pct / (marca ? 1.3 : 1)));
+  return '<div style="position:relative;height:7px;background:rgba(255,255,255,.1);border-radius:4px;margin:6px 0 4px;overflow:hidden;">' +
+    '<div style="height:100%;width:' + w + '%;background:' + color + ';border-radius:4px;"></div>' +
+    (marca ? '<div style="position:absolute;top:-2px;bottom:-2px;left:' + (100 / 1.3) + '%;width:2px;background:#fff;opacity:.85;" title="Límite $100k"></div>' : '') +
+  '</div>';
+}
+
+window._ciVivoRender = function(cap, ft3){
+  var el = document.getElementById('ci-vivo'); if (!el) return;
+  var S = _ciEstadoPedido(cap, ft3), E = S.E, P = S.P;
+  var card = function(borde, titulo, cuerpo, onclick){
+    return '<div ' + (onclick ? 'onclick="' + onclick + '" title="Abrir / actualizar" ' : '') + 'style="flex:1;min-width:230px;background:#0f1338;border:1.5px solid ' + borde + ';border-radius:10px;padding:9px 12px;' + (onclick ? 'cursor:pointer;' : '') + '">' +
+      '<div style="font-family:Barlow Condensed,sans-serif;font-weight:900;letter-spacing:.8px;font-size:.82rem;color:' + borde + ';">' + titulo + '</div>' + cuerpo + '</div>';
+  };
+  var lin = function(t, c){ return '<div style="font-size:.7rem;line-height:1.45;color:' + (c || '#cbd5ff') + ';">' + t + '</div>'; };
+  // CRÉDITO
+  var cc = S.credNivel === 'sobre' ? '#fb923c' : (S.credNivel === 'cerca' ? '#facc15' : '#4ade80');
+  var credTxt = S.credNivel === 'sobre'
+    ? '⬆ ' + _cc$0(S.exceso) + ' por encima del límite de ' + _cc$0(E.limite) + ' · aviso, no bloquea'
+    : (S.credNivel === 'cerca' ? '⚠ Te acercas al límite · quedan ' + _cc$0(S.libre) : '✓ Dentro del límite · quedan ' + _cc$0(S.libre));
+  var cred = card(cc, '🏦 CRÉDITO ARGELIA',
+    lin('Deuda hoy <b style="color:#fff;">' + _cc$0(E.deuda) + '</b> <span style="opacity:.75;">(corte ' + _ccFmt(E.corte) + (E.nAb || E.nFa ? ' + ' + (E.nAb + E.nFa) + ' mov.' : '') + ')</span>') +
+    lin('+ este pedido ' + _cc$0(S.factura) + (S.cap > 0 && S.C.flete ? ' <span style="opacity:.75;">(FOB ' + _cc$0(S.cap) + ' + flete ' + _cc$0(S.C.flete) + ')</span>' : (S.cap > 0 && S.C.n && S.C.tipo !== "20'" && !S.C.flete ? ' <span style="color:#fbbf24;">(+ flete del ' + S.C.tipo + ' sin dato)</span>' : ''))) +
+    _ciBarra(S.pctLim, cc, true) +
+    lin('= <b style="color:#fff;">' + _cc$0(S.deudaCon) + '</b> · <b style="color:' + cc + ';">' + Math.round(S.pctLim) + '%</b> del límite') +
+    lin(credTxt, cc), 'ciCuentaAbrir()');
+  // MONTO
+  var mc = S.presu && S.pctPresu > 110 ? '#fb923c' : (S.presu && S.pctPresu >= 90 ? '#facc15' : '#60a5fa');
+  var monto = card(mc, '💰 MONTO',
+    lin('Pedido FOB <b style="color:#fff;">' + _cc$0(S.cap) + '</b>' + (S.presu ? ' · objetivo ' + _cc$0(S.presu) : '')) +
+    (S.presu ? _ciBarra(S.pctPresu, mc) + lin('<b style="color:' + mc + ';">' + Math.round(S.pctPresu) + '%</b> del objetivo' + (S.pctPresu > 100 ? ' (+' + _cc$0(S.cap - S.presu) + ')' : ' (faltan ' + _cc$0(S.presu - S.cap) + ')')) : '') +
+    lin('Factura Argelia estimada ' + _cc$0(S.factura)) +
+    (S.cap > 0 ? lin('De tu caja al llegar: ~' + (S.caja ? _cc$0(S.caja) : '<span style="color:#fbbf24;">sin dato para ' + S.C.tipo + '</span>') + ' (puesta en depósito)') : ''));
+  // TIEMPO
+  var tc = E.vencido > 0 ? '#fb923c' : '#a78bfa';
+  var tiempo = card(tc, '⏱ TIEMPO',
+    lin('Si se factura hoy: vence el <b style="color:#fff;">' + _ccFmt(S.vence) + '</b> (60 días)') +
+    lin('Llega ~' + _ccFmt(S.llega) + ' (tránsito ' + (+P.transito || 21) + ' d) → <b style="color:#fff;">~' + S.diasVenta + ' días</b> para vender y cobrar') +
+    lin('El pedido cubre ventas hasta ~' + _ccFmt(S.cubreHasta)) +
+    lin((E.vencido > 0 ? '🔴 Vencido hoy: <b>' + _cc$0(E.vencido) + '</b> (' + E.nVenc + ' fact.)' : '✓ Nada vencido') +
+      (E.prox ? ' · próximo: ' + E.prox.n + ' ' + _cc$0(E.prox.saldo) + ' el ' + _ccFmt(E.prox.vence) + ' (en ' + E.prox.dias + ' d)' : ''), tc), 'ciCuentaAbrir()');
+  // ESPACIO
+  var C = S.C, ec = C.tipo === "20'" ? (S.pctCont >= 85 ? '#4ade80' : '#facc15') : '#38bdf8';
+  var espTxt = C.tipo === "20'"
+    ? (S.pctCont >= 85 ? '✓ 20\' bien aprovechado' : 'Le caben ~' + _ccR2(C.cap - S.ft3).toLocaleString('en-US') + ' ft³ más (🧱 Completar)')
+    : 'Pasa del 20\' por ' + (C.pasa20 || 0).toLocaleString('en-US') + ' ft³ → pide un ' + C.tipo + ' (o recorta para quedarte en 20\')';
+  var espacio = card(ec, '🚢 ESPACIO',
+    lin('<b style="color:#fff;">' + _ccR2(S.ft3).toLocaleString('en-US') + ' ft³</b> → contenedor <b style="color:#fff;">' + C.tipo + '</b> (' + Math.round(C.cap).toLocaleString('en-US') + ' ft³)') +
+    _ciBarra(S.pctCont, ec) +
+    lin('<b style="color:' + ec + ';">' + Math.round(S.pctCont) + '%</b> lleno · ' + espTxt, ec) +
+    lin(S.costoFt3 != null ? 'Costo fijo: $' + S.costoFt3.toFixed(2) + '/ft³ ' + (S.costoFt3 > 15 ? '<span style="color:#fca5a5;">⚠ más de $15</span>' : '<span style="color:#86efac;">✓ ≤ $15</span>') : (S.ft3 > 0 ? '<span style="color:#fbbf24;">Costo fijo del ' + C.tipo + ' sin dato (⚙ parámetros)</span>' : '')));
+  el.innerHTML = cred + monto + tiempo + espacio +
+    '<div style="width:100%;font-size:.62rem;color:#8891c9;">Modo ' + (P.estricto ? '<b style="color:#fca5a5;">ESTRICTO</b>: el cálculo recorta por presupuesto, crédito y contenedor 20\'.' : '<b style="color:#86efac;">FLEXIBLE</b>: son referencias en vivo, nada se recorta.') + ' Cámbialo en 🎯 Reposición quirúrgica.</div>';
+};
+
+// ── Editor del estado de cuenta ───────────────────────────────────────
+window._ccEst = null;
+window.ciCuentaAbrir = function(){
+  window._ccEst = _ciCuenta();
+  _ccRender();
+};
+function _ccInp(val, onch, w, tipo, extra){
+  var k = (String(onch).match(/_ccSet\('([^']+)'/) || [])[1] || '';
+  return '<input data-k="' + k + '" ' + (tipo ? 'type="' + tipo + '" ' : '') + 'value="' + String(val == null ? '' : val).replace(/"/g, '&quot;') + '" onchange="' + onch + '" style="width:' + (w || 110) + 'px;max-width:100%;box-sizing:border-box;background:#0b0e28;border:1.5px solid #6366f1;color:#e0e7ff;border-radius:6px;padding:5px 6px;font-weight:800;font-family:inherit;font-size:.74rem;' + (extra || '') + '">';
+}
+window._ccSet = function(ruta, val){
+  var c = window._ccEst, p = ruta.split('.');
+  var num = /^(saldo|monto|limite|saldoCorte|creditoSinAplicar)$/.test(p[p.length - 1]);
+  if (num) { val = parseFloat(String(val).replace(/[^0-9.\-]/g, '')); if (!isFinite(val)) val = 0; }
+  if (p.length === 1) c[p[0]] = val; else c[p[0]][+p[1]][p[2]] = val;
+  if (p[0] === 'facturas' && p[2] === 'fecha') { var f = c.facturas[+p[1]]; var d = _ccDate(val); if (d && !f.vence) f.vence = _ccISO(_ccMas(d, 60)); }
+  setTimeout(_ccRender, 0); // deja que el foco pase al siguiente campo y lo conserva
+};
+window._ccAdd = function(lista){
+  var c = window._ccEst, hoy = _ccISO(_ccHoy());
+  if (lista === 'facturas') c.facturas.push({ n: '', fecha: hoy, vence: _ccISO(_ccMas(_ccHoy(), 60)), saldo: 0 });
+  else c.movs.push({ fecha: hoy, tipo: 'abono', monto: 0, nota: '' });
+  _ccRender();
+};
+window._ccDel = function(lista, i){ window._ccEst[lista].splice(i, 1); _ccRender(); };
+function _ccRender(){
+  var c = window._ccEst, E = _ciCuentaEstado(c);
+  var sumF = _ccR2((c.facturas || []).reduce(function(s, f){ return s + (+f.saldo || 0); }, 0));
+  var dif = _ccR2(sumF - (+c.creditoSinAplicar || 0) - (+c.saldoCorte || 0));
+  var th = function(t){ return '<th style="padding:6px;text-align:left;font-size:.66rem;color:#a5b4fc;">' + t + '</th>'; };
+  var filasF = (c.facturas || []).map(function(f, i){
+    var v = _ccDate(f.vence), d = v ? Math.round((v - _ccHoy()) / 86400000) : null;
+    return '<tr><td style="padding:4px;">' + _ccInp(f.n, "_ccSet('facturas." + i + ".n',this.value)", 80) + '</td>' +
+      '<td style="padding:4px;">' + _ccInp(f.fecha, "_ccSet('facturas." + i + ".fecha',this.value)", 130, 'date') + '</td>' +
+      '<td style="padding:4px;">' + _ccInp(f.vence, "_ccSet('facturas." + i + ".vence',this.value)", 130, 'date') + '</td>' +
+      '<td style="padding:4px;">' + _ccInp(f.saldo, "_ccSet('facturas." + i + ".saldo',this.value)", 110, null, 'text-align:right;') + '</td>' +
+      '<td style="padding:4px;font-size:.7rem;font-weight:800;color:' + (d != null && d < 0 ? '#fb923c' : '#86efac') + ';">' + (d == null ? '' : (d < 0 ? 'vencida hace ' + (-d) + ' d' : 'vence en ' + d + ' d')) + '</td>' +
+      '<td><button onclick="_ccDel(\'facturas\',' + i + ')" style="background:none;border:0;color:#fca5a5;cursor:pointer;font-weight:900;">✕</button></td></tr>';
+  }).join('');
+  var filasM = (c.movs || []).map(function(m, i){
+    return '<tr><td style="padding:4px;">' + _ccInp(m.fecha, "_ccSet('movs." + i + ".fecha',this.value)", 130, 'date') + '</td>' +
+      '<td style="padding:4px;"><select onchange="_ccSet(\'movs.' + i + '.tipo\',this.value)" style="width:100%;box-sizing:border-box;background:#0b0e28;border:1.5px solid #6366f1;color:#e0e7ff;border-radius:6px;padding:5px;font-weight:800;font-family:inherit;font-size:.74rem;">' +
+        '<option value="abono"' + (m.tipo !== 'factura' ? ' selected' : '') + '>💵 Abono (baja la deuda)</option><option value="factura"' + (m.tipo === 'factura' ? ' selected' : '') + '>🧾 Factura nueva (sube)</option></select></td>' +
+      '<td style="padding:4px;">' + _ccInp(m.monto, "_ccSet('movs." + i + ".monto',this.value)", 110, null, 'text-align:right;') + '</td>' +
+      '<td style="padding:4px;">' + _ccInp(m.nota, "_ccSet('movs." + i + ".nota',this.value)", 170) + '</td>' +
+      '<td><button onclick="_ccDel(\'movs\',' + i + ')" style="background:none;border:0;color:#fca5a5;cursor:pointer;font-weight:900;">✕</button></td></tr>';
+  }).join('');
+  var pct = E.limite ? E.deuda / E.limite * 100 : 0, col = pct > 100 ? '#fb923c' : (pct >= 90 ? '#facc15' : '#4ade80');
+  var html = '<div id="cc-ov" style="position:fixed;inset:0;z-index:100020;background:rgba(5,6,20,.85);display:flex;align-items:center;justify-content:center;padding:12px;">' +
+    '<div style="background:#12153a;border:1.5px solid #6366f1;border-radius:14px;max-width:880px;width:100%;max-height:94vh;overflow:auto;color:#e5e7ff;">' +
+      '<div style="padding:13px 18px;background:linear-gradient(135deg,#1e3a8a,#4f46e5);border-radius:14px 14px 0 0;">' +
+        '<div style="font-family:Barlow Condensed,sans-serif;font-weight:900;font-size:1.25rem;letter-spacing:1px;">🏦 CUENTA ARGELIA · ' + (c.cuenta || 'VE-906') + '</div>' +
+        '<div style="font-size:.72rem;opacity:.9;">Copia aquí el último estado de cuenta y anota lo que pase después (abonos, facturas nuevas). Compra Inteligente lo usa en vivo.</div></div>' +
+      '<div style="padding:12px 18px;display:flex;gap:18px;flex-wrap:wrap;background:#0f1338;">' +
+        '<div><div style="font-size:.64rem;color:#a5b4fc;">DEUDA HOY</div><div style="font-size:1.25rem;font-weight:900;color:' + col + ';">' + _cc$(E.deuda) + '</div><div style="font-size:.66rem;color:' + col + ';">' + Math.round(pct) + '% del límite' + (pct > 100 ? ' · +' + _cc$(E.deuda - E.limite) : ' · quedan ' + _cc$(E.limite - E.deuda)) + '</div></div>' +
+        '<div><div style="font-size:.64rem;color:#a5b4fc;">VENCIDO HOY</div><div style="font-size:1.25rem;font-weight:900;color:' + (E.vencido > 0 ? '#fb923c' : '#4ade80') + ';">' + _cc$(E.vencido) + '</div><div style="font-size:.66rem;color:#cbd5ff;">' + E.nVenc + ' factura(s)</div></div>' +
+        '<div><div style="font-size:.64rem;color:#a5b4fc;">PRÓXIMO VENCIMIENTO</div><div style="font-size:1rem;font-weight:900;color:#fff;">' + (E.prox ? E.prox.n + ' · ' + _cc$(E.prox.saldo) : '—') + '</div><div style="font-size:.66rem;color:#cbd5ff;">' + (E.prox ? _ccFmt(E.prox.vence) + ' (en ' + E.prox.dias + ' días)' : '') + '</div></div>' +
+      '</div>' +
+      '<div style="padding:12px 18px;">' +
+        '<div style="font-family:Barlow Condensed,sans-serif;font-weight:900;color:#fde68a;letter-spacing:.8px;margin-bottom:6px;">1 · ESTADO DE CUENTA (lo que dice Argelia)</div>' +
+        '<div style="display:flex;gap:12px;flex-wrap:wrap;font-size:.72rem;font-weight:800;align-items:center;">' +
+          '<label>Límite ' + _ccInp(c.limite, "_ccSet('limite',this.value)", 100, null, 'text-align:right;') + '</label>' +
+          '<label>Fecha de corte ' + _ccInp(c.corte, "_ccSet('corte',this.value)", 135, 'date') + '</label>' +
+          '<label>Saldo final ' + _ccInp(c.saldoCorte, "_ccSet('saldoCorte',this.value)", 110, null, 'text-align:right;') + '</label>' +
+          '<label title="Notas de crédito o pagos que Argelia aún no aplicó a ninguna factura">Crédito sin aplicar ' + _ccInp(c.creditoSinAplicar, "_ccSet('creditoSinAplicar',this.value)", 80, null, 'text-align:right;') + '</label>' +
+        '</div>' +
+        '<table style="width:100%;border-collapse:collapse;margin-top:8px;table-layout:fixed;min-width:0;"><colgroup><col style="width:14%"><col style="width:20%"><col style="width:20%"><col style="width:17%"><col style="width:24%"><col style="width:5%"></colgroup><thead><tr>' + th('Factura') + th('Fecha') + th('Vence') + th('Saldo $') + th('') + th('') + '</tr></thead><tbody>' + filasF + '</tbody></table>' +
+        '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px;flex-wrap:wrap;gap:8px;">' +
+          '<button onclick="_ccAdd(\'facturas\')" style="background:rgba(99,102,241,.2);border:1.5px solid #6366f1;color:#c7d2fe;border-radius:7px;padding:6px 12px;cursor:pointer;font-weight:800;font-size:.7rem;">＋ Factura pendiente</button>' +
+          '<span style="font-size:.7rem;font-weight:800;color:' + (Math.abs(dif) < 0.01 ? '#86efac' : '#fca5a5') + ';">' + (Math.abs(dif) < 0.01 ? '✓ Cuadra: facturas ' + _cc$(sumF) + ' − crédito sin aplicar ' + _cc$(c.creditoSinAplicar) + ' = saldo final' : '⚠ No cuadra por ' + _cc$(dif) + ': facturas ' + _cc$(sumF) + ' − crédito sin aplicar ' + _cc$(c.creditoSinAplicar) + ' ≠ saldo final ' + _cc$(c.saldoCorte)) + '</span>' +
+        '</div>' +
+        '<div style="font-family:Barlow Condensed,sans-serif;font-weight:900;color:#fde68a;letter-spacing:.8px;margin:16px 0 6px;">2 · DESPUÉS DEL CORTE (lo que todavía no sale en el estado)</div>' +
+        '<table style="width:100%;border-collapse:collapse;table-layout:fixed;min-width:0;"><colgroup><col style="width:20%"><col style="width:28%"><col style="width:17%"><col style="width:30%"><col style="width:5%"></colgroup><thead><tr>' + th('Fecha') + th('Tipo') + th('Monto $') + th('Nota (ref. / N° factura)') + th('') + '</tr></thead><tbody>' + (filasM || '<tr><td colspan="5" style="padding:8px;font-size:.7rem;color:#8891c9;">Nada todavía. Los abonos se aplican a la factura más vieja (FIFO), igual que Argelia.</td></tr>') + '</tbody></table>' +
+        '<button onclick="_ccAdd(\'movs\')" style="margin-top:6px;background:rgba(99,102,241,.2);border:1.5px solid #6366f1;color:#c7d2fe;border-radius:7px;padding:6px 12px;cursor:pointer;font-weight:800;font-size:.7rem;">＋ Abono o factura</button>' +
+      '</div>' +
+      '<div style="padding:12px 18px;display:flex;justify-content:flex-end;gap:8px;border-top:1px solid rgba(99,102,241,.4);">' +
+        '<button onclick="document.getElementById(\'cc-ov\').remove()" style="background:transparent;border:1.5px solid rgba(255,255,255,.3);color:#c7d2fe;border-radius:8px;padding:9px 14px;cursor:pointer;font-weight:800;">Cancelar</button>' +
+        '<button onclick="ciCuentaGuardar()" style="background:linear-gradient(135deg,#16a34a,#15803d);color:#fff;border:0;border-radius:8px;padding:10px 20px;cursor:pointer;font-weight:900;">💾 Guardar</button>' +
+      '</div>' +
+    '</div></div>';
+  var prev = document.getElementById('cc-ov');
+  var sc = prev ? (prev.firstChild || {}).scrollTop : 0;
+  var act = (document.activeElement && document.activeElement.getAttribute) ? document.activeElement.getAttribute('data-k') : null;
+  if (prev) prev.remove();
+  document.body.insertAdjacentHTML('beforeend', html);
+  try { if (sc) document.getElementById('cc-ov').firstChild.scrollTop = sc; } catch(e){}
+  try { if (act) { var nx = document.querySelector('#cc-ov [data-k="' + act + '"]'); if (nx) nx.focus(); } } catch(e){}
+}
+window._ccRender = _ccRender;
+
+window.ciCuentaGuardar = async function(){
+  var c = window._ccEst; if (!c) return;
+  c.updatedAt = Date.now();
+  try { localStorage.setItem('farmers_ci_cuenta', JSON.stringify(c)); localStorage.setItem('farmers_ci_cuenta_savedAt', String(c.updatedAt)); } catch(e){}
+  var ov = document.getElementById('cc-ov'); if (ov) ov.remove();
+  try { if (document.getElementById('ci-modal')) _ciTotals(); } catch(e){}
+  var E = _ciCuentaEstado(c), nube = false;
+  try { if (typeof window.fbSaveCiCuenta === 'function') { await window.fbSaveCiCuenta(c); nube = true; } } catch(e){ console.warn('[v.378] cuenta → nube:', e); }
+  alert('🏦 CUENTA ARGELIA GUARDADA' + (nube ? ' (este equipo + nube)' : ' (solo en este equipo: la nube no respondió)') +
+    '\n\nDeuda hoy: ' + _cc$(E.deuda) + ' · ' + Math.round(E.deuda / E.limite * 100) + '% del límite de ' + _cc$0(E.limite) +
+    '\nVencido: ' + _cc$(E.vencido) + ' (' + E.nVenc + ' factura/s)' +
+    (E.prox ? '\nPróximo vencimiento: ' + E.prox.n + ' ' + _cc$(E.prox.saldo) + ' el ' + _ccFmt(E.prox.vence) : ''));
+};
+
+// Trae la cuenta de la nube al abrir Compra Inteligente (si es más nueva)
+window._ciCuentaRefrescar = function(){
+  if (typeof window.fbGetCiCuenta !== 'function') return;
+  window.fbGetCiCuenta().then(function(rc){
+    if (!rc || !Array.isArray(rc.facturas)) return;
+    var loc = _ciCuenta();
+    if ((+rc.updatedAt || 0) > (+loc.updatedAt || 0)) {
+      try { localStorage.setItem('farmers_ci_cuenta', JSON.stringify(rc)); } catch(e){}
+      try { if (document.getElementById('ci-modal')) _ciTotals(); } catch(e){}
+    }
+  }).catch(function(){});
+};
+
+
+
+// ═══════════════════════════════════════════════════════════════════════
+// v.376 (14/10/2026) — FALTANTES POR CLIENTE Y SU RECUPERACIÓN
+// Por cada línea de pedido de cliente (Monitor de Pedidos) donde se despachó
+// MENOS de lo pedido: quién (cliente/sucursal), qué, cuánto faltó, y DESPUÉS:
+//   • ¿llegó mercancía de ese producto? (recepción de OC o stock visto en un pedido posterior)
+//   • ¿se le surtió luego a esa misma sucursal? (despachos posteriores del mismo producto)
+//   • ¿lo volvió a pedir?
+// Estados: ✅ RECUPERADO · 🟢 RECUPERADO PARCIAL · 🔁 LO VOLVIÓ A PEDIR ·
+//          🟡 LLEGÓ MERCANCÍA Y NO SE LE SURTIÓ (oportunidad) · 🔴 NUNCA LLEGÓ MERCANCÍA
+// Para la reposición se usa solo lo PERDIDO NETO (sin lo recuperado ni lo re-pedido),
+// así un mismo faltante no se cuenta dos veces.
+// ═══════════════════════════════════════════════════════════════════════
+function _ciFaltAnalisis(){
+  var peds = []; try { peds = (typeof getMsPedidos === 'function') ? (getMsPedidos() || []) : []; } catch(e){}
+  var cls = []; try { cls = JSON.parse(localStorage.getItem('farmers_clients_v2') || '[]') || []; } catch(e){}
+  var nomCli = {}; (Array.isArray(cls) ? cls : []).forEach(function(c){ if (c && c.id) nomCli[c.id] = c.nombre || c.razonSocial || c.id; });
+  var lista = peds.filter(function(p){ var e = String((p && p.estado) || 'RESERVADO').toUpperCase(); return p && e !== 'CANCELADO' && e !== 'ANULADO'; })
+    .map(function(p){ return { p: p, f: _ciFecha(p.fechaISO) || _ciFecha(p.fecha), vivo: ['RESERVADO', 'PARCIAL'].indexOf(String(p.estado || 'RESERVADO').toUpperCase()) >= 0 }; })
+    .filter(function(x){ return x.f; })
+    .sort(function(a, b){ return a.f - b.f || String(a.p.fechaISO || '').localeCompare(String(b.p.fechaISO || '')); });
+  // Llegadas de mercancía: recepciones de OC
+  var llegadas = {};
+  try {
+    (typeof getOrdenesCompraDB === 'function' ? getOrdenesCompraDB() : []).forEach(function(o){
+      (o.recepciones || []).forEach(function(r){
+        var f = _ciFecha(r.fecha); if (!f) return;
+        (r.items || []).forEach(function(it){ if (it && it.refFarmers && (parseInt(it.cantidadRecibida, 10) || 0) > 0) (llegadas[it.refFarmers] = llegadas[it.refFarmers] || []).push({ f: f, q: parseInt(it.cantidadRecibida, 10) || 0, oc: o.numero || '' }); });
+      });
+    });
+  } catch(e){}
+  // Stock visto al crear pedidos posteriores (data[].stock)
+  var stockVisto = {};
+  lista.forEach(function(x){ (x.p.data || []).forEach(function(dd){ if (dd && dd.ref && (parseInt(dd.stock, 10) || 0) > 0) (stockVisto[dd.ref] = stockVisto[dd.ref] || []).push({ f: x.f, q: parseInt(dd.stock, 10) || 0, numP: x.p.numP }); }); });
+  // Historial por sucursal+ref
+  var porSR = {};
+  lista.forEach(function(x, idx){
+    (x.p.items || []).forEach(function(it){
+      if (!it || !it.ref || !it.sucursales) return;
+      Object.keys(it.sucursales).forEach(function(suc){
+        var dt = it.sucursales[suc] || {};
+        var k = suc + '|' + it.ref;
+        (porSR[k] = porSR[k] || []).push({ idx: idx, f: x.f, numP: x.p.numP, pide: parseInt(dt.pide, 10) || 0, desp: parseInt(dt.desp, 10) || 0, vivo: x.vivo });
+      });
+    });
+  });
+  var lineas = [], precio = {};
+  (window.PRODUCTS || []).forEach(function(p){ precio[p.r] = parseFloat(p.u) || 0; });
+  lista.forEach(function(x, idx){
+    if (x.vivo) return; // los vivos van como "pedidos por cubrir" en la reposición
+    var p = x.p;
+    (p.items || []).forEach(function(it){
+      if (!it || !it.ref || !it.sucursales) return;
+      Object.keys(it.sucursales).forEach(function(suc){
+        var dt = it.sucursales[suc] || {};
+        var pide = parseInt(dt.pide, 10) || 0, desp = parseInt(dt.desp, 10) || 0, falta = pide - desp;
+        if (falta <= 0) return;
+        var cliId = (p.clientesPorSucursal || {})[suc];
+        var post = (porSR[suc + '|' + it.ref] || []).filter(function(y){ return y.idx > idx; });
+        var despPost = post.reduce(function(s, y){ return s + y.desp; }, 0);
+        var pidePost = post.reduce(function(s, y){ return s + y.pide; }, 0);
+        var recuperado = Math.min(falta, despPost);
+        var repedido = Math.max(0, Math.min(falta, pidePost) - recuperado);
+        var perdidoNeto = Math.max(0, falta - Math.max(recuperado, Math.min(falta, pidePost)));
+        var lleg = (llegadas[it.ref] || []).filter(function(l){ return l.f > x.f; }).sort(function(a, b){ return a.f - b.f; })[0] || null;
+        var stk = (stockVisto[it.ref] || []).filter(function(l){ return l.f > x.f; }).sort(function(a, b){ return a.f - b.f; })[0] || null;
+        var huboStock = !!(lleg || stk);
+        var estado, icono;
+        if (recuperado >= falta) { estado = 'RECUPERADO'; icono = '✅'; }
+        else if (recuperado > 0) { estado = 'RECUPERADO PARCIAL'; icono = '🟢'; }
+        else if (pidePost > 0) { estado = 'LO VOLVIÓ A PEDIR'; icono = '🔁'; }
+        else if (huboStock) { estado = 'LLEGÓ MERCANCÍA Y NO SE LE SURTIÓ'; icono = '🟡'; }
+        else { estado = 'NUNCA LLEGÓ MERCANCÍA'; icono = '🔴'; }
+        lineas.push({
+          numP: p.numP, f: x.f, suc: suc, cliente: (cliId && nomCli[cliId]) || suc, ref: _ciAliasRef(it.ref), refOrig: it.ref,
+          pide: pide, desp: desp, falta: falta, recuperado: recuperado, repedido: repedido, perdidoNeto: perdidoNeto,
+          pedidosDespues: post.length, despDespues: despPost, pideDespues: pidePost,
+          llego: lleg ? { f: lleg.f, q: lleg.q, oc: lleg.oc } : null, stockDespues: stk ? { f: stk.f, q: stk.q, numP: stk.numP } : null,
+          estado: estado, icono: icono, valorPerdido: perdidoNeto * (precio[it.ref] || 0)
+        });
+      });
+    });
+  });
+  return { lineas: lineas, pedidos: lista.length };
+}
+window._ciFaltAnalisis = _ciFaltAnalisis;
+
+var _cfEst = { filtro: 'TODOS', q: '', vista: 'cliente' };
+window.ciFaltantesAbrir = function(){
+  try {
+    var A = _ciFaltAnalisis();
+    window._cfDatos = A;
+    _cfRender();
+  } catch(e){ console.error('[v.376] faltantes:', e); alert('⚠ Error analizando faltantes: ' + e.message); }
+};
+function _cfFmt(n){ return Math.round(n || 0).toLocaleString('en-US'); }
+function _cfFecha(d){ return d ? (('0' + d.getDate()).slice(-2) + '/' + ('0' + (d.getMonth() + 1)).slice(-2) + '/' + d.getFullYear()) : '—'; }
+window._cfRender = function(){
+  var A = window._cfDatos || { lineas: [] }, L = A.lineas;
+  var q = _cfEst.q.toUpperCase();
+  var vis = L.filter(function(l){
+    if (_cfEst.filtro !== 'TODOS' && l.estado !== _cfEst.filtro) return false;
+    if (q && (l.cliente + ' ' + l.suc + ' ' + l.ref + ' ' + l.numP).toUpperCase().indexOf(q) < 0) return false;
+    return true;
+  });
+  // KPIs globales (sobre todas las líneas de pedidos despachados)
+  var peds = []; try { peds = getMsPedidos() || []; } catch(e){}
+  var pideT = 0, despT = 0;
+  peds.forEach(function(p){ var e = String(p.estado || 'RESERVADO').toUpperCase(); if (e === 'CANCELADO' || e === 'ANULADO' || e === 'RESERVADO' || e === 'PARCIAL') return; (p.items || []).forEach(function(it){ Object.keys(it.sucursales || {}).forEach(function(s){ var d = it.sucursales[s] || {}; pideT += parseInt(d.pide, 10) || 0; despT += parseInt(d.desp, 10) || 0; }); }); });
+  var falta = 0, rec = 0, rep = 0, perd = 0, valP = 0, oport = 0, oportU = 0;
+  L.forEach(function(l){ falta += l.falta; rec += l.recuperado; rep += l.repedido; perd += l.perdidoNeto; valP += l.valorPerdido; if (l.icono === '🟡') { oport++; oportU += l.perdidoNeto; } });
+  var fill1 = pideT ? despT / pideT * 100 : 0, fill2 = pideT ? (despT + rec) / pideT * 100 : 0;
+  var cnt = {}; L.forEach(function(l){ cnt[l.estado] = (cnt[l.estado] || 0) + 1; });
+  var chip = function(key, txt, col){ var on = _cfEst.filtro === key; return '<button onclick="_cfEst.filtro=\'' + key + '\';_cfRender()" style="border:1.5px solid ' + col + ';background:' + (on ? col : 'transparent') + ';color:' + (on ? '#0f1230' : col) + ';border-radius:8px;padding:6px 10px;font-weight:900;font-size:.68rem;cursor:pointer;">' + txt + ' ' + (key === 'TODOS' ? L.length : (cnt[key] || 0)) + '</button>'; };
+  var kpi = function(lbl, val, col, sub){ return '<div style="background:#141840;border:1px solid rgba(99,102,241,.3);border-radius:10px;padding:10px 12px;min-width:140px;"><div style="font-size:.6rem;color:#a5b4fc;font-weight:800;text-transform:uppercase;letter-spacing:.5px;">' + lbl + '</div><div style="font-family:Barlow Condensed,sans-serif;font-size:1.35rem;font-weight:900;color:' + col + ';">' + val + '</div>' + (sub ? '<div style="font-size:.62rem;color:#8891c9;">' + sub + '</div>' : '') + '</div>'; };
+  var cuerpo;
+  if (_cfEst.vista === 'cliente') {
+    var g = {};
+    vis.forEach(function(l){ var k = l.cliente + '|' + l.suc; var x = g[k] || (g[k] = { cliente: l.cliente, suc: l.suc, lineas: 0, falta: 0, rec: 0, rep: 0, perd: 0, val: 0, oport: 0, refs: {} }); x.lineas++; x.falta += l.falta; x.rec += l.recuperado; x.rep += l.repedido; x.perd += l.perdidoNeto; x.val += l.valorPerdido; if (l.icono === '🟡') x.oport += l.perdidoNeto; x.refs[l.ref] = 1; });
+    var arr = Object.keys(g).map(function(k){ return g[k]; }).sort(function(a, b){ return b.perd - a.perd || b.falta - a.falta; });
+    cuerpo = '<table style="width:100%;border-collapse:collapse;font-size:.74rem;color:#dbe1ff;"><thead><tr style="background:#171b4a;position:sticky;top:0;"><th style="padding:8px;text-align:left;">CLIENTE</th><th style="padding:8px;text-align:left;">SUCURSAL</th><th style="padding:8px;">REFS</th><th style="padding:8px;">FALTÓ</th><th style="padding:8px;">SE LE SURTIÓ DESPUÉS</th><th style="padding:8px;">LO VOLVIÓ A PEDIR</th><th style="padding:8px;">PERDIDO NETO</th><th style="padding:8px;">🟡 LLEGÓ Y NO SE SURTIÓ</th><th style="padding:8px;">$ PERDIDO (USD)</th></tr></thead><tbody>' +
+      arr.map(function(x){ return '<tr style="border-bottom:1px solid rgba(99,102,241,.12);cursor:pointer;" onclick="_cfEst.q=\'' + String(x.suc).replace(/'/g, '') + '\';_cfEst.vista=\'linea\';_cfRender()"><td style="padding:6px 8px;font-weight:800;">' + _ciEsc(x.cliente) + '</td><td style="padding:6px 8px;color:#99f6e4;font-weight:800;">' + _ciEsc(x.suc) + '</td><td style="text-align:center;">' + Object.keys(x.refs).length + '</td><td style="text-align:center;">' + _cfFmt(x.falta) + '</td><td style="text-align:center;color:#86efac;">' + _cfFmt(x.rec) + ' <span style="color:#8891c9;">(' + (x.falta ? Math.round(x.rec / x.falta * 100) : 0) + '%)</span></td><td style="text-align:center;color:#93c5fd;">' + _cfFmt(x.rep) + '</td><td style="text-align:center;color:#fca5a5;font-weight:900;">' + _cfFmt(x.perd) + '</td><td style="text-align:center;color:#fde047;font-weight:900;">' + (x.oport ? _cfFmt(x.oport) : '') + '</td><td style="text-align:right;padding-right:10px;color:#fca5a5;">$' + _cfFmt(x.val) + '</td></tr>'; }).join('') + '</tbody></table>';
+  } else {
+    var arr2 = vis.slice().sort(function(a, b){ return b.f - a.f || b.falta - a.falta; });
+    cuerpo = '<table style="width:100%;border-collapse:collapse;font-size:.72rem;color:#dbe1ff;"><thead><tr style="background:#171b4a;position:sticky;top:0;"><th style="padding:8px;">FECHA</th><th style="padding:8px;">PEDIDO</th><th style="padding:8px;text-align:left;">CLIENTE / SUCURSAL</th><th style="padding:8px;">REF</th><th style="padding:8px;">PIDIÓ</th><th style="padding:8px;">DESPACHADO</th><th style="padding:8px;">FALTÓ</th><th style="padding:8px;text-align:left;">QUÉ PASÓ DESPUÉS</th><th style="padding:8px;text-align:left;">ESTADO</th></tr></thead><tbody>' +
+      arr2.map(function(l){
+        var desp = [];
+        if (l.llego) desp.push('📦 llegó ' + _cfFmt(l.llego.q) + ' el ' + _cfFecha(l.llego.f) + (l.llego.oc ? ' (' + l.llego.oc + ')' : ''));
+        else if (l.stockDespues) desp.push('📦 hubo ' + _cfFmt(l.stockDespues.q) + ' en stock el ' + _cfFecha(l.stockDespues.f));
+        else desp.push('sin llegada de mercancía');
+        if (l.pedidosDespues) desp.push(l.pedidosDespues + ' pedido(s) después: pidió ' + _cfFmt(l.pideDespues) + ', se le despachó ' + _cfFmt(l.despDespues));
+        var col = l.icono === '🔴' ? '#fca5a5' : l.icono === '🟡' ? '#fde047' : l.icono === '🔁' ? '#93c5fd' : '#86efac';
+        return '<tr style="border-bottom:1px solid rgba(99,102,241,.12);"><td style="padding:5px 6px;text-align:center;">' + _cfFecha(l.f) + '</td><td style="text-align:center;color:#a5b4fc;">' + _ciEsc(l.numP) + '</td><td style="padding:5px 6px;"><b>' + _ciEsc(l.cliente) + '</b><div style="color:#99f6e4;font-size:.64rem;">' + _ciEsc(l.suc) + '</div></td><td style="text-align:center;font-weight:900;color:#99f6e4;">' + _ciEsc(l.ref) + '</td><td style="text-align:center;">' + _cfFmt(l.pide) + '</td><td style="text-align:center;">' + _cfFmt(l.desp) + '</td><td style="text-align:center;color:#fca5a5;font-weight:900;">' + _cfFmt(l.falta) + '</td><td style="padding:5px 6px;font-size:.66rem;color:#c7cdf5;">' + desp.join(' · ') + '</td><td style="padding:5px 6px;color:' + col + ';font-weight:900;white-space:nowrap;">' + l.icono + ' ' + l.estado + '</td></tr>';
+      }).join('') + '</tbody></table>';
+  }
+  var html = '<div id="cf-ov" style="position:fixed;inset:0;z-index:100005;background:rgba(5,6,20,.88);display:flex;align-items:center;justify-content:center;padding:12px;">' +
+    '<div style="background:#0f1230;border:1.5px solid rgba(244,63,94,.45);border-radius:16px;width:97vw;height:94vh;display:flex;flex-direction:column;overflow:hidden;">' +
+      '<div style="padding:12px 18px;background:linear-gradient(135deg,#881337,#be123c);display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;">' +
+        '<div><div style="font-family:Barlow Condensed,sans-serif;font-weight:900;font-size:1.25rem;color:#fff;letter-spacing:1px;">📉 FALTANTES POR CLIENTE Y SU RECUPERACIÓN</div>' +
+        '<div style="font-size:.68rem;color:rgba(255,255,255,.85);">' + A.pedidos + ' pedidos de clientes (Monitor de Pedidos) · qué les faltó, qué llegó después y cuánto se les surtió</div></div>' +
+        '<div style="display:flex;gap:8px;"><button onclick="_cfExport()" style="background:#16a34a;color:#fff;border:0;border-radius:8px;padding:8px 14px;font-weight:900;cursor:pointer;">📊 Excel</button>' +
+        '<button onclick="document.getElementById(\'cf-ov\').remove()" style="background:rgba(255,255,255,.15);border:1.5px solid rgba(255,255,255,.4);color:#fff;border-radius:8px;padding:8px 14px;cursor:pointer;font-weight:900;">✕ Cerrar</button></div>' +
+      '</div>' +
+      '<div style="padding:10px 18px;display:flex;gap:10px;flex-wrap:wrap;background:#0b0e28;">' +
+        kpi('Nivel de surtido inicial', fill1.toFixed(1) + '%', '#fde68a', _cfFmt(despT) + ' de ' + _cfFmt(pideT) + ' uds pedidas') +
+        kpi('Surtido final (con recuperación)', fill2.toFixed(1) + '%', '#86efac', '+' + _cfFmt(rec) + ' uds surtidas después') +
+        kpi('Faltó despachar', _cfFmt(falta) + ' uds', '#fca5a5', L.length + ' líneas cliente/sucursal/ref') +
+        kpi('Lo volvieron a pedir', _cfFmt(rep) + ' uds', '#93c5fd', 'la misma necesidad, no se cuenta 2 veces') +
+        kpi('Perdido neto', _cfFmt(perd) + ' uds', '#f87171', '≈ $' + _cfFmt(valP) + ' en venta (USD)') +
+        kpi('🟡 Llegó y no se surtió', _cfFmt(oportU) + ' uds', '#fde047', oport + ' líneas → ofrecer a esos clientes') +
+      '</div>' +
+      '<div style="padding:8px 18px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;border-bottom:1px solid rgba(99,102,241,.25);">' +
+        '<button onclick="_cfEst.vista=\'cliente\';_cfRender()" style="background:' + (_cfEst.vista === 'cliente' ? '#be123c' : 'transparent') + ';color:#fff;border:1.5px solid #be123c;border-radius:8px;padding:6px 12px;font-weight:900;font-size:.7rem;cursor:pointer;">👥 Por cliente / sucursal</button>' +
+        '<button onclick="_cfEst.vista=\'linea\';_cfRender()" style="background:' + (_cfEst.vista === 'linea' ? '#be123c' : 'transparent') + ';color:#fff;border:1.5px solid #be123c;border-radius:8px;padding:6px 12px;font-weight:900;font-size:.7rem;cursor:pointer;">📋 Detalle por línea</button>' +
+        '<span style="width:10px;"></span>' + chip('TODOS', 'Todos', '#c7d2fe') + chip('NUNCA LLEGÓ MERCANCÍA', '🔴 Nunca llegó', '#fca5a5') + chip('LLEGÓ MERCANCÍA Y NO SE LE SURTIÓ', '🟡 Llegó y no se surtió', '#fde047') + chip('LO VOLVIÓ A PEDIR', '🔁 Lo volvió a pedir', '#93c5fd') + chip('RECUPERADO PARCIAL', '🟢 Parcial', '#86efac') + chip('RECUPERADO', '✅ Recuperado', '#86efac') +
+        '<input oninput="_cfEst.q=this.value;_cfRender()" value="' + _ciEsc(_cfEst.q) + '" placeholder="🔎 cliente, sucursal, ref o pedido" style="flex:1;min-width:180px;background:#141840;border:1.5px solid rgba(99,102,241,.35);color:#e5e7ff;border-radius:8px;padding:7px 10px;font-size:.74rem;">' +
+      '</div>' +
+      '<div style="flex:1;overflow:auto;">' + (vis.length ? cuerpo : '<div style="padding:40px;text-align:center;color:#8891c9;">Sin faltantes con ese filtro.</div>') + '</div>' +
+    '</div></div>';
+  var prev = document.getElementById('cf-ov'); if (prev) prev.remove();
+  document.body.insertAdjacentHTML('beforeend', html);
+  var inpQ = document.querySelector('#cf-ov input'); if (inpQ && _cfEst.q) { inpQ.focus(); inpQ.setSelectionRange(inpQ.value.length, inpQ.value.length); }
+};
+window._cfExport = function(){
+  if (typeof XLSX === 'undefined') { alert('⚠ Librería Excel no cargada.'); return; }
+  var L = (window._cfDatos || { lineas: [] }).lineas;
+  var aoa = [['FECHA PEDIDO', 'PEDIDO', 'CLIENTE', 'SUCURSAL', 'REF', 'PIDIÓ', 'DESPACHADO', 'FALTÓ', 'LLEGÓ MERCANCÍA (FECHA)', 'CANTIDAD LLEGADA', 'OC', 'PEDIDOS DESPUÉS', 'PIDIÓ DESPUÉS', 'SE LE DESPACHÓ DESPUÉS', 'RECUPERADO', 'LO VOLVIÓ A PEDIR', 'PERDIDO NETO', '$ PERDIDO (USD)', 'ESTADO']];
+  L.slice().sort(function(a, b){ return a.f - b.f; }).forEach(function(l){
+    aoa.push([_cfFecha(l.f), l.numP, l.cliente, l.suc, l.ref, l.pide, l.desp, l.falta, l.llego ? _cfFecha(l.llego.f) : (l.stockDespues ? 'stock ' + _cfFecha(l.stockDespues.f) : ''), l.llego ? l.llego.q : (l.stockDespues ? l.stockDespues.q : ''), l.llego ? l.llego.oc : '', l.pedidosDespues, l.pideDespues, l.despDespues, l.recuperado, l.repedido, l.perdidoNeto, Math.round(l.valorPerdido * 100) / 100, l.estado]);
+  });
+  var ws = XLSX.utils.aoa_to_sheet(aoa);
+  ws['!cols'] = [{wch:12},{wch:16},{wch:34},{wch:14},{wch:9},{wch:8},{wch:11},{wch:8},{wch:16},{wch:10},{wch:12},{wch:10},{wch:10},{wch:12},{wch:11},{wch:11},{wch:11},{wch:12},{wch:34}];
+  var wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'FALTANTES');
+  XLSX.writeFile(wb, 'FARMERS_FALTANTES_RECUPERACION_' + new Date().toISOString().slice(0, 10) + '.xlsx');
+};
+
+window._ciAutofill = function() {
+  var P = _ciParams(), med = _ciMedirOC();
+  var prev = document.getElementById('ci-param-ov'); if (prev) prev.remove();
+  var inp = function(id, val, step){ return '<input id="' + id + '" type="number" step="' + (step || 1) + '" value="' + val + '" style="width:80px;background:#0b0e28;border:1.5px solid #7c3aed;color:#e9d5ff;border-radius:6px;padding:6px;font-weight:900;text-align:center;font-family:inherit;">'; };
+  var fila = function(lbl, ctl, ayuda){ return '<tr><td style="padding:8px 10px;font-weight:800;color:#e5e7ff;">' + lbl + '</td><td style="padding:8px;">' + ctl + '</td><td style="padding:8px;font-size:.7rem;color:#a5b4fc;line-height:1.35;">' + ayuda + '</td></tr>'; };
+  var html = '<div id="ci-param-ov" style="position:fixed;inset:0;z-index:100010;background:rgba(5,6,20,.82);display:flex;align-items:center;justify-content:center;padding:14px;">' +
+    '<div style="background:#12153a;border:1.5px solid #7c3aed;border-radius:14px;max-width:860px;width:100%;max-height:92vh;overflow:auto;color:#e5e7ff;">' +
+      '<div style="padding:14px 18px;background:linear-gradient(135deg,#4c1d95,#7c3aed);border-radius:14px 14px 0 0;"><div style="font-family:Barlow Condensed,sans-serif;font-weight:900;font-size:1.3rem;letter-spacing:1px;">🎯 REPOSICIÓN QUIRÚRGICA</div>' +
+      '<div style="font-size:.72rem;opacity:.9;">Repone lo que vendes · más respaldo si estás en stockout · nada si ya estás cubierto</div></div>' +
+      '<table style="width:100%;border-collapse:collapse;">' +
+        fila('Lead time (días)', inp('cip-L', P.L), 'Días desde que haces la OC hasta que está en tu depósito.' + (med.lead ? ' <b style="color:#fde68a;">Medido en tus OC: ' + med.lead + ' días (' + med.nLead + ' recepción' + (med.nLead > 1 ? 'es' : '') + ').</b>' : '')) +
+        fila('Días hasta el próximo pedido', inp('cip-R', P.R), 'Cada cuánto le haces pedido a Argelia. El pedido debe cubrir hasta que llegue el siguiente.' + (med.ciclo ? ' <b style="color:#fde68a;">Medido: cada ' + med.ciclo + ' días.</b>' : '')) +
+        fila('Ventana de ventas (días)', inp('cip-W', P.W), 'Historial que se analiza. 180 días capta a los clientes que compran cada 2–3 meses.') +
+        fila('Respaldo clase A / B / C', inp('cip-zA', P.zA, 0.01) + ' ' + inp('cip-zB', P.zB, 0.01) + ' ' + inp('cip-zC', P.zC, 0.01), 'A = productos que hacen el 80% de tu venta → más protección (1.65 ≈ 95% de las veces sin quiebre). C = cola larga → menos.') +
+        fila('Extra si hay stockout (×)', inp('cip-boost', P.boost, 0.1), 'Multiplica el respaldo cuando el producto está hoy en 0, y suma la demanda no atendida registrada.') +
+        fila('Tope del respaldo', inp('cip-cap', P.capSS, 0.05), 'El respaldo nunca pasa de este % de la venta esperada (0.5 = 50%) → evita sobre-stock en ventas irregulares.') +
+        fila('Mínimo para pedir un bulto', inp('cip-min', P.minFrac, 0.05), 'Si falta menos de este % de un bulto y no hay stockout, no se pide (0.3 = 30%).') +
+        fila('Días extra para las TOP (A)', inp('cip-extraA', P.extraA), 'Más profundidad en los productos que hacen el 80% de tu venta, para protegerte en inventario y tiempo.') +
+        fila('Marcas en depuración', '<input id="cip-excl" type="text" value="' + _ciEsc(P.excluir) + '" style="width:220px;background:#0b0e28;border:1.5px solid #7c3aed;color:#e9d5ff;border-radius:6px;padding:6px;font-weight:800;font-family:inherit;">', 'No se reponen. Separa con comas.') +
+        '<tr><td colspan="3" style="padding:10px 10px 4px;font-family:Barlow Condensed,sans-serif;font-weight:900;color:#fde68a;letter-spacing:.8px;">💰 DINERO Y CONTENEDOR</td></tr>' +
+        fila('Modo', '<label style="font-weight:900;cursor:pointer;"><input id="cip-estricto" type="checkbox"' + (P.estricto ? ' checked' : '') + ' style="vertical-align:middle;"> Estricto</label>', '<b style="color:#86efac;">Sin marcar = FLEXIBLE</b>: presupuesto, crédito y contenedor son referencias en vivo y no se recorta nada. Marcado = ESTRICTO: recorta lo que pase del presupuesto, del crédito disponible o del 20\'.') +
+        fila('Presupuesto objetivo ($ FOB)', inp('cip-pres', P.presupuesto, 500), 'Lo que quieres invertir. En flexible solo se muestra cuánto llevas.') +
+        fila('Deuda y límite Argelia', '<button onclick="ciCuentaAbrir()" style="background:#4f46e5;border:0;color:#fff;border-radius:7px;padding:7px 10px;font-weight:900;cursor:pointer;font-size:.72rem;">🏦 Cuenta Argelia</button>', (function(){ try { var E = _ciCuentaEstado(); return 'Hoy: <b style="color:#fde68a;">$' + Math.round(E.deuda).toLocaleString('en-US') + '</b> de $' + Math.round(E.limite).toLocaleString('en-US') + ' (corte ' + _ccFmt(E.corte) + '). Se actualiza con el estado de cuenta y tus abonos.'; } catch(e){ return ''; } })()) +
+        fila('Avisar al llegar a (% del límite)', inp('cip-aviso', P.aviso, 1), 'Amarillo desde este %, naranja cuando pasa del 100%. Nunca bloquea.') +
+        fila('Capacidad 20\' / 40\' (ft³)', inp('cip-cont', P.contFt3, 10) + ' ' + inp('cip-cont40', P.cont40Ft3, 10), '20\': tus OC llenas cargaron 943–1.005 ft³. 40\': estimado ~2.000; ajústalo con tu primer 40\'.') +
+        fila('Costo fijo 20\' / 40\' ($)', inp('cip-cfijo', P.costoFijo, 50) + ' ' + inp('cip-cfijo40', P.costoFijo40, 50), 'Flete Panamá→Guamache + puesta en depósito. 20\': ~$3.000 + $3.500–4.000. 40\': en 0 hasta que tengas la cotización.') +
+        fila('Flete que factura Argelia 20\' / 40\' ($)', inp('cip-flete', P.fleteArg, 50) + ' ' + inp('cip-flete40', P.fleteArg40, 50), 'Se suma a la factura (y al crédito). La 96881 vino con ~$2.711 sobre el pedido.') +
+        fila('Tránsito zarpe → Guamache (días)', inp('cip-trans', P.transito, 1), 'Factura al zarpar, vence a 60 días. Ej. 05/10 → 26/10 = 21 días.') +
+        fila('Máximo de inventario TOP al completar (días)', inp('cip-maxA', P.maxCobA, 5), 'Tope para "🧱 Completar contenedor": no llenar una TOP por encima de estos días de venta.') +
+      '</table>' +
+      '<div style="padding:12px 18px;display:flex;justify-content:space-between;gap:10px;align-items:center;border-top:1px solid rgba(124,58,237,.4);">' +
+        '<button onclick="localStorage.removeItem(\'farmers_ci_params\');document.getElementById(\'ci-param-ov\').remove();_ciAutofill()" style="background:transparent;border:1.5px solid rgba(255,255,255,.3);color:#c7d2fe;border-radius:8px;padding:9px 14px;cursor:pointer;font-weight:800;font-size:.72rem;">↺ Valores por defecto</button>' +
+        '<div style="display:flex;gap:8px;"><button onclick="document.getElementById(\'ci-param-ov\').remove()" style="background:transparent;border:1.5px solid rgba(255,255,255,.3);color:#c7d2fe;border-radius:8px;padding:9px 14px;cursor:pointer;font-weight:800;">Cancelar</button>' +
+        '<button onclick="_ciCalcular()" style="background:linear-gradient(135deg,#16a34a,#15803d);color:#fff;border:0;border-radius:8px;padding:10px 20px;cursor:pointer;font-weight:900;">🎯 Calcular pedido</button></div>' +
+      '</div>' +
+    '</div></div>';
+  document.body.insertAdjacentHTML('beforeend', html);
+};
+
+window._ciCalcular = function(){
+  var g = function(id){ var e = document.getElementById(id); return e ? parseFloat(e.value) : NaN; };
+  var P = _ciParams();
+  var nv = { L: g('cip-L'), R: g('cip-R'), W: g('cip-W'), zA: g('cip-zA'), zB: g('cip-zB'), zC: g('cip-zC'), boost: g('cip-boost'), capSS: g('cip-cap'), minFrac: g('cip-min'),
+    extraA: g('cip-extraA'), presupuesto: g('cip-pres'), credito: g('cip-cred'), deuda: g('cip-deuda'), contFt3: g('cip-cont'), costoFijo: g('cip-cfijo'), maxCobA: g('cip-maxA'),
+    cont40Ft3: g('cip-cont40'), costoFijo40: g('cip-cfijo40'), fleteArg: g('cip-flete'), fleteArg40: g('cip-flete40'), transito: g('cip-trans'), aviso: g('cip-aviso') }; // v.378
+  var est378 = document.getElementById('cip-estricto'); if (est378) P.estricto = !!est378.checked;
+  var ex = document.getElementById('cip-excl'); if (ex) P.excluir = ex.value;
+  Object.keys(nv).forEach(function(k){ if (isFinite(nv[k]) && nv[k] >= 0) P[k] = nv[k]; });
+  var gen = document.getElementById('cip-gen'); if (gen) P.exclGenial = !!gen.checked;
+  try { localStorage.setItem('farmers_ci_params', JSON.stringify(P)); } catch(e){}
+  var hayBorrador = Object.keys(_ciDraft || {}).some(function(k){ return parseInt(_ciDraft[k], 10) > 0; });
+  if (hayBorrador && !confirm('Ya tienes cantidades en el borrador.\n\nAceptar = REEMPLAZARLAS por el cálculo nuevo.\nCancelar = no hacer nada.')) return;
+  var ov = document.getElementById('ci-param-ov'); if (ov) ov.remove();
+  _ciBuildData();
+  window._ciSug = {};
+  var cnt = {}, n = 0, b = 0, cap = 0, ft3 = 0;
+  window._ciDraft = {};
+  var necB = 0, necCap = 0, necFt3 = 0;
+  _ciData.forEach(function(r){
+    var s = _ciSugerir(r, P);
+    window._ciSug[r.ref] = s;
+    var e = s.estado.split(' · ')[0]; cnt[e] = (cnt[e] || 0) + 1;
+    if (window._ciCliSet && !window._ciCliSet[r.ref]) return;
+    if (s.b > 0) { necB += s.b; necCap += s.b * r.m * r.fob; necFt3 += s.b * r.vol; }
+  });
+  var plan = _ciAsignar(P); // v.377: presupuesto + crédito + contenedor
+  Object.keys(_ciDraft).forEach(function(k){ var r = _ciByRef[k], q = parseInt(_ciDraft[k], 10) || 0; if (!r || q <= 0) return; n++; b += q; cap += q * r.m * r.fob; ft3 += q * r.vol; });
+  try { localStorage.setItem('farmers_ci_draft', JSON.stringify(_ciDraft)); } catch(e) {}
+  try { var hd = document.getElementById('ci-hdr-sub'); if (hd) hd.innerHTML = _ciSubtitulo(); } catch(e){}
+  _ciRender(); _ciTotals();
+  var R_ = '🎯 REPOSICIÓN QUIRÚRGICA · ' + new Date().toLocaleDateString('es-VE') +
+    '\nLead ' + P.L + 'd + ciclo ' + P.R + 'd · ventana ' + P.W + 'd · ' + _ciMeta.facUsadas + ' facturas (' + _ciMeta.desde + ' → ' + _ciMeta.hasta + ')' +
+    '\n\nNecesario completo: $' + Math.round(necCap).toLocaleString('en-US') + ' · ' + necB + ' bultos · ' + Math.round(necFt3).toLocaleString('en-US') + ' ft³' +
+    (P.estricto ? '\nModo ESTRICTO · tope $' + Math.round(plan.tope).toLocaleString('en-US') + ' (presupuesto / crédito disponible $' + Math.round(plan.credDisp).toLocaleString('en-US') + ') · contenedor ' + plan.cap + ' ft³' : '\nModo FLEXIBLE: nada se recorta; abajo ves dónde quedas') +
+    '\n\n✅ PEDIDO: ' + n + ' refs · ' + b + ' bultos · $' + Math.round(cap).toLocaleString('en-US') + ' FOB · ' + Math.round(ft3).toLocaleString('en-US') + ' ft³' +
+    (function(){ var S = _ciEstadoPedido(cap, ft3); return '\n🚢 Contenedor ' + S.C.tipo + ' al ' + Math.round(S.pctCont) + '%' + (S.C.pasa20 ? ' (pasa del 20\' por ' + Math.round(S.C.pasa20) + ' ft³)' : '') +
+      '\n💰 ' + (S.presu ? Math.round(S.pctPresu) + '% del objetivo $' + Math.round(S.presu).toLocaleString('en-US') : '') +
+      '\n🏦 Deuda hoy $' + Math.round(S.E.deuda).toLocaleString('en-US') + ' + factura ~$' + Math.round(S.factura).toLocaleString('en-US') + ' = $' + Math.round(S.deudaCon).toLocaleString('en-US') + ' (' + Math.round(S.pctLim) + '% del límite' + (S.exceso > 0 ? ' · +$' + Math.round(S.exceso).toLocaleString('en-US') + ' por encima, aviso' : '') + ')' +
+      '\n⏱ Si factura hoy vence ' + _ccFmt(S.vence) + ' · llega ~' + _ccFmt(S.llega) + ' · ~' + S.diasVenta + ' días para vender y cobrar'; })() +
+    (plan.nRec ? '\n✂ Quedaron fuera o recortadas ' + plan.nRec + ' refs (' + plan.bRec + ' bultos · $' + Math.round(plan.capRec).toLocaleString('en-US') + ') — lo urgente y las TOP entraron primero' : '') +
+    (function(){ var S = _ciEstadoPedido(cap, ft3); return S.costoFt3 != null ? '\n🚢 Costo fijo por ft³ con este llenado: $' + S.costoFt3.toFixed(2) + ' (tu precio asume $15/ft³' + (S.costoFt3 > 15 ? ' ⚠ NO lo cubre: completa el contenedor o espera' : ' ✓') + ')' : ''; })() +
+    '\nDemanda perdida sumada: ' + (_ciMeta.udsPerdidas || 0).toLocaleString('en-US') + ' uds pedidas por clientes y nunca surtidas (sin contar lo que se les despachó después ni lo que volvieron a pedir)' +
+    '\n🔴 Pedidos sin stock: ' + (cnt['PEDIDOS DE CLIENTES SIN STOCK'] || 0) + '  🔴 Stockout: ' + (cnt['STOCKOUT'] || 0) + '  🟠 Se agota antes de llegar: ' + (cnt['SE AGOTA ANTES DE QUE LLEGUE'] || 0) + '  🟢 Reponer lo vendido: ' + (cnt['REPONER LO VENDIDO'] || 0) +
+    '\n✅ Cubiertos: ' + (cnt['CUBIERTO'] || 0) + '  🟣 Sobre stock: ' + (cnt['SOBRE STOCK'] || 0) + '  💤 Sin rotación: ' + (cnt['SIN ROTACIÓN'] || 0);
+  window.R = R_;
+  alert(R_ + '\n\nCada fila muestra el motivo debajo de la descripción. Ajusta lo que quieras y exporta.');
+};
+
+function _ciSubtitulo(){
+  var f = (_ciMeta && _ciMeta.fuentes) || {};
+  return 'Demanda: últimos ' + _ciMeta.dias + ' días (' + _ciMeta.desde + ' → ' + _ciMeta.hasta + ') · ' + _ciMeta.facUsadas + ' facturas SIN duplicar (' + (f.despacho || 0) + ' despachos · ' + (f.factura || 0) + ' foto/PDF · ' + (f.importada || 0) + ' importadas) + ' + (_ciMeta.udsPerdidas || 0).toLocaleString('en-US') + ' uds pedidas y nunca surtidas (' + (_ciMeta.pedidos || 0) + ' pedidos de clientes' + (_ciMeta.pedidosVivos ? ', ' + _ciMeta.pedidosVivos + ' vivos' : '') + ') · Cantidades en BULTOS';
+}
+window._ciSubtitulo = _ciSubtitulo;
 
 window.farmersCompraInteligente = function() {
   try {
@@ -27114,7 +28028,7 @@ window.farmersCompraInteligente = function() {
       '<div style="background:#0f1230;border:1.5px solid rgba(13,148,136,.45);border-radius:16px;width:97vw;height:94vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.6);">'+
         '<div style="padding:12px 18px;background:linear-gradient(135deg,#1B1F6B,#0d9488);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">'+
           '<div><div style="font-family:Barlow Condensed,sans-serif;font-weight:900;font-size:1.25rem;color:#fff;letter-spacing:1px;">🧠 COMPRA INTELIGENTE — PEDIDO A PROVEEDOR</div>'+
-          '<div style="font-size:.68rem;color:rgba(255,255,255,.85);">Rotación: últimos 90 días (ventana real '+_ciMeta.desde+' → '+_ciMeta.hasta+' · '+_ciMeta.facUsadas+' facturas) · Cantidades en BULTOS · borrador se guarda solo</div></div>'+
+          '<div id="ci-hdr-sub" style="font-size:.68rem;color:rgba(255,255,255,.85);">'+_ciSubtitulo()+'</div></div>'+
           '<button onclick="_ciCerrar()" style="background:rgba(255,255,255,.15);border:1.5px solid rgba(255,255,255,.4);color:#fff;border-radius:8px;padding:8px 14px;cursor:pointer;font-weight:900;font-size:.8rem;">✕ Cerrar</button>'+
         '</div>'+
         '<div style="padding:10px 18px;display:flex;gap:10px;flex-wrap:wrap;align-items:center;background:rgba(13,148,136,.07);border-bottom:1px solid rgba(13,148,136,.25);">'+
@@ -27124,11 +28038,15 @@ window.farmersCompraInteligente = function() {
           '<input type="file" id="ci-file" accept=".xlsx,.xls,.csv,.txt" style="display:none" onchange="_ciFileChange(this)">'+
           '<button onclick="document.getElementById(\'ci-file\').click()" style="background:rgba(244,123,62,.18);border:1.5px solid rgba(244,123,62,.5);color:#fdba74;border-radius:8px;padding:9px 14px;cursor:pointer;font-weight:900;font-size:.7rem;text-transform:uppercase;">📥 Lista cliente</button>'+
           '<span id="ci-chip"></span>'+
-          '<button onclick="_ciAutofill()" style="background:linear-gradient(135deg,#7c3aed,#6d28d9);color:#fff;border:none;border-radius:8px;padding:9px 14px;cursor:pointer;font-weight:900;font-size:.7rem;text-transform:uppercase;">⚡ Autollenar sugerencia</button>'+
+          '<button onclick="ciFaltantesAbrir()" style="background:rgba(190,18,60,.25);border:1.5px solid rgba(244,63,94,.6);color:#fda4af;border-radius:8px;padding:9px 14px;cursor:pointer;font-weight:900;font-size:.7rem;text-transform:uppercase;">📉 Faltantes por cliente</button>'+
+          '<button onclick="ciCuentaAbrir()" title="Estado de cuenta con Argelia: deuda, vencimientos, abonos" style="background:rgba(79,70,229,.25);border:1.5px solid rgba(129,140,248,.6);color:#c7d2fe;border-radius:8px;padding:9px 14px;cursor:pointer;font-weight:900;font-size:.7rem;text-transform:uppercase;">🏦 Cuenta Argelia</button>'+
+          '<button onclick="_ciCompletar()" title="Llena el espacio y presupuesto que sobran con más bultos de las TOP (clase A)" style="background:rgba(13,148,136,.22);border:1.5px solid rgba(45,212,191,.6);color:#5eead4;border-radius:8px;padding:9px 14px;cursor:pointer;font-weight:900;font-size:.7rem;text-transform:uppercase;">🧱 Completar contenedor</button>'+
+          '<button onclick="_ciAutofill()" style="background:linear-gradient(135deg,#7c3aed,#6d28d9);color:#fff;border:none;border-radius:8px;padding:9px 14px;cursor:pointer;font-weight:900;font-size:.7rem;text-transform:uppercase;">🎯 Reposición quirúrgica</button>'+
           '<button onclick="_ciLimpiar()" style="background:rgba(220,38,38,.18);border:1.5px solid rgba(220,38,38,.45);color:#fca5a5;border-radius:8px;padding:9px 14px;cursor:pointer;font-weight:900;font-size:.7rem;text-transform:uppercase;">🧹 Limpiar</button>'+
           fotoBtn+'<button onclick="_ciExport()" style="background:linear-gradient(135deg,#16a34a,#15803d);color:#fff;border:none;border-radius:8px;padding:9px 16px;cursor:pointer;font-weight:900;font-size:.7rem;text-transform:uppercase;">📊 Exportar Excel</button>'+
         '</div>'+
         '<div id="ci-tot" style="padding:9px 18px;display:flex;gap:16px;flex-wrap:wrap;align-items:center;background:#131740;border-bottom:1.5px solid rgba(13,148,136,.3);font-size:.78rem;color:#ccfbf1;font-weight:800;"></div>'+
+        '<div id="ci-vivo" style="padding:8px 18px;display:flex;gap:10px;flex-wrap:wrap;background:#0b0e2a;border-bottom:1.5px solid rgba(13,148,136,.3);"></div>'+
         '<div style="flex:1;overflow:auto;">'+
           '<table style="width:100%;border-collapse:collapse;font-size:.72rem;color:#dbe1ff;">'+
             '<thead><tr style="background:#171b4a;position:sticky;top:0;z-index:5;">'+
@@ -27146,6 +28064,7 @@ window.farmersCompraInteligente = function() {
     document.body.insertAdjacentHTML('beforeend', html);
     _ciRender(); _ciTotals();
     if (window._ciCliInfo) _ciRedibujarChip();
+    try { _ciCuentaRefrescar(); } catch(eR378){} // v.378
   } catch(err) { console.error('[CI] Error:', err); alert('⚠ Error: ' + err.message); }
 };
 
@@ -27166,7 +28085,7 @@ window._ciRender = function() {
     out.push('<tr id="ci-r-'+r.ref+'" onclick="_ciFocus(\''+r.ref+'\')" style="border-bottom:1px solid rgba(99,102,241,.12);cursor:pointer;'+(b>0?'background:rgba(13,148,136,.16);':'')+(r.stk?'box-shadow:inset 3px 0 0 #dc2626;':'')+'">'+
       (function(){var im=window._prodImgs||{};var s=im[r.ref]||im[r.c]||im[r.b]||null;return s? '<td style="padding:3px 5px;"><img src="'+s+'" onclick="event.stopPropagation();_ciZoom(\''+r.ref+'\')" style="width:38px;height:38px;object-fit:cover;border-radius:7px;border:1.5px solid rgba(255,255,255,.4);cursor:zoom-in;background:#fff;display:block;"></td>' : '<td style="padding:3px 5px;text-align:center;color:#3f467f;font-size:.65rem;">·</td>';})()+
       '<td style="padding:6px 10px;font-weight:900;color:#99f6e4;">'+r.ref+(r.stk?' <span style="color:#fca5a5;font-size:.6rem;">STOCKOUT</span>':'')+'</td>'+
-      '<td style="padding:6px 8px;color:#c7cdf5;">'+_ciEsc(r.d)+'<span style="color:#fbbf24;font-size:.62rem;">'+warn+'</span>'+'<div style="font-size:.6rem;color:#8891c9;margin-top:1px;letter-spacing:.3px;">'+(r.c? 'COD: <span style="color:#a5b4fc;font-weight:700;">'+_ciEsc(r.c)+'</span>':'')+(r.c&&r.b? ' &nbsp;·&nbsp; ':'')+(r.b? '▍'+_ciEsc(r.b):'')+'</div></td>'+
+      '<td style="padding:6px 8px;color:#c7cdf5;">'+_ciEsc(r.d)+'<span style="color:#fbbf24;font-size:.62rem;">'+warn+'</span>'+'<div style="font-size:.6rem;color:#8891c9;margin-top:1px;letter-spacing:.3px;">'+(r.c? 'COD: <span style="color:#a5b4fc;font-weight:700;">'+_ciEsc(r.c)+'</span>':'')+(r.c&&r.b? ' &nbsp;·&nbsp; ':'')+(r.b? '▍'+_ciEsc(r.b):'')+'</div>'+(function(){ var sg=window._ciSug&&window._ciSug[r.ref]; if(!sg||!sg.estado) return ''; var col=sg.icono==='🔴'?'#fca5a5':sg.icono==='🟠'?'#fdba74':sg.icono==='🟢'?'#86efac':sg.icono==='🟣'?'#d8b4fe':'#a5b4fc'; return '<div style="font-size:.62rem;margin-top:3px;line-height:1.35;color:'+col+';"><b>'+sg.icono+' '+_ciEsc(sg.estado)+'</b> · <span style="color:#c7cdf5;">'+_ciEsc(sg.motivo)+'</span>'+(sg.recorte?' <b style="color:#fde047;">'+_ciEsc(sg.recorte)+'</b>':'')+'</div>'; })()+'</td>'+
       '<td style="padding:6px;text-align:center;color:#a5b4fc;">'+_ciEsc(r.br)+'</td>'+
       '<td style="padding:6px;text-align:center;'+(r.disp===0?'color:#fca5a5;font-weight:900;':'')+'">'+r.disp+'</td>'+
       '<td style="padding:6px;text-align:center;color:#93c5fd;">'+(r.ord||'')+'</td>'+
@@ -27229,35 +28148,17 @@ window._ciTotals = function() {
     refs++; bultos+=b; uds+=b*r.m; cap+=b*r.m*r.fob; ft3+=b*r.vol;
     if(r.fob<=0) sinFOB++; if(r.vol<=0) sinVol++;
   });
-  var contEl=document.getElementById('ci-cont');
-  var cont=contEl? (parseFloat(contEl.value)||2200):2200;
-  var pct=_ciR2(ft3/cont*100);
   document.getElementById('ci-tot').innerHTML =
     '<span>📦 <span style="color:#fff;">'+refs+'</span> refs</span>'+
     '<span>🧱 <span style="color:#fff;">'+bultos+'</span> bultos · '+uds.toLocaleString('en-US')+' uds</span>'+
     '<span>💰 <span style="color:#86efac;font-size:.92rem;">$'+_ciR2(cap).toLocaleString('en-US')+'</span></span>'+
-    '<span>🚢 <span style="color:#99f6e4;">'+_ciR2(ft3).toLocaleString('en-US')+' ft³</span> = <span style="color:'+(pct>100?'#fca5a5':'#fff')+';">'+pct+'%</span> de '+
-    '<input id="ci-cont" type="number" value="'+cont+'" oninput="_ciTotals()" style="width:70px;background:#0b0e28;border:1px solid rgba(99,102,241,.4);color:#e5e7ff;border-radius:6px;padding:3px 6px;font-weight:800;text-align:center;font-family:inherit;"> ft³</span>'+
+    '<span>🚢 <span style="color:#99f6e4;">'+_ciR2(ft3).toLocaleString('en-US')+' ft³</span></span>'+
     (sinFOB? '<span style="color:#fbbf24;">⚠ '+sinFOB+' sin FOB</span>':'')+
     (sinVol? '<span style="color:#fbbf24;">⚠ '+sinVol+' sin ft³</span>':'');
+  try { _ciVivoRender(cap, ft3); } catch(eV378){ console.warn('[v.378] panel en vivo:', eV378); } // v.378: crédito · monto · tiempo · espacio
 };
 
-window._ciAutofill = function() {
-  var obj = parseFloat(prompt('🎯 Cobertura objetivo en MESES (stock + en camino + este pedido).\nSolo precarga refs con venta en 90 días; luego ajustas a mano:', '4'));
-  if (!obj || obj<=0) return;
-  var n=0;
-  _ciData.forEach(function(r){
-    if (window._ciCliSet && !window._ciCliSet[r.ref]) return;
-    if (r.venta<=0 || r.m<=0) return;
-    var nec = Math.max(0, obj*r.mensual - (r.disp+r.ord));
-    var b = Math.ceil(nec/r.m);
-    if (b>0) { _ciDraft[r.ref]=b; n++; }
-  });
-  try { localStorage.setItem('farmers_ci_draft', JSON.stringify(_ciDraft)); } catch(e) {}
-  _ciRender(); _ciTotals();
-  alert('⚡ '+n+' referencias precargadas con la sugerencia de '+obj+' meses.\nAjusta las que quieras y exporta.');
-};
-
+/* v.374: _ciAutofill viejo (cobertura en meses sobre ventas en 0) reemplazado por el motor de reposición quirúrgica */
 window._ciCliSet = window._ciCliSet || null;
 window._ciCliInfo = window._ciCliInfo || null;
 window._ciNorm = function(x){ return String(x==null?'':x).toUpperCase().replace(/\s+/g,''); };
@@ -27352,14 +28253,15 @@ window._ciExport = function() {
     if (!sel.length) { alert('El pedido está vacío. Coloca bultos en al menos una referencia.'); return; }
     var contEl=document.getElementById('ci-cont');
     var cont=contEl? (parseFloat(contEl.value)||2200):2200;
-    var aoa=[['REF','DESCRIPCIÓN','CÓD. PROVEEDOR','CÓD. BARRA','MARCA','DISPONIBLE','EN CAMINO','VENTA 90D','VENTA MENSUAL','COBERTURA (MESES)','UDS/BULTO','BULTOS','UDS A PEDIR','FOB UNIT $','CAPITAL $','FT³/BULTO','FT³ TOTAL','ALERTAS']];
+    var aoa=[['REF','DESCRIPCIÓN','CÓD. PROVEEDOR','CÓD. BARRA','MARCA','DISPONIBLE','EN CAMINO','VENTA 90D','VENTA MENSUAL','COBERTURA (MESES)','UDS/BULTO','BULTOS','UDS A PEDIR','FOB UNIT $','CAPITAL $','FT³/BULTO','FT³ TOTAL','ALERTAS','ESTADO','MOTIVO DEL CÁLCULO']];
     var tB=0,tU=0,tC=0,tF=0,sinFOB=0,sinVol=0,stk=0;
     sel.forEach(function(x){
       var r=x.r,b=x.b,uds=b*r.m,cap=uds*r.fob,ft3=b*r.vol;
       tB+=b;tU+=uds;tC+=cap;tF+=ft3;
       if(r.fob<=0)sinFOB++; if(r.vol<=0)sinVol++; if(r.stk)stk++;
       var al=[]; if(r.m<=0)al.push('SIN UDS/BULTO'); if(r.fob<=0)al.push('SIN COSTO FOB'); if(r.vol<=0)al.push('SIN FT3 EN MASTER');
-      aoa.push([r.ref,r.d,r.c,r.b,r.br,r.disp,r.ord,r.venta,_ciR2(r.mensual),r.cob===null?'':_ciR2(r.cob),r.m,b,uds,_ciR2(r.fob),_ciR2(cap),_ciR2(r.vol),_ciR2(ft3),al.join(' · ')]);
+      var sg=(window._ciSug||{})[r.ref]||{};
+      aoa.push([r.ref,r.d,r.c,r.b,r.br,r.disp,r.ord,r.venta,_ciR2(r.mensual),r.cob===null?'':_ciR2(r.cob),r.m,b,uds,_ciR2(r.fob),_ciR2(cap),_ciR2(r.vol),_ciR2(ft3),al.join(' · '),sg.estado||'(manual)',(sg.b && sg.b!==b ? '[sugerido '+sg.b+' bultos, ajustado a mano a '+b+'] ' : '')+(sg.motivo||'')+(sg.recorte?' · '+sg.recorte:'')]);
     });
     aoa.push([]);
     aoa.push(['TOTALES','','','','','','','','','','',tB,tU,'',_ciR2(tC),'',_ciR2(tF),'']);
@@ -27367,7 +28269,10 @@ window._ciExport = function() {
     var par=[
       ['FARMERS, C.A. — PEDIDO A PROVEEDOR (COMPRA INTELIGENTE · armado manual)'],
       ['Generado', new Date().toLocaleString('es-VE')],
-      ['Versión motor','v2026.10.06.358'],
+      ['Versión motor','v2026.10.14.377 — reposición quirúrgica + faltantes + presupuesto/contenedor'],
+      ['Tope de dinero', (function(){ var P=_ciParams(), l=_ciLimiteDinero(P); return '$'+Math.round(l.tope).toLocaleString('en-US')+' (presupuesto $'+P.presupuesto+' · crédito $'+P.credito+' − deuda $'+P.deuda+' = disponible $'+Math.round(l.credDisp)+')'; })()],
+      ['Contenedor', (function(){ var P=_ciParams(); return P.contFt3+' ft³ · costo fijo $'+P.costoFijo+' (flete + puesta en depósito)'; })()],
+      ['Parámetros', (function(){ var P=_ciParams(); return 'Lead '+P.L+'d · ciclo '+P.R+'d · ventana '+P.W+'d · z A/B/C '+P.zA+'/'+P.zB+'/'+P.zC+' · stockout ×'+P.boost+' · tope respaldo '+(P.capSS*100)+'% · mínimo '+(P.minFrac*100)+'% de bulto · GENIAL '+(P.exclGenial?'excluida':'incluida'); })()],
       [],
       ['Rotación: días analizados', _ciMeta.dias],
       ['⚠ VENTANA REAL de facturas usadas', _ciMeta.desde+' → '+_ciMeta.hasta],
@@ -27386,7 +28291,7 @@ window._ciExport = function() {
       ['⚠ Refs sin costo FOB (capital subestimado)', sinFOB],
       ['⚠ Refs sin ft3 en Master (volumen subestimado)', sinVol],
       [],
-      ['FUENTES','Ventas: farmers_sales · Stock: getInventory (fallback p.ex) · Comprometido: getComprometido · En camino: farmers_pt_data.exOrdenada (OC) · ft3: MASTER.volFt3PorBulto · FOB: p.costoFOB (fallback MASTER)']
+      ['FUENTES','Ventas: despachos + facturas foto/PDF + importadas, SIN duplicar por N° de factura · Stock: getInventory − comprometido · En camino: OC abiertas (pendiente por recibir; si no hay, Existencia Ordenada) · ft3: MASTER.volFt3PorBulto · FOB: p.costoFOB']
     ];
     var wb=XLSX.utils.book_new();
     var ws1=XLSX.utils.aoa_to_sheet(aoa);
@@ -27395,6 +28300,26 @@ window._ciExport = function() {
     var ws2=XLSX.utils.aoa_to_sheet(par);
     ws2['!cols']=[{wch:42},{wch:60}];
     XLSX.utils.book_append_sheet(wb,ws2,'PARÁMETROS');
+    if (window._ciSug) {
+      var an=[['REF','DESCRIPCIÓN','MARCA','CLASE ABC','FACTURAS 180D','DEMANDA 180D','PEDIDO Y NUNCA SURTIDO','DEMANDA 90D','DEMANDA/MES','DESV. MENSUAL','DISPONIBLE','EN CAMINO','PEDIDOS VIVOS SIN STOCK','DÍAS DE STOCK','OBJETIVO (UDS)','RESPALDO (UDS)','SUGERIDO BULTOS','SUGERIDO UDS','ESTADO','MOTIVO']];
+      _ciData.forEach(function(r){ var sg=_ciSug[r.ref]; if(!sg || (!r.ventaW && !r.disp)) return;
+        an.push([r.ref,r.d,r.br,r.abc,r.nfac,r.ventaW,r.perdida||0,r.venta,Math.round(r.mensual),Math.round(r.sdMes),r.disp,r.ord,r.porCubrir||0,sg.diasCob==null?'':Math.round(sg.diasCob),Math.round(sg.objetivo||0),Math.round(sg.ss||0),sg.b,sg.uds,sg.estado,sg.motivo]); });
+      var ws3=XLSX.utils.aoa_to_sheet(an); ws3['!cols']=[{wch:9},{wch:40},{wch:11},{wch:8},{wch:9},{wch:10},{wch:9},{wch:9},{wch:9},{wch:10},{wch:10},{wch:9},{wch:10},{wch:10},{wch:9},{wch:10},{wch:28},{wch:120}];
+      XLSX.utils.book_append_sheet(wb,ws3,'ANÁLISIS');
+    }
+    try { // v.378
+      var S8 = _ciEstadoPedido(tC, tF), E8 = S8.E;
+      var de = [['DÓNDE ESTAMOS — ' + new Date().toLocaleDateString('es-VE'), ''],
+        ['CRÉDITO ARGELIA', ''], ['Deuda hoy (corte ' + _ccFmt(E8.corte) + ' + movimientos)', _ccR2(E8.deuda)], ['Factura estimada de este pedido (FOB + flete)', _ccR2(S8.factura)],
+        ['Deuda con este pedido', _ccR2(S8.deudaCon)], ['% del límite ($' + Math.round(E8.limite).toLocaleString('en-US') + ')', Math.round(S8.pctLim) + '%'], ['Por encima del límite (aviso)', _ccR2(S8.exceso)],
+        ['MONTO', ''], ['Pedido FOB', _ccR2(S8.cap)], ['Objetivo', S8.presu], ['% del objetivo', Math.round(S8.pctPresu) + '%'],
+        ['TIEMPO', ''], ['Si se factura hoy vence', _ccFmt(S8.vence)], ['Llega aprox.', _ccFmt(S8.llega)], ['Días para vender y cobrar', S8.diasVenta], ['Vencido hoy en la cuenta', _ccR2(E8.vencido)],
+        ['ESPACIO', ''], ['ft³ del pedido', _ccR2(S8.ft3)], ['Contenedor', S8.C.tipo], ['% lleno', Math.round(S8.pctCont) + '%'],
+        ['', ''], ['FACTURAS ABIERTAS', '']];
+      E8.abiertas.forEach(function(f){ de.push([f.n + ' · vence ' + _ccFmt(f.vence) + (f.dias < 0 ? ' (vencida ' + (-f.dias) + ' d)' : ' (en ' + f.dias + ' d)'), f.saldo]); });
+      var ws8 = XLSX.utils.aoa_to_sheet(de); ws8['!cols'] = [{wch:52},{wch:18}];
+      XLSX.utils.book_append_sheet(wb, ws8, 'DÓNDE ESTAMOS');
+    } catch(e8){ console.warn('[v.378] hoja DÓNDE ESTAMOS:', e8); }
     XLSX.writeFile(wb,'FARMERS_PEDIDO_PROVEEDOR_'+new Date().toISOString().slice(0,10)+'.xlsx');
     console.log('[CI EXPORT]',{refs:sel.length,bultos:tB,capital:_ciR2(tC),ft3:_ciR2(tF)});
   } catch(err) { console.error('[CI] Export error:', err); alert('⚠ Error exportando: '+err.message); }
