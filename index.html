@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.10.15.380">
+<meta name="farmers-version" content="2026.10.15.381">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -10910,6 +10910,7 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
       var snapshot = {};
       var stats = { totalRefs: 0, conStock: 0, bajoStock: 0, agotados: 0, conOrdenada: 0 };
 
+      var _pvCam381 = {}; try { _pvCam381 = (typeof window.pvEnCamino === 'function') ? window.pvEnCamino() : {}; } catch(eC){}
       var _pvRes379 = {}; try { _pvRes379 = (typeof window.pvPendientePorRef === 'function') ? window.pvPendientePorRef() : {}; } catch(ePv){}
       products.forEach(function(p){
         var ref = p.r;
@@ -10920,6 +10921,7 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
         var ord  = Math.max(0, (parseInt((ptData[ref] || {}).exOrdenada || 0) || 0) - (_pvRes379[ref] || 0)); // v.379: ordenada LIBRE
 
         snapshot[ref] = { real: real, comprometido: comp, disponible: disp, ordenada: ord };
+        if (ord > 0 && _pvCam381[ref]) { var _eta381 = (_pvCam381[ref].ocs || []).map(function(o){ return o.eta; }).filter(Boolean).sort()[0]; if (_eta381) snapshot[ref].llega = _eta381; } // v.381
         stats.totalRefs++;
         if (disp === 0) stats.agotados++;
         else if (disp <= 10) stats.bajoStock++;
@@ -27502,6 +27504,177 @@ function _ciMarcasExcl(P){
 window._ciMarcasExcl = _ciMarcasExcl;
 
 // ═══════════════════════════════════════════════════════════════════════
+// v.381 (15/10/2026) — PEDIDOS DEL PORTAL CON MERCANCÍA EN CAMINO
+// Omar: "que se permita importar el pedido con normalidad … despacharlo
+// parcialmente, primero lo disponible y luego lo ordenado, o dejar el pedido
+// reservado para que cuando esté todo yo decida despacharlo todo".
+//   • Al importar: cada línea se parte en AHORA (disponible) + EN CAMINO
+//     (ordenada libre). Lo de ahora va al pedido normal; lo en camino queda
+//     como PREVENTA comprometida LIGADA a ese pedido (mismo precio del portal).
+//   • Al llegar la mercancía, tú eliges:
+//       ➕ Agregar al pedido (despachas todo junto), o
+//       📦 Pedido aparte (despacho parcial: lo de ahora sale ya, esto después).
+//   • El Monitor marca los pedidos que esperan mercancía en camino.
+// ═══════════════════════════════════════════════════════════════════════
+(function(){
+  function i0(v){ var x = parseInt(v, 10); return isFinite(x) ? x : 0; }
+  function n0(v){ var x = parseFloat(v); return isFinite(x) ? x : 0; }
+  function monKey(m){ m = String(m || 'USD').toUpperCase(); return (m === 'TF' || m === 'TIERRA FIRME') ? 'TF' : (m === 'BCV' ? 'BCV' : 'USD'); }
+  function prod(ref){ return (window.PRODUCTS || []).find(function(p){ return p && p.r === ref; }) || null; }
+  function fmt$(v, mon){ var s = (Math.round(n0(v) * 100) / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); return (mon === 'USD' || !mon ? '$' : mon + ' ') + s; }
+  var ACTIVOS = { ACTIVA: 1, PARCIAL: 1 };
+
+  // Partir las líneas de un pedido del portal: ahora / en camino / sin cubrir
+  window.pvPartirPedidoPortal = function(items){
+    var camino = (typeof pvEnCamino === 'function') ? pvEnCamino() : {};
+    var pend = (typeof pvPendientePorRef === 'function') ? pvPendientePorRef() : {};
+    var usado = {};
+    return (items || []).map(function(it){
+      var ref = it.ref, q = i0(it.qty);
+      var d = 0; try { d = ref ? Math.max(0, getDisponible(ref) - (usado[ref] || 0)) : q; } catch(e){ d = q; }
+      var ahora = ref ? Math.min(q, d) : q;
+      var libre = ref ? Math.max(0, ((camino[ref] || {}).q || 0) - (pend[ref] || 0) - (usado['ord|' + ref] || 0)) : 0;
+      var encamino = Math.min(q - ahora, libre);
+      usado[ref] = (usado[ref] || 0) + ahora; usado['ord|' + ref] = (usado['ord|' + ref] || 0) + encamino;
+      return { it: it, ref: ref, q: q, ahora: ahora, encamino: encamino, sinCubrir: q - ahora - encamino, llega: ((camino[ref] || {}).ocs || []).map(function(o){ return o.eta; }).filter(Boolean).sort()[0] || '' };
+    });
+  };
+
+  // Crear la preventa ligada a un pedido (o suelta si todo era en camino)
+  window.pvCrearDesdePortal = function(pend, numP){
+    if (!pend || !pend.items || !pend.items.length) return null;
+    var cli = null; try { cli = (typeof buscarClienteCRM === 'function') ? buscarClienteCRM(pend.cliente.razon, pend.cliente.rif) : null; } catch(e){}
+    var suc = pend.suc || pend.cliente.razon, cid = cli ? cli.id : '';
+    if (numP) { try { var ped = getMsPedidos().find(function(p){ return p.numP === numP; }); if (ped && ped.clientesPorSucursal && ped.clientesPorSucursal[suc]) cid = cid || ped.clientesPorSucursal[suc]; } catch(e){} }
+    var arr = pvGet(), ahora = new Date();
+    var base = 'PV-' + String(ahora.getFullYear()).slice(-2) + ('0' + (ahora.getMonth() + 1)).slice(-2) + ('0' + ahora.getDate()).slice(-2) + '-' + ('0' + ahora.getHours()).slice(-2) + ('0' + ahora.getMinutes()).slice(-2);
+    var id = base, k = 1; while (arr.some(function(x){ return x.id === id; })) id = base + '-' + (++k);
+    var camino = pvEnCamino();
+    var pv = { id: id, fecha: ahora.toISOString(), estado: 'ACTIVA', conversiones: [], origen: 'PORTAL', portalId: pend.portalId || '', pedidoNumP: numP || '',
+      clienteId: cid, clienteNombre: cli ? cli.nombre : pend.cliente.razon, rif: (cli && cli.rif) || pend.cliente.rif || '', suc: suc, moneda: monKey(pend.moneda),
+      notas: 'Pedido del portal' + (numP ? ' · parte en camino de ' + numP : ''), usuario: (typeof CURRENT_USER !== 'undefined' && CURRENT_USER) ? CURRENT_USER : 'OGK',
+      items: pend.items.map(function(x){
+        return { ref: x.ref, desc: (prod(x.ref) || {}).d || x.desc || '', qty: i0(x.qty), precio: Math.round(n0(x.precio) * 10000) / 10000,
+          precioSistema: Math.round(((typeof pvPrecioSistema === 'function') ? pvPrecioSistema(x.ref, pend.moneda, cli) : 0) * 10000) / 10000,
+          convertido: 0, ocs: ((camino[x.ref] || {}).ocs || []).map(function(o){ return o.num; }) };
+      }), updatedAt: Date.now() };
+    arr.push(pv); pvSave(arr);
+    return pv;
+  };
+
+  // Pedido ligado todavía abierto (se puede agregar) para esta preventa
+  function pedidoAbierto(pv){
+    if (!pv || !pv.pedidoNumP) return null;
+    var ped = null; try { ped = getMsPedidos().find(function(p){ return p.numP === pv.pedidoNumP; }); } catch(e){}
+    if (!ped) return null;
+    var e = String(ped.estado || '').toUpperCase();
+    if (e !== 'RESERVADO' && e !== 'PARCIAL') return null;
+    var se = String((ped.sucursalesEstado || {})[pv.suc] || '').toUpperCase();
+    if (se === 'DESPACHADO' || se === 'CANCELADO') return null;
+    return ped;
+  }
+  window.pvPedidoAbierto = pedidoAbierto;
+
+  // Elegir cómo convertir cuando hay pedido ligado
+  window.pvConvertirElegir = function(id){
+    var pv = pvGet().find(function(x){ return x.id === id; }); if (!pv) return;
+    var ped = pedidoAbierto(pv);
+    if (!ped) { pvConvertir(id); return; }
+    var prev = document.getElementById('pvc-ov'); if (prev) prev.remove();
+    var b = function(t, sub, fn, bg){ return '<button onclick="document.getElementById(\'pvc-ov\').remove();' + fn + '" style="display:block;width:100%;text-align:left;background:' + bg + ';color:#fff;border:0;border-radius:10px;padding:12px 14px;margin-top:10px;cursor:pointer;font-family:inherit;"><div style="font-weight:900;font-size:.9rem;">' + t + '</div><div style="font-size:.72rem;opacity:.9;margin-top:3px;">' + sub + '</div></button>'; };
+    document.body.insertAdjacentHTML('beforeend', '<div id="pvc-ov" style="position:fixed;inset:0;z-index:100060;background:rgba(5,6,20,.85);display:flex;align-items:center;justify-content:center;padding:14px;">' +
+      '<div style="background:#12153a;border:1.5px solid #7c3aed;border-radius:14px;max-width:520px;width:100%;color:#e5e7ff;padding:18px;">' +
+        '<div style="font-family:Barlow Condensed,sans-serif;font-weight:900;font-size:1.2rem;letter-spacing:1px;">✅ LLEGÓ LA MERCANCÍA DE ' + pv.id + '</div>' +
+        '<div style="font-size:.76rem;color:#c7d2fe;margin-top:4px;">' + pv.clienteNombre + ' · es la parte en camino del pedido <b>' + ped.numP + '</b> (todavía reservado, sin despachar). ¿Cómo la quieres manejar?</div>' +
+        b('➕ Agregar al pedido ' + ped.numP, 'Queda todo en un solo pedido y lo despachas junto cuando tú decidas.', "pvAgregarAPedido('" + id + "')", 'linear-gradient(135deg,#16a34a,#15803d)') +
+        b('📦 Pedido aparte (despacho parcial)', 'Despachas ' + ped.numP + ' con lo que ya había, y esto sale en un pedido nuevo.', "pvConvertir('" + id + "')", 'linear-gradient(135deg,#4f46e5,#4338ca)') +
+        '<button onclick="document.getElementById(\'pvc-ov\').remove()" style="margin-top:12px;background:transparent;border:1.5px solid rgba(255,255,255,.3);color:#c7d2fe;border-radius:8px;padding:8px 14px;cursor:pointer;font-weight:800;">Luego</button>' +
+      '</div></div>');
+  };
+
+  // Agregar lo que llegó al pedido ligado (despachar todo junto)
+  window.pvAgregarAPedido = function(id){
+    var arr = pvGet(), pv = arr.find(function(x){ return x.id === id; });
+    if (!pv || !ACTIVOS[pv.estado]) { alert('La preventa no está activa.'); return; }
+    var ped0 = pedidoAbierto(pv);
+    if (!ped0) { alert('El pedido ' + (pv.pedidoNumP || '') + ' ya no está abierto (se despachó o se canceló). Conviértela en un pedido aparte.'); return; }
+    var plan = [];
+    pv.items.forEach(function(it){
+      var pend = i0(it.qty) - i0(it.convertido); if (pend <= 0) return;
+      var d = 0; try { d = pvDispPara(pv.id, it.ref); } catch(e){}
+      plan.push({ it: it, pend: pend, disp: d, q: Math.min(pend, Math.max(0, d)) });
+    });
+    var conQ = plan.filter(function(x){ return x.q > 0; });
+    if (!conQ.length) { alert('Todavía no hay disponible para esta preventa.\n\n' + plan.map(function(x){ return x.it.ref + ': faltan ' + x.pend + ' · llegaron ' + x.disp; }).join('\n')); return; }
+    var numP = ped0.numP, suc = pv.suc, campo = 'precioCongelado_' + monKey(pv.moneda);
+    if (!confirm('➕ AGREGAR AL PEDIDO ' + numP + '\n\n' + pv.clienteNombre + ' · ' + pv.moneda + '\n' +
+      plan.map(function(x){ return x.it.ref + ': ' + (x.q > 0 ? '+' + x.q + (x.q < x.pend ? ' de ' + x.pend + ' (el resto sigue en camino)' : '') + ' a ' + fmt$(x.it.precio, pv.moneda) : 'aún no llega (' + x.pend + ')'); }).join('\n') +
+      '\n\nQuedan reservadas dentro del mismo pedido para despacharlo todo junto.')) return;
+    // 1) sale de la preventa…
+    conQ.forEach(function(x){ x.it.convertido = i0(x.it.convertido) + x.q; });
+    pvSave(arr);
+    // 2) …y entra al pedido (detalle + líneas + reserva)
+    var peds = getMsPedidos(), ped = peds.find(function(p){ return p.numP === numP; });
+    var comp = getComprometido();
+    conQ.forEach(function(x){
+      var ref = x.it.ref, q = x.q, p = prod(ref) || {};
+      var item = (ped.items = ped.items || []).find(function(i){ return i.ref === ref; });
+      if (!item) { item = { ref: ref, desc: p.d || x.it.desc || '', sucursales: {} }; ped.items.push(item); }
+      var sd = item.sucursales[suc] || (item.sucursales[suc] = { pide: 0, desp: 0 });
+      sd.pide = i0(sd.pide) + q; sd.desp = i0(sd.desp) + q;
+      var row = (ped.data = ped.data || []).find(function(l){ return (l.ref || l.r) === ref; });
+      if (row) {
+        row.pedidos = row.pedidos || {}; row.dist = row.dist || {};
+        row.pedidos[suc] = i0(row.pedidos[suc]) + q; row.dist[suc] = i0(row.dist[suc]) + q;
+        row.totalPedido = i0(row.totalPedido) + q;
+      } else {
+        var o = {}; o[suc] = q;
+        row = { ref: ref, desc: p.d || x.it.desc || '', stock: x.disp, enSistema: true, pedidos: o, dist: JSON.parse(JSON.stringify(o)), estado: 'completo', totalPedido: q,
+          precioCongelado_USD: n0(p.u), precioCongelado_BCV: n0(p.bv), precioCongelado_TF: n0(p.t), preciosCongeladosFecha: new Date().toISOString() };
+        ped.data.push(row);
+      }
+      if (!row.preventaId && row[campo] !== undefined && row.pedidos && i0(row.pedidos[suc]) > q) {
+        // la línea ya existía en el pedido: se respeta el precio con que se reservó el pedido
+      } else { row[campo] = x.it.precio; row.precioOverride = 'cliente'; row.precioNegociado = x.it.precio; }
+      row.preventaId = pv.id;
+      var e = comp[ref];
+      if (!e || typeof e !== 'object') e = comp[ref] = { qty: i0(e), pedidos: [] };
+      e.pedidos = e.pedidos || [];
+      e.qty = i0(e.qty) + q;
+      var en = e.pedidos.find(function(z){ return z.numP === numP; });
+      if (en) en.qty = i0(en.qty) + q; else e.pedidos.push({ numP: numP, qty: q, fecha: new Date().toISOString().slice(0, 10) });
+    });
+    ped.preventasAgregadas = (ped.preventasAgregadas || []).concat([{ pv: pv.id, fecha: new Date().toISOString(), items: conQ.map(function(x){ return { ref: x.it.ref, q: x.q }; }) }]);
+    saveMsPedidos(peds);
+    saveComprometido(comp);
+    try { if (typeof syncInventoryToProducts === 'function') syncInventoryToProducts(); } catch(e){}
+    pv.conversiones = pv.conversiones || [];
+    pv.conversiones.push({ numP: numP, agregado: true, fecha: new Date().toISOString(), items: conQ.map(function(x){ return { ref: x.it.ref, q: x.q }; }) });
+    pv.estado = pv.items.every(function(it){ return i0(it.convertido) >= i0(it.qty); }) ? 'CONVERTIDA' : 'PARCIAL';
+    pv.updatedAt = Date.now();
+    pvSave(arr);
+    pvAbrir();
+    alert('✅ AGREGADO AL PEDIDO ' + numP + '\n\n' + conQ.map(function(x){ return x.it.ref + ': +' + x.q + ' uds a ' + fmt$(x.it.precio, pv.moneda); }).join('\n') +
+      '\n\nEl pedido sigue RESERVADO. ' + (pv.estado === 'PARCIAL' ? 'Lo que falta sigue en camino dentro de la preventa.' : 'Ya tiene todo: despáchalo cuando quieras desde el Monitor.'));
+  };
+
+  // Etiqueta para el Monitor: pedidos que esperan mercancía en camino
+  window.pvBadgePedido = function(numP){
+    try {
+      var q = 0, ids = [];
+      pvGet().forEach(function(pv){
+        if (!ACTIVOS[pv.estado] || pv.pedidoNumP !== numP) return;
+        var p = (pv.items || []).reduce(function(a, it){ return a + Math.max(0, i0(it.qty) - i0(it.convertido)); }, 0);
+        if (p > 0) { q += p; ids.push(pv.id); }
+      });
+      if (!q) return '';
+      return '<div onclick="event.stopPropagation();pvAbrir(\'ACTIVAS\')" title="' + ids.join(', ') + '" style="display:inline-block;margin-top:4px;cursor:pointer;font-size:.66rem;font-weight:900;background:rgba(124,58,237,.25);color:#e9d5ff;border:1px solid #a78bfa;border-radius:6px;padding:3px 8px;">🕒 Espera ' + q + ' uds en camino</div>';
+    } catch(e){ return ''; }
+  };
+})();
+
+
+// ═══════════════════════════════════════════════════════════════════════
 // v.379 (15/10/2026) — PREVENTAS: reservar mercancía que viene en camino
 // Pedido de Omar: un cliente quiere apartar un producto que todavía no llega,
 // a un precio pactado SOLO para esa venta (el resto sigue con el precio del
@@ -27689,10 +27862,10 @@ window._ciMarcasExcl = _ciMarcasExcl;
         '<div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:center;">' +
           '<div><b style="color:#fff;">' + esc(pv.id) + '</b> · ' + fDMY(pv.fecha) + ' · <b style="color:#fde68a;">' + esc(pv.clienteNombre) + '</b>' + (pv.suc && pv.suc !== pv.clienteNombre ? ' <span style="color:#a5b4fc;">(' + esc(pv.suc) + ')</span>' : '') + ' · ' + esc(pv.moneda) +
             '<div style="font-size:.68rem;color:#8891c9;">Total pactado <b style="color:#fff;">' + fmt$(tot, pv.moneda) + '</b> · a precio sistema ' + fmt$(totSis, pv.moneda) + ' · diferencia <b style="color:' + (tot - totSis < 0 ? '#fca5a5' : '#86efac') + ';">' + fmt$(tot - totSis, pv.moneda) + '</b>' +
-            (pv.conversiones && pv.conversiones.length ? ' · pedidos: ' + pv.conversiones.map(function(c){ return esc(c.numP); }).join(', ') : '') + (pv.notas ? ' · 📝 ' + esc(pv.notas) : '') + '</div></div>' +
+            (pv.pedidoNumP ? ' · <b style="color:#fde68a;">parte en camino del pedido ' + esc(pv.pedidoNumP) + '</b>' : '') + (pv.conversiones && pv.conversiones.length ? ' · pedidos: ' + pv.conversiones.map(function(c){ return esc(c.numP); }).join(', ') : '') + (pv.notas ? ' · 📝 ' + esc(pv.notas) : '') + '</div></div>' +
           '<div style="display:flex;gap:6px;align-items:center;">' +
             '<span style="font-size:.66rem;font-weight:900;color:' + col + ';">' + (pv.estado === 'PARCIAL' ? 'PARCIAL' : pv.estado) + (ACTIVOS[pv.estado] && listo ? ' · LISTA PARA PEDIDO' : '') + '</span>' +
-            (ACTIVOS[pv.estado] && listo ? '<button onclick="pvConvertir(\'' + pv.id + '\')" style="background:linear-gradient(135deg,#16a34a,#15803d);color:#fff;border:0;border-radius:7px;padding:7px 12px;font-weight:900;cursor:pointer;font-size:.7rem;">✅ Convertir en pedido</button>' : '') +
+            (ACTIVOS[pv.estado] && listo ? '<button onclick="pvConvertirElegir(\'' + pv.id + '\')" style="background:linear-gradient(135deg,#16a34a,#15803d);color:#fff;border:0;border-radius:7px;padding:7px 12px;font-weight:900;cursor:pointer;font-size:.7rem;">✅ Convertir en pedido</button>' : '') +
             (ACTIVOS[pv.estado] && !(pv.items || []).some(function(it){ return i0(it.convertido) > 0; }) ? '<button onclick="pvForm(\'' + pv.id + '\')" style="background:rgba(99,102,241,.25);border:1px solid #6366f1;color:#c7d2fe;border-radius:7px;padding:7px 10px;font-weight:800;cursor:pointer;font-size:.7rem;">✏ Editar</button>' +
               '' : '') + (ACTIVOS[pv.estado] ? '<button onclick="pvCancelar(\'' + pv.id + '\')" style="background:rgba(220,38,38,.2);border:1px solid #dc2626;color:#fca5a5;border-radius:7px;padding:7px 10px;font-weight:800;cursor:pointer;font-size:.7rem;">✖ Cancelar</button>' : '') +
           '</div>' +
@@ -27900,9 +28073,10 @@ window._ciMarcasExcl = _ciMarcasExcl;
     pvSave(arr);
     // …y en el mismo paso queda comprometido por el pedido.
     var MSg = window.MS = window.MS || {}, monAntes = MSg.moneda, ok;
+    var portAntes381 = MSg._portalPedidoId, encAntes381 = MSg._pvEnCamino; MSg._portalPedidoId = null; MSg._pvEnCamino = null; // v.381
     try { MSg.moneda = pv.moneda; ok = window.msComprometerInventario(numP, [suc], data, cps, pv.moneda, hoyDMY()); }
     catch(e){ ok = false; console.error('[v.379] convertir preventa:', e); }
-    finally { MSg.moneda = monAntes; }
+    finally { MSg.moneda = monAntes; MSg._portalPedidoId = portAntes381; MSg._pvEnCamino = encAntes381; }
     var peds2 = getMsPedidos(), ped = peds2.find(function(p){ return p.numP === numP; });
     if (ok === false || !ped) {
       conQ.forEach(function(x){ x.it.convertido = Math.max(0, i0(x.it.convertido) - x.q); });
@@ -58946,6 +59120,14 @@ window.msComprometerInventario = function(numP, sel, data, clientesPorSucursal, 
 
   // v.69b: Si este pedido vino del Portal Cliente, marcarlo como sincronizado AHORA
   // (solo cuando realmente se reservó en el monitor, no antes).
+  var _pvLigada381 = null;
+  try {
+    if (typeof MS !== 'undefined' && MS._pvEnCamino && MS._pvEnCamino.portalId && MS._pvEnCamino.portalId === MS._portalPedidoId && typeof window.pvCrearDesdePortal === 'function') {
+      _pvLigada381 = window.pvCrearDesdePortal(MS._pvEnCamino, numP);
+      MS._pvEnCamino = null;
+      if (_pvLigada381) setTimeout(function(){ alert('🕒 PARTE EN CAMINO DEL PEDIDO ' + numP + '\n\nQuedó como preventa ' + _pvLigada381.id + ' (comprometida, mismo precio del portal):\n' + _pvLigada381.items.map(function(it){ return it.ref + ': ' + it.qty + ' uds'; }).join('\n') + '\n\nCuando llegue la mercancía eliges: agregarla a ' + numP + ' y despachar todo junto, o despacharla en un pedido aparte.'); }, 700);
+    }
+  } catch(ePv381){ console.warn('[v.381] preventa ligada:', ePv381); }
   if (typeof MS !== 'undefined' && MS._portalPedidoId) {
     var portalId = MS._portalPedidoId;
     MS._portalPedidoId = null; // limpiar para evitar doble marcado
@@ -58957,6 +59139,7 @@ window.msComprometerInventario = function(numP, sel, data, clientesPorSucursal, 
           p.estado = 'sincronizado';
           p.sincronizadoAFarmers = true;
           p.numPedidoMonitor = numP;
+          if (_pvLigada381) p.preventaEnCamino = _pvLigada381.id; // v.381
           p.fechaSincronizado = new Date().toISOString();
           await window.fbSavePortalPedido(portalId, p);
           console.log('✅ Pedido portal marcado sincronizado tras reserva real:', portalId, '→', numP);
@@ -61140,7 +61323,7 @@ window.msAbrirMonitor = function() {
 
     ch.innerHTML=
       '<div style="display:flex;align-items:center;gap:12px;">' +
-        '<div style="font-family:\'Barlow Condensed\',sans-serif;font-size:1.65rem;font-weight:900;color:'+WHITE+';letter-spacing:1px;text-shadow:0 1px 4px rgba(0,0,0,.3);">'+ped.numP+'</div>' +
+        '<div style="font-family:\'Barlow Condensed\',sans-serif;font-size:1.65rem;font-weight:900;color:'+WHITE+';letter-spacing:1px;text-shadow:0 1px 4px rgba(0,0,0,.3);">'+ped.numP+'</div>' + (typeof window.pvBadgePedido === 'function' ? window.pvBadgePedido(ped.numP) : '') +
         (function(){
           /* v.349: el chip refleja la ETAPA real del flujo.
              RESERVADO sin embalar → azul RESERVADO.
@@ -84561,7 +84744,28 @@ async function pcImportarPedido(id) {
   try {
     // Convertir pedido a formato MS (similar a QuickSell)
     var sucursales = [p.cliente.razon];
-    var productosNorm = p.items.map(function(it){
+    // v.381: separar lo que viene EN CAMINO (preventa ligada) de lo que se procesa ahora
+    var _part381 = (typeof window.pvPartirPedidoPortal === 'function') ? window.pvPartirPedidoPortal(p.items) : null;
+    var _itemsAhora381 = p.items;
+    if (typeof MS !== 'undefined') MS._pvEnCamino = null;
+    if (_part381 && _part381.some(function(x){ return x.encamino > 0; })) {
+      var _fmtF381 = function(f){ var m = String(f || '').match(/(\d{4})-(\d{2})-(\d{2})/); return m ? ' (llega ~' + m[3] + '/' + m[2] + ')' : ''; };
+      var _txt381 = _part381.map(function(x){ return x.ref + ': ' + x.q + ' → ' + (x.q - x.encamino) + ' ahora' + (x.encamino ? ' + ' + x.encamino + ' en camino' + _fmtF381(x.llega) : '') + (x.sinCubrir ? ' (sin cubrir ' + x.sinCubrir + ')' : ''); }).join('\n');
+      if (!confirm('🕒 ESTE PEDIDO TRAE MERCANCÍA EN CAMINO\n\n' + _txt381 + '\n\n• Lo de AHORA entra al pedido normal (reserva y despacho como siempre).\n• Lo EN CAMINO queda como preventa comprometida ligada a ese pedido. Al llegar eliges: agregarla al mismo pedido (despachas todo junto) o pedido aparte.\n\n¿Importar así?')) return;
+      var _pend381 = { portalId: id, moneda: p.moneda || 'USD', cliente: p.cliente, suc: p.cliente.razon,
+        items: _part381.filter(function(x){ return x.encamino > 0; }).map(function(x){ return { ref: x.ref, desc: x.it.desc, qty: x.encamino, precio: x.it.precioMostrado }; }) };
+      _itemsAhora381 = _part381.filter(function(x){ return (x.q - x.encamino) > 0; }).map(function(x){ return Object.assign({}, x.it, { qty: x.q - x.encamino }); });
+      if (!_itemsAhora381.length) {
+        // Todo viene en camino: solo preventa (no hay nada que reservar hoy)
+        var _pvSolo381 = window.pvCrearDesdePortal(_pend381, null);
+        try { p.estado = 'sincronizado'; p.sincronizadoAFarmers = true; p.numPedidoMonitor = _pvSolo381 ? _pvSolo381.id : ''; p.preventaEnCamino = _pvSolo381 ? _pvSolo381.id : ''; p.fechaSincronizado = new Date().toISOString(); if (typeof window.fbSavePortalPedido === 'function') await window.fbSavePortalPedido(id, p); } catch(eM381){ console.warn('[v.381] marcar portal:', eM381); }
+        var _pcm = document.getElementById('pc-modal'); if (_pcm) _pcm.remove();
+        alert('🕒 TODO EL PEDIDO VIENE EN CAMINO\n\nQuedó como preventa ' + (_pvSolo381 ? _pvSolo381.id : '') + ' (comprometida, precio del portal). Cuando llegue la mercancía la conviertes en pedido desde 🕒 Preventas.');
+        return;
+      }
+      if (typeof MS !== 'undefined') MS._pvEnCamino = _pend381;
+    }
+    var productosNorm = _itemsAhora381.map(function(it){
       var pedidos = {};
       pedidos[p.cliente.razon] = it.qty;
       return {
