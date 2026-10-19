@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.10.19.386">
+<meta name="farmers-version" content="2026.10.19.387">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -9770,6 +9770,24 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
         } catch(e) { console.warn('onSnapshot marcas_catalogo:', e); }
       });
 
+      // ── v.387 Portal: logos, presentación de marcas, categorías y orden del catálogo ──
+      window.fbPublicarMarcasPortal = async (forzar) => {
+        try {
+          if (typeof window.portalMarcasPayload !== 'function') return false;
+          var pl = window.portalMarcasPayload();
+          if (!pl || !pl.orden || !pl.orden.length) return false;
+          var txt = JSON.stringify(pl);
+          var h = 5381; for (var i = 0; i < txt.length; i++) { h = ((h << 5) + h + txt.charCodeAt(i)) | 0; }
+          var firma = txt.length + ':' + h;
+          if (!forzar && localStorage.getItem('farmers_portal_marcas_firma') === firma) return true;
+          if (txt.length > 950000) { console.warn('[portal_marcas] demasiado grande: ' + txt.length); return false; }
+          await setDoc(doc(db,'data','portal_marcas'), { v: txt, updatedAt: Date.now() });
+          localStorage.setItem('farmers_portal_marcas_firma', firma);
+          console.log('[portal_marcas] ✓ publicado (' + Math.round(txt.length / 1024) + ' KB)');
+          return true;
+        } catch(e) { console.warn('[portal_marcas] no se pudo publicar:', e); return false; }
+      };
+
       // ── v.379 Preventas (mercancía en camino) ──
       window.fbSavePreventas = async (arr) => {
         var payload = Array.isArray(arr) ? arr : [];
@@ -10958,6 +10976,7 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
         conOrdenada: stats.conOrdenada
       });
       console.log('[fbSavePortalSnapshot] ✓ Snapshot publicado: ' + stats.totalRefs + ' refs (' + stats.conStock + ' con stock, ' + stats.bajoStock + ' bajo, ' + stats.agotados + ' agotadas, ' + stats.conOrdenada + ' con Ordenada)');
+      try { if (typeof window.fbPublicarMarcasPortal === 'function') window.fbPublicarMarcasPortal(); } catch(eMk){} // v.387
       return true;
     } catch(e) {
       console.error('[fbSavePortalSnapshot] ✗ error:', e);
@@ -27521,6 +27540,61 @@ function _ciMarcasExcl(P){
 }
 window._ciMarcasExcl = _ciMarcasExcl;
 
+// ═══ v.387 PORTAL ↔ CATÁLOGO: lo que el portal necesita para verse igual que el catálogo ═══
+(function(){
+  var ACR = { USB:1, LED:1, PVC:1, XL:1, XXL:1, BBQ:1, TV:1, AAA:1, AA:1, LCD:1, UV:1, '3D':1, ABS:1, PET:1, EVA:1, HD:1, CA:1, DC:1, AC:1, II:1, III:1 };
+  var ACC = { CLASICO:'CLÁSICO', CLASICA:'CLÁSICA', CLASICOS:'CLÁSICOS', CLASICAS:'CLÁSICAS', PLASTICO:'PLÁSTICO', PLASTICA:'PLÁSTICA', PLASTICOS:'PLÁSTICOS', PLASTICAS:'PLÁSTICAS',
+    METALICO:'METÁLICO', METALICA:'METÁLICA', METALICOS:'METÁLICOS', METALICAS:'METÁLICAS', ELECTRICO:'ELÉCTRICO', ELECTRICA:'ELÉCTRICA', ELECTRICOS:'ELÉCTRICOS',
+    BASCULA:'BÁSCULA', BASCULAS:'BÁSCULAS', CERAMICA:'CERÁMICA', CERAMICO:'CERÁMICO', CERAMICAS:'CERÁMICAS', TERMICO:'TÉRMICO', TERMICA:'TÉRMICA', MAGNETICO:'MAGNÉTICO', MAGNETICA:'MAGNÉTICA',
+    AUTOMATICO:'AUTOMÁTICO', AUTOMATICA:'AUTOMÁTICA', PRACTICO:'PRÁCTICO', PRACTICA:'PRÁCTICA', BEBE:'BEBÉ', BEBES:'BEBÉS', JARDIN:'JARDÍN', LIMON:'LIMÓN', CARBON:'CARBÓN',
+    ALGODON:'ALGODÓN', JABON:'JABÓN', CAJON:'CAJÓN', BOTON:'BOTÓN', SARTEN:'SARTÉN', MULTIPROPOSITO:'MULTIPROPÓSITO', TAMANO:'TAMAÑO', BANO:'BAÑO', PEQUENO:'PEQUEÑO', PEQUENA:'PEQUEÑA',
+    DISENO:'DISEÑO', ORGANICO:'ORGÁNICO', SILICON:'SILICÓN', VEHICULO:'VEHÍCULO', MAQUINA:'MÁQUINA', MAQUINAS:'MÁQUINAS', RAPIDO:'RÁPIDO', RAPIDA:'RÁPIDA', CAFE:'CAFÉ', TAPON:'TAPÓN',
+    ACRILICO:'ACRÍLICO', ACRILICA:'ACRÍLICA', HIGIENICO:'HIGIÉNICO', HIGIENICA:'HIGIÉNICA', BASICO:'BÁSICO', BASICA:'BÁSICA', UNICO:'ÚNICO', ECONOMICO:'ECONÓMICO', ECONOMICA:'ECONÓMICA',
+    ESTANDAR:'ESTÁNDAR', ERGONOMICO:'ERGONÓMICO', ERGONOMICA:'ERGONÓMICA', CAMARA:'CÁMARA', LAMPARA:'LÁMPARA', LAMPARAS:'LÁMPARAS', CESPED:'CÉSPED', AZUCAR:'AZÚCAR', PANTALON:'PANTALÓN',
+    CORAZON:'CORAZÓN', FACIL:'FÁCIL', UTILES:'ÚTILES', PORCION:'PORCIÓN', BATERIA:'BATERÍA', BATERIAS:'BATERÍAS', ENERGIA:'ENERGÍA', PANAL:'PAÑAL', PANALES:'PAÑALES', BIBERON:'BIBERÓN',
+    ESPATULA:'ESPÁTULA', ESPATULAS:'ESPÁTULAS', PETALO:'PÉTALO', ANGULO:'ÁNGULO' };
+  // Misma limpieza que la ficha del catálogo PDF: sin la REF repetida al final, MAYÚSCULAS y tildes
+  window.catDescLimpia = function(p){
+    var d = String((p && p.d) || '').replace(/\s+/g, ' ').trim();
+    var r = String((p && p.r) || '').trim();
+    if (r) {
+      var reR = new RegExp('[\\s\\-·|,(]*' + r.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\)?\\s*$', 'i');
+      var sin = d.replace(reR, '').trim();
+      if (sin) d = sin;
+    }
+    if (!d) return '';
+    return d.toUpperCase().split(/(\s+)/).map(function(tok){
+      if (!tok || /^\s+$/.test(tok)) return tok;
+      var core = tok.replace(/[^A-Z0-9ÁÉÍÓÚÜÑ]/g, '');
+      if (!core || ACR[core] || /\d/.test(core)) return tok;
+      return ACC[core] ? tok.replace(core, ACC[core]) : tok;
+    }).join('');
+  };
+  function catNom(p){
+    try { var c = (typeof window.catClasificar === 'function') ? (window.catClasificar(p).cat || '') : ''; return c ? c.charAt(0) + c.slice(1).toLowerCase() : ''; } catch(e){ return ''; }
+  }
+  // Paquete que se publica en data/portal_marcas
+  window.portalMarcasPayload = function(){
+    var prods = (typeof PRODUCTS !== 'undefined' && PRODUCTS) ? PRODUCTS : [];
+    var marcas = {}, cat = {}, dl = {};
+    prods.forEach(function(p){
+      if (!p || !p.r) return;
+      var br = String(p.br || '').toUpperCase();
+      if (br && !marcas[br]) marcas[br] = {
+        logo: (typeof window.mcLogo === 'function') ? (window.mcLogo(br) || '') : '',
+        desc: (typeof window.mcDesc === 'function') ? (window.mcDesc(br) || '') : ''
+      };
+      var c = catNom(p); if (c) cat[p.r] = c;
+      var lim = window.catDescLimpia(p);
+      if (lim && lim !== String(p.d || '').toUpperCase().replace(/\s+/g, ' ').trim()) dl[p.r] = lim;
+    });
+    var orden = [];
+    try { orden = ((typeof window.catOrdenarPorCategoria === 'function') ? window.catOrdenarPorCategoria(prods) : prods.slice()).map(function(p){ return p.r; }); } catch(e){ orden = prods.map(function(p){ return p.r; }); }
+    return { marcas: marcas, cat: cat, dl: dl, orden: orden };
+  };
+})();
+
+
 // ═══ v.385 MARCAS DEL CATÁLOGO: logos oficiales + presentación de cada marca ═══
 (function(){
   var KEY = 'farmers_marcas_cat';
@@ -27551,7 +27625,7 @@ window._ciMarcasExcl = _ciMarcasExcl;
     try { localStorage.setItem(KEY, txt); localStorage.setItem(KEY + '_savedAt', String(Date.now())); }
     catch(e){ alert('⚠ No se pudo guardar en este equipo: ' + e.message); return false; }
     if (typeof window.fbSaveMarcasCat === 'function') {
-      window.fbSaveMarcasCat(obj).then(function(){ if (!silencioso && typeof showToast === 'function') showToast('☁ Marcas guardadas en la nube', 'success'); })
+      window.fbSaveMarcasCat(obj).then(function(){ if (!silencioso && typeof showToast === 'function') showToast('☁ Marcas guardadas en la nube', 'success'); try { if (typeof window.fbPublicarMarcasPortal === 'function') window.fbPublicarMarcasPortal(); } catch(eP){} })
         .catch(function(e){ alert('⚠ Se guardó en este equipo pero NO en la nube:\n' + (e && e.message ? e.message : e)); });
     }
     return true;
