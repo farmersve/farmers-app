@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.10.22.388">
+<meta name="farmers-version" content="2026.10.22.390">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -27582,7 +27582,8 @@ window._ciMarcasExcl = _ciMarcasExcl;
     if (!o || typeof o !== 'object') o = {};
     if (!o.refs || typeof o.refs !== 'object') o.refs = {};
     if (!o.dias) o.dias = 60;
-    if (o.seccion === undefined) o.seccion = true;
+    if (!o.v390) { o.seccion = false; o.v390 = 1; } // v.390: por defecto los nuevos se ven en su marca, sin sección al inicio
+    if (o.seccion === undefined) o.seccion = false;
     return o;
   };
   window.novSave = function(o, subir){
@@ -27593,13 +27594,50 @@ window._ciMarcasExcl = _ciMarcasExcl;
   };
 
   // ¿Es un código nuevo hoy?
+  // v.389 REGLA DE OMAR: solo es NUEVO un código nuevo que entra por ORDEN DE COMPRA.
+  //   • Mientras está ORDENADO (en camino) → nuevo.
+  //   • Desde su RECEPCIÓN OFICIAL en la OC → nuevo por 60 días (ajustable).
+  //   • Un código que no está ordenado ni recibido por OC → NO es nuevo.
+  var _ocCache = null, _ocCacheAt = 0;
+  window.novOcInfo = function(){
+    if (_ocCache && (Date.now() - _ocCacheAt) < 3000) return _ocCache;
+    var info = {};
+    var ocs = LS('farmers_ordenes_compra', []) || [];
+    var pt = LS('farmers_pt_data', {}) || {};
+    ocs.forEach(function(oc){
+      if (!oc) return;
+      var est = String(oc.estado || '').toUpperCase();
+      var anulada = /CANCEL|ANUL/.test(est);
+      var rec = {};
+      (oc.recepciones || []).forEach(function(r){
+        var f = iso(r.fecha || r.fechaCreacion);
+        (r.items || []).forEach(function(ri){
+          var ref = ri.refFarmers, q = parseFloat(ri.cantidadRecibida) || 0;
+          if (!ref || q <= 0) return;
+          rec[ref] = (rec[ref] || 0) + q;
+          var x = info[ref] = info[ref] || {};
+          if (f && (!x.rec || f < x.rec)) { x.rec = f; x.ocRec = oc.numero || ''; }
+        });
+      });
+      (oc.items || []).forEach(function(it){
+        var ref = it.refFarmers; if (!ref) return;
+        var x = info[ref] = info[ref] || {};
+        if (!anulada && (parseFloat(it.cantidad) || 0) - (rec[ref] || 0) > 0 && !/RECIBIDA|CERRADA/.test(est)) { x.ord = true; x.ocOrd = x.ocOrd || oc.numero || ''; }
+      });
+    });
+    Object.keys(pt).forEach(function(ref){ if ((parseInt((pt[ref] || {}).exOrdenada) || 0) > 0) { var x = info[ref] = info[ref] || {}; x.ord = true; } });
+    _ocCache = info; _ocCacheAt = Date.now();
+    return info;
+  };
   window.novEsNuevo = function(ref, reg){
     var o = reg || window.novGet(), e = o.refs[ref];
     if (!e) return false;
     if (e.manual === 'si') return true;
     if (e.manual === 'no' || e.base) return false;
-    if (e.fs) return dias(e.fs) <= (o.dias || 60);
-    return dias(e.f) <= 180; // creado y todavía sin llegar: se presenta como nuevo mientras viene en camino
+    var x = window.novOcInfo()[ref];
+    if (!x) return false;                                   // nunca ordenado ni recibido por OC
+    if (x.rec) return dias(x.rec) <= (o.dias || 60);        // recibido oficialmente → plazo desde la recepción
+    return !!x.ord;                                         // ordenado, todavía en camino
   };
   window.novLista = function(){
     var o = window.novGet(), out = [];
@@ -27651,7 +27689,6 @@ window._ciMarcasExcl = _ciMarcasExcl;
       if (!p || !p.r) return;
       var e = o.refs[p.r];
       if (!e) { o.refs[p.r] = e = { f: hoy, o: 'auto' }; cambio = true; }
-      if (!e.base && !e.fs && stockReal(p) > 0) { e.fs = hoy; cambio = true; }
     });
     if (cambio) { window.novSave(o); try { if (typeof window.fbPublicarMarcasPortal === 'function') window.fbPublicarMarcasPortal(); } catch(e){} }
     return cambio;
@@ -27682,7 +27719,12 @@ window._ciMarcasExcl = _ciMarcasExcl;
     function motivo(r){
       var e = _d.refs[r] || {};
       if (e.manual === 'si') return 'Marcado a mano';
-      return (e.o === 'auto' ? 'Código creado el ' : 'Código nuevo desde ') + fmt(e.f) + (e.fs ? ' · llegó ' + fmt(e.fs) : ' · aún no llega');
+      var x = window.novOcInfo()[r] || {};
+      if (x.rec) {
+        var hasta = new Date(x.rec + 'T00:00:00'); hasta.setDate(hasta.getDate() + (_d.dias || 60));
+        return 'Recibido ' + fmt(x.rec) + (x.ocRec ? ' (' + x.ocRec + ')' : '') + ' · nuevo hasta ' + fmt(hasta.toISOString().slice(0, 10));
+      }
+      return 'Ordenado' + (x.ocOrd ? ' en ' + x.ocOrd : '') + ' · en camino';
     }
     function fila(p, accion){
       return '<tr style="border-top:1px solid rgba(255,255,255,.07);">' +
@@ -27698,14 +27740,14 @@ window._ciMarcasExcl = _ciMarcasExcl;
     box.innerHTML =
       '<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:18px 20px;">' +
         '<div><div style="font-family:\'Barlow Condensed\',Arial,sans-serif;font-weight:900;font-size:1.35rem;letter-spacing:2px;">🆕 NOVEDADES DEL CATÁLOGO</div>' +
-        '<div style="font-size:.75rem;color:rgba(255,255,255,.6);margin-top:2px;">Solo códigos NUEVOS (no los que se reponen). Salen marcados "NUEVO" en el catálogo PDF y en el portal.</div></div>' +
+        '<div style="font-size:.75rem;color:rgba(255,255,255,.6);margin-top:2px;">Solo códigos NUEVOS que entran por orden de compra: mientras están ordenados y por un plazo desde su recepción oficial. Los que se reponen no cuentan.</div></div>' +
         '<div style="display:flex;gap:8px;flex-shrink:0;">' +
           '<button onclick="novGuardar()" style="background:#16a34a;color:#fff;border:none;border-radius:10px;padding:10px 18px;font-weight:900;font-size:.8rem;cursor:pointer;">💾 GUARDAR</button>' +
           '<button onclick="document.getElementById(\'nv-ov\').remove()" style="background:rgba(255,255,255,.12);color:#fff;border:none;border-radius:10px;padding:10px 14px;font-weight:800;cursor:pointer;">✕</button>' +
         '</div></div>' +
       '<div style="display:flex;flex-wrap:wrap;gap:16px;align-items:center;margin:0 20px 12px;padding:12px 14px;border-radius:10px;background:rgba(124,77,255,.14);border:1px solid rgba(124,77,255,.35);font-size:.78rem;">' +
-        '<label>Un código se presenta como nuevo durante <select onchange="_novSet(\'dias\', parseInt(this.value))" style="background:#0a0e2e;color:#fff;border:1px solid rgba(255,255,255,.25);border-radius:6px;padding:3px 6px;font-weight:800;">' + opts + '</select> desde que llega</label>' +
-        '<label style="display:flex;align-items:center;gap:6px;cursor:pointer;"><input type="checkbox" ' + (_d.seccion !== false ? 'checked' : '') + ' onchange="_novSet(\'seccion\', this.checked)"> Abrir el catálogo PDF con una sección de NOVEDADES</label>' +
+        '<label>Después de su recepción, un código sigue como nuevo durante <select onchange="_novSet(\'dias\', parseInt(this.value))" style="background:#0a0e2e;color:#fff;border:1px solid rgba(255,255,255,.25);border-radius:6px;padding:3px 6px;font-weight:800;">' + opts + '</select></label>' +
+        '<label style="display:flex;align-items:center;gap:6px;cursor:pointer;"><input type="checkbox" ' + (_d.seccion === true ? 'checked' : '') + ' onchange="_novSet(\'seccion\', this.checked)"> Además, agrupar los nuevos en una sección de NOVEDADES al inicio del PDF (opcional)</label>' +
       '</div>' +
       '<div style="display:flex;gap:8px;align-items:center;margin:0 20px 12px;">' +
         '<input id="nv-add" placeholder="Agregar a mano: escribe la REF (ej. EXC470)" style="flex:1;background:#0a0e2e;color:#fff;border:1px solid rgba(255,255,255,.2);border-radius:8px;padding:9px 12px;font-size:.8rem;text-transform:uppercase;">' +
@@ -27734,7 +27776,7 @@ window._ciMarcasExcl = _ciMarcasExcl;
   window.novGuardar = function(){
     window.novSave(_d);
     var n = 0; try { n = (PRODUCTS || []).filter(function(p){ return window.novEsNuevo(p.r, _d); }).length; } catch(e){}
-    alert('✅ NOVEDADES GUARDADAS\n\n' + n + ' código(s) nuevo(s) se marcarán como "NUEVO" en el próximo catálogo PDF' + (_d.seccion !== false ? ', con su sección de NOVEDADES al inicio' : '') + ', y en el portal de pedidos.');
+    alert('✅ NOVEDADES GUARDADAS\n\n' + n + ' código(s) nuevo(s) saldrán marcados "NUEVO" dentro de su marca en el próximo catálogo PDF' + (_d.seccion === true ? ', y además agrupados en la sección NOVEDADES al inicio' : '') + ', y en el portal de pedidos.');
     try { if (typeof window.fbPublicarMarcasPortal === 'function') window.fbPublicarMarcasPortal(); } catch(e){}
     var ov = document.getElementById('nv-ov'); if (ov) ov.remove();
   };
@@ -37116,7 +37158,7 @@ function _catDownloadPDFWithImgs(_prodImgsLocal) {
     if (typeof window.novSync === 'function') window.novSync();
     var _rg388 = (typeof window.novGet === 'function') ? window.novGet() : null;
     if (_rg388 && typeof window.novEsNuevo === 'function') {
-      _nov388.on = _rg388.seccion !== false;
+      _nov388.on = _rg388.seccion === true;
       pool.forEach(function(p){ if (p && p.r && window.novEsNuevo(p.r, _rg388)) { _nov388.set[p.r] = 1; _nov388.n++; } });
     }
   } catch(eNv){ console.warn('[novedades] catálogo:', eNv); }
@@ -37612,7 +37654,7 @@ function _catDownloadPDFWithImgs(_prodImgsLocal) {
       var stats =
         '<div class="fx-st"><b>' + pool.length + '</b><span>Referencias</span></div>' +
         '<div class="fx-st"><b>' + marcas.length + '</b><span>' + (marcas.length === 1 ? 'Marca' : 'Marcas') + '</span></div>' +
-        (_nov388.n > 0 && !esSeleccion ? '<div class="fx-st"><b>' + _nov388.n + '</b><span>' + (_nov388.n === 1 ? 'Nuevo' : 'Nuevos') + '</span></div>' : '') +
+        (_novSec388 ? '<div class="fx-st"><b>' + _nov388.n + '</b><span>' + (_nov388.n === 1 ? 'Nuevo' : 'Nuevos') + '</span></div>' : '') +
         (monTxt ? '<div class="fx-st"><b>' + monTxt + '</b><span>Precios</span></div>' : '') +
         (!_catSinPrecio && !_catClientMode && capTotal > 0 ? '<div class="fx-st"><b>$ ' + Math.round(capTotal).toLocaleString('es-VE') + '</b><span>Capital USD</span></div>' : '');
       var titulo = esSeleccion ? ('Ficha de<br><em>producto' + (pool.length > 1 ? 's' : '') + '</em>') : 'Catálogo<br><em>de productos</em>';
