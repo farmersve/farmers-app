@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.10.23.394">
+<meta name="farmers-version" content="2026.10.23.396">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -12485,6 +12485,11 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
   window.fbMergePortalPedido = async (id, patchObj) => {
     try { await setDoc(doc(db, 'portal_pedidos', id), patchObj, { merge: true }); return true; }
     catch(e) { console.error('fbMergePortalPedido:', e); return false; }
+  };
+  // v.395: lectura FRESCA de un pedido (null = no existe · undefined = no se pudo leer)
+  window.fbGetPortalPedido = async (id) => {
+    try { const s1 = await getDoc(doc(db, 'portal_pedidos', id)); return s1.exists() ? Object.assign({}, s1.data(), { id: id }) : null; }
+    catch(e) { console.error('fbGetPortalPedido:', e); return undefined; }
   };
   window.fbGetPortalPedidos = async () => {
     try {
@@ -27565,6 +27570,76 @@ function _ciMarcasExcl(P){
   return String(P.excluir || '').toUpperCase().split(/[,;]+/).map(function(x){ return x.trim(); }).filter(Boolean);
 }
 window._ciMarcasExcl = _ciMarcasExcl;
+
+// ═══ v.395 UN PEDIDO, UN SOLO PROCESAMIENTO ═══
+// Antes de importar (director) o confirmar (ADM) se lee el pedido FRESCO de la
+// nube y se pone un candado "en proceso". Si otro ya lo tomó, lo confirmó o ya
+// existe en el Monitor, se bloquea. Y en el último instante, antes de reservar
+// inventario, una compuerta vuelve a verificar: nunca se reserva dos veces.
+(function(){
+  var MIN = 20; // minutos que dura un candado sin terminar
+  function yo(){ return window.FARMERS_USER || 'OGK'; }
+  function esDirector(){ return (window.FARMERS_ROL || 'ADMIN') === 'ADMIN'; }
+  function hora(v){ var d = new Date(v); if (isNaN(d.getTime())) return ''; var h = d.getHours(), m = d.getMinutes(); return ((h % 12) || 12) + ':' + String(m).padStart(2, '0') + ' ' + (h < 12 ? 'am' : 'pm'); }
+  function vigente(p){ var e = p && p.enProceso; if (!e || !e.por || !e.desde) return null; var t = Date.parse(e.desde); if (!isFinite(t) || (Date.now() - t) > MIN * 60000) return null; return e; }
+  window.ppCandadoVigente = vigente;
+  function enMonitor(id){ try { return (getMsPedidos() || []).find(function(x){ return x.portalId === id && String(x.estado || '').toUpperCase() !== 'CANCELADO'; }) || null; } catch(e){ return null; } }
+  function motivo(p, id){
+    if (!p) return '⛔ Ese pedido ya no existe en la nube.';
+    var est = String(p.estado || '');
+    if (est === 'rechazado') return '⛔ Este pedido YA FUE RECHAZADO' + (p.rechazadoPor ? ' por ' + p.rechazadoPor : '') + (p.fechaRechazo ? ' (' + new Date(p.fechaRechazo).toLocaleString('es-VE') + ')' : '') + '.\n\nNo se puede procesar.';
+    if (est !== 'pendiente') return '⛔ Este pedido YA FUE PROCESADO' + (p.confirmadoPor ? ' — confirmado por ' + p.confirmadoPor : (p.importadoPor ? ' — importado por ' + p.importadoPor : '')) + (p.numPedidoMonitor ? '\nPedido en el Monitor: ' + p.numPedidoMonitor : '') + '\n\nNo se vuelve a reservar para no duplicar inventario.';
+    if (p.confirmadoPor && p.confirmadoPor !== yo()) return '⛔ ' + p.confirmadoPor + ' ya confirmó este pedido como oficial.\n\nNo se vuelve a reservar.';
+    var ms = enMonitor(id);
+    if (ms) return '⛔ Este pedido ya está en el Monitor como ' + ms.numP + '.\n\nNo se vuelve a reservar para no duplicar inventario.';
+    return '';
+  }
+  // Verificación con lectura fresca. Devuelve el pedido fresco o null si NO se debe seguir.
+  window.ppVerificar = async function(id){
+    var fresco = (typeof window.fbGetPortalPedido === 'function') ? await window.fbGetPortalPedido(id) : undefined;
+    if (fresco === undefined) {
+      if (esDirector() && confirm('⚠ No pude verificar este pedido con la nube (¿sin conexión?).\n\nSi otra persona ya lo procesó, se podría duplicar la reserva.\n\n¿Seguir de todas formas bajo tu responsabilidad?')) {
+        return (window.portalPedidos || []).find(function(x){ return x.id === id; }) || null;
+      }
+      if (!esDirector()) alert('⛔ No pude verificar este pedido con la nube. Revisa la conexión e intenta de nuevo.\n\n(Para no duplicar reservas, sin verificar no se procesa.)');
+      return null;
+    }
+    var loc = (window.portalPedidos || []).find(function(x){ return x.id === id; });
+    if (loc && fresco) Object.keys(fresco).forEach(function(k){ loc[k] = fresco[k]; });
+    var m = motivo(fresco, id);
+    if (m) { alert(m); return null; }
+    var c = vigente(fresco);
+    if (c && c.por !== yo()) {
+      if (esDirector()) {
+        if (!confirm('🔒 ' + c.por + ' está ' + (c.accion === 'importar' ? 'importando' : 'revisando') + ' este pedido desde las ' + hora(c.desde) + '.\n\nSi lo tomas tú, a ' + c.por + ' se le bloquea y no podrá confirmarlo.\n\n¿Tomarlo tú?')) return null;
+      } else {
+        var falta = Math.max(1, MIN - Math.floor((Date.now() - Date.parse(c.desde)) / 60000));
+        alert('🔒 ' + c.por + ' está ' + (c.accion === 'importar' ? 'importando' : 'revisando') + ' este pedido desde las ' + hora(c.desde) + '.\n\nPara no duplicarlo, no puedes procesarlo ahora. Si ' + c.por + ' no lo termina, se libera solo en ' + falta + ' min.');
+        return null;
+      }
+    }
+    return fresco;
+  };
+  window.ppTomar = async function(id, accion){
+    var e = { por: yo(), desde: new Date().toISOString(), accion: accion || 'revisar' };
+    var ok = await window.fbMergePortalPedido(id, { enProceso: e });
+    var loc = (window.portalPedidos || []).find(function(x){ return x.id === id; }); if (loc) loc.enProceso = e;
+    return ok;
+  };
+  window.ppSoltar = function(id){
+    var loc = (window.portalPedidos || []).find(function(x){ return x.id === id; });
+    if (loc && loc.enProceso && loc.enProceso.por !== yo()) return;
+    if (loc) loc.enProceso = null;
+    try { window.fbMergePortalPedido(id, { enProceso: null }); } catch(e){}
+  };
+  // Compuerta final (sincrónica) justo antes de reservar inventario
+  window.ppCompuerta = function(id){
+    var p = (window.portalPedidos || []).find(function(x){ return x.id === id; });
+    var m = p ? motivo(p, id) : (enMonitor(id) ? motivo({ estado: 'pendiente' }, id) : '');
+    if (!m && p) { var c = vigente(p); if (c && c.por !== yo()) m = '⛔ ' + c.por + ' tomó este pedido mientras lo procesabas.\n\nNo se reservó nada para no duplicar inventario.'; }
+    return m;
+  };
+})();
 // ═══ v.394 CENTRO DE PEDIDOS — rol ADMINISTRATIVO (usuario ADM) ═══
 // Revisa cada pedido que entra (precios vs lista, cantidades vs disponible,
 // referencias), corrige cantidades/referencias o quita líneas, y lo CONFIRMA
@@ -27664,7 +27739,7 @@ window._ciMarcasExcl = _ciMarcasExcl;
       '</div>' +
       '<div style="display:flex;gap:6px;">' +
         '<button data-traza="' + esc(p.id) + '" style="background:#fff;color:#000;border:1.5px solid #000;border-radius:8px;padding:8px 12px;font-weight:900;font-size:.7rem;cursor:pointer;">TRAZABILIDAD</button>' +
-        (p.estado === 'pendiente' ? '<button data-rev="' + esc(p.id) + '" style="background:#000;color:#fff;border:none;border-radius:8px;padding:9px 18px;font-weight:900;font-size:.74rem;cursor:pointer;letter-spacing:.5px;">REVISAR →</button>' : '') +
+        (p.estado === 'pendiente' ? (function(){ var c = (typeof window.ppCandadoVigente === 'function') ? window.ppCandadoVigente(p) : null; if (c && c.por !== usr()) return '<span style="background:#fef3c7;color:#000;border:1.5px solid #000;border-radius:8px;padding:8px 12px;font-weight:900;font-size:.68rem;">🔒 ' + esc(c.por) + ' LO ESTÁ ' + (c.accion === 'importar' ? 'IMPORTANDO' : 'REVISANDO') + '</span>'; return '<button data-rev="' + esc(p.id) + '" style="background:#000;color:#fff;border:none;border-radius:8px;padding:9px 18px;font-weight:900;font-size:.74rem;cursor:pointer;letter-spacing:.5px;">REVISAR →</button>'; })() : '') +
       '</div></div>';
   }
   function admTraza(id){
@@ -27683,10 +27758,16 @@ window._ciMarcasExcl = _ciMarcasExcl;
 
   // ── Revisión de un pedido ──
   var R = null; // estado de la revisión abierta
-  window.admRevisar = function(id){
+  window.admRevisar = async function(id){
     var p = pedidos().find(function(x){ return x.id === id; });
     if (!p) { alert('⛔ No encontré ese pedido. Pulsa ACTUALIZAR e intenta de nuevo.'); return; }
     if (p.estado !== 'pendiente') { alert('ℹ️ Este pedido ya no está por revisar (estado: ' + String(p.estado).toUpperCase() + ').'); admTraza(id); return; }
+    if (typeof window.ppVerificar === 'function') { // v.395: lectura fresca + candado
+      var fr = await window.ppVerificar(id);
+      if (!fr) { if (document.getElementById('adm-centro')) window.admCentro(); return; }
+      p = pedidos().find(function(x){ return x.id === id; }) || p;
+      await window.ppTomar(id, 'revisar');
+    }
     var cli = cliCRM(p), mon = p.moneda || 'USD';
     R = { id: id, p: p, cli: cli, mon: mon, inicio: new Date().toISOString(),
       lineas: (p.items || []).map(function(it){ return { ref0: it.ref, ref: it.ref, desc: it.desc || '', qty0: i0(it.qty), qty: i0(it.qty), precio: n0(it.precioMostrado), quitada: false, it: it }; }) };
@@ -27709,7 +27790,8 @@ window._ciMarcasExcl = _ciMarcasExcl;
     var prev = document.getElementById('adm-rev'); if (prev) prev.remove();
     var p = R.p, tp = p.tomadoPor && (p.tomadoPor.nombre || p.tomadoPor.codigo), cx = cxcDe(p);
     var activas = R.lineas.filter(function(l){ return !l.quitada; });
-    var tot = activas.reduce(function(s, l){ return s + l.qty * l.precio; }, 0), uds = activas.reduce(function(s, l){ return s + l.qty; }, 0);
+    // v.396: el total es el que se va a facturar (lista del cliente), no el precio redondeado que vio en el portal
+    var tot = activas.reduce(function(s, l){ var lp = l.ref && prod(l.ref) ? precioLista(l.ref, R.mon, R.cli) : 0; return s + l.qty * (lp > 0 ? lp : l.precio); }, 0), uds = activas.reduce(function(s, l){ return s + l.qty; }, 0);
     var bloqueos = 0, alertas = 0;
     var filas = R.lineas.map(function(l, i){
       var inf = l.quitada ? { avisos: [], d: 0, c: 0, lista: 0, pr: prod(l.ref) } : lineaInfo(l);
@@ -27725,7 +27807,7 @@ window._ciMarcasExcl = _ciMarcasExcl;
         '<td style="padding:8px 6px;text-align:center;font-size:.74rem;color:#334155;">' + (l.quitada ? '—' : (inf.c ? inf.c.toLocaleString('es-VE') : '—')) + '</td>' +
         '<td style="padding:8px 6px;text-align:right;font-size:.74rem;font-weight:800;color:#000;">' + $$(l.precio) + '</td>' +
         '<td style="padding:8px 6px;text-align:right;font-size:.72rem;color:#475569;">' + (inf.lista ? $$(inf.lista) : '—') + '</td>' +
-        '<td style="padding:8px 6px;text-align:right;font-size:.76rem;font-weight:900;color:#000;">' + (l.quitada ? '—' : $$(l.qty * l.precio)) + '</td>' +
+        '<td style="padding:8px 6px;text-align:right;font-size:.76rem;font-weight:900;color:#000;">' + (l.quitada ? '—' : $$(l.qty * (inf.lista > 0 ? inf.lista : l.precio))) + '</td>' +
         '<td style="padding:6px;text-align:center;"><button data-del="' + i + '" title="' + (l.quitada ? 'Volver a incluir' : 'Quitar línea') + '" style="background:#fff;border:1.5px solid ' + (l.quitada ? '#000' : '#fca5a5') + ';color:' + (l.quitada ? '#000' : '#991b1b') + ';border-radius:6px;padding:4px 8px;font-weight:900;cursor:pointer;font-size:.72rem;">' + (l.quitada ? '↺' : '✕') + '</button></td></tr>';
     }).join('');
     var ov = document.createElement('div');
@@ -27745,17 +27827,17 @@ window._ciMarcasExcl = _ciMarcasExcl;
             (cx.n ? $$(cx.pend) + ' pendiente en ' + cx.n + ' factura(s)' + (cx.venc > 0 ? ' · <b style="color:#991b1b;">' + $$(cx.venc) + ' VENCIDO</b>' : ' · al día') : 'sin saldo pendiente') + '</div>' +
         '</div>' +
         '<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;min-width:900px;">' +
-          '<thead><tr style="background:#f1f5f9;">' + ['#', 'REF', 'DESCRIPCIÓN Y REVISIÓN', 'CANT.', 'DISPONIBLE', 'EN CAMINO', 'PRECIO PEDIDO', 'LISTA', 'SUBTOTAL', ''].map(function(h, k){ return '<th style="padding:8px 6px;font-size:.6rem;letter-spacing:.8px;color:#000;text-align:' + (k >= 6 && k <= 8 ? 'right' : (k === 3 || k === 4 || k === 5 ? 'center' : 'left')) + ';">' + h + '</th>'; }).join('') + '</tr></thead>' +
+          '<thead><tr style="background:#f1f5f9;">' + ['#', 'REF', 'DESCRIPCIÓN Y REVISIÓN', 'CANT.', 'DISPONIBLE', 'EN CAMINO', 'PRECIO PORTAL', 'LISTA', 'SUBTOTAL', ''].map(function(h, k){ return '<th style="padding:8px 6px;font-size:.6rem;letter-spacing:.8px;color:#000;text-align:' + (k >= 6 && k <= 8 ? 'right' : (k === 3 || k === 4 || k === 5 ? 'center' : 'left')) + ';">' + h + '</th>'; }).join('') + '</tr></thead>' +
           '<tbody>' + filas + '</tbody></table></div>' +
         '<datalist id="adm-refs">' + (window.PRODUCTS || []).map(function(x){ return '<option value="' + esc(x.r) + '">' + esc(String(x.d || '').slice(0, 60)) + '</option>'; }).join('') + '</datalist>' +
         '<div style="margin-top:12px;display:flex;gap:14px;align-items:center;flex-wrap:wrap;border-top:2px solid #000;padding-top:12px;">' +
-          '<div style="flex:1;min-width:240px;font-size:.78rem;color:#000;"><b>' + activas.length + '</b> refs · <b>' + uds.toLocaleString('es-VE') + '</b> uds · Total <b style="font-size:1rem;">' + $$(tot) + '</b>' +
+          '<div style="flex:1;min-width:240px;font-size:.78rem;color:#000;"><b>' + activas.length + '</b> refs · <b>' + uds.toLocaleString('es-VE') + '</b> uds · Total a facturar <b style="font-size:1rem;">' + $$(tot) + '</b>' +
             (bloqueos ? '<div style="color:#991b1b;font-weight:900;font-size:.72rem;margin-top:3px;">⛔ ' + bloqueos + ' línea(s) con referencia inexistente o cantidad 0: corrígelas o quítalas para poder confirmar.</div>' : (alertas ? '<div style="color:#92400e;font-weight:800;font-size:.72rem;margin-top:3px;">⚠ ' + alertas + ' aviso(s) para revisar antes de confirmar.</div>' : '<div style="color:#000;font-weight:800;font-size:.72rem;margin-top:3px;">✓ Todo cuadra con el sistema.</div>')) + '</div>' +
           '<button id="adm-r-rech" style="background:#fff;color:#991b1b;border:1.5px solid #991b1b;border-radius:9px;padding:11px 16px;font-weight:900;font-size:.74rem;cursor:pointer;">RECHAZAR</button>' +
           '<button id="adm-r-ok"' + (bloqueos || !activas.length ? ' disabled' : '') + ' style="background:' + (bloqueos || !activas.length ? '#94a3b8' : '#000') + ';color:#fff;border:none;border-radius:9px;padding:12px 22px;font-weight:900;font-size:.8rem;letter-spacing:.5px;cursor:' + (bloqueos || !activas.length ? 'not-allowed' : 'pointer') + ';">✓ CONFIRMAR COMO OFICIAL</button>' +
         '</div></div></div>';
     document.body.appendChild(ov);
-    ov.querySelector('#adm-r-x').onclick = function(){ ov.remove(); };
+    ov.querySelector('#adm-r-x').onclick = function(){ ov.remove(); if (typeof window.ppSoltar === 'function') window.ppSoltar(R.id); }; // v.395
     ov.querySelectorAll('[data-qty]').forEach(function(inp){ inp.onchange = function(){ R.lineas[i0(inp.dataset.qty)].qty = Math.max(0, i0(inp.value)); setTimeout(pintarRevision, 0); }; });
     ov.querySelectorAll('[data-ref]').forEach(function(inp){ inp.onchange = function(){
       var l = R.lineas[i0(inp.dataset.ref)], nr = String(inp.value || '').trim().toUpperCase();
@@ -27783,11 +27865,12 @@ window._ciMarcasExcl = _ciMarcasExcl;
     return c;
   }
   async function rechazar(){
+    if (typeof window.ppVerificar === 'function') { var fr0 = await window.ppVerificar(R.id); if (!fr0) { var oo = document.getElementById('adm-rev'); if (oo) oo.remove(); return; } } // v.395
     var m = prompt('Motivo del rechazo (lo verá la oficina en la trazabilidad):', '');
     if (m === null) return;
     m = String(m).trim();
     if (m.length < 3) { alert('⛔ Escribe el motivo del rechazo.'); return; }
-    var ok = await window.fbMergePortalPedido(R.id, { estado: 'rechazado', motivoRechazo: m, fechaRechazo: new Date().toISOString(), rechazadoPor: usr() });
+    var ok = await window.fbMergePortalPedido(R.id, { estado: 'rechazado', motivoRechazo: m, fechaRechazo: new Date().toISOString(), rechazadoPor: usr(), enProceso: null });
     if (!ok) { alert('⛔ No se pudo guardar el rechazo. Revisa la conexión.'); return; }
     R.p.estado = 'rechazado'; R.p.motivoRechazo = m; R.p.fechaRechazo = new Date().toISOString(); R.p.rechazadoPor = usr();
     var o = document.getElementById('adm-rev'); if (o) o.remove();
@@ -27814,10 +27897,15 @@ window._ciMarcasExcl = _ciMarcasExcl;
       (sin.length ? '⚠ NO SE PUEDE RESERVAR (sin existencia):\n' + sin.map(function(x){ return '• ' + x.ref + ' — ' + x.sinCubrir + ' uds'; }).join('\n') + '\n\n' : '') +
       (cb.length ? 'Cambios de tu revisión: ' + cb.length + '\n' : 'Sin cambios en la revisión.\n') + '\n¿Confirmar?';
     if (!confirm(txt)) return;
-    var b = document.getElementById('adm-r-ok'); if (b) { b.disabled = true; b.textContent = 'Confirmando…'; }
+    var b = document.getElementById('adm-r-ok'); if (b) { b.disabled = true; b.textContent = 'Verificando…'; }
+    if (typeof window.ppVerificar === 'function') { // v.395: última lectura fresca antes de reservar
+      var fr1 = await window.ppVerificar(R.id);
+      if (!fr1) { var oz = document.getElementById('adm-rev'); if (oz) oz.remove(); if (document.getElementById('adm-centro')) window.admCentro(); return; }
+    }
+    if (b) b.textContent = 'Confirmando…';
     var ahoraISO = new Date().toISOString();
     var itemsOficiales = part.map(function(x){ return { ref: x.ref, desc: x.it.desc, qty: x.ahora + x.encamino, qtyEnCamino: x.encamino, precioMostrado: x.it.precioMostrado }; }).filter(function(x){ return x.qty > 0; });
-    var patch = { revision: { por: usr(), inicio: R.inicio, fin: ahoraISO }, cambiosRevision: cb, confirmadoPor: usr(), fechaConfirmado: ahoraISO,
+    var patch = { revision: { por: usr(), inicio: R.inicio, fin: ahoraISO }, cambiosRevision: cb, confirmadoPor: usr(), fechaConfirmado: ahoraISO, enProceso: null,
       items: itemsOficiales, total: itemsOficiales.reduce(function(s, x){ return s + x.qty * x.precioMostrado; }, 0), totalQty: itemsOficiales.reduce(function(s, x){ return s + x.qty; }, 0),
       sinCubrir: sin.map(function(x){ return { ref: x.ref, qty: x.sinCubrir }; }) };
     if (cb.length || sin.length) patch.itemsOriginal = p.items || [];
@@ -27841,10 +27929,16 @@ window._ciMarcasExcl = _ciMarcasExcl;
     var base = 'MS-' + String(d.getFullYear()).slice(-2) + ('0' + (d.getMonth() + 1)).slice(-2) + ('0' + d.getDate()).slice(-2) + '-' + ('0' + d.getHours()).slice(-2) + ('0' + d.getMinutes()).slice(-2);
     var numP = base, k = 0, letras = 'BCDEFGHIJK';
     while (peds.some(function(x){ return x.numP === numP; })) numP = base + '-' + letras.charAt(k++);
+    // v.396: MISMA forma que el pedido que emite el director ("Continuar con datos del sistema"):
+    // precio base del catálogo en la moneda del pedido (el ajuste CRM se aplica al facturar, igual que siempre)
+    var mk = (R.mon === 'TF' ? 'TF' : (R.mon === 'BCV' ? 'BCV' : 'USD'));
     var data = ahora.map(function(x){
       var o = {}; o[suc] = x.ahora;
-      return { ref: x.ref, desc: (prod(x.ref) || {}).d || x.it.desc || '', stock: disp(x.ref), enSistema: true, pedidos: o, dist: JSON.parse(JSON.stringify(o)),
-        estado: 'completo', totalPedido: x.ahora, precioPedido: x.it.precioMostrado, _precioCliente: x.it.precioMostrado, precioOverride: 'cliente' };
+      var pr = prod(x.ref) || {};
+      var base = mk === 'TF' ? n0(pr.t) : (mk === 'BCV' ? n0(pr.bv) : n0(pr.u));
+      if (!(base > 0)) base = n0(x.it.precioMostrado);
+      return { ref: x.ref, desc: pr.d || x.it.desc || '', stock: disp(x.ref), enSistema: true, pedidos: o, dist: JSON.parse(JSON.stringify(o)),
+        estado: 'completo', totalPedido: x.ahora, totalDespachado: x.ahora, factorReparto: 1, precioPedido: base, precio_usd: base, _precioCliente: base };
     });
     var cps = {}; cps[suc] = (R.cli && R.cli.id) || '';
     var monAntes = MSg.moneda, ok;
@@ -27859,12 +27953,19 @@ window._ciMarcasExcl = _ciMarcasExcl;
       if (b) { b.disabled = false; b.textContent = '✓ CONFIRMAR COMO OFICIAL'; }
       return;
     }
-    // precio del pedido congelado en su moneda (el que el cliente vio)
-    var campo = 'precioCongelado_' + (R.mon === 'TF' ? 'TF' : (R.mon === 'BCV' ? 'BCV' : 'USD'));
-    ped.origen = 'PORTAL'; ped.portalId = R.id; ped.confirmadoPor = usr();
-    (ped.data || []).forEach(function(l){ var x = ahora.find(function(y){ return y.ref === (l.ref || l.r); }); if (x) { l[campo] = x.it.precioMostrado; l.precioOverride = 'cliente'; } });
+    ped.portalId = R.id; ped.confirmadoPor = usr();
     saveMsPedidos(peds2);
     try { if (typeof syncInventoryToProducts === 'function') syncInventoryToProducts(); } catch(e){}
+    // v.396: mismos pasos que la emisión del director — existencias del PT y respaldo de la reserva
+    try {
+      var ptRaw = localStorage.getItem('farmers_pt_data');
+      if (ptRaw && typeof ptSaveData === 'function') {
+        var ptArr = JSON.parse(ptRaw);
+        data.forEach(function(l){ var td = i0(l.dist[suc]); if (!td) return; var pt = ptArr.find(function(z){ return z.r === l.ref; }); if (pt) { pt.ex = Math.max(0, i0(pt.ex) - td); pt.et = Math.max(0, i0(pt.et) - td); } });
+        ptSaveData(ptArr); if (window.ptData) window.ptData = ptArr;
+      }
+    } catch(ePt){ console.warn('[v.396] pt_data:', ePt); }
+    try { localStorage.setItem('ms_reserva_' + numP, JSON.stringify({ numPedido: numP, fecha: new Date().toISOString(), sucursales: [suc], clientesPorSucursal: cps, moneda: R.mon, data: ped.data || data })); } catch(eR){}
     var o2 = document.getElementById('adm-rev'); if (o2) o2.remove();
     p.estado = 'sincronizado'; p.numPedidoMonitor = numP; p.fechaSincronizado = new Date().toISOString(); p.importadoPor = usr();
     alert('✓ PEDIDO ' + numP + ' CONFIRMADO COMO OFICIAL\n\n' + suc + '\nReservado: ' + ahora.reduce(function(s, x){ return s + x.ahora; }, 0) + ' uds en ' + ahora.length + ' ref(s)' +
@@ -59454,7 +59555,8 @@ window.msConfirmarSeleccionadas = function(numP, sel, hayPendientes, ovEmision){
   // El inventario DISPONIBLE = Real - Comprometido disminuye.
   // El real solo se descuenta cuando se DESPACHA (Fase 2).
   if(typeof msComprometerInventario==='function') {
-    msComprometerInventario(
+    window._ppBloqueo395 = false;
+    var _rc395 = msComprometerInventario(
       numP || MS.numPedido,
       sel,
       MS.data,
@@ -59462,6 +59564,7 @@ window.msConfirmarSeleccionadas = function(numP, sel, hayPendientes, ovEmision){
       MS.moneda || 'USD',
       MS.fechaEmision || new Date().toLocaleDateString('es-VE',{day:'2-digit',month:'2-digit',year:'numeric'})
     );
+    if (_rc395 === false && window._ppBloqueo395) { window._ppBloqueo395 = false; try { if (ovEmision && ovEmision.remove) ovEmision.remove(); } catch(eO){} return false; } // v.395
   }
   // Sincronizar catálogo con el disponible actualizado
   if(typeof syncInventoryToProducts==='function') syncInventoryToProducts();
@@ -60289,6 +60392,13 @@ function msRegistrarVentaYCXC(numP, sel) {
 
 // ── Comprometer inventario al RESERVAR ───────────────────────
 window.msComprometerInventario = function(numP, sel, data, clientesPorSucursal, moneda, fecha) {
+  /* v.395 — COMPUERTA: un pedido del portal nunca se reserva dos veces */
+  try {
+    if (typeof MS !== 'undefined' && MS._portalPedidoId && typeof window.ppCompuerta === 'function') {
+      var _m395 = window.ppCompuerta(MS._portalPedidoId);
+      if (_m395) { alert(_m395); MS._portalPedidoId = null; MS._pvEnCamino = null; MS._portalVend392 = null; MS._portalNotas392 = ''; window._ppBloqueo395 = true; return false; }
+    }
+  } catch(eG395){ console.warn('[v.395] compuerta:', eG395); }
   /* v.330 — CANDADO DE ESPACIO: con el almacenamiento local en zona crítica,
      un guardado puede fallar a medias (la causa del susto del 24/09). Antes
      de reservar, se mide; sobre el umbral se BLOQUEA la emisión con
@@ -60449,6 +60559,7 @@ window.msComprometerInventario = function(numP, sel, data, clientesPorSucursal, 
           if (_pvLigada381) p.preventaEnCamino = _pvLigada381.id; // v.381
           p.fechaSincronizado = new Date().toISOString();
           p.importadoPor = window.FARMERS_USER || 'OGK'; // v.393
+          p.enProceso = null; // v.395
           await window.fbSavePortalPedido(portalId, p);
           console.log('✅ Pedido portal marcado sincronizado tras reserva real:', portalId, '→', numP);
         }
@@ -85967,6 +86078,7 @@ function pcRenderPedidoCard(p) {
         '<div style="font-size:.7rem;color:#64748b;margin-top:2px;">RIF: ' + (p.cliente && p.cliente.rif ? p.cliente.rif : '—') + ' · Tel: ' + (p.cliente && p.cliente.telefono ? p.cliente.telefono : '—') + '</div>' +
         '<div style="font-size:.66rem;color:#94a3b8;margin-top:3px;">' + fecha + ' · ' + numItems + ' productos · ' + simb + (p.total || 0).toFixed(2) + '</div>' +
         '<div style="font-size:.62rem;color:#94a3b8;margin-top:2px;font-family:monospace;">ID: PORTAL-' + p.id.substring(0, 8).toUpperCase() + '</div>' +
+        (function(){ var c = (p.estado === 'pendiente' && typeof window.ppCandadoVigente === 'function') ? window.ppCandadoVigente(p) : null; if (!c) return ''; var d = new Date(c.desde), h = d.getHours(); return '<div style="margin-top:6px;"><span style="background:#fef3c7;color:#000;border:1.5px solid #000;border-radius:5px;padding:3px 8px;font-size:.64rem;font-weight:900;">🔒 ' + (c.accion === 'importar' ? 'IMPORTANDO' : 'EN REVISIÓN') + ' POR ' + String(c.por).replace(/</g, '&lt;') + ' · DESDE ' + ((h % 12) || 12) + ':' + String(d.getMinutes()).padStart(2, '0') + (h < 12 ? ' AM' : ' PM') + '</span></div>'; })() + // v.395
         (p.tomadoPor && (p.tomadoPor.nombre || p.tomadoPor.codigo) ? '<div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap;"><span style="background:#000;color:#fff;border-radius:5px;padding:3px 8px;font-size:.64rem;font-weight:800;letter-spacing:.3px;">👔 TOMADO POR ' + String(p.tomadoPor.nombre || p.tomadoPor.codigo).toUpperCase().replace(/</g, '&lt;') + '</span>' + (p.waAvisado ? '<span style="background:#e7f6f3;color:#0f5e55;border-radius:5px;padding:3px 8px;font-size:.64rem;font-weight:800;">📲 Avisado por WhatsApp</span>' : '') + '</div>' : '') +
         (p.notas ? '<div style="margin-top:6px;font-size:.7rem;color:#000;background:#f1f5f9;border-radius:6px;padding:5px 8px;">📝 ' + String(p.notas).replace(/</g, '&lt;') + '</div>' : '') + // v.392
       '</div>' +
@@ -86056,7 +86168,9 @@ function pcVerPedido(id) {
 async function pcImportarPedido(id) {
   var p = window.portalPedidos.find(function(x){ return x.id === id; });
   if (!p) return;
+  if (typeof window.ppVerificar === 'function') { var _f395 = await window.ppVerificar(id); if (!_f395) { try { var _b395 = document.getElementById('pc-body'); if (_b395 && typeof pcRenderPedidos === 'function') pcRenderPedidos(_b395); } catch(e){} return; } p = window.portalPedidos.find(function(x){ return x.id === id; }) || p; } // v.395
   if (!confirm('¿Importar este pedido al Monitor de Pedidos?\n\nCliente: ' + p.cliente.razon + '\nProductos: ' + p.items.length + '\nTotal: $' + p.total.toFixed(2))) return;
+  if (typeof window.ppTomar === 'function') await window.ppTomar(id, 'importar'); // v.395: candado
 
   try {
     // Convertir pedido a formato MS (similar a QuickSell)
@@ -86184,6 +86298,7 @@ async function pcImportarPedido(id) {
 async function pcRechazarPedido(id) {
   var p = window.portalPedidos.find(function(x){ return x.id === id; });
   if (!p) return;
+  if (typeof window.ppVerificar === 'function') { var _fr395 = await window.ppVerificar(id); if (!_fr395) return; } // v.395
 
   var motivo = prompt('¿Estás seguro que quieres RECHAZAR este pedido?\n\nCliente: ' + p.cliente.razon + '\nProductos: ' + p.items.length + '\nTotal: $' + p.total.toFixed(2) + '\n\nEscribe un motivo (opcional):', '');
   if (motivo === null) return; // Canceló
