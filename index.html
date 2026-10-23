@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.10.23.396">
+<meta name="farmers-version" content="2026.10.23.398">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -12485,6 +12485,15 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
   window.fbMergePortalPedido = async (id, patchObj) => {
     try { await setDoc(doc(db, 'portal_pedidos', id), patchObj, { merge: true }); return true; }
     catch(e) { console.error('fbMergePortalPedido:', e); return false; }
+  };
+  // v.397: documentos JSON genéricos en data/<nombre> (null = no existe · undefined = no se pudo leer)
+  window.fbGetDataJSON = async (name) => {
+    try { const s2 = await getDoc(doc(db, 'data', name)); if (!s2.exists() || !s2.data().v) return null; return JSON.parse(s2.data().v); }
+    catch(e) { console.error('fbGetDataJSON ' + name + ':', e); return undefined; }
+  };
+  window.fbSetDataJSON = async (name, obj) => {
+    try { await setDoc(doc(db, 'data', name), { v: JSON.stringify(obj), updatedAt: Date.now() }); return true; }
+    catch(e) { console.error('fbSetDataJSON ' + name + ':', e); return false; }
   };
   // v.395: lectura FRESCA de un pedido (null = no existe · undefined = no se pudo leer)
   window.fbGetPortalPedido = async (id) => {
@@ -27570,6 +27579,275 @@ function _ciMarcasExcl(P){
   return String(P.excluir || '').toUpperCase().split(/[,;]+/).map(function(x){ return x.trim(); }).filter(Boolean);
 }
 window._ciMarcasExcl = _ciMarcasExcl;
+
+// ═══ v.398 ACTIVAR CÓDIGO SMS A TODOS LOS LINKS (desde el teléfono de Clientes) ═══
+window.pcSmsTodos398 = async function(){
+  var tks = (window.portalTokens || []).filter(function(t){ return t.tipo !== 'vendedor'; });
+  if (!tks.length) { alert('⛔ No hay links de clientes cargados.'); return; }
+  if (!confirm('🔐 ACTIVAR CÓDIGO SMS A TODOS LOS LINKS\n\nSe toma el teléfono de cada cliente en Clientes (el de cobranza, el principal o el del gerente) y se le pide código SMS al entrar.\n\nLos clientes que NO tengan teléfono en Clientes quedan como están y te los listo para que se lo agregues.\n\n¿Continuar?')) return;
+  var r = (typeof farmersSincronizarTelefonos === 'function') ? await farmersSincronizarTelefonos() : null;
+  if (r && r.ok) { for (var i = 0; i < tks.length; i++) { var t = tks[i]; if (t.telHash && t.candado !== 'estricto') { if (await fbMergePortalToken(t.token, { candado: 'estricto' })) t.candado = 'estricto'; } } }
+  try { if (typeof pcRenderTokensList === 'function') pcRenderTokensList(); } catch(e){}
+};
+// ═══ v.397 VENDEDORES Y COMISIONES ═══
+// Política (Omar, 23/10/2026):
+//  • La comisión se gana SOLO cuando la factura queda PAGADA COMPLETA (saldo $0),
+//    y cuenta en el mes del último cobro.
+//  • Base = monto de la factura (neto, en $). % fijo por vendedor.
+//  • Si el último cobro llega más de X días después del vencimiento, esa factura
+//    NO comisiona (X configurable, por defecto 30).
+//  • Lo que ya se pagó queda registrado (con el % de ese momento) y no se paga dos veces.
+(function(){
+  function esc(t){ return String(t == null ? '' : t).replace(/[&<>"']/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; }); }
+  function n0(v){ var x = parseFloat(v); return isFinite(x) ? x : 0; }
+  function r2(v){ return Math.round(n0(v) * 100) / 100; }
+  function $$(v){ return '$' + r2(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+  function ymd(d){ return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
+  function dmy(s){ var m = String(s || '').match(/(\d{4})-(\d{2})-(\d{2})/); return m ? m[3] + '/' + m[2] + '/' + m[1] : (s || '—'); }
+  function iso(s){ // acepta YYYY-MM-DD o DD/MM/YYYY
+    s = String(s || '');
+    var a = s.match(/(\d{4})-(\d{2})-(\d{2})/); if (a) return a[1] + '-' + a[2] + '-' + a[3];
+    var b = s.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/); if (b) return b[3] + '-' + String(b[2]).padStart(2, '0') + '-' + String(b[1]).padStart(2, '0');
+    return '';
+  }
+  function dias(a, b){ var x = Date.parse(a + 'T00:00:00'), y = Date.parse(b + 'T00:00:00'); return (isFinite(x) && isFinite(y)) ? Math.round((y - x) / 86400000) : 0; }
+  var MESES = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
+  function nomMes(p){ var m = String(p).split('-'); return MESES[parseInt(m[1], 10) - 1] + ' ' + m[0]; }
+
+  var ST = { periodo: ymd(new Date()).slice(0, 7), tab: 'resumen', vend: '', reg: null, cargado: false };
+  var KEY = 'farmers_comisiones';
+  function regLocal(){ try { return JSON.parse(localStorage.getItem(KEY) || 'null'); } catch(e){ return null; } }
+  function regBase(){ return { cfg: { diasGracia: 30 }, pagos: [] }; }
+  async function cargarReg(){
+    var r = null;
+    if (typeof window.fbGetDataJSON === 'function') { var x = await window.fbGetDataJSON('comisiones'); if (x && typeof x === 'object') r = x; else if (x === undefined) r = regLocal(); }
+    else r = regLocal();
+    ST.reg = r || regLocal() || regBase();
+    if (!ST.reg.cfg) ST.reg.cfg = { diasGracia: 30 };
+    if (!Array.isArray(ST.reg.pagos)) ST.reg.pagos = [];
+  }
+  async function guardarReg(){
+    try { localStorage.setItem(KEY, JSON.stringify(ST.reg)); } catch(e){}
+    if (typeof window.fbSetDataJSON === 'function') return await window.fbSetDataJSON('comisiones', ST.reg);
+    return false;
+  }
+  function vendedores(){ return (window.portalVendedores || []).filter(function(v){ return v && v.vendedorCodigo; }).sort(function(a, b){ return String(a.vendedorNombre || '').localeCompare(String(b.vendedorNombre || ''), 'es'); }); }
+  function cod(v){ return String(v || '').trim().toUpperCase(); }
+  function pagadoSet(){ var s = {}; (ST.reg.pagos || []).forEach(function(p){ (p.items || []).forEach(function(it){ s[it.facId] = p; }); }); return s; }
+
+  // Facturas de un vendedor con su situación de comisión
+  function analizar(v){
+    var c = cod(v.vendedorCodigo), pct = n0(v.comisionPct), X = parseInt(ST.reg.cfg.diasGracia, 10); if (!isFinite(X)) X = 30;
+    var pagadas = pagadoSet(), hoy = ymd(new Date());
+    var facs = (typeof cxcFacs === 'function' ? cxcFacs() : []).filter(function(f){ return cod(f.vendedor) === c; });
+    return facs.map(function(f){
+      var monto = n0(f.monto), saldo = n0(f.saldo), completa = saldo <= 0.009;
+      var ult = ''; (f.pagos || []).forEach(function(p){ var d = iso(p.fecha) || (p.ts ? ymd(new Date(p.ts)) : ''); if (d && d > ult) ult = d; });
+      var venc = iso(f.fechaVencimiento), tarde = (completa && venc && ult) ? dias(venc, ult) : 0;
+      var o = { f: f, id: f.id, num: f.numpedido || '', cliente: f.clienteNombre || '', monto: monto, saldo: saldo, emision: iso(f.fechaEmision), venc: venc, ult: ult, completa: completa, tarde: tarde };
+      var pg = pagadas[f.id];
+      if (pg) { var it = (pg.items || []).find(function(x){ return x.facId === f.id; }) || {}; o.estado = 'PAGADA'; o.pago = pg; o.pct = n0(it.pct); o.comision = n0(it.comision); o.periodo = it.periodo || pg.periodo; return o; }
+      if (!completa) { o.estado = 'ESPERA'; o.pct = pct; o.comision = r2(monto * pct / 100); o.vencida = venc && venc < hoy; o.periodo = ''; return o; }
+      o.periodo = ult.slice(0, 7);
+      if (tarde > X) { o.estado = 'NO_COMISIONA'; o.pct = 0; o.comision = 0; o.motivo = 'Pagada ' + tarde + ' días después del vencimiento (límite ' + X + ')'; return o; }
+      o.estado = 'POR_PAGAR'; o.pct = pct; o.comision = r2(monto * pct / 100);
+      return o;
+    });
+  }
+  function ventasMes(v, periodo){
+    var c = cod(v.vendedorCodigo), t = 0, n = 0;
+    (typeof getSales === 'function' ? getSales() : []).forEach(function(s){ if (cod(s.vendedor) !== c) return; var d = iso(s.fecha); if (d.slice(0, 7) !== periodo) return; t += n0(s.total); n++; });
+    return { total: t, n: n };
+  }
+  function resumenDe(v){
+    var A = analizar(v), P = ST.periodo, vm = ventasMes(v, P);
+    var mes = A.filter(function(o){ return o.periodo === P && o.completa; });
+    var r = {
+      v: v, ventas: vm.total, nVentas: vm.n, meta: n0(v.metaMensual),
+      cobradoMes: mes.reduce(function(s, o){ return s + o.monto; }, 0),
+      comisionMes: mes.filter(function(o){ return o.estado === 'POR_PAGAR' || o.estado === 'PAGADA'; }).reduce(function(s, o){ return s + o.comision; }, 0),
+      porPagar: A.filter(function(o){ return o.estado === 'POR_PAGAR'; }).reduce(function(s, o){ return s + o.comision; }, 0),
+      nPorPagar: A.filter(function(o){ return o.estado === 'POR_PAGAR'; }).length,
+      cartera: A.filter(function(o){ return !o.completa; }).reduce(function(s, o){ return s + o.saldo; }, 0),
+      vencido: A.filter(function(o){ return !o.completa && o.vencida; }).reduce(function(s, o){ return s + o.saldo; }, 0),
+      enEspera: A.filter(function(o){ return o.estado === 'ESPERA'; }).reduce(function(s, o){ return s + o.comision; }, 0),
+      noCom: A.filter(function(o){ return o.estado === 'NO_COMISIONA' && o.periodo === P; }).length,
+      A: A
+    };
+    return r;
+  }
+
+  // ── Pantalla ──
+  window.vcAbrir = async function(tab){
+    if (tab) ST.tab = tab;
+    var prev = document.getElementById('vc-ov'); if (prev) prev.remove();
+    var ov = document.createElement('div'); ov.id = 'vc-ov';
+    ov.style.cssText = 'position:fixed;inset:0;z-index:99600;background:rgba(0,0,0,.72);display:flex;align-items:flex-start;justify-content:center;padding:16px;overflow:auto;';
+    ov.innerHTML = '<div style="background:#fff;border-radius:14px;width:100%;max-width:1200px;margin:auto;min-height:200px;"><div style="padding:40px;text-align:center;color:#64748b;">Cargando vendedores y cobranza…</div></div>';
+    document.body.appendChild(ov);
+    try {
+      if (typeof window.fbGetPortalTokens === 'function') {
+        var tks = await window.fbGetPortalTokens();
+        if (tks && tks.length) { window.portalVendedores = tks.filter(function(t){ return t.tipo === 'vendedor'; }); window.portalTokens = tks.filter(function(t){ return t.tipo !== 'vendedor'; }); }
+      }
+    } catch(e){}
+    await cargarReg();
+    pintar();
+  };
+  function pintar(){
+    var ov = document.getElementById('vc-ov'); if (!ov) return;
+    var vs = vendedores();
+    if (!ST.vend && vs.length) ST.vend = vs[0].token;
+    var meses = []; var d0 = new Date(); for (var i = 0; i < 12; i++) { var dd = new Date(d0.getFullYear(), d0.getMonth() - i, 1); meses.push(ymd(dd).slice(0, 7)); }
+    var tabB = function(k, t){ var on = ST.tab === k; return '<button data-tab="' + k + '" style="padding:11px 16px;border:none;border-bottom:3px solid ' + (on ? '#000' : 'transparent') + ';background:none;font-weight:900;font-size:.76rem;letter-spacing:.5px;color:' + (on ? '#000' : '#64748b') + ';cursor:pointer;">' + t + '</button>'; };
+    var cuerpo = !vs.length ? '<div style="padding:40px 20px;text-align:center;color:#64748b;font-size:.85rem;">Todavía no hay vendedores. Créalos en <b>Portal Cliente → 👔 Vendedores</b> y aquí aparecen con sus ventas, metas y comisiones.</div>'
+      : (ST.tab === 'resumen' ? tabResumen(vs) : (ST.tab === 'detalle' ? tabDetalle(vs) : (ST.tab === 'pagos' ? tabPagos() : tabConfig(vs))));
+    ov.innerHTML = '<div style="background:#fff;border-radius:14px;width:100%;max-width:1200px;margin:auto;overflow:hidden;">' +
+      '<div style="background:#000;color:#fff;padding:14px 20px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;">' +
+        '<div style="flex:1;min-width:240px;"><div style="font-weight:900;font-size:1.05rem;letter-spacing:1px;">🧑‍💼 VENDEDORES Y COMISIONES</div>' +
+        '<div style="font-size:.66rem;opacity:.75;margin-top:2px;">Comisión solo sobre facturas pagadas completas · no comisiona si se cobra más de ' + esc(ST.reg.cfg.diasGracia) + ' días después del vencimiento</div></div>' +
+        '<select id="vc-mes" style="background:#fff;color:#000;border:none;border-radius:8px;padding:8px 10px;font-weight:800;font-size:.76rem;">' + meses.map(function(m){ return '<option value="' + m + '"' + (m === ST.periodo ? ' selected' : '') + '>' + nomMes(m) + '</option>'; }).join('') + '</select>' +
+        '<button id="vc-x" style="background:rgba(255,255,255,.15);border:none;color:#fff;font-size:1.1rem;width:32px;height:32px;border-radius:6px;cursor:pointer;">×</button></div>' +
+      '<div style="display:flex;gap:4px;border-bottom:1px solid #e2e8f0;padding:0 12px;flex-wrap:wrap;">' + tabB('resumen', 'RESUMEN') + tabB('detalle', 'COMISIONES POR VENDEDOR') + tabB('pagos', 'PAGOS REGISTRADOS') + tabB('config', '% Y METAS') + '</div>' +
+      '<div style="padding:16px 20px;">' + cuerpo + '</div></div>';
+    ov.querySelector('#vc-x').onclick = function(){ ov.remove(); };
+    ov.querySelector('#vc-mes').onchange = function(){ ST.periodo = this.value; pintar(); };
+    ov.querySelectorAll('[data-tab]').forEach(function(b){ b.onclick = function(){ ST.tab = b.dataset.tab; pintar(); }; });
+    ov.querySelectorAll('[data-vend]').forEach(function(b){ b.onclick = function(){ ST.vend = b.dataset.vend; ST.tab = 'detalle'; pintar(); }; });
+    var sv = ov.querySelector('#vc-sel'); if (sv) sv.onchange = function(){ ST.vend = this.value; pintar(); };
+    var bp = ov.querySelector('#vc-pagar'); if (bp) bp.onclick = pagarSeleccion;
+    var bx = ov.querySelector('#vc-xls'); if (bx) bx.onclick = exportar;
+    var bs = ov.querySelector('#vc-save-cfg'); if (bs) bs.onclick = guardarCfg;
+    var ba = ov.querySelector('#vc-all'); if (ba) ba.onchange = function(){ ov.querySelectorAll('.vc-chk').forEach(function(c){ c.checked = ba.checked; }); sumaSel(); };
+    ov.querySelectorAll('.vc-chk').forEach(function(c){ c.onchange = sumaSel; });
+    sumaSel();
+  }
+  function th(t, al){ return '<th style="padding:8px 8px;font-size:.6rem;letter-spacing:.8px;color:#000;text-align:' + (al || 'left') + ';white-space:nowrap;">' + t + '</th>'; }
+  function td(t, al, extra){ return '<td style="padding:8px 8px;font-size:.76rem;color:#000;text-align:' + (al || 'left') + ';' + (extra || '') + '">' + t + '</td>'; }
+  function tabResumen(vs){
+    var R = vs.map(resumenDe);
+    var T = R.reduce(function(a, r){ a.v += r.ventas; a.c += r.cobradoMes; a.k += r.comisionMes; a.p += r.porPagar; a.ca += r.cartera; a.ve += r.vencido; return a; }, { v: 0, c: 0, k: 0, p: 0, ca: 0, ve: 0 });
+    var card = function(t, v, s){ return '<div style="border:1.5px solid #000;border-radius:10px;padding:10px 12px;"><div style="font-size:.6rem;font-weight:900;letter-spacing:1px;color:#475569;text-transform:uppercase;">' + t + '</div><div style="font-size:1.25rem;font-weight:900;color:#000;">' + v + '</div>' + (s ? '<div style="font-size:.64rem;color:#64748b;">' + s + '</div>' : '') + '</div>'; };
+    return '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin-bottom:16px;">' +
+        card('Ventas del mes', $$(T.v), nomMes(ST.periodo)) + card('Cobrado (facturas completas)', $$(T.c), 'en el mes') + card('Comisión ganada del mes', $$(T.k), '') +
+        card('Comisión por pagar', $$(T.p), 'acumulada, sin pagar aún') + card('Cartera por cobrar', $$(T.ca), T.ve > 0 ? '<b style="color:#991b1b;">' + $$(T.ve) + ' vencido</b>' : 'al día') + '</div>' +
+      '<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;min-width:980px;"><thead><tr style="background:#f1f5f9;">' +
+        th('VENDEDOR') + th('%', 'center') + th('VENTAS DEL MES', 'right') + th('META', 'right') + th('CUMPLIMIENTO') + th('COBRADO', 'right') + th('COMISIÓN DEL MES', 'right') + th('POR PAGAR', 'right') + th('CARTERA', 'right') + th('VENCIDO', 'right') + th('') +
+      '</tr></thead><tbody>' + R.map(function(r){
+        var pc = r.meta > 0 ? Math.round(r.ventas / r.meta * 100) : null;
+        var bar = pc == null ? '<span style="font-size:.68rem;color:#94a3b8;">Sin meta</span>' :
+          '<div style="display:flex;align-items:center;gap:6px;"><div style="flex:1;min-width:80px;height:8px;background:#e2e8f0;border-radius:99px;overflow:hidden;"><div style="width:' + Math.min(100, pc) + '%;height:100%;background:#000;"></div></div><b style="font-size:.72rem;">' + pc + '%</b></div>';
+        return '<tr style="border-top:1px solid #e2e8f0;">' +
+          td('<b style="text-transform:uppercase;">' + esc(r.v.vendedorNombre) + '</b><div style="font-size:.64rem;color:#64748b;">' + esc(r.v.vendedorCodigo) + ' · ' + r.nVentas + ' venta(s)' + (r.v.activo === false ? ' · DESACTIVADO' : '') + '</div>') +
+          td(n0(r.v.comisionPct) > 0 ? n0(r.v.comisionPct) + '%' : '<span style="color:#991b1b;font-weight:800;">sin %</span>', 'center') +
+          td($$(r.ventas), 'right', 'font-weight:800;') + td(r.meta > 0 ? $$(r.meta) : '—', 'right') + td(bar) + td($$(r.cobradoMes), 'right') +
+          td($$(r.comisionMes), 'right', 'font-weight:900;') + td(r.porPagar > 0 ? '<b>' + $$(r.porPagar) + '</b><div style="font-size:.62rem;color:#64748b;">' + r.nPorPagar + ' factura(s)</div>' : '$0.00', 'right') +
+          td($$(r.cartera), 'right') + td(r.vencido > 0 ? '<b style="color:#991b1b;">' + $$(r.vencido) + '</b>' : '—', 'right') +
+          td('<button data-vend="' + esc(r.v.token) + '" style="background:#000;color:#fff;border:none;border-radius:7px;padding:7px 11px;font-weight:900;font-size:.66rem;cursor:pointer;">DETALLE →</button>', 'right') + '</tr>';
+      }).join('') + '</tbody></table></div>' +
+      '<div style="font-size:.68rem;color:#64748b;margin-top:10px;">Ventas del mes = lo facturado/despachado a nombre del vendedor en el mes. Cobrado y comisión = facturas que quedaron pagadas completas en el mes. "Por pagar" incluye meses anteriores aún no pagados.</div>';
+  }
+  function tabDetalle(vs){
+    var v = vs.find(function(x){ return x.token === ST.vend; }) || vs[0];
+    var r = resumenDe(v), A = r.A;
+    var porPagar = A.filter(function(o){ return o.estado === 'POR_PAGAR'; }).sort(function(a, b){ return a.ult < b.ult ? -1 : 1; });
+    var mesNo = A.filter(function(o){ return o.estado === 'NO_COMISIONA' && o.periodo === ST.periodo; });
+    var pagMes = A.filter(function(o){ return o.estado === 'PAGADA' && o.periodo === ST.periodo; });
+    var espera = A.filter(function(o){ return o.estado === 'ESPERA'; }).sort(function(a, b){ return (a.venc || '') < (b.venc || '') ? -1 : 1; });
+    var fila = function(o, chk){
+      return '<tr style="border-top:1px solid #e2e8f0;">' + (chk ? td('<input type="checkbox" class="vc-chk" data-fac="' + esc(o.id) + '" checked style="width:16px;height:16px;accent-color:#000;">', 'center') : '') +
+        td('<span style="font-family:monospace;font-size:.7rem;">' + esc(o.num) + '</span>') + td('<span style="text-transform:uppercase;">' + esc(o.cliente) + '</span>') + td($$(o.monto), 'right', 'font-weight:800;') +
+        td(dmy(o.emision), 'center') + td(dmy(o.venc), 'center') + td(o.completa ? dmy(o.ult) : '<span style="color:#64748b;">saldo ' + $$(o.saldo) + '</span>', 'center') +
+        td(o.completa ? (o.tarde > 0 ? '<b' + (o.estado === 'NO_COMISIONA' ? ' style="color:#991b1b;"' : '') + '>' + o.tarde + ' d tarde</b>' : 'a tiempo') : (o.vencida ? '<b style="color:#991b1b;">VENCIDA</b>' : 'vigente'), 'center') +
+        td(o.pct ? o.pct + '%' : '—', 'center') + td(o.estado === 'NO_COMISIONA' ? '<span style="color:#991b1b;font-weight:800;">$0.00</span><div style="font-size:.62rem;color:#991b1b;">' + esc(o.motivo) + '</div>' : $$(o.comision), 'right', 'font-weight:900;') + '</tr>';
+    };
+    var head = function(chk){ return '<thead><tr style="background:#f1f5f9;">' + (chk ? th('<input type="checkbox" id="vc-all" checked style="width:16px;height:16px;accent-color:#000;">', 'center') : '') + th('PEDIDO / FACTURA') + th('CLIENTE') + th('MONTO', 'right') + th('EMISIÓN', 'center') + th('VENCE', 'center') + th('PAGADA COMPLETA', 'center') + th('PUNTUALIDAD', 'center') + th('%', 'center') + th('COMISIÓN', 'right') + '</tr></thead>'; };
+    var tabla = function(t, rows, chk, extra){ return '<div style="margin-top:16px;"><div style="font-weight:900;font-size:.8rem;color:#000;letter-spacing:.5px;margin-bottom:6px;">' + t + '</div>' + (rows.length ? '<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;min-width:900px;">' + head(chk) + '<tbody>' + rows.map(function(o){ return fila(o, chk); }).join('') + '</tbody></table></div>' + (extra || '') : '<div style="font-size:.74rem;color:#94a3b8;padding:8px 0;">Nada aquí.</div>') + '</div>'; };
+    return '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">' +
+        '<select id="vc-sel" style="border:1.5px solid #000;border-radius:8px;padding:8px 10px;font-weight:900;font-size:.8rem;">' + vs.map(function(x){ return '<option value="' + esc(x.token) + '"' + (x.token === v.token ? ' selected' : '') + '>' + esc(String(x.vendedorNombre || '').toUpperCase()) + ' · ' + esc(x.vendedorCodigo) + '</option>'; }).join('') + '</select>' +
+        '<div style="font-size:.74rem;color:#000;flex:1;">Comisión <b>' + (n0(v.comisionPct) > 0 ? n0(v.comisionPct) + '%' : '<span style="color:#991b1b;">sin % configurado</span>') + '</b> · Meta ' + (n0(v.metaMensual) > 0 ? $$(v.metaMensual) : '—') + ' · Ventas ' + nomMes(ST.periodo) + ' <b>' + $$(r.ventas) + '</b> · Cartera <b>' + $$(r.cartera) + '</b>' + (r.vencido > 0 ? ' · <b style="color:#991b1b;">' + $$(r.vencido) + ' vencido</b>' : '') + '</div>' +
+        '<button id="vc-xls" style="background:#fff;color:#000;border:1.5px solid #000;border-radius:8px;padding:8px 12px;font-weight:900;font-size:.7rem;cursor:pointer;">EXCEL</button></div>' +
+      tabla('✅ COMISIONES POR PAGAR (facturas pagadas completas, todos los meses)', porPagar, true,
+        '<div style="display:flex;justify-content:flex-end;align-items:center;gap:12px;margin-top:10px;"><div style="font-size:.8rem;color:#000;">Seleccionado: <b id="vc-suma">$0.00</b></div>' +
+        '<button id="vc-pagar" style="background:#000;color:#fff;border:none;border-radius:9px;padding:11px 18px;font-weight:900;font-size:.76rem;cursor:pointer;">REGISTRAR PAGO DE COMISIÓN</button></div>') +
+      (pagMes.length ? tabla('💵 YA PAGADAS (' + nomMes(ST.periodo) + ')', pagMes, false) : '') +
+      (mesNo.length ? tabla('⛔ NO COMISIONAN (' + nomMes(ST.periodo) + ') — cobradas fuera de plazo', mesNo, false) : '') +
+      tabla('⏳ EN ESPERA — todavía no pagadas completas (comisión posible)', espera, false);
+  }
+  function sumaSel(){
+    var el = document.getElementById('vc-suma'); if (!el) return;
+    var v = vendedores().find(function(x){ return x.token === ST.vend; }); if (!v) return;
+    var A = analizar(v), t = 0;
+    document.querySelectorAll('.vc-chk').forEach(function(c){ if (!c.checked) return; var o = A.find(function(x){ return x.id === c.dataset.fac; }); if (o) t += o.comision; });
+    el.textContent = $$(t);
+  }
+  async function pagarSeleccion(){
+    var v = vendedores().find(function(x){ return x.token === ST.vend; }); if (!v) return;
+    var A = analizar(v), ids = [];
+    document.querySelectorAll('.vc-chk').forEach(function(c){ if (c.checked) ids.push(c.dataset.fac); });
+    var sel = A.filter(function(o){ return o.estado === 'POR_PAGAR' && ids.indexOf(o.id) >= 0; });
+    if (!sel.length) { alert('Selecciona al menos una factura por pagar.'); return; }
+    if (sel.some(function(o){ return !(o.pct > 0); })) { alert('⛔ ' + v.vendedorNombre + ' no tiene % de comisión configurado. Configúralo en "% y metas" antes de pagar.'); return; }
+    var tot = r2(sel.reduce(function(s, o){ return s + o.comision; }, 0));
+    if (!confirm('REGISTRAR PAGO DE COMISIÓN\n\n' + String(v.vendedorNombre).toUpperCase() + ' · ' + sel.length + ' factura(s)\nBase cobrada: ' + $$(sel.reduce(function(s, o){ return s + o.monto; }, 0)) + '\nComisión (' + v.comisionPct + '%): ' + $$(tot) + '\n\nQueda registrado y esas facturas no se vuelven a pagar. ¿Confirmar?')) return;
+    await cargarReg(); // lo más reciente de la nube antes de escribir
+    var ya = pagadoSet(), dup = sel.filter(function(o){ return ya[o.id]; });
+    if (dup.length) { alert('⛔ ' + dup.length + ' de esas facturas ya tenían su comisión pagada (registrada desde otro equipo). Revisa y vuelve a intentar.'); pintar(); return; }
+    var hoy = new Date();
+    ST.reg.pagos.push({ id: 'COM-' + ymd(hoy).replace(/-/g, '') + '-' + String(hoy.getHours()).padStart(2, '0') + String(hoy.getMinutes()).padStart(2, '0') + '-' + v.vendedorCodigo, fecha: hoy.toISOString(), por: window.FARMERS_USER || 'OGK',
+      vendedor: v.vendedorCodigo, vendedorNombre: v.vendedorNombre, periodo: ST.periodo, total: tot,
+      items: sel.map(function(o){ return { facId: o.id, numpedido: o.num, cliente: o.cliente, base: r2(o.monto), pct: o.pct, comision: o.comision, pagadaEl: o.ult, periodo: o.periodo }; }) });
+    var ok = await guardarReg();
+    alert((ok ? '✅' : '⚠️') + ' PAGO DE COMISIÓN REGISTRADO\n\n' + String(v.vendedorNombre).toUpperCase() + ': ' + $$(tot) + ' (' + sel.length + ' factura(s))' + (ok ? '' : '\n\nQuedó en este equipo pero NO llegó a la nube. Revisa la conexión y vuelve a abrir el módulo.'));
+    pintar();
+  }
+  function tabPagos(){
+    var ps = (ST.reg.pagos || []).slice().sort(function(a, b){ return a.fecha < b.fecha ? 1 : -1; });
+    if (!ps.length) return '<div style="padding:30px;text-align:center;color:#94a3b8;font-size:.82rem;">Todavía no se ha registrado ningún pago de comisión.</div>';
+    return '<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;min-width:760px;"><thead><tr style="background:#f1f5f9;">' + th('N°') + th('FECHA') + th('VENDEDOR') + th('FACTURAS', 'center') + th('TOTAL PAGADO', 'right') + th('REGISTRADO POR') + '</tr></thead><tbody>' +
+      ps.map(function(p){ return '<tr style="border-top:1px solid #e2e8f0;">' + td('<span style="font-family:monospace;font-size:.7rem;">' + esc(p.id) + '</span>') + td(new Date(p.fecha).toLocaleString('es-VE')) + td('<b>' + esc(String(p.vendedorNombre || p.vendedor).toUpperCase()) + '</b>') + td((p.items || []).length, 'center') + td($$(p.total), 'right', 'font-weight:900;') + td(esc(p.por)) + '</tr>'; }).join('') + '</tbody></table></div>';
+  }
+  function tabConfig(vs){
+    return '<div style="max-width:720px;">' +
+      '<div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap;"><label style="font-size:.74rem;font-weight:900;color:#000;">Días de gracia después del vencimiento (si se cobra después, no comisiona):</label>' +
+      '<input id="vc-dias" type="number" min="0" step="1" value="' + esc(ST.reg.cfg.diasGracia) + '" style="width:80px;border:1.5px solid #000;border-radius:7px;padding:7px;text-align:center;font-weight:900;"></div>' +
+      '<table style="width:100%;border-collapse:collapse;"><thead><tr style="background:#f1f5f9;">' + th('VENDEDOR') + th('% COMISIÓN', 'center') + th('META MENSUAL DE VENTAS ($)', 'center') + '</tr></thead><tbody>' +
+      vs.map(function(v){ return '<tr style="border-top:1px solid #e2e8f0;">' + td('<b style="text-transform:uppercase;">' + esc(v.vendedorNombre) + '</b> <span style="font-size:.66rem;color:#64748b;">' + esc(v.vendedorCodigo) + '</span>') +
+        td('<input class="vc-pct" data-t="' + esc(v.token) + '" type="number" min="0" max="50" step="0.1" value="' + (n0(v.comisionPct) || '') + '" placeholder="ej. 3" style="width:80px;border:1.5px solid #cbd5e1;border-radius:7px;padding:7px;text-align:center;font-weight:900;"> %', 'center') +
+        td('<input class="vc-meta" data-t="' + esc(v.token) + '" type="number" min="0" step="100" value="' + (n0(v.metaMensual) || '') + '" placeholder="ej. 5000" style="width:130px;border:1.5px solid #cbd5e1;border-radius:7px;padding:7px;text-align:center;font-weight:900;">', 'center') + '</tr>'; }).join('') +
+      '</tbody></table><div style="font-size:.68rem;color:#64748b;margin-top:8px;">Cambiar el % solo afecta las comisiones que todavía no se han pagado; las ya pagadas guardan el % de ese momento.</div>' +
+      '<div style="text-align:right;margin-top:12px;"><button id="vc-save-cfg" style="background:#000;color:#fff;border:none;border-radius:9px;padding:11px 20px;font-weight:900;font-size:.76rem;cursor:pointer;">GUARDAR</button></div></div>';
+  }
+  async function guardarCfg(){
+    var X = parseInt(document.getElementById('vc-dias').value, 10);
+    if (!isFinite(X) || X < 0) { alert('⛔ Días de gracia inválidos.'); return; }
+    var cambios = [], malos = [];
+    document.querySelectorAll('.vc-pct').forEach(function(inp){
+      var t = inp.dataset.t, v = (window.portalVendedores || []).find(function(x){ return x.token === t; }); if (!v) return;
+      var pct = n0(inp.value), meta = n0((document.querySelector('.vc-meta[data-t="' + t + '"]') || {}).value);
+      if (pct < 0 || pct > 50) { malos.push(v.vendedorNombre); return; }
+      if (pct !== n0(v.comisionPct) || meta !== n0(v.metaMensual)) cambios.push({ v: v, pct: pct, meta: meta });
+    });
+    if (malos.length) { alert('⛔ % fuera de rango (0–50) para: ' + malos.join(', ')); return; }
+    var okT = 0;
+    for (var i = 0; i < cambios.length; i++) { var c = cambios[i]; if (await window.fbMergePortalToken(c.v.token, { comisionPct: c.pct, metaMensual: c.meta })) { c.v.comisionPct = c.pct; c.v.metaMensual = c.meta; okT++; } }
+    var okD = true;
+    if (X !== parseInt(ST.reg.cfg.diasGracia, 10)) { await cargarReg(); ST.reg.cfg.diasGracia = X; okD = await guardarReg(); }
+    alert((okT === cambios.length && okD ? '✅' : '⚠️') + ' CONFIGURACIÓN GUARDADA\n\n' + (cambios.length ? okT + ' de ' + cambios.length + ' vendedor(es) actualizados' : 'Sin cambios en % ni metas') + '\nDías de gracia: ' + X + (okD ? '' : ' (no llegó a la nube)'));
+    pintar();
+  }
+  function exportar(){
+    var v = vendedores().find(function(x){ return x.token === ST.vend; }); if (!v) return;
+    if (typeof XLSX === 'undefined') { alert('⛔ El generador de Excel no está cargado. Recarga la página.'); return; }
+    var A = analizar(v), est = { POR_PAGAR: 'Por pagar', PAGADA: 'Pagada', NO_COMISIONA: 'No comisiona', ESPERA: 'En espera' };
+    var rows = [['Vendedor', 'Pedido/Factura', 'Cliente', 'Monto $', 'Emisión', 'Vence', 'Pagada completa', 'Días tarde', 'Estado comisión', '%', 'Comisión $', 'Motivo']];
+    A.forEach(function(o){ rows.push([v.vendedorNombre, o.num, o.cliente, r2(o.monto), dmy(o.emision), dmy(o.venc), o.completa ? dmy(o.ult) : '', o.completa ? o.tarde : '', est[o.estado], o.pct || 0, o.comision, o.motivo || '']); });
+    var ws = XLSX.utils.aoa_to_sheet(rows), wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'Comisiones');
+    XLSX.writeFile(wb, 'FARMERS - COMISIONES ' + String(v.vendedorCodigo) + ' (' + ymd(new Date()) + ').xlsx');
+  }
+  window._vcAnalizar = function(codigo){ var v = vendedores().find(function(x){ return cod(x.vendedorCodigo) === cod(codigo); }); return v ? resumenDe(v) : null; }; // diagnóstico
+})();
+
 
 // ═══ v.395 UN PEDIDO, UN SOLO PROCESAMIENTO ═══
 // Antes de importar (director) o confirmar (ADM) se lee el pedido FRESCO de la
@@ -79859,13 +80137,13 @@ window.cxcMostrarReconciliacion = cxcMostrarReconciliacion;
         </div>
       </div>
 
-      <div class="vt-card vt-card-soon">
-        <div class="vt-card-bar" style="background:linear-gradient(90deg,#64748b,#475569);"></div>
+      <div class="vt-card" onclick="vtOpenModule(function(){ vcAbrir('resumen'); })">
+        <div class="vt-card-bar" style="background:linear-gradient(90deg,#f8fafc,#94a3b8);"></div>
         <div class="vt-card-inner">
-          <div class="vt-card-icon" style="background:rgba(100,116,139,.1);color:#64748b;">🧑‍💼</div>
+          <div class="vt-card-icon" style="background:rgba(255,255,255,.1);color:#fff;">🧑‍💼</div>
           <div class="vt-card-name">Vendedores</div>
           <div class="vt-card-desc">Gestión de vendedores, metas y comisiones.</div>
-          <div class="vt-badge" style="background:rgba(100,116,139,.12);color:#64748b;"><span class="vt-dot" style="background:#64748b;"></span>PRÓXIMAMENTE</div>
+          <div class="vt-badge" style="background:rgba(255,255,255,.14);color:#fff;"><span class="vt-dot" style="background:#fff;"></span>ACTIVO</div>
         </div>
       </div>
 
@@ -79941,13 +80219,13 @@ window.cxcMostrarReconciliacion = cxcMostrarReconciliacion;
         </div>
       </div>
 
-      <div class="vt-card vt-card-soon">
+      <div class="vt-card" onclick="vtOpenModule(function(){ vcAbrir('detalle'); })">
         <div class="vt-card-bar" style="background:linear-gradient(90deg,#64748b,#475569);"></div>
         <div class="vt-card-inner">
           <div class="vt-card-icon" style="background:rgba(100,116,139,.1);color:#64748b;">💵</div>
           <div class="vt-card-name">Comisiones</div>
           <div class="vt-card-desc">Cálculo automático de comisiones por vendedor.</div>
-          <div class="vt-badge" style="background:rgba(100,116,139,.12);color:#64748b;"><span class="vt-dot" style="background:#64748b;"></span>PRÓXIMAMENTE</div>
+          <div class="vt-badge" style="background:rgba(255,255,255,.14);color:#fff;"><span class="vt-dot" style="background:#fff;"></span>ACTIVO</div>
         </div>
       </div>
 
@@ -85199,6 +85477,7 @@ function pcRenderTokens(body) {
       '</div>' +
       '<button id="pc-new-token" style="background:#1B1F6B;color:#fff;border:none;border-radius:8px;padding:10px 18px;font-weight:800;font-size:.78rem;cursor:pointer;">+ Nuevo link</button>' +
       '<button onclick="vdAbrirPanel()" style="background:#000;color:#fff;border:none;border-radius:8px;padding:10px 18px;font-weight:800;font-size:.78rem;cursor:pointer;">👔 Vendedores</button>' +
+      '<button onclick="pcSmsTodos398()" title="Toma el teléfono de cada cliente en Clientes y le activa el código SMS" style="background:#fff;color:#000;border:1.5px solid #000;border-radius:8px;padding:9px 16px;font-weight:800;font-size:.78rem;cursor:pointer;">🔐 Activar SMS a todos</button>' +
     '</div>' +
     '<input id="pc-token-buscar" value="' + String(window._pcTokenFiltro || '').replace(/"/g, '&quot;').replace(/</g, '&lt;') + '" oninput="window._pcTokenFiltro = this.value; pcRenderTokensList();" placeholder="🔎 Buscar cliente por nombre, RIF o token..." style="width:100%;box-sizing:border-box;margin-bottom:12px;padding:11px 14px;border:1.5px solid #c7d2fe;border-radius:10px;font-size:.82rem;font-family:inherit;color:#1B1F6B;font-weight:600;outline:none;background:#fff;">' +
     '<div id="pc-tokens-list"></div>';
@@ -85265,6 +85544,7 @@ function pcRenderTokensList() {
           '<div style="font-size:.92rem;font-weight:800;color:#1B1F6B;">' + (t.clienteNombre || '(sin nombre)') + (activo ? '' : ' <span style="color:#dc2626;font-size:.7rem;">(DESACTIVADO)</span>') + '</div>' +
           '<div style="font-size:.7rem;color:#64748b;margin-top:2px;">RIF: ' + (t.rifEsperado || '—') + ' · Moneda: ' + moneda + ' · Stock: ' + stockLabel + '</div>' +
           '<div style="font-size:.65rem;color:#94a3b8;margin-top:4px;">Último acceso: ' + ultimoAcceso + ' · <b style="color:#1B1F6B;">Pedidos recibidos: ' + pcContarPedidosDe(t) + '</b></div>' +
+          (t.telHash ? '<div style="margin-top:6px;"><span style="background:#000;color:#fff;border-radius:5px;padding:3px 8px;font-size:.64rem;font-weight:900;">🔐 CÓDIGO SMS · ••' + (t.telHint || '??') + '</span></div>' : '<div style="margin-top:6px;"><span style="background:#f1f5f9;color:#475569;border:1px solid #cbd5e1;border-radius:5px;padding:3px 8px;font-size:.64rem;font-weight:800;">🔓 SIN CÓDIGO SMS' + (t.candado === 'estricto' ? ' · BLOQUEADO (sin teléfono)' : '') + '</span></div>') + // v.398
         '</div>' +
         '<div style="display:flex;gap:6px;flex-wrap:wrap;">' +
           '<button data-action="copy" data-url="' + url + '" style="background:#F47B3E;color:#fff;border:none;border-radius:6px;padding:7px 12px;font-weight:700;font-size:.72rem;cursor:pointer;">📋 Copiar link</button>' +
@@ -85482,6 +85762,23 @@ function pcAbrirFormToken(existente, clDB) {
           '</div>' +
         '</div>' +
 
+        // ── v.398 Acceso con código SMS ──
+        (function(){
+          var cli = null; try { cli = (typeof buscarClienteCRM === 'function' && data.clienteNombre) ? buscarClienteCRM(data.clienteNombre, data.rifEsperado) : null; } catch(e){}
+          var telCRM = cli ? (cli.cxcTel || cli.telefono || cli.gerenteTel || '') : '';
+          var on = !!data.telHash;
+          return '<label style="display:block;font-size:.7rem;font-weight:800;color:#1B1F6B;margin-bottom:8px;text-transform:uppercase;letter-spacing:.8px;">🔐 Acceso con código SMS</label>' +
+            '<div style="background:#f8fafc;padding:12px;border-radius:10px;border:1.5px solid ' + (on ? '#000' : '#e2e8f0') + ';margin-bottom:16px;" id="pc-sms-wrap">' +
+              '<label style="display:flex;align-items:center;gap:9px;font-size:.8rem;font-weight:800;color:#000;cursor:pointer;"><input type="checkbox" id="pc-sms-on"' + (on ? ' checked' : '') + ' style="width:18px;height:18px;accent-color:#000;cursor:pointer;"> Pedir código SMS para entrar al portal</label>' +
+              '<div style="font-size:.66rem;color:#64748b;margin:4px 0 0 27px;">Al abrir su link, el cliente confirma su teléfono y recibe un código de 6 dígitos. En ese teléfono ya no se lo vuelve a pedir.</div>' +
+              '<div id="pc-sms-box" style="margin:10px 0 0 27px;' + (on ? '' : 'display:none;') + '">' +
+                '<label style="display:block;font-size:.64rem;font-weight:800;color:#475569;margin-bottom:4px;text-transform:uppercase;letter-spacing:.5px;">Teléfono que recibe el código</label>' +
+                '<input type="tel" id="pc-sms-tel" value="' + String(on ? '' : telCRM).replace(/"/g, '&quot;') + '" placeholder="' + (on ? 'Registrado: termina en ••' + (data.telHint || '??') + ' — déjalo vacío para mantenerlo' : 'Ej: 0414-1234567') + '" style="width:100%;padding:10px 12px;border:1.5px solid #cbd5e1;border-radius:9px;font-size:.85rem;font-weight:700;box-sizing:border-box;">' +
+                (telCRM ? '<div style="font-size:.64rem;color:#64748b;margin-top:4px;">En Clientes tiene: <b>' + String(telCRM).replace(/</g, '&lt;') + '</b> <a href="#" id="pc-sms-usar" style="color:#000;font-weight:800;">usar este</a></div>' : '<div style="font-size:.64rem;color:#92400e;margin-top:4px;">Este cliente no tiene teléfono en Clientes: escríbelo aquí.</div>') +
+                (on ? '<div style="font-size:.66rem;color:#000;font-weight:800;margin-top:6px;">✓ Activo: el código llega al teléfono que termina en ••' + (data.telHint || '??') + '</div>' : '') +
+              '</div>' +
+            '</div>';
+        })() +
         // ── Marcas visibles ──
         '<label style="display:block;font-size:.7rem;font-weight:800;color:#1B1F6B;margin-bottom:8px;text-transform:uppercase;letter-spacing:.8px;">🏷 Marcas visibles <span style="color:#94a3b8;font-weight:600;">(vacío = todas)</span></label>' +
         '<div id="pc-marcas-chk" style="background:#f8fafc;padding:12px;border-radius:10px;border:1.5px solid #e2e8f0;display:flex;flex-wrap:wrap;gap:6px;">' +
@@ -85499,6 +85796,20 @@ function pcAbrirFormToken(existente, clDB) {
     '</div>';
   document.body.appendChild(ov);
 
+  // v.398: interruptor y teléfono del código SMS
+  (function(){
+    var on = document.getElementById('pc-sms-on'), box = document.getElementById('pc-sms-box'), wrap = document.getElementById('pc-sms-wrap');
+    if (on) on.addEventListener('change', function(){ box.style.display = on.checked ? '' : 'none'; wrap.style.borderColor = on.checked ? '#000' : '#e2e8f0'; });
+    var u = document.getElementById('pc-sms-usar');
+    if (u) u.addEventListener('click', function(ev){ ev.preventDefault(); var m = u.parentNode.querySelector('b'); if (m) document.getElementById('pc-sms-tel').value = m.textContent; });
+  })();
+  document.getElementById('pc-cliente').addEventListener('change', function(){
+    try { // v.398: al elegir el cliente, traer su teléfono de Clientes
+      var t = document.getElementById('pc-sms-tel'); if (!t || t.value) return;
+      var c = (typeof buscarClienteCRM === 'function') ? buscarClienteCRM(document.getElementById('pc-nombre').value, document.getElementById('pc-rif').value) : null;
+      var tel = c ? (c.cxcTel || c.telefono || c.gerenteTel || '') : ''; if (tel) t.value = tel;
+    } catch(e){}
+  });
   document.getElementById('pc-cliente').addEventListener('change', function(e){
     var sel = e.target.options[e.target.selectedIndex];
     var warning = document.getElementById('pc-cliente-warning');
@@ -85633,6 +85944,27 @@ function pcAbrirFormToken(existente, clDB) {
       }
     } catch(eTok){ console.warn('[v.306] ajustePrecio en token:', eTok); data.configVista.ajustePrecio = null; }
 
+    /* v.398 — CÓDIGO SMS: se guarda solo la huella del teléfono (nunca el número legible) */
+    var _smsMsg398 = '';
+    try {
+      var _on398 = document.getElementById('pc-sms-on') && document.getElementById('pc-sms-on').checked;
+      var _tel398 = (document.getElementById('pc-sms-tel') || {}).value || '';
+      if (_on398) {
+        if (String(_tel398).trim()) {
+          var _n398 = (typeof farmersTelNormalizar === 'function') ? farmersTelNormalizar(_tel398) : '';
+          if (!_n398) { alert('⛔ El teléfono para el código SMS no es válido.\n\nEscríbelo así: 0414-1234567'); return; }
+          data.telHash = await farmersTelHash(_n398); data.telHint = _n398.slice(-2); data.telSync = new Date().toISOString().slice(0, 10);
+        } else if (!data.telHash) { alert('⛔ Para pedir código SMS escribe el teléfono del cliente (el que va a recibir el código).'); return; }
+        data.candado = 'estricto';
+        _smsMsg398 = ' · 🔐 Código SMS activo (teléfono ••' + data.telHint + ')';
+      } else {
+        delete data.telHash; delete data.telHint; delete data.telSync;
+        data.candado = 'suave';
+        _smsMsg398 = ' · 🔓 Entra sin código SMS';
+      }
+    } catch(eSms){ console.warn('[v.398] sms:', eSms); }
+    window._smsMsg398 = _smsMsg398;
+
     var btn = document.getElementById('pc-form-save');
     btn.disabled = true;
     btn.textContent = 'Guardando...';
@@ -85671,7 +86003,7 @@ function pcAbrirFormToken(existente, clDB) {
       }
       ov.remove();
       pcRenderTokensList();
-      showToast((isEdit ? 'Link actualizado' : 'Link creado') + syncOrdenadaMsg, 'success');
+      showToast((isEdit ? 'Link actualizado' : 'Link creado') + syncOrdenadaMsg + (window._smsMsg398 || ''), 'success');
     } catch(e) {
       console.error(e);
       alert('Error al guardar: ' + e.message);
