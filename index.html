@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.11.02.403">
+<meta name="farmers-version" content="2026.11.02.404">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -16043,6 +16043,7 @@ function ocRenderFicha(oc) {
           // ═══ GRUPO 2: EDICIÓN ═══
           '<button onclick="ocEditarItemsClick(\'' + oc.id + '\')" style="background:#ddd6fe;color:#5b21b6;border:1.5px solid #c4b5fd;border-radius:7px;padding:7px 12px;font-weight:800;cursor:pointer;font-size:0.75rem;" title="Editar cada línea de producto: ref, descripción, cantidad, precio, etc">📋 Items</button>' +
           '<button onclick="ocPreciosAbrir(\'' + oc.id + '\')" style="background:#dcfce7;color:#166534;border:1.5px solid #86efac;border-radius:7px;padding:7px 12px;font-weight:800;cursor:pointer;font-size:0.75rem;" title="Calcular FOB y precios USD/BCV/TF con el FOB de esta OC (flete $15/ft³, 40% s/venta, ×1.6, ×1.2)">💲 Precios</button>' +
+          '<button onclick="ocCuadreRecepcion404(\'' + oc.id + '\')" style="background:#0f172a;color:#fff;border:1.5px solid #0f172a;border-radius:7px;padding:7px 12px;font-weight:800;cursor:pointer;font-size:0.75rem;" title="Ver ref por ref: pedido, recibido, ordenada, existencia y disponible — y devolver a existencia lo recibido que no aparece">🔎 Cuadre</button>' +
           '<button onclick="ocOrdenadaIgualAOC(\'' + oc.id + '\')" style="background:#dbeafe;color:#1e40af;border:1.5px solid #93c5fd;border-radius:7px;padding:7px 12px;font-weight:800;cursor:pointer;font-size:0.75rem;" title="Poner la Existencia Ordenada de estas refs igual a lo que realmente viene (OCs abiertas)">📦 Ordenada</button>' +
           '<button onclick="ocEditarTotalesClick(\'' + oc.id + '\')" style="background:#fef3c7;color:#78350f;border:1.5px solid #fcd34d;border-radius:7px;padding:7px 12px;font-weight:800;cursor:pointer;font-size:0.75rem;" title="Editar manualmente totales, ajustes, volumen, peso, fechas">✏️ Totales</button>' +
           '<button onclick="ocRecalcularVolPeso(\'' + oc.id + '\')" style="background:#e0e7ff;color:#4338ca;border:1.5px solid #c7d2fe;border-radius:7px;padding:7px 12px;font-weight:800;cursor:pointer;font-size:0.75rem;" title="Recalcula volumen y peso desde las medidas del catálogo">📐 Recalc</button>' +
@@ -27656,6 +27657,195 @@ function _ciMarcasExcl(P){
   return String(P.excluir || '').toUpperCase().split(/[,;]+/).map(function(x){ return x.trim(); }).filter(Boolean);
 }
 window._ciMarcasExcl = _ciMarcasExcl;
+// ═══ v.404 CUADRE DE RECEPCIÓN DE OC ═══════════════════════════════════
+// Si una recepción no llegó a la nube (guardia multi-equipo, otro equipo con versión
+// vieja, recarga), la mercancía queda "en el limbo": ya no está en Ordenada (se
+// descontó al recibir) pero tampoco aparece en Existencia/Disponible.
+// Este panel lo muestra ref por ref con datos VISIBLES y permite devolver lo recibido
+// a la existencia UNA sola vez por línea de recepción (queda marcado con fecha y usuario).
+(function(){
+  function n0(v){ var x = parseInt(v, 10); return isFinite(x) ? x : 0; }
+  function esc(t){ return String(t == null ? '' : t).replace(/[&<>"]/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
+  function fechaSale(s){ // "19/3/2026" → Date
+    var m = String(s || '').match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/); if (!m) return null;
+    return new Date(+m[3], +m[2] - 1, +m[1]);
+  }
+  function prodDe(r){ return (window.PRODUCTS || []).find(function(p){ return p && p.r === r; }); }
+  function realDe(p){ return p ? n0(p.exNE) + n0(p.exAN) + n0(p.exTF) : 0; }
+  function vendidoDesde(ref, desde){
+    var t = 0; if (!desde) return 0;
+    try { (getSales() || []).forEach(function(s){
+      var f = fechaSale(s.fecha); if (!f || f < desde) return;
+      (s.items || []).forEach(function(it){ if (it && it.r === ref) t += n0(it.orden); });
+    }); } catch(e){}
+    return t;
+  }
+
+  // Analiza una OC → filas por ref
+  window.ocCuadreAnalizar404 = function(oc){
+    var pt = {}; try { pt = ptGetData() || {}; } catch(e){}
+    var comp = {}; try { comp = getComprometido() || {}; } catch(e){}
+    var sinPend = (typeof _OC_ESTADOS_SIN_PENDIENTE_367 !== 'undefined') ? _OC_ESTADOS_SIN_PENDIENTE_367 : ['RECIBIDA_TOTAL','CERRADA','CANCELADA'];
+    var filas = {}, orden = [];
+    (oc.items || []).forEach(function(it){
+      if (!it || !it.refFarmers) return;
+      if (!filas[it.refFarmers]) { filas[it.refFarmers] = { ref: it.refFarmers, desc: it.descripcion || it.desc || '', pedido: 0, recibido: 0, porAplicar: 0, lineas: [], primeraRec: null }; orden.push(it.refFarmers); }
+      filas[it.refFarmers].pedido += n0(it.cantidad);
+    });
+    (oc.recepciones || []).forEach(function(rec){
+      var fr = rec.fecha ? new Date(String(rec.fecha) + 'T00:00:00') : null;
+      (rec.items || []).forEach(function(ri){
+        if (!ri || !ri.refFarmers) return;
+        var f = filas[ri.refFarmers];
+        if (!f) { f = filas[ri.refFarmers] = { ref: ri.refFarmers, desc: '', pedido: 0, recibido: 0, porAplicar: 0, lineas: [], primeraRec: null }; orden.push(ri.refFarmers); }
+        var q = n0(ri.cantidadRecibida);
+        f.recibido += q;
+        f.lineas.push({ rec: rec, ri: ri, q: q });
+        if (!ri.reaplicado404) f.porAplicar += q;
+        if (fr && (!f.primeraRec || fr < f.primeraRec)) f.primeraRec = fr;
+      });
+    });
+    return orden.map(function(r){
+      var f = filas[r], p = prodDe(r);
+      f.desc = f.desc || (p ? p.d : '');
+      f.existe = !!p;
+      f.real = realDe(p);
+      f.comp = comp[r] ? n0(comp[r].qty) : 0;
+      f.disp = Math.max(0, f.real - f.comp);
+      f.ordenada = n0((pt[r] || {}).exOrdenada);
+      f.pendiente = sinPend.indexOf(oc.estado) >= 0 ? 0 : Math.max(0, f.pedido - f.recibido);
+      f.vendido = vendidoDesde(r, f.primeraRec);
+      f.yaReaplicado = f.lineas.some(function(l){ return !!l.ri.reaplicado404; });
+      // ¿Se ve lo recibido? Existencia actual + lo vendido desde la recepción debería ser ≥ lo recibido
+      // Firma de una recepción "perdida": falta prácticamente TODO lo recibido (no unas pocas unidades)
+      f.deficit = Math.max(0, f.recibido - (f.real + f.vendido));
+      f.faltaExist = f.recibido > 0 && f.porAplicar > 0 && f.deficit >= Math.ceil(f.porAplicar * 0.9);
+      f.difMenor = !f.faltaExist && f.porAplicar > 0 && f.deficit > 0;
+      f.faltaOrd = f.pendiente > 0 && f.ordenada < f.pendiente;
+      return f;
+    });
+  };
+
+  window.ocCuadreRecepcion404 = function(ocId){
+    var db = (typeof _ocDB !== 'undefined' && _ocDB.length) ? _ocDB : (getOrdenesCompraDB() || []);
+    var oc = db.find(function(x){ return x.id === ocId || x.numero === ocId; });
+    if (!oc) { alert('⛔ No encontré esa orden de compra.'); return; }
+    var filas = ocCuadreAnalizar404(oc);
+    var nFaltaE = filas.filter(function(f){ return f.faltaExist; }).length;
+    var nFaltaO = filas.filter(function(f){ return f.faltaOrd; }).length;
+    var prev = document.getElementById('oc-cuadre-404'); if (prev) prev.remove();
+    var th = 'padding:7px 8px;font-size:.62rem;font-weight:900;color:#fff;background:#0f172a;text-transform:uppercase;letter-spacing:.3px;white-space:nowrap;';
+    var td = 'padding:6px 8px;font-size:.74rem;color:#000;border-bottom:1px solid #e2e8f0;white-space:nowrap;';
+    var rows = filas.map(function(f){
+      var est;
+      if (!f.existe) est = '<span style="color:#991b1b;font-weight:900;">⛔ Ref no existe en catálogo</span>';
+      else if (f.faltaExist) est = '<span style="color:#991b1b;font-weight:900;">⚠ Lo recibido NO se ve en existencia</span>';
+      else if (f.yaReaplicado && f.porAplicar === 0) est = '<span style="color:#1e3a8a;font-weight:800;">✓ Ya devuelto con el cuadre</span>';
+      else if (f.difMenor) est = '<span style="color:#1e3a8a;font-weight:800;">ⓘ Recibido en existencia · faltan ' + f.deficit + ' uds sin factura (salidas, NC o ajustes)</span>';
+      else if (f.recibido > 0) est = '<span style="color:#166534;font-weight:800;">✓ Recibido en existencia</span>';
+      else est = '<span style="color:#334155;">Sin recibir</span>';
+      if (f.faltaOrd) est += '<div style="color:#991b1b;font-weight:800;font-size:.66rem;">⚠ Ordenada (' + f.ordenada + ') menor que lo que falta por llegar (' + f.pendiente + ')</div>';
+      var chk = (f.existe && f.porAplicar > 0) ? '<input type="checkbox" class="cq404" data-ref="' + esc(f.ref) + '"' + (f.faltaExist ? ' checked' : '') + ' style="width:16px;height:16px;cursor:pointer;">' : '';
+      return '<tr style="background:' + (f.faltaExist || f.faltaOrd ? '#fef2f2' : '#fff') + ';">' +
+        '<td style="' + td + 'text-align:center;">' + chk + '</td>' +
+        '<td style="' + td + 'font-weight:900;">' + esc(f.ref) + '</td>' +
+        '<td style="' + td + 'white-space:normal;max-width:240px;font-size:.68rem;">' + esc(f.desc) + '</td>' +
+        '<td style="' + td + 'text-align:right;">' + f.pedido + '</td>' +
+        '<td style="' + td + 'text-align:right;font-weight:800;">' + f.recibido + '</td>' +
+        '<td style="' + td + 'text-align:right;">' + f.pendiente + '</td>' +
+        '<td style="' + td + 'text-align:right;">' + f.ordenada + '</td>' +
+        '<td style="' + td + 'text-align:right;font-weight:900;">' + f.real + '</td>' +
+        '<td style="' + td + 'text-align:right;">' + f.comp + '</td>' +
+        '<td style="' + td + 'text-align:right;font-weight:900;">' + f.disp + '</td>' +
+        '<td style="' + td + 'text-align:right;">' + f.vendido + '</td>' +
+        '<td style="' + td + 'white-space:normal;min-width:170px;">' + est + '</td></tr>';
+    }).join('');
+    var resumen = (nFaltaE || nFaltaO)
+      ? '<div style="background:#fef2f2;border:1.5px solid #dc2626;border-radius:8px;padding:10px 12px;color:#000;font-size:.8rem;margin-bottom:10px;"><b>⚠ ' +
+          (nFaltaE ? nFaltaE + ' ref(s): lo recibido no aparece en existencia/disponible. ' : '') +
+          (nFaltaO ? nFaltaO + ' ref(s): la existencia ordenada no cubre lo que falta por llegar.' : '') + '</b>' +
+          (nFaltaE ? '<div style="margin-top:4px;font-size:.74rem;">Ya vienen marcadas. Revisa físicamente y pulsa <b>Pasar lo recibido a existencia</b>.</div>' : '') + '</div>'
+      : '<div style="background:#f0fdf4;border:1.5px solid #16a34a;border-radius:8px;padding:10px 12px;color:#000;font-size:.8rem;margin-bottom:10px;"><b>✅ Todo cuadra:</b> lo recibido está en existencia y la ordenada cubre lo que falta por llegar.</div>';
+    var html = '<div id="oc-cuadre-404" style="position:fixed;inset:0;background:rgba(15,23,42,.6);z-index:99800;display:flex;align-items:center;justify-content:center;padding:14px;">' +
+      '<div style="background:#fff;border-radius:12px;max-width:1150px;width:100%;max-height:92vh;display:flex;flex-direction:column;box-shadow:0 20px 50px rgba(0,0,0,.35);">' +
+      '<div style="background:#0f172a;color:#fff;padding:12px 16px;border-radius:12px 12px 0 0;display:flex;align-items:center;gap:10px;">' +
+        '<div style="flex:1;"><div style="font-weight:900;font-size:.95rem;">🔎 Cuadre de recepción · ' + esc(oc.numero) + '</div>' +
+        '<div style="font-size:.7rem;opacity:.85;">' + esc(oc.proveedorNombre || '') + ' · Estado: ' + esc(oc.estado || '') + ' · ' + (oc.recepciones || []).length + ' recepción(es)</div></div>' +
+        '<button onclick="document.getElementById(\'oc-cuadre-404\').remove()" style="background:#fff;color:#000;border:none;border-radius:6px;padding:6px 12px;font-weight:900;cursor:pointer;">✕</button></div>' +
+      '<div style="padding:14px 16px;overflow:auto;">' + resumen +
+        '<div style="font-size:.68rem;color:#334155;margin-bottom:8px;">Existencia = depósito (NE+TF) · Disponible = existencia − comprometido en pedidos · Vendido = facturado de esa ref desde la fecha de recepción.</div>' +
+        '<table style="border-collapse:collapse;width:100%;"><thead><tr>' +
+          '<th style="' + th + '"><input type="checkbox" onclick="document.querySelectorAll(\'.cq404\').forEach(function(c){c.checked=this.checked}.bind(this))"></th>' +
+          '<th style="' + th + '">Ref</th><th style="' + th + '">Descripción</th><th style="' + th + '">Pedido OC</th><th style="' + th + '">Recibido</th><th style="' + th + '">Falta llegar</th>' +
+          '<th style="' + th + '">Ordenada</th><th style="' + th + '">Existencia</th><th style="' + th + '">Comprom.</th><th style="' + th + '">Disponible</th><th style="' + th + '">Vendido desde</th><th style="' + th + '">Estado</th>' +
+        '</tr></thead><tbody>' + rows + '</tbody></table></div>' +
+      '<div style="padding:12px 16px;border-top:1px solid #e2e8f0;display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;">' +
+        (nFaltaO ? '<button onclick="document.getElementById(\'oc-cuadre-404\').remove(); ocOrdenadaIgualAOC(\'' + oc.id + '\')" style="background:#fff;color:#000;border:1.5px solid #0f172a;border-radius:7px;padding:8px 14px;font-weight:900;cursor:pointer;font-size:.78rem;">📦 Ordenada = lo que falta por llegar</button>' : '') +
+        '<button onclick="ocCuadreAplicar404(\'' + oc.id + '\')" style="background:#0f172a;color:#fff;border:none;border-radius:7px;padding:8px 14px;font-weight:900;cursor:pointer;font-size:.78rem;">➕ Pasar lo recibido a existencia (marcadas)</button>' +
+      '</div></div></div>';
+    document.body.insertAdjacentHTML('beforeend', html);
+  };
+
+  window.ocCuadreAplicar404 = function(ocId){
+    var oc = (_ocDB || []).find(function(x){ return x.id === ocId; });
+    if (!oc) { alert('⛔ No encontré la OC.'); return; }
+    var marc = [].slice.call(document.querySelectorAll('.cq404:checked')).map(function(c){ return c.getAttribute('data-ref'); });
+    if (!marc.length) { alert('Marca al menos una referencia.'); return; }
+    var filas = ocCuadreAnalizar404(oc).filter(function(f){ return marc.indexOf(f.ref) >= 0 && f.existe && f.porAplicar > 0; });
+    if (!filas.length) { alert('Las referencias marcadas ya fueron devueltas a existencia antes. No hay nada que sumar.'); return; }
+    var lin = filas.map(function(f){ return f.ref + ':  existencia ' + f.real + ' → ' + (f.real + f.porAplicar) + '   (+' + f.porAplicar + ')'; });
+    if (!confirm('➕ PASAR LO RECIBIDO A EXISTENCIA · ' + oc.numero + '\n\n' + lin.slice(0, 25).join('\n') + (lin.length > 25 ? '\n… y ' + (lin.length - 25) + ' más' : '') +
+      '\n\nSolo hazlo si físicamente la mercancía está en el depósito.\nCada línea se suma UNA sola vez (queda registrada con fecha y usuario).\n\n¿Aplicar?')) return;
+    var user = window.FARMERS_USER || 'OGK', ahora = new Date().toISOString(), det = [];
+    filas.forEach(function(f){
+      var p = prodDe(f.ref); if (!p) return;
+      var antes = n0(p.exNE);
+      f.lineas.forEach(function(l){ if (l.ri.reaplicado404) return; l.ri.reaplicado404 = { fecha: ahora, por: user, qty: l.q, exNEantes: antes }; });
+      p.exNE = antes + f.porAplicar; p.exAN = 0; p.ex = p.exNE + n0(p.exTF);
+      det.push(f.ref + ' +' + f.porAplicar);
+    });
+    oc.cuadre404 = (oc.cuadre404 || []).concat([{ fecha: ahora, por: user, refs: det }]);
+    try { if (typeof saveProducts === 'function') saveProducts(); } catch(e){}
+    try { saveOrdenesCompraDB(_ocDB); } catch(e){ alert('⚠ No se pudo guardar la marca en la OC: ' + e.message); }
+    var ov = document.getElementById('oc-cuadre-404'); if (ov) ov.remove();
+    Promise.resolve(window._ocSubirExistencia403 ? window._ocSubirExistencia403('Cuadre ' + oc.numero, det) : []).then(function(fallas){
+      if (!fallas || !fallas.length) alert('✅ Listo · ' + oc.numero + '\n\n' + det.join('\n') + '\n\nYa está en Existencia, Disponible, Catálogo y Portal.');
+      try { ocRenderFicha(oc); } catch(e){}
+      ocCuadreRecepcion404(oc.id);
+    });
+  };
+
+  // Revisión automática al abrir: si alguna OC recibida en los últimos 90 días tiene
+  // lo recibido "en el limbo", aparece un aviso visible con botón para revisarla.
+  window.ocCuadreRevisarTodas404 = function(silencioso){
+    var db = (typeof _ocDB !== 'undefined' && _ocDB.length) ? _ocDB : (getOrdenesCompraDB() || []);
+    var lim = Date.now() - 90 * 864e5, malas = [];
+    db.forEach(function(oc){
+      if (!oc || !(oc.recepciones || []).length || oc.estado === 'CANCELADA') return;
+      var reciente = oc.recepciones.some(function(r){ var t = Date.parse(String(r.fecha) + 'T00:00:00'); return isFinite(t) && t >= lim; });
+      if (!reciente) return;
+      var f = ocCuadreAnalizar404(oc).filter(function(x){ return x.faltaExist; });
+      if (f.length) malas.push({ oc: oc, n: f.length });
+    });
+    var prev = document.getElementById('oc-cuadre-aviso-404'); if (prev) prev.remove();
+    if (!malas.length) { if (!silencioso) alert('✅ Todas las recepciones de OC de los últimos 90 días están en existencia.'); return malas; }
+    var html = '<div id="oc-cuadre-aviso-404" style="position:fixed;right:16px;bottom:16px;z-index:99750;background:#fff;border:2px solid #dc2626;border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,.25);padding:12px 14px;max-width:340px;color:#000;font-size:.78rem;">' +
+      '<div style="font-weight:900;margin-bottom:6px;">⚠ Recepción de OC que no aparece en existencia</div>' +
+      malas.map(function(m){ return '<div style="display:flex;align-items:center;gap:8px;margin:4px 0;"><span style="flex:1;">' + esc(m.oc.numero) + ' · ' + m.n + ' ref(s)</span><button onclick="ocCuadreRecepcion404(\'' + m.oc.id + '\')" style="background:#0f172a;color:#fff;border:none;border-radius:6px;padding:4px 10px;font-weight:800;cursor:pointer;font-size:.72rem;">Revisar</button></div>'; }).join('') +
+      '<div style="text-align:right;margin-top:6px;"><button onclick="document.getElementById(\'oc-cuadre-aviso-404\').remove()" style="background:none;border:none;color:#334155;cursor:pointer;font-size:.7rem;text-decoration:underline;">Cerrar</button></div></div>';
+    document.body.insertAdjacentHTML('beforeend', html);
+    return malas;
+  };
+  setTimeout(function(){
+    try {
+      var u = String(window.FARMERS_USER || '').toUpperCase();
+      if (u && u !== 'OGK' && u !== 'GKK') return;
+      if (!Array.isArray(window.PRODUCTS) || window.PRODUCTS.length < 50) return;
+      ocCuadreRevisarTodas404(true);
+    } catch(e){ console.warn('[v.404 cuadre OC]', e); }
+  }, 30000);
+})();
+
 // v.403: alineación inicial inventario ← productos (repara recepciones de OC que no llegaron al catálogo)
 setTimeout(function(){
   try {
