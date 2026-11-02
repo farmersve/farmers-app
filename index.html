@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.10.23.398">
+<meta name="farmers-version" content="2026.11.02.399">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -27579,6 +27579,248 @@ function _ciMarcasExcl(P){
   return String(P.excluir || '').toUpperCase().split(/[,;]+/).map(function(x){ return x.trim(); }).filter(Boolean);
 }
 window._ciMarcasExcl = _ciMarcasExcl;
+// ═══ v.399 CxC — SELECCIÓN LIBRE DE FACTURAS + COMPROBANTES INTELIGENTES ═══
+// Omar (02/11/2026): "quiero poder seleccionarlas todas a mi placer" y que al
+// enviar los comprobantes el sistema determine a qué factura pertenece cada uno.
+(function(){
+  function esc(t){ return String(t == null ? '' : t).replace(/[&<>"']/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; }); }
+  function n0(v){ var x = parseFloat(v); return isFinite(x) ? x : 0; }
+  function fmt(v){ return (typeof cxcFmt === 'function') ? cxcFmt(v) : n0(v).toFixed(2); }
+  function pend(f){ return (typeof cxcEstado === 'function') ? cxcEstado(f) !== 'PAGADA' : n0(f.saldo) > 0.009; }
+  function facsPend(){ return (typeof cxcFacs === 'function' ? cxcFacs() : []).filter(pend); }
+  function clKeyDe(f){ return f.clienteId || f.clienteNombre || '?'; }
+  function etiqueta(f){ var nf = f.nFactura || f.nroFactura || f.numFactura || ''; return nf ? ('Fact. ' + nf) : ('Pedido ' + (f.numpedido || '—')); }
+  function alnum(s){ return String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, ''); }
+  function digitos(s){ return String(s || '').replace(/\D/g, '').replace(/^0+/, ''); }
+
+  // ─────────────── 1) SELECCIÓN LIBRE EN LA TABLA DE FACTURAS ───────────────
+  window._cxcSel = window._cxcSel || new Set();
+  function limpiarSel(){ var ok = {}; facsPend().forEach(function(f){ ok[f.id] = 1; }); Array.from(window._cxcSel).forEach(function(id){ if (!ok[id]) window._cxcSel.delete(id); }); }
+  window.cxcSelCellHTML = function(f, est){
+    if (est === 'PAGADA') return '';
+    return '<input type="checkbox" class="cxc-sel-chk" data-fid="' + esc(f.id) + '"' + (window._cxcSel.has(f.id) ? ' checked' : '') +
+      ' onclick="event.stopPropagation();" onchange="cxcSelToggle(this.dataset.fid, this.checked)" title="Seleccionar para procesar el pago" style="width:17px;height:17px;accent-color:#000;cursor:pointer;">';
+  };
+  window.cxcSelHeaderHTML = function(facs){
+    var p = (facs || []).filter(pend), todas = p.length > 0 && p.every(function(f){ return window._cxcSel.has(f.id); });
+    return '<input type="checkbox" id="cxc-sel-all"' + (todas ? ' checked' : '') + ' onchange="cxcSelVisibles(this.checked)" title="Marcar / desmarcar todas las facturas de esta lista" style="width:17px;height:17px;accent-color:#000;cursor:pointer;">';
+  };
+  window.cxcSelToggle = function(fid, on){ if (on) window._cxcSel.add(fid); else window._cxcSel.delete(fid); window.cxcSelBarra(); };
+  window.cxcSelVisibles = function(on){
+    document.querySelectorAll('.cxc-sel-chk').forEach(function(c){ c.checked = on; if (on) window._cxcSel.add(c.dataset.fid); else window._cxcSel.delete(c.dataset.fid); });
+    window.cxcSelBarra();
+  };
+  window.cxcSelBarra = function(body){
+    limpiarSel();
+    var bar = document.getElementById('cxc-sel-bar');
+    if (!bar) {
+      var host = body || (document.querySelector('.cxc-fac-table-card') || {}).parentNode;
+      if (!host) return;
+      bar = document.createElement('div'); bar.id = 'cxc-sel-bar';
+      host.appendChild(bar);
+    } else if (body && bar.parentNode !== body) { body.appendChild(bar); }
+    var ids = Array.from(window._cxcSel), all = facsPend(), sel = all.filter(function(f){ return window._cxcSel.has(f.id); });
+    var cls = {}; sel.forEach(function(f){ cls[clKeyDe(f)] = 1; });
+    var tot = sel.reduce(function(s, f){ return s + n0(f.saldo); }, 0);
+    bar.style.cssText = 'position:sticky;bottom:0;z-index:20;margin-top:10px;background:#000;color:#fff;border-radius:12px;padding:10px 14px;display:' + (ids.length ? 'flex' : 'none') + ';align-items:center;gap:12px;flex-wrap:wrap;box-shadow:0 -6px 20px rgba(0,0,0,.25);';
+    bar.innerHTML = '<div style="flex:1;min-width:220px;font-size:.8rem;font-weight:800;">' + sel.length + ' factura' + (sel.length !== 1 ? 's' : '') + ' seleccionada' + (sel.length !== 1 ? 's' : '') +
+        ' · ' + Object.keys(cls).length + ' cliente' + (Object.keys(cls).length !== 1 ? 's' : '') + ' · Saldo <span style="font-size:1rem;">$ ' + fmt(tot) + '</span></div>' +
+      '<button onclick="cxcSelLimpiar()" style="background:transparent;color:#fff;border:1.5px solid #fff;border-radius:8px;padding:8px 12px;font-weight:800;font-size:.72rem;cursor:pointer;">Quitar selección</button>' +
+      '<button onclick="cxcSelProcesar()" style="background:#fff;color:#000;border:none;border-radius:8px;padding:9px 16px;font-weight:900;font-size:.76rem;cursor:pointer;">💳 PROCESAR PAGO DE LAS ' + sel.length + ' →</button>';
+    var h = document.getElementById('cxc-sel-all');
+    if (h) { var vis = Array.prototype.slice.call(document.querySelectorAll('.cxc-sel-chk')); h.checked = vis.length > 0 && vis.every(function(c){ return c.checked; }); }
+  };
+  window.cxcSelLimpiar = function(){ window._cxcSel.clear(); document.querySelectorAll('.cxc-sel-chk').forEach(function(c){ c.checked = false; }); window.cxcSelBarra(); };
+  window.cxcSelProcesar = function(){
+    var ids = Array.from(window._cxcSel);
+    if (!ids.length) { alert('Marca al menos una factura.'); return; }
+    cxcAbrirMultiPago();
+    setTimeout(function(){ window.cxcmpCargarSeleccion(ids); }, 80);
+  };
+
+  // ─────────────── 2) CARGAR CUALQUIER SELECCIÓN (de uno o varios clientes) ───────────────
+  window.cxcmpCargarSeleccion = function(ids, opts){
+    opts = opts || {};
+    var set = {}; (ids || []).forEach(function(i){ set[i] = 1; });
+    var porCl = {}, orden = [];
+    facsPend().forEach(function(f){
+      var k = clKeyDe(f);
+      if (!porCl[k]) porCl[k] = { cl: { id: f.clienteId || '', nombre: f.clienteNombre || '—', rif: f.rif || '', facs: [], total: 0 }, ids: [] };
+      porCl[k].cl.facs.push(f); porCl[k].cl.total += n0(f.saldo);
+      if (set[f.id]) { if (!porCl[k].ids.length) orden.push(k); porCl[k].ids.push(f.id); }
+    });
+    var grupos = orden.map(function(k){ return porCl[k]; });
+    if (!grupos.length) { alert('⛔ Esas facturas ya no están pendientes.'); return 0; }
+    window._cxcmpClientesAcumulados = grupos.slice(1).map(function(g){ return { cliente: g.cl, facsSeleccionadas: new Set(g.ids) }; });
+    cxcmpSeleccionarCliente(grupos[0].cl);
+    grupos[0].ids.forEach(function(fid){ var card = document.querySelector('#cxcmp-facs-lista [data-fid="' + fid + '"]'); if (card && !_cxcmpSelFacs.has(fid)) cxcmpToggleFac(fid, card); });
+    if (typeof cxcmpRenderClientesAcumulados === 'function') cxcmpRenderClientesAcumulados();
+    if (typeof cxcmpActualizarTotal === 'function') cxcmpActualizarTotal();
+    if (opts.keepIA) { var r = document.getElementById('cxcmp-ia-result'); if (r) r.style.display = 'block'; }
+    if (n0((document.getElementById('cxcmp-ia-monto') || {}).value) > 0) cxcmpDistribuir();
+    var nTot = grupos.reduce(function(s, g){ return s + g.ids.length; }, 0);
+    if (!opts.silencioso && typeof showToast === 'function') showToast('✓ ' + nTot + ' factura(s) de ' + grupos.length + ' cliente(s) listas para procesar', 'success');
+    return grupos.length;
+  };
+
+  // Barra global en el paso ① del Pago Multi-Factura (lo marcado en todos los acordeones)
+  window.cxcmpGlobalBar = function(){
+    var el = document.getElementById('cxcmp-global-bar'); if (!el) return;
+    var pre = window._cxcmpPreSel || {}, ok = {}; facsPend().forEach(function(f){ ok[f.id] = f; });
+    var ids = [], cls = 0, tot = 0;
+    Object.keys(pre).forEach(function(k){ var c = 0; (pre[k] || new Set()).forEach(function(fid){ if (ok[fid]) { ids.push(fid); tot += n0(ok[fid].saldo); c++; } }); if (c) cls++; });
+    if (!ids.length) { el.innerHTML = '<div style="font-size:.7rem;color:#64748b;margin-bottom:8px;">Abre uno o varios clientes (▾) y marca las facturas que quieras; luego procésalas todas juntas.</div>'; return; }
+    el.innerHTML = '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;background:#000;color:#fff;border-radius:10px;padding:9px 12px;margin-bottom:10px;">' +
+      '<div style="flex:1;font-size:.78rem;font-weight:800;">' + ids.length + ' factura(s) marcada(s) de ' + cls + ' cliente(s) · $ ' + fmt(tot) + '</div>' +
+      '<button onclick="cxcmpLimpiarPre399()" style="background:transparent;color:#fff;border:1.5px solid #fff;border-radius:7px;padding:6px 10px;font-weight:800;font-size:.68rem;cursor:pointer;">Quitar</button>' +
+      '<button onclick="cxcmpProcesarPre399()" style="background:#fff;color:#000;border:none;border-radius:7px;padding:7px 14px;font-weight:900;font-size:.72rem;cursor:pointer;">PROCESAR TODAS JUNTAS →</button></div>';
+  };
+  window.cxcmpProcesarPre399 = function(){
+    var pre = window._cxcmpPreSel || {}, ids = [];
+    Object.keys(pre).forEach(function(k){ (pre[k] || new Set()).forEach(function(fid){ ids.push(fid); }); });
+    window.cxcmpCargarSeleccion(ids);
+  };
+  window.cxcmpLimpiarPre399 = function(){ window._cxcmpPreSel = {}; if (typeof cxcmpListarClientes === 'function') cxcmpListarClientes((document.getElementById('cxcmp-cl-search') || {}).value || ''); window.cxcmpGlobalBar(); };
+
+  // ─────────────── 3) COMPROBANTES: ¿A QUÉ FACTURA PERTENECE? ───────────────
+  // Coincidencia estricta: N° fiscal (completo o solo sus dígitos sin ceros), N° de control,
+  // nota de entrega o N° de pedido. Nada de "contiene" con números cortos.
+  window.cxcMatchFactura = function(token, facs){
+    var t = alnum(token), td = digitos(token);
+    if (!t) return [];
+    return (facs || []).filter(function(f){
+      var nf = f.nFactura || f.nroFactura || f.numFactura || '';
+      if (nf && (alnum(nf) === t || (td.length >= 3 && digitos(nf) === td))) return true;
+      if (f.nControl && td.length >= 3 && digitos(f.nControl) === td) return true;
+      if (f.nNotaEntrega && td.length >= 3 && digitos(f.nNotaEntrega) === td) return true;
+      var np = alnum(f.numpedido);
+      if (np && (np === t || (t.length >= 8 && np.indexOf(t) === 0))) return true;
+      return false;
+    });
+  };
+  var GENERICAS = { CA: 1, SA: 1, SRL: 1, DE: 1, LA: 1, EL: 1, LOS: 1, LAS: 1, Y: 1, INVERSIONES: 1, COMERCIAL: 1, COMERCIALIZADORA: 1, DISTRIBUIDORA: 1, GRUPO: 1, CORPORACION: 1, IMPORTADORA: 1 };
+  function palabras(s){ return String(s || '').toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^A-Z0-9 ]/g, ' ').split(/\s+/).filter(function(w){ return w.length >= 2 && !GENERICAS[w]; }); }
+  // Identifica al cliente que pagó: RIF del ordenante (exacto) o nombre (coincidencia fuerte)
+  window.cxcIdentCliente = function(parsed){
+    var fs = facsPend(), porCl = {};
+    fs.forEach(function(f){ var k = clKeyDe(f); if (!porCl[k]) porCl[k] = { key: k, nombre: f.clienteNombre || '—', rif: f.rif || '', facs: [] }; porCl[k].facs.push(f); });
+    var cls = Object.keys(porCl).map(function(k){ return porCl[k]; });
+    var r = digitos(parsed && parsed.rif_ordenante);
+    if (r.length >= 6) { var c1 = cls.filter(function(c){ return digitos(c.rif) === r; }); if (c1.length === 1) return { cl: c1[0], via: 'RIF ' + parsed.rif_ordenante }; }
+    var w = palabras(parsed && parsed.ordenante);
+    if (w.length) {
+      var best = null, bs = 0, seg = 0;
+      cls.forEach(function(c){ var cw = palabras(c.nombre); if (!cw.length) return; var hit = w.filter(function(x){ return cw.indexOf(x) >= 0; }).length; var sc = hit / Math.max(cw.length, 1); if (sc > bs) { seg = bs; bs = sc; best = c; } else if (sc > seg) seg = sc; });
+      if (best && bs >= 0.6 && bs > seg) return { cl: best, via: 'nombre "' + parsed.ordenante + '"' };
+    }
+    return null;
+  };
+  // Combinación de facturas cuyo saldo suma EXACTO el monto (±$0.05), priorizando las más viejas
+  function combinacionExacta(facs, monto){
+    var lista = facs.slice().sort(function(a, b){ return String(a.fechaVencimiento || '') < String(b.fechaVencimiento || '') ? -1 : 1; }).slice(0, 22);
+    var obj = Math.round(monto * 100), tol = 5, vals = lista.map(function(f){ return Math.round(n0(f.saldo) * 100); }), res = null, pasos = 0;
+    var suf = []; for (var i = vals.length - 1, acc = 0; i >= 0; i--) { acc += vals[i]; suf[i] = acc; }
+    (function dfs(i, s, el){
+      if (res || ++pasos > 400000) return;
+      if (Math.abs(s - obj) <= tol && el.length) { res = el.slice(); return; }
+      if (i >= vals.length || s > obj + tol || s + suf[i] < obj - tol) return;
+      el.push(i); dfs(i + 1, s + vals[i], el); el.pop();
+      dfs(i + 1, s, el);
+    })(0, 0, []);
+    return res ? res.map(function(i){ return lista[i]; }) : null;
+  }
+  // Propuesta completa a partir de lo que leyó la IA
+  window.cxcmpPropuesta = function(parsed, monto){
+    var fs = facsPend(), items = [], razon = '', idc = window.cxcIdentCliente(parsed);
+    var desg = (parsed && parsed.desglose) || [], menc = (parsed && parsed.facturas_mencionadas) || [];
+    var pool = idc ? idc.cl.facs : fs;
+    var usados = {};
+    var tomar = function(token, m){
+      var c = window.cxcMatchFactura(token, pool); if (c.length !== 1 && pool !== fs) c = window.cxcMatchFactura(token, fs);
+      if (c.length === 1 && !usados[c[0].id]) { usados[c[0].id] = 1; items.push({ fac: c[0], monto: m > 0 ? Math.min(m, n0(c[0].saldo)) : null }); return true; }
+      return false;
+    };
+    desg.forEach(function(d){ if (d && d.factura) tomar(d.factura, n0(d.monto)); });
+    menc.forEach(function(t){ tomar(t, 0); });
+    if (items.length) {
+      razon = 'El comprobante nombra ' + (items.length === 1 ? 'esta factura' : 'estas facturas');
+      var sinMonto = items.filter(function(x){ return x.monto == null; });
+      if (sinMonto.length) { var resto = monto - items.reduce(function(s, x){ return s + (x.monto || 0); }, 0); sinMonto.forEach(function(x){ var a = Math.max(0, Math.min(n0(x.fac.saldo), resto)); x.monto = Math.round(a * 100) / 100; resto -= a; }); }
+      // lo que sobra se propone para las otras facturas del mismo cliente, empezando por la más vieja
+      var sobra = Math.round((monto - items.reduce(function(s, x){ return s + (x.monto || 0); }, 0)) * 100) / 100;
+      var cliK = idc ? idc.cl.key : (items.length ? clKeyDe(items[0].fac) : '');
+      if (sobra > 0.009 && cliK) {
+        var extra = 0;
+        fs.filter(function(f){ return clKeyDe(f) === cliK && !usados[f.id]; }).sort(function(a, b){ return String(a.fechaVencimiento || '') < String(b.fechaVencimiento || '') ? -1 : 1; }).forEach(function(f){
+          if (sobra <= 0.009) return; var a = Math.min(n0(f.saldo), sobra); items.push({ fac: f, monto: Math.round(a * 100) / 100, extra: true }); sobra = Math.round((sobra - a) * 100) / 100; extra++;
+        });
+        if (extra) razon += ' (y lo que sobra va a ' + (extra === 1 ? 'la siguiente factura más vieja' : 'las siguientes ' + extra + ' facturas más viejas') + ' del mismo cliente)';
+      }
+      return { items: items, razon: razon, ident: idc };
+    }
+    if (!idc) return { items: [], razon: '', ident: null };
+    var exacta = monto > 0 ? combinacionExacta(idc.cl.facs, monto) : null;
+    if (exacta) return { items: exacta.map(function(f){ return { fac: f, monto: Math.round(n0(f.saldo) * 100) / 100 }; }), razon: 'El monto cubre EXACTO ' + (exacta.length === 1 ? 'el saldo de esta factura' : 'el saldo de estas ' + exacta.length + ' facturas'), ident: idc };
+    var resto = monto, fifo = [];
+    idc.cl.facs.slice().sort(function(a, b){ return String(a.fechaVencimiento || '') < String(b.fechaVencimiento || '') ? -1 : 1; }).forEach(function(f){ if (resto <= 0.009) return; var a = Math.min(n0(f.saldo), resto); fifo.push({ fac: f, monto: Math.round(a * 100) / 100 }); resto = Math.round((resto - a) * 100) / 100; });
+    return { items: fifo, razon: 'No hay combinación exacta: se abona desde la factura MÁS VIEJA' + (resto > 0.009 ? ' (sobran $' + fmt(resto) + ')' : ''), ident: idc };
+  };
+  function aplicarMontos(mapa){
+    setTimeout(function(){
+      document.querySelectorAll('#cxcmp-dist-tabla input[data-fid]').forEach(function(inp){
+        if (mapa[inp.dataset.fid] != null) { inp.value = n0(mapa[inp.dataset.fid]).toFixed(2); inp.style.background = '#dcfce7'; inp.style.border = '1.5px solid #16a34a'; inp.title = 'Asignado según el comprobante'; }
+        else { inp.value = '0.00'; }
+      });
+      if (typeof cxcmpRecalcResumen === 'function') cxcmpRecalcResumen();
+    }, 160);
+  }
+  // Decide qué hacer después de leer el comprobante
+  window.cxcmpDecidirIA399 = function(parsed, monto){
+    var sel = (typeof window.cxcmpObtenerTodasFacturasSeleccionadas === 'function') ? window.cxcmpObtenerTodasFacturasSeleccionadas() : [];
+    var idc = window.cxcIdentCliente(parsed);
+    if (sel.length) {
+      // Ya eligió facturas: respetar su selección, aplicar lo que nombre el comprobante y avisar si parece de otro cliente
+      var desg = (parsed && parsed.desglose) || [], mapa = {}, n = 0;
+      desg.forEach(function(d){ if (!d || !d.factura) return; var c = window.cxcMatchFactura(d.factura, sel.map(function(x){ return x.factura; })); if (c.length === 1 && n0(d.monto) > 0) { mapa[c[0].id] = Math.min(n0(d.monto), n0(c[0].saldo)); n++; } });
+      cxcmpDistribuir();
+      if (n) { aplicarMontos(mapa); if (typeof showToast === 'function') showToast('🤖 ' + n + ' monto(s) asignados según el desglose del comprobante', 'success'); }
+      if (idc) {
+        var keys = {}; sel.forEach(function(x){ keys[clKeyDe(x.factura)] = 1; });
+        if (!keys[idc.cl.key]) alert('⚠ ATENCIÓN: este comprobante parece ser de ' + idc.cl.nombre + ' (por ' + idc.via + '), pero las facturas seleccionadas son de otro cliente.\n\nRevisa antes de aplicar el pago.');
+      }
+      return;
+    }
+    var p = window.cxcmpPropuesta(parsed, monto);
+    if (!p.items.length) {
+      alert('🤖 Leí el comprobante (' + (monto ? '$ ' + fmt(monto) : 'sin monto claro') + (parsed && parsed.ordenante ? ' · ordenante: ' + parsed.ordenante : '') + '), pero NO pude determinar a qué facturas corresponde:\n\n• no nombra ningún N° de factura que exista pendiente, y\n• no reconocí al cliente por RIF ni por nombre.\n\nSelecciona tú las facturas; el monto y los datos del pago ya quedaron cargados.');
+      return;
+    }
+    var tot = p.items.reduce(function(s, x){ return s + x.monto; }, 0);
+    var txt = '🤖 ESTE PAGO CORRESPONDE A:\n\n' + (p.ident ? 'Cliente: ' + p.ident.cl.nombre + ' (identificado por ' + p.ident.via + ')\n' : '') + p.razon + ':\n\n' +
+      p.items.map(function(x){ return '• ' + etiqueta(x.fac) + ' — ' + (x.fac.clienteNombre || '') + ' — saldo $' + fmt(x.fac.saldo) + ' → abono $' + fmt(x.monto) + (x.extra ? '  (resto)' : ''); }).join('\n') +
+      '\n\nTotal asignado: $' + fmt(tot) + ' de $' + fmt(monto) + '\n\n¿Cargar estas facturas con esos montos? (podrás ajustarlos antes de aplicar)';
+    if (!confirm(txt)) return;
+    var mapa = {}; p.items.forEach(function(x){ mapa[x.fac.id] = x.monto; });
+    window.cxcmpCargarSeleccion(p.items.map(function(x){ return x.fac.id; }), { keepIA: true, silencioso: true });
+    aplicarMontos(mapa);
+  };
+
+  // Subir el comprobante desde el paso ① (sin elegir cliente antes)
+  window.cxcmpSubirDesdeInicio = function(file){
+    if (!file) return;
+    _cxcmpCliente = null; _cxcmpSelFacs = new Set(); window._cxcmpClientesAcumulados = [];
+    document.getElementById('cxcmp-paso1').style.display = 'none';
+    document.getElementById('cxcmp-paso2').style.display = 'block';
+    document.getElementById('cxcmp-cl-avatar').textContent = '🤖';
+    document.getElementById('cxcmp-cl-nombre').textContent = 'Comprobante en análisis…';
+    document.getElementById('cxcmp-cl-rif').textContent = 'El sistema busca a qué cliente y facturas corresponde';
+    document.getElementById('cxcmp-facs-lista').innerHTML = '';
+    ['cxcmp-dist-section', 'cxcmp-btn-aplicar'].forEach(function(i){ var e = document.getElementById(i); if (e) e.style.display = 'none'; });
+    if (typeof cxcmpRenderClientesAcumulados === 'function') cxcmpRenderClientesAcumulados();
+    cxcmpProcesarArchivo(file);
+  };
+})();
+
 
 // ═══ v.398 ACTIVAR CÓDIGO SMS A TODOS LOS LINKS (desde el teléfono de Clientes) ═══
 window.pcSmsTodos398 = async function(){
@@ -70001,6 +70243,7 @@ function cxcTabFacturas(body){
     card.appendChild(empty);
   }
   body.appendChild(card);
+  if (typeof window.cxcSelBarra === 'function') { var _ob=document.getElementById('cxc-sel-bar'); if(_ob) _ob.remove(); window.cxcSelBarra(body); } // v.399
 }
 
 // ══════════════════════════════════════════════════════════
@@ -70557,7 +70800,7 @@ function cxcTabNotif(body){
   var todasFacs = cxcFacs().filter(function(f){ return cxcEstado(f)!=='PAGADA'; });
   todasFacs.sort(function(a,b){
     var ord={VENCIDA:0,POR_VENCER:1,VIGENTE:2};
-    return (ord[cxcEstado(a)]||3)-(ord[cxcEstado(b)]||3) || (b.saldo||0)-(a.saldo||0);
+    return ((ord[cxcEstado(a)]!=null?ord[cxcEstado(a)]:3)-(ord[cxcEstado(b)]!=null?ord[cxcEstado(b)]:3) || String(a.fechaVencimiento||'').localeCompare(String(b.fechaVencimiento||''))) /* v.399: VENCIDA=0 ya no se trata como 'sin orden'; desempate por vencimiento */ || (b.saldo||0)-(a.saldo||0);
   });
   // Adaptar al formato esperado por _renderLista (una "entrada" por factura)
   var todosClientes = todasFacs.map(function(f){
@@ -70759,11 +71002,13 @@ function cxcBuildTable(facs, compact){
   // Thead
   var cols=compact
     ?['Cliente','Estado','Vencimiento','Saldo Pend.','']
-    :['Cliente','Nº Factura','Estado','Emisión','Vencimiento','Monto','Saldo Pend.',''];
+    :['__SEL','Cliente','Nº Factura','Estado','Emisión','Vencimiento','Monto','Saldo Pend.','']; // v.399: __SEL = casilla de selección
   var thead=document.createElement('thead');
   var hr=document.createElement('tr');
   cols.forEach(function(h){
-    var th=document.createElement('th'); th.textContent=h;
+    var th=document.createElement('th');
+    if(h==='__SEL'){ th.style.width='1px'; th.innerHTML=(typeof window.cxcSelHeaderHTML==='function')?window.cxcSelHeaderHTML(facs):''; hr.appendChild(th); return; } // v.399
+    th.textContent=h;
     if(h==='Saldo Pend.'||h==='Monto') th.style.textAlign='right';
     if(h==='') th.style.width='1px';
     hr.appendChild(th);
@@ -70780,6 +71025,7 @@ function cxcBuildTable(facs, compact){
     if(est==='VENCIDA') tr.style.background='var(--cxc-red-bg)';
     else if(est==='POR_VENCER') tr.style.background='var(--cxc-amber-bg)';
 
+    if(!compact){ var tdSel=document.createElement('td'); tdSel.style.width='1px'; tdSel.innerHTML=(typeof window.cxcSelCellHTML==='function')?window.cxcSelCellHTML(f, est):''; tr.appendChild(tdSel); } // v.399
     // Cliente
     var tdCl=document.createElement('td');
     var initials=(f.clienteNombre||'?').replace(/[^A-Za-z0-9\u00C0-\u024F]/g,'').substring(0,2).toUpperCase()||'??';
@@ -72562,7 +72808,7 @@ function cxcNotifCliente(id,nombreEnc){
 
   facs.sort(function(a,b){
     var ord={VENCIDA:0,POR_VENCER:1,VIGENTE:2};
-    return (ord[cxcEstado(a)]||3)-(ord[cxcEstado(b)]||3);
+    return ((ord[cxcEstado(a)]!=null?ord[cxcEstado(a)]:3)-(ord[cxcEstado(b)]!=null?ord[cxcEstado(b)]:3) || String(a.fechaVencimiento||'').localeCompare(String(b.fechaVencimiento||''))) /* v.399: VENCIDA=0 ya no se trata como 'sin orden'; desempate por vencimiento */;
   });
 
   var total=facs.reduce(function(s,f){return s+(f.saldo||0);},0);
@@ -73161,6 +73407,7 @@ function cxcAbrirMultiPago(){
   document.getElementById('cxc-multipago-overlay').classList.add('open');
   // v.249: mostrar de una vez todos los clientes con deuda (sin tener que escribir)
   if (typeof cxcmpListarClientes === 'function') cxcmpListarClientes('');
+  if (typeof window.cxcmpGlobalBar === 'function') window.cxcmpGlobalBar(); // v.399
 }
 window.cxcAbrirMultiPago=cxcAbrirMultiPago;
 
@@ -73303,7 +73550,7 @@ window.cxcmpToggleAcordeon = function(idx, cl){
     var bm = matchSet.has(b.id) ? 0 : 1;
     if (am !== bm) return am - bm;
     var ord={VENCIDA:0,POR_VENCER:1,VIGENTE:2};
-    return (ord[cxcEstado(a)]||3)-(ord[cxcEstado(b)]||3);
+    return ((ord[cxcEstado(a)]!=null?ord[cxcEstado(a)]:3)-(ord[cxcEstado(b)]!=null?ord[cxcEstado(b)]:3) || String(a.fechaVencimiento||'').localeCompare(String(b.fechaVencimiento||''))) /* v.399: VENCIDA=0 ya no se trata como 'sin orden'; desempate por vencimiento */;
   });
 
   var box=document.createElement('div');
@@ -73345,6 +73592,7 @@ window.cxcmpToggleAcordeon = function(idx, cl){
   acc.appendChild(barra);
   acc.dataset.built='1';
   cxcmpActualizarBarraAcordeon(idx, cl);
+  if (typeof window.cxcmpGlobalBar === 'function') window.cxcmpGlobalBar(); // v.399
 };
 
 // Barra inferior del acordeón: contador + botón para continuar con lo ya marcado
@@ -73363,6 +73611,7 @@ window.cxcmpActualizarBarraAcordeon = function(idx, cl){
     + '<button onclick="event.stopPropagation();cxcmpContinuarConPreseleccion(\''+clKey.replace(/'/g,"\\'")+'\')" style="background:var(--cxc-navy);border:none;color:#fff;padding:6px 14px;border-radius:7px;font-size:.72rem;font-weight:800;cursor:pointer;">'
     + (n>0 ? ('Continuar con '+n+' →') : 'Abrir cliente →')
     + '</button>';
+  if (typeof window.cxcmpGlobalBar === 'function') window.cxcmpGlobalBar(); // v.399
 };
 
 // Entra al Paso 2 de este cliente con las facturas marcadas en el acordeón ya pre-seleccionadas
@@ -73540,7 +73789,7 @@ function cxcmpRenderFacs(facs){
   lista.innerHTML='';
   facs.sort(function(a,b){
     var ord={VENCIDA:0,POR_VENCER:1,VIGENTE:2};
-    return (ord[cxcEstado(a)]||3)-(ord[cxcEstado(b)]||3);
+    return ((ord[cxcEstado(a)]!=null?ord[cxcEstado(a)]:3)-(ord[cxcEstado(b)]!=null?ord[cxcEstado(b)]:3) || String(a.fechaVencimiento||'').localeCompare(String(b.fechaVencimiento||''))) /* v.399: VENCIDA=0 ya no se trata como 'sin orden'; desempate por vencimiento */;
   });
   facs.forEach(function(f){
     var est=cxcEstado(f);
@@ -73711,7 +73960,7 @@ async function cxcmpProcesarArchivo(file){
       var seleccionadas = [];
       window._cxcmpSelFacs.forEach(function(fid){
         var f = facs.find(function(x){ return x.id === fid; });
-        if (f) seleccionadas.push({ id: f.id, numero: f.numpedido || f.numero || f.id, saldo: f.saldo, cliente: f.cliente });
+        if (f) seleccionadas.push({ id: f.id, numero: (f.nFactura ? f.nFactura + ' (pedido ' + f.numpedido + ')' : (f.numpedido || f.numero || f.id)), saldo: f.saldo, cliente: f.clienteNombre || '' }); // v.399
       });
       if (seleccionadas.length > 0) {
         facsSeleccionadasContexto = '\n\nCONTEXTO: El usuario ha seleccionado estas facturas pendientes que podrían estar siendo pagadas (intenta hacer match si los identifica el comprobante):\n' +
@@ -73742,6 +73991,7 @@ async function cxcmpProcesarArchivo(file){
       '    { "factura": "N4319", "monto": 1190.29, "concepto": "abono parcial" },\n' +
       '    { "factura": "N4318", "monto": 1372.28, "concepto": "" }\n' +
       '  ],\n' +
+      '  "facturas_mencionadas": ["todo número de factura, pedido o nota de entrega que aparezca en el comprobante (concepto, descripción, referencia del cliente), aunque no tenga monto"],\n' +
       '  "confianza_general": número (0-100, cuán seguro estás de los datos extraídos),\n' +
       '  "advertencias": ["lista de cosas que debas advertir al usuario, ej: imagen borrosa"]\n' +
       '}\n\n' +
@@ -73868,16 +74118,10 @@ async function cxcmpProcesarArchivo(file){
     // ═══ Mostrar panel de auditoría enriquecida con todos los campos ═══
     cxcmpMostrarAuditoriaIA(parsed);
 
-    // ═══ Aplicar desglose por factura si la IA lo detectó ═══
-    var desgloseAplicado = cxcmpAplicarDesgloseIA(parsed.desglose || []);
-
-    // Si no había desglose, distribuir normalmente
-    if (!desgloseAplicado && _cxcmpSelFacs.size > 0) {
-      cxcmpDistribuir();
-    } else if (_cxcmpSelFacs.size === 0 && (parsed.desglose||[]).length > 0) {
-      // La IA detectó desglose pero el usuario aún no marcó facturas — sugerir
-      cxcmpSugerirFacturasDesdeDesglose(parsed.desglose);
-    } else {
+    // ═══ v.399: decidir a qué facturas pertenece el pago (N° fiscal, cliente por RIF/nombre, monto exacto) ═══
+    if (typeof window.cxcmpDecidirIA399 === 'function') {
+      window.cxcmpDecidirIA399(parsed, montoUSD);
+    } else if (_cxcmpSelFacs.size > 0) {
       cxcmpDistribuir();
     }
 
@@ -74177,7 +74421,7 @@ function cxcmpDistribuir(){
   // Distribuir automáticamente de la más vencida a la más nueva
   selFacs.sort(function(a,b){
     var ord={VENCIDA:0,POR_VENCER:1,VIGENTE:2};
-    return (ord[cxcEstado(a)]||3)-(ord[cxcEstado(b)]||3);
+    return ((ord[cxcEstado(a)]!=null?ord[cxcEstado(a)]:3)-(ord[cxcEstado(b)]!=null?ord[cxcEstado(b)]:3) || String(a.fechaVencimiento||'').localeCompare(String(b.fechaVencimiento||''))) /* v.399: VENCIDA=0 ya no se trata como 'sin orden'; desempate por vencimiento */;
   });
 
   var restante=montoTotal;
@@ -74213,7 +74457,7 @@ function cxcmpDistribuir(){
     var clienteCell = hayMultiCliente
       ? '<td style="padding:8px 10px;color:#0c4a6e;font-weight:600;font-size:.7rem;">'+ ((clienteFila && clienteFila.nombre) || '—').substring(0,28) +'</td>'
       : '';
-    tr.innerHTML='<td style="padding:8px 10px;font-weight:700;color:var(--cxc-navy);font-family:monospace;">'+d.fac.numpedido+'</td>'
+    tr.innerHTML='<td style="padding:8px 10px;font-weight:700;color:var(--cxc-navy);font-family:monospace;">'+(d.fac.nFactura ? ('Fact. '+d.fac.nFactura+'<div style="font-size:.6rem;color:#64748b;font-weight:600;">'+d.fac.numpedido+'</div>') : d.fac.numpedido)+'</td>'
       + clienteCell
       +'<td style="padding:8px 10px;text-align:right;color:var(--cxc-muted);">$ '+cxcFmt(d.fac.saldo)+'</td>'
       +'<td style="padding:8px 10px;text-align:right;">'
@@ -77654,6 +77898,15 @@ window.cxcMostrarReconciliacion = cxcMostrarReconciliacion;
       <!-- PASO 1: Seleccionar cliente -->
       <div id="cxcmp-paso1" style="padding:20px 24px;">
         <div style="font-size:.72rem;font-weight:800;text-transform:uppercase;letter-spacing:.8px;color:var(--cxc-navy);margin-bottom:12px;">① Seleccionar Cliente</div>
+        <label id="cxcmp-up1" style="display:flex;align-items:center;gap:12px;border:2px dashed #000;border-radius:10px;padding:10px 14px;margin-bottom:10px;cursor:pointer;background:#fafafa;"
+          ondragover="event.preventDefault();this.style.background='#eef2ff';" ondragleave="this.style.background='#fafafa';"
+          ondrop="event.preventDefault();this.style.background='#fafafa';if(event.dataTransfer.files[0])cxcmpSubirDesdeInicio(event.dataTransfer.files[0]);">
+          <span style="font-size:1.4rem;">🧾</span>
+          <span style="flex:1;font-size:.76rem;color:#000;"><b>¿Tienes el comprobante?</b> Súbelo aquí (foto, PDF o Excel) y el sistema busca solo a qué cliente y facturas corresponde.</span>
+          <span style="background:#000;color:#fff;border-radius:7px;padding:7px 12px;font-size:.7rem;font-weight:900;white-space:nowrap;">SUBIR</span>
+          <input type="file" accept="image/*,.pdf,.xlsx,.xls,.csv" style="display:none;" onchange="if(this.files[0])cxcmpSubirDesdeInicio(this.files[0]);this.value='';">
+        </label>
+        <div id="cxcmp-global-bar"></div>
         <input id="cxcmp-cl-search" type="text" placeholder="Buscar cliente, RIF o N° de factura..."
           style="width:100%;padding:10px 14px;border:1.5px solid var(--cxc-border);border-radius:8px;font-size:.82rem;font-family:var(--cxc-font);outline:none;"
           oninput="cxcmpBuscarCliente(this.value)">
