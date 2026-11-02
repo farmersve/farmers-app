@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.11.02.401">
+<meta name="farmers-version" content="2026.11.02.402">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -27579,6 +27579,108 @@ function _ciMarcasExcl(P){
   return String(P.excluir || '').toUpperCase().split(/[,;]+/).map(function(x){ return x.trim(); }).filter(Boolean);
 }
 window._ciMarcasExcl = _ciMarcasExcl;
+// ═══ v.402 ANULAR UNA NOTA DE CRÉDITO (y emitirla de nuevo con el monto correcto) ═══
+// La NC no se borra: queda en el historial como ANULADA (con fecha, usuario y motivo)
+// y se revierte TODO lo que hizo: saldo y monto de la factura en CxC, inventario
+// (si fue devolución), HCL y el pedido del Monitor.
+(function(){
+  function n0(v){ var x = parseFloat(v); return isFinite(x) ? x : 0; }
+  function r2(v){ return Math.round(n0(v) * 100) / 100; }
+  function $$(v){ return '$' + r2(v).toFixed(2); }
+  function facDeNC(nc, facs){
+    var i = -1;
+    if (nc.cxcFacId) i = facs.findIndex(function(f){ return String(f.id) === String(nc.cxcFacId); });
+    if (i < 0 && nc.numpedido) i = facs.findIndex(function(f){ return f.numpedido && f.numpedido === nc.numpedido && Array.isArray(f.notasCredito) && f.notasCredito.some(function(x){ return x.numero === nc.numero; }); });
+    return i;
+  }
+  window.ncAnular = function(ncId){
+    var all = ncGetAll(), nc = all.find(function(x){ return String(x.id) === String(ncId); });
+    if (!nc) { alert('⛔ No encontré esa nota de crédito.'); return; }
+    if (nc.anulada) { alert('ℹ️ ' + nc.numero + ' ya está ANULADA (' + new Date(nc.anuladaEl).toLocaleString('es-VE') + ').'); return; }
+    var facs = cxcFacs(), fi = facDeNC(nc, facs), f = fi >= 0 ? facs[fi] : null;
+    var esDev = nc.tipo === 'devolucion' && (nc.items || []).length > 0;
+    var motivo = prompt('ANULAR ' + nc.numero + ' — ' + (nc.cliente || '') + '\n' +
+      'Factura: ' + (f ? (f.nFactura ? 'Fact. ' + f.nFactura : f.numpedido) : (nc.numpedido || '—')) + ' · Monto de la NC: ' + $$(nc.total) + '\n\n' +
+      'Al anularla:\n• La factura recupera los ' + $$(nc.total) + ' en su saldo' + (esDev ? '\n• Se descuenta del inventario lo que la NC había devuelto (' + nc.items.map(function(it){ return it.r + ' ×' + it.qty; }).join(', ') + ')' : '') +
+      '\n• Queda en el historial como ANULADA\n\nEscribe el motivo de la anulación:', 'Monto equivocado');
+    if (motivo === null) return;
+    motivo = String(motivo).trim() || 'Monto equivocado';
+    var avisos = [];
+    // 1) Inventario (solo si fue devolución física)
+    if (esDev) {
+      try {
+        var inv = getInventory();
+        nc.items.forEach(function(it){
+          var q = parseInt(it.qty, 10) || 0; if (!q) return;
+          var p = (window.PRODUCTS || []).find(function(pp){ return pp && pp.r === it.r; });
+          if (p) {
+            var antes = parseInt(p.exNE, 10) || 0;
+            if (antes < q) avisos.push(it.r + ': había ' + antes + ' en inventario y la NC devolvió ' + q + ' → queda en 0');
+            p.exNE = Math.max(0, antes - q); p.exAN = 0; p.ex = p.exNE; inv[it.r] = p.ex;
+          } else { inv[it.r] = Math.max(0, (parseInt(inv[it.r], 10) || 0) - q); }
+        });
+        saveInventory(inv);
+        if (typeof saveProducts === 'function') saveProducts(PRODUCTS);
+        if (window.fbSaveProducts) window.fbSaveProducts(PRODUCTS).catch(function(e){ console.warn('[NC anular] fbSaveProducts:', e); });
+        if (window.fbSaveInventory) window.fbSaveInventory(inv).catch(function(e){ console.warn('[NC anular] fbSaveInventory:', e); });
+      } catch(eInv){ avisos.push('⛔ No se pudo revertir el inventario: ' + eInv.message); }
+    }
+    // 2) CxC: devolver el monto a la factura
+    var saldoAntes = null, saldoDesp = null;
+    if (f) {
+      var tot = n0(nc.total);
+      saldoAntes = n0(f.saldo);
+      f.monto = r2(n0(f.monto) + tot);
+      var pagado = (f.pagos || []).reduce(function(s, p){ return s + n0(p.monto); }, 0);
+      f.saldo = r2(Math.min(saldoAntes + tot, Math.max(0, f.monto - pagado)));
+      saldoDesp = f.saldo;
+      f.totalNC = Math.max(0, r2(n0(f.totalNC) - tot));
+      if (Array.isArray(f.notasCredito)) f.notasCredito = f.notasCredito.filter(function(x){ return x.numero !== nc.numero; });
+      f.notas = ((f.notas || '') + ' | ' + nc.numero + ' ANULADA (' + motivo + '): +' + $$(tot)).trim();
+      cxcSaveFacs(facs);
+      if (typeof cxcUpdateBadge === 'function') cxcUpdateBadge();
+    } else avisos.push('No encontré la factura en CxC: el saldo no se tocó.');
+    // 3) HCL
+    try {
+      if (typeof hclGetFacturas === 'function' && typeof hclSaveFacturas === 'function') {
+        var hf = hclGetFacturas(), mod = false;
+        hf.forEach(function(h){
+          if (!Array.isArray(h.devolucionesNC)) return;
+          var d = h.devolucionesNC.find(function(x){ return x.numero === nc.numero; }); if (!d) return;
+          h.devolucionesNC = h.devolucionesNC.filter(function(x){ return x.numero !== nc.numero; });
+          if (d.tipo === 'devolucion' && h.items) {
+            (d.items || []).forEach(function(di){
+              var line = h.items.find(function(li){ return String(li.ref || li.r || '') === String(di.ref); });
+              if (line && line.cantidadEntregada != null) { var tope = line.cantidadOriginal != null ? parseInt(line.cantidadOriginal, 10) : Infinity; line.cantidadEntregada = Math.min(tope, (parseInt(line.cantidadEntregada, 10) || 0) + (parseInt(di.cantidad, 10) || 0)); }
+            });
+            h.totalDevuelto = Math.max(0, n0(h.totalDevuelto) - n0(d.total));
+            h.totalEntregadoReal = Math.max(0, n0(h.totalFactura) - h.totalDevuelto);
+          }
+          mod = true;
+        });
+        if (mod) { hclSaveFacturas(hf); if (typeof window.fbSaveHCL === 'function') { try { window.fbSaveHCL(hf); } catch(e){} } }
+      }
+    } catch(eH){ console.warn('[NC anular] HCL:', eH); }
+    // 4) Pedido del Monitor
+    try {
+      var peds = getMsPedidos(), modP = false;
+      peds.forEach(function(p){ if (Array.isArray(p.devolucionesNC) && p.devolucionesNC.some(function(x){ return x.numero === nc.numero; })) { p.devolucionesNC = p.devolucionesNC.filter(function(x){ return x.numero !== nc.numero; }); modP = true; } });
+      if (modP) saveMsPedidos(peds);
+    } catch(eM){ console.warn('[NC anular] Monitor:', eM); }
+    // 5) La NC queda ANULADA (no se borra)
+    nc.anulada = true; nc.anuladaEl = new Date().toISOString(); nc.anuladaPor = window.FARMERS_USER || 'OGK'; nc.motivoAnulacion = motivo;
+    ncSaveAll(all);
+    try { if (window.fbTriggerPortalSnapshot) window.fbTriggerPortalSnapshot('nc-anulada'); } catch(e){}
+    var msg = '✅ ' + nc.numero + ' ANULADA\n\n' + (f ? 'Factura ' + (f.nFactura ? f.nFactura : f.numpedido) + ': saldo ' + $$(saldoAntes) + ' → ' + $$(saldoDesp) + '\n' : '') +
+      (esDev ? 'Inventario: se descontó lo que la NC había devuelto.\n' : '') + (avisos.length ? '\n⚠ ' + avisos.join('\n⚠ ') + '\n' : '') +
+      '\n¿Emitir AHORA la nota de crédito con el monto correcto?';
+    var ov = document.getElementById('nc-hist-overlay'); if (ov) ov.remove();
+    try { var cm = document.getElementById('cxc-modal'); if (cm && cm.classList.contains('open') && typeof cxcGoTab === 'function' && typeof _cxcTab !== 'undefined') cxcGoTab(_cxcTab); } catch(e){}
+    if (confirm(msg) && f && typeof ncMostrarModal === 'function') ncMostrarModal(nc.saleId || null, 'cxc', f.id);
+  };
+  window.ncActivas = function(){ return ncGetAll().filter(function(nc){ return !nc.anulada; }); };
+})();
+
 // ═══ v.400 RELACIÓN DE PAGOS DEL CLIENTE (Excel) — lectura directa, sin IA ═══
 // Grupo Abreu manda 2 archivos: el comprobante del banco (PDF) y la relación en
 // Excel con cada factura pagada (# Doc., Pago Index $, NC descontadas, tasa, ref).
@@ -70361,6 +70463,7 @@ function cxcTabFacturas(body){
     newBtn.className='cxc-btn cxc-btn-success cxc-btn-sm';
     newBtn.textContent='\uff0b Nueva Factura';
     newBtn.onclick=cxcAgregarFactura;
+    var ncBtn402=document.createElement('button'); ncBtn402.className='cxc-btn cxc-btn-sm'; ncBtn402.textContent='📋 Notas de crédito'; ncBtn402.title='Ver, anular o reemitir notas de crédito'; ncBtn402.style.cssText='background:#fff;color:#000;border:1.5px solid #000;'; ncBtn402.onclick=function(){ ncVerHistorial(); }; toolbar.appendChild(ncBtn402); // v.402
     toolbar.appendChild(newBtn);
     body.appendChild(toolbar);
     // v.401: subir el comprobante (o la relación del cliente + comprobante) AQUÍ MISMO, sin entrar a Multi-Factura
@@ -70784,6 +70887,7 @@ function cxcRenderEstadoCuenta(body,cl){
   var facIds    = facs.map(function(f){ return f.id; });
   var numpedArr = facs.map(function(f){ return f.numpedido; }).filter(Boolean);
   ncGetAll().filter(function(nc){
+    if (nc.anulada) return false; // v.402
     return facIds.indexOf(nc.cxcFacId) >= 0 ||
            numpedArr.indexOf(nc.numpedido) >= 0 ||
            nc.cliente === cl.nombre;
@@ -70917,6 +71021,7 @@ function cxcRenderEstadoCuenta(body,cl){
   var facIds = facs.map(function(f){ return f.id; });
   var numpedidos = facs.map(function(f){ return f.numpedido; }).filter(Boolean);
   var ncsCliente = ncGetAll().filter(function(nc){
+    if (nc.anulada) return false; // v.402
     return facIds.indexOf(nc.cxcFacId) >= 0 ||
            numpedidos.indexOf(nc.numpedido) >= 0 ||
            nc.cliente === cl.nombre;
@@ -71308,6 +71413,13 @@ function cxcBuildTable(facs, compact){
     bNC.style.cssText='background:#f0fdf4;color:#15803d;border:1px solid #86efac;';
     bNC.onclick=function(e){e.stopPropagation();ncMostrarModal(null,'cxc',this.dataset.facid);};
     btnWrap.appendChild(bNC);
+    if (Array.isArray(f.notasCredito) && f.notasCredito.length) { // v.402: ver / anular sus NC
+      var bNCv=document.createElement('button'); bNCv.className='cxc-btn cxc-btn-xs'; bNCv.dataset.facid=f.id;
+      bNCv.innerHTML='↩ NC ('+f.notasCredito.length+')'; bNCv.title='Ver o anular las notas de crédito de esta factura';
+      bNCv.style.cssText='background:#fff;color:#000;border:1.5px solid #000;';
+      bNCv.onclick=function(e){ e.stopPropagation(); ncVerHistorial(this.dataset.facid); };
+      btnWrap.appendChild(bNCv);
+    }
     // ─────────────────────────────────────────────────────────
     // v.88: Botón Estado de Cuenta (notificación consolidada del cliente)
     // Solo aparece si la factura está pendiente (no pagada).
@@ -85162,8 +85274,9 @@ function ncGenerarPDF(ncId) {
 window.ncGenerarPDF = ncGenerarPDF;
 
 // ── Ver historial de NCs ──────────────────────────────────────────────────────
-function ncVerHistorial() {
+function ncVerHistorial(soloFacId) {
   var all = ncGetAll();
+  if (soloFacId) all = all.filter(function(nc){ return String(nc.cxcFacId) === String(soloFacId); }); // v.402
   if (all.length === 0) { showToast('No hay notas de crédito emitidas aún.', 'info'); return; }
 
   var old = document.getElementById('nc-hist-overlay');
@@ -85176,8 +85289,8 @@ function ncVerHistorial() {
       '<td style="padding:8px 12px;font-size:.82rem;">' + (nc.fechaDisplay||nc.fecha) + '</td>' +
       '<td style="padding:8px 12px;font-size:.82rem;color:#1B1F6B;font-weight:700;">' + (nc.cliente||'—') + '</td>' +
       '<td style="padding:8px 12px;font-size:.78rem;">' + (nc.numpedido||'—') + '</td>' +
-      '<td style="padding:8px 12px;font-size:.78rem;">' + tipoLabel(nc.tipo) + '</td>' +
-      '<td style="padding:8px 12px;text-align:right;font-weight:700;color:#15803d;">$ ' + (nc.total||0).toFixed(2) + '</td>' +
+      '<td style="padding:8px 12px;font-size:.78rem;">' + tipoLabel(nc.tipo) + (nc.anulada ? '<div style="margin-top:3px;"><span style="background:#fee2e2;color:#991b1b;border-radius:4px;padding:1px 6px;font-size:.62rem;font-weight:900;">ANULADA</span> <span style="font-size:.62rem;color:#64748b;">' + (nc.motivoAnulacion || '') + ' · ' + (nc.anuladaPor || '') + '</span></div>' : '<div style="margin-top:4px;"><button onclick="ncAnular(' + nc.id + ')" style="background:#fff;border:1.5px solid #dc2626;color:#dc2626;border-radius:5px;padding:2px 9px;cursor:pointer;font-size:.68rem;font-weight:800;">✕ Anular</button></div>') + '</td>' + // v.402
+      '<td style="padding:8px 12px;text-align:right;font-weight:700;color:' + (nc.anulada ? '#94a3b8;text-decoration:line-through' : '#15803d') + ';">$ ' + (nc.total||0).toFixed(2) + '</td>' +
       '<td style="padding:8px 12px;">' +
         '<button onclick="ncGenerarPDF(' + nc.id + ')" style="background:#f0fdf4;border:1px solid #86efac;color:#15803d;border-radius:5px;padding:3px 10px;cursor:pointer;font-size:.72rem;font-weight:700;">⬇️ PDF</button>' +
       '</td>' +
@@ -85216,7 +85329,7 @@ window.ncVerHistorial = ncVerHistorial;
 // Corrige facturas cuyo f.saldo no refleja las NCs emitidas
 // (útil para datos emitidos con versiones anteriores del sistema)
 function ncReconciliarSaldos() {
-  var allNC  = ncGetAll();
+  var allNC  = ncGetAll().filter(function(nc){ return !nc.anulada; }); // v.402
   if (!allNC.length) { showToast('No hay Notas de Crédito registradas.', 'info'); return; }
 
   var facs  = cxcFacs();
