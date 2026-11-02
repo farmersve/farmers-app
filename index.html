@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.11.02.404">
+<meta name="farmers-version" content="2026.11.02.406">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -9097,14 +9097,17 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
       };
       function _gmeStamp(col, ts){ try { localStorage.setItem('farmers_fresh_' + col, String(parseInt(ts,10) || Date.now())); } catch(e){} if (col === 'products') window._farmersCatalogoDeNube = true; /* v.366 */ }
       window._gmeStamp = _gmeStamp;
-      async function _gmeOkEscribir(col, nombre){
+      async function _gmeOkEscribir(col, nombre, silencioso){
         try {
           if (Date.now() < (window._farmersPisarHasta || 0)) return true;
           var visto = parseInt(localStorage.getItem('farmers_fresh_' + col) || '0', 10) || 0;
           var sG = await getDoc(doc(db, 'data', col));
           var nube = (sG.exists() && sG.data()) ? (parseInt(sG.data().updatedAt, 10) || 0) : 0;
+          // v.406: si lo que hay en la nube lo subió ESTA misma máquina, no es "otra máquina"
+          if (nube && window._gmeMios406 && (window._gmeMios406[col] || []).indexOf(nube) >= 0) { _gmeStamp(col, nube); if (col === 'products' && sG.exists() && sG.data()) { try { window._farmersNubeProdCount = parseInt(sG.data().count, 10) || window._farmersNubeProdCount; window._gmeNubeProdV = sG.data().v; } catch(eC){} } return true; }
           if (col === 'products' && sG.exists() && sG.data()) { try { window._farmersNubeProdCount = parseInt(sG.data().count, 10) || JSON.parse(sG.data().v).length; window._farmersCatalogoDeNube = true; window._gmeNubeProdV = sG.data().v; /* v.369 */ } catch(eC){} } // v.366
           if (nube > visto + 8000) {
+            if (silencioso) { window._gmeNubeTs406 = nube; return false; } // v.406: el que llama intentará fusionar
             var tx = '⛔ GUARDIA MULTI-EQUIPO (' + nombre + '): la nube tiene datos MÁS NUEVOS que lo visto por esta máquina (otra PC guardó después). NO se subió nada.\n→ Recarga la página para traer lo nuevo y reintenta.\n→ Solo si estás SEGURO de pisar la nube: farmersPermitirPisar(5) y reintenta.';
             console.error('[v.364] ' + tx);
             try { if (typeof showToast === 'function') showToast('⛔ ' + nombre + ': otra máquina guardó algo más reciente. Recarga antes de guardar (guardia multi-equipo v.364).', 'error', { duration: 16000 }); } catch(e2){}
@@ -9115,14 +9118,123 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
       }
       window._gmeOkEscribir = _gmeOkEscribir;
 
-      window.fbSaveProducts = async (arr) => {
+      /* ═══ v.406 — FUSIÓN AUTOMÁTICA DEL CATÁLOGO ════════════════════════
+         Antes: si otra máquina guardó el catálogo después de que esta lo cargó,
+         la guardia v.364 BLOQUEABA y pedía recargar (y el cambio quedaba solo aquí).
+         Ahora: se trae lo de la nube y se FUSIONA ref por ref y campo por campo
+         contra la última versión de la nube que esta máquina aplicó (la "base"):
+           • cambió solo aquí  → gana lo de aquí
+           • cambió solo allá  → gana lo de la nube
+           • existencia (NE/AN/TF) cambió en los dos → se suman los dos movimientos
+           • otro campo cambió en los dos → gana lo de aquí (es lo que acabas de hacer)
+         Sin base confiable (no se ha cargado la nube en esta sesión) → bloquea como antes. */
+      window._gmeMios406 = window._gmeMios406 || {};
+      function _gmeMarcarMio406(col, ts){ var a = window._gmeMios406[col] = window._gmeMios406[col] || []; a.push(ts); if (a.length > 30) a.shift(); }
+      window._gmeMarcarMio406 = _gmeMarcarMio406;
+      function _j406(v){ return v === undefined ? '\u0000undef' : JSON.stringify(v); }
+      var _STOCK406 = { exNE: 1, exAN: 1, exTF: 1 };
+      function _fusionarProducto406(b, l, c, info){
+        var m = {}, keys = {};
+        [b, l, c].forEach(function(o){ if (o) Object.keys(o).forEach(function(k){ keys[k] = 1; }); });
+        Object.keys(keys).forEach(function(k){
+          var lv = _j406(l[k]), cv = _j406(c[k]), bv = _j406(b ? b[k] : undefined), val;
+          if (lv === cv) val = l[k];
+          else if (lv === bv) { val = c[k]; info.remotos++; }
+          else if (cv === bv) val = l[k];
+          else if (_STOCK406[k]) {
+            var nb = parseInt(b ? b[k] : 0, 10) || 0, nl = parseInt(l[k], 10) || 0, nc = parseInt(c[k], 10) || 0;
+            val = Math.max(0, nc + (nl - nb));
+            info.sumados.push(l.r + ' ' + k + ': nube ' + nc + ' + aquí ' + (nl - nb >= 0 ? '+' : '') + (nl - nb) + ' = ' + val);
+          } else { val = l[k]; info.choques.push(l.r + ' ' + k); }
+          if (val !== undefined) m[k] = val;
+        });
+        if (m.exNE !== undefined || m.exAN !== undefined || m.exTF !== undefined) m.ex = (parseInt(m.exNE, 10) || 0) + (parseInt(m.exAN, 10) || 0) + (parseInt(m.exTF, 10) || 0);
+        return m;
+      }
+      async function _gmeFusionarProductos406(){
+        if (!window._gme405Base) return { ok: false, motivo: 'sin base' };
+        var sN = await getDoc(doc(db, 'data', 'products'));
+        if (!sN.exists() || !sN.data() || !sN.data().v) return { ok: false, motivo: 'nube vacía' };
+        var nubeArr = JSON.parse(sN.data().v), baseArr = JSON.parse(window._gme405Base);
+        if (!Array.isArray(nubeArr) || !nubeArr.length || !Array.isArray(baseArr)) return { ok: false, motivo: 'datos inválidos' };
+        var B = {}, C = {}, L = {};
+        baseArr.forEach(function(p){ if (p && p.r) B[p.r] = p; });
+        nubeArr.forEach(function(p){ if (p && p.r) C[p.r] = p; });
+        PRODUCTS.forEach(function(p){ if (p && p.r) L[p.r] = p; });
+        var info = { remotos: 0, nuevosNube: [], borrados: [], sumados: [], choques: [] };
+        var M = {};
+        Object.keys(Object.assign({}, B, C, L)).forEach(function(r){
+          var b = B[r], l = L[r], c = C[r];
+          if (!l && !c) return;
+          if (!l) { // no está aquí
+            if (b && _j406(c) === _j406(b)) { info.borrados.push(r); return; } // se borró aquí
+            M[r] = c; if (!b) info.nuevosNube.push(r); return;
+          }
+          if (!c) { // no está en la nube
+            if (b && _j406(l) === _j406(b)) { info.borrados.push(r); return; } // se borró allá
+            M[r] = l; return;
+          }
+          M[r] = _fusionarProducto406(b, l, c, info);
+        });
+        // Aplicar sobre los MISMOS objetos (hay pantallas que los tienen abiertos)
+        var vistos = {};
+        for (var i = PRODUCTS.length - 1; i >= 0; i--) {
+          var p = PRODUCTS[i]; if (!p || !p.r) continue;
+          var m = M[p.r];
+          if (!m) { PRODUCTS.splice(i, 1); continue; }
+          Object.keys(p).forEach(function(k){ if (!(k in m)) delete p[k]; });
+          Object.assign(p, m); vistos[p.r] = 1;
+        }
+        nubeArr.forEach(function(c){ if (c && c.r && M[c.r] && !vistos[c.r]) { PRODUCTS.push(M[c.r]); vistos[c.r] = 1; } });
+        if (info.nuevosNube.length && typeof sortProducts === 'function') { try { sortProducts(); } catch(eS){} }
+        _gmeStamp('products', sN.data().updatedAt);
+        window._farmersNubeProdCount = nubeArr.length;
+        window._gmeNubeProdV = sN.data().v;
+        try { if (window.farmersDB && typeof window.farmersDB.saveProducts === 'function') window.farmersDB.saveProducts(PRODUCTS).catch(function(){}); } catch(eI){}
+        try { localStorage.setItem('farmers_products', JSON.stringify(PRODUCTS)); } catch(eL){}
+        console.log('[v.406] Catálogo fusionado con la nube: ' + info.remotos + ' cambios de otra máquina incorporados · ' + info.nuevosNube.length + ' refs nuevas · ' + info.sumados.length + ' existencias sumadas · ' + info.choques.length + ' choques (ganó esta máquina)', info);
+        setTimeout(function(){
+          try { if (typeof renderTable === 'function') renderTable(); } catch(e){}
+          try { if (typeof renderInvTable === 'function') renderInvTable(); } catch(e){}
+          try { if (typeof doRefSearch === 'function' && document.getElementById('ref-search-results')) doRefSearch(); } catch(e){}
+          try { if (typeof ptRender === 'function') ptRender(); } catch(e){}
+        }, 50);
+        return { ok: true, payload: PRODUCTS, info: info };
+      }
+      window._gmeFusionarProductos406 = _gmeFusionarProductos406;
+      var _fbSaveProdCola406 = Promise.resolve(), _fbSaveProdEspera406 = null;
+      window.fbSaveProducts = function(arr){
+        var esGlobal = !Array.isArray(arr) || (typeof PRODUCTS !== 'undefined' && arr === PRODUCTS);
+        if (esGlobal && _fbSaveProdEspera406) return _fbSaveProdEspera406; // ya hay uno en cola con el catálogo actual
+        var p = _fbSaveProdCola406.then(function(){
+          if (esGlobal) _fbSaveProdEspera406 = null;
+          return _fbSaveProductsReal406(esGlobal ? PRODUCTS : arr);
+        });
+        if (esGlobal) _fbSaveProdEspera406 = p;
+        _fbSaveProdCola406 = p.catch(function(){});
+        return p;
+      };
+
+      var _fbSaveProductsReal406 = async (arr) => {
         await _fbEsperarSyncListo('catálogo'); // v.262: candado
         var payload = Array.isArray(arr) ? arr : (typeof PRODUCTS !== 'undefined' ? PRODUCTS : []);
         if (!Array.isArray(payload) || payload.length === 0) {
           throw new Error('fbSaveProducts: payload vacío, no se guarda para evitar borrar Firebase');
         }
         window._gmeNubeProdV = null; // v.369: se llena con la lectura de la guardia
-        if (!(await _gmeOkEscribir('products', 'catálogo/productos'))) throw new Error('Guardia multi-equipo v.364: la nube de productos es más nueva — recarga antes de guardar.');
+        if (!(await _gmeOkEscribir('products', 'catálogo/productos', true))) {
+          // v.406: otra máquina guardó después → fusionar en vez de bloquear
+          var _fus406 = null;
+          try { _fus406 = await _gmeFusionarProductos406(); } catch(eF406){ _fus406 = { ok: false, motivo: eF406 && eF406.message }; }
+          if (!_fus406 || !_fus406.ok) {
+            console.error('[v.406] No se pudo fusionar (' + (_fus406 && _fus406.motivo) + ') — guardia v.364 bloquea.');
+            try { if (typeof showToast === 'function') showToast('⛔ catálogo/productos: otra máquina guardó algo más reciente. Recarga antes de guardar (guardia multi-equipo v.364).', 'error', { duration: 16000 }); } catch(e2){}
+            throw new Error('Guardia multi-equipo v.364: la nube de productos es más nueva — recarga antes de guardar.');
+          }
+          payload = _fus406.payload;
+          var _i406 = _fus406.info;
+          try { if (typeof showToast === 'function') showToast('🔄 Catálogo unido con lo que guardó otra máquina (' + _i406.remotos + ' cambios de allá' + (_i406.nuevosNube.length ? ', ' + _i406.nuevosNube.length + ' refs nuevas' : '') + (_i406.sumados.length ? ', ' + _i406.sumados.length + ' existencias sumadas' : '') + '). Nada se perdió.', 'success', { duration: 7000 }); } catch(eT){}
+        }
         // ── v.366 (07/10/2026) CANDADO ANTI-CATÁLOGO-VIEJO ─────────────────
         // Incidente Mac 07/10: un equipo que NUNCA leyó el catálogo de la nube
         // (canal en vivo con error 400) subió el catálogo de fábrica (883 refs,
@@ -9177,16 +9289,19 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
           // Hash simple del estado para identificar este write específico
           sample: (payload.find(p => p.r === 'EXC001') || {}).ex || 0
         };
+        var _v406 = JSON.stringify(payload), _ts406 = Date.now();
+        _gmeMarcarMio406('products', _ts406); // v.406: este sello es de ESTA máquina
         await (window._fbConReintento ? window._fbConReintento(function(){ return setDoc(doc(db,'data','products'), {
-          v: JSON.stringify(payload),
+          v: _v406,
           count: payload.length,
-          updatedAt: Date.now()
+          updatedAt: _ts406
         }); }, 45000, 'catálogo', 3) : setDoc(doc(db,'data','products'), {
-          v: JSON.stringify(payload),
+          v: _v406,
           count: payload.length,
-          updatedAt: Date.now()
+          updatedAt: _ts406
         }));
-        _gmeStamp('products');   // v.364: este write pasa a ser lo más fresco visto
+        _gmeStamp('products', _ts406);   // v.364: este write pasa a ser lo más fresco visto
+        window._gme405Base = _v406;      // v.406: base para fusionar
         try { if (window._fobCmpDesdeNube) window._fobCmpDesdeNube(window._gmeNubeProdV, payload); } catch(eF369){} // v.369
         window._gmeNubeProdV = null;
         // ── FIX #4 v.111: BACKUP AUTOMÁTICO DIARIO ─────────────────────────
@@ -9731,6 +9846,7 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
               // FIX #1 bloqueó la aplicación → no persistir tampoco
               return;
             }
+            try { window._gme405Base = JSON.stringify(fbProds); } catch(eB406){} // v.406
           }
           // v.102: Persistir en IndexedDB (sin truncamiento)
           if (window.farmersDB && typeof window.farmersDB.saveProducts === 'function') {
@@ -12955,6 +13071,7 @@ async function loadFromFirebase() {
           if (typeof window._aplicarProductsArray === 'function') {
             // Primera carga del usuario logueado: forzar (puede venir de hardcoded fallback)
             window._aplicarProductsArray(fbProds, {forzar: true});
+            try { window._gme405Base = JSON.stringify(fbProds); } catch(eB406){} // v.406
             // v.102: Persistir en IndexedDB primero (sin truncamiento), localStorage como espejo
             if (window.farmersDB && typeof window.farmersDB.saveProducts === 'function') {
               window.farmersDB.saveProducts(fbProds).catch(function(e){
@@ -27657,6 +27774,71 @@ function _ciMarcasExcl(P){
   return String(P.excluir || '').toUpperCase().split(/[,;]+/).map(function(x){ return x.trim(); }).filter(Boolean);
 }
 window._ciMarcasExcl = _ciMarcasExcl;
+// ═══ v.405 INVENTARIO VALORIZADO (costo FOB · costo CIF · venta USD/BCV/TF) ═══
+// Datos en vivo: existencia real (exNE+exAN+exTF) × costo de cada ref.
+// Costo = costoFOB del producto (si no, el costo del Master Data).
+// CIF = costoCIF real de la recepción; si no lo tiene, FOB + flete $15/ft³ ÷ uds por bulto (regla de precios).
+(function(){
+  function n(v){ var x = parseFloat(v); return isFinite(x) ? x : 0; }
+  function $$(v){ return '$' + n(v).toLocaleString('es-VE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+  window.invValorizado405 = function(){
+    var master = window.MASTER;
+    if (!master || typeof master !== 'object') { try { master = JSON.parse(localStorage.getItem('farmers_pt_master') || '{}'); } catch(e){ master = {}; } }
+    var comp = {}; try { comp = getComprometido() || {}; } catch(e){}
+    var T = { refs: 0, uds: 0, compUds: 0, costo: 0, cif: 0, usd: 0, bcv: 0, tf: 0, sinCosto: [], sinPrecio: [], cifReal: 0, cifEst: 0, cifSinMedida: 0 };
+    var porMarca = {};
+    (window.PRODUCTS || []).forEach(function(p){
+      if (!p || !p.r) return;
+      var ex = (parseInt(p.exNE)||0) + (parseInt(p.exAN)||0) + (parseInt(p.exTF)||0);
+      if (ex <= 0) return;
+      var m = master[p.r] || {};
+      var costo = n(p.costoFOB) || n(m.costo);
+      var cif = n(p.costoCIF);
+      if (cif > 0) T.cifReal++;
+      else if (costo > 0) {
+        var upb = n(m.unidadesPorBulto) || n(p.m), vol = n(m.volFt3PorBulto);
+        if (upb > 0 && vol > 0) { cif = costo + 15 * vol / upb; T.cifEst++; } else { cif = costo; T.cifSinMedida++; }
+      }
+      T.refs++; T.uds += ex; T.compUds += Math.min(ex, comp[p.r] ? (parseInt(comp[p.r].qty)||0) : 0);
+      if (!costo) T.sinCosto.push(p.r);
+      if (!n(p.u)) T.sinPrecio.push(p.r);
+      T.costo += costo * ex; T.cif += cif * ex; T.usd += n(p.u) * ex; T.bcv += n(p.bv) * ex; T.tf += n(p.t) * ex;
+      var b = p.br || 'OTRAS'; var M = porMarca[b] = porMarca[b] || { uds: 0, costo: 0, cif: 0, usd: 0 };
+      M.uds += ex; M.costo += costo * ex; M.cif += cif * ex; M.usd += n(p.u) * ex;
+    });
+    var td = 'padding:7px 10px;border-bottom:1px solid #e2e8f0;color:#000;font-size:.8rem;';
+    var tdr = td + 'text-align:right;font-variant-numeric:tabular-nums;';
+    var marcas = Object.keys(porMarca).sort(function(a,b){ return porMarca[b].cif - porMarca[a].cif; });
+    var notas = [];
+    if (T.sinCosto.length) notas.push('⚠ ' + T.sinCosto.length + ' ref(s) con existencia y SIN costo (no suman al costo): ' + T.sinCosto.slice(0, 12).join(', ') + (T.sinCosto.length > 12 ? '…' : ''));
+    if (T.sinPrecio.length) notas.push('⚠ ' + T.sinPrecio.length + ' ref(s) con existencia y SIN precio de venta: ' + T.sinPrecio.slice(0, 12).join(', ') + (T.sinPrecio.length > 12 ? '…' : ''));
+    notas.push('CIF: ' + T.cifReal + ' ref(s) con CIF real de recepción · ' + T.cifEst + ' estimadas con flete $15/ft³' + (T.cifSinMedida ? ' · ' + T.cifSinMedida + ' sin medidas (CIF = FOB)' : '') + '.');
+    var html = '<div id="iv405" style="position:fixed;inset:0;background:rgba(15,23,42,.6);z-index:99800;display:flex;align-items:center;justify-content:center;padding:14px;" onclick="if(event.target===this)this.remove()">' +
+      '<div style="background:#fff;border-radius:12px;max-width:720px;width:100%;max-height:92vh;overflow:auto;box-shadow:0 20px 50px rgba(0,0,0,.35);">' +
+      '<div style="background:#0f172a;color:#fff;padding:12px 16px;border-radius:12px 12px 0 0;display:flex;align-items:center;"><div style="flex:1;"><div style="font-weight:900;">💰 Inventario valorizado</div>' +
+      '<div style="font-size:.7rem;opacity:.85;">' + new Date().toLocaleString('es-VE') + ' · ' + T.refs + ' refs con existencia · ' + T.uds.toLocaleString('es-VE') + ' uds' + (T.compUds ? ' (' + T.compUds.toLocaleString('es-VE') + ' comprometidas en pedidos)' : '') + '</div></div>' +
+      '<button onclick="document.getElementById(\'iv405\').remove()" style="background:#fff;color:#000;border:none;border-radius:6px;padding:6px 12px;font-weight:900;cursor:pointer;">✕</button></div>' +
+      '<div style="padding:14px 16px;">' +
+      '<table style="border-collapse:collapse;width:100%;margin-bottom:14px;">' +
+        '<tr><td style="' + td + '"><b>Costo (FOB)</b></td><td style="' + tdr + 'font-weight:900;font-size:1rem;">' + $$(T.costo) + '</td></tr>' +
+        '<tr><td style="' + td + '"><b>Costo CIF</b> <span style="font-size:.7rem;color:#334155;">(FOB + flete)</span></td><td style="' + tdr + 'font-weight:900;font-size:1rem;">' + $$(T.cif) + '</td></tr>' +
+        '<tr><td style="' + td + '"><b>Venta USD</b></td><td style="' + tdr + 'font-weight:900;font-size:1rem;">' + $$(T.usd) + '</td></tr>' +
+        '<tr><td style="' + td + '">Venta BCV</td><td style="' + tdr + '">' + $$(T.bcv) + '</td></tr>' +
+        '<tr><td style="' + td + '">Venta TF</td><td style="' + tdr + '">' + $$(T.tf) + '</td></tr>' +
+        '<tr><td style="' + td + '">Margen bruto USD sobre CIF</td><td style="' + tdr + '">' + $$(T.usd - T.cif) + (T.usd ? ' · ' + ((T.usd - T.cif) / T.usd * 100).toFixed(1) + '% s/venta' : '') + '</td></tr>' +
+      '</table>' +
+      '<div style="font-weight:900;font-size:.75rem;margin-bottom:6px;color:#000;">Por marca</div>' +
+      '<table style="border-collapse:collapse;width:100%;"><tr>' + ['Marca','Uds','Costo FOB','Costo CIF','Venta USD'].map(function(h,i){ return '<th style="padding:6px 10px;background:#0f172a;color:#fff;font-size:.65rem;text-align:' + (i ? 'right' : 'left') + ';">' + h + '</th>'; }).join('') + '</tr>' +
+      marcas.map(function(b){ var M = porMarca[b]; return '<tr><td style="' + td + 'font-weight:800;">' + b + '</td><td style="' + tdr + '">' + M.uds.toLocaleString('es-VE') + '</td><td style="' + tdr + '">' + $$(M.costo) + '</td><td style="' + tdr + '">' + $$(M.cif) + '</td><td style="' + tdr + '">' + $$(M.usd) + '</td></tr>'; }).join('') +
+      '</table>' +
+      '<div style="margin-top:12px;font-size:.7rem;color:#000;line-height:1.5;">' + notas.join('<br>') + '</div>' +
+      '</div></div></div>';
+    var prev = document.getElementById('iv405'); if (prev) prev.remove();
+    document.body.insertAdjacentHTML('beforeend', html);
+    return T;
+  };
+})();
+
 // ═══ v.404 CUADRE DE RECEPCIÓN DE OC ═══════════════════════════════════
 // Si una recepción no llegó a la nube (guardia multi-equipo, otro equipo con versión
 // vieja, recarga), la mercancía queda "en el limbo": ya no está en Ordenada (se
@@ -40809,6 +40991,7 @@ function doRefSearch() {
         '<div style="font-size:.55rem;color:rgba(255,255,255,.55);font-weight:700;text-transform:uppercase;letter-spacing:1.5px;margin-bottom:4px;">Capital USD Total</div>' +
         '<div style="font-family:Barlow Condensed,sans-serif;font-size:1.7rem;font-weight:900;color:white;line-height:1;">$ ' + totalCapital.toFixed(2) + '</div>' +
         '<div style="font-size:.6rem;color:rgba(255,255,255,.4);margin-top:3px;">inventario valorizado</div>' +
+        '<button onclick="invValorizado405()" style="margin-top:6px;background:#fff;color:#000;border:none;border-radius:6px;padding:3px 9px;font-size:.62rem;font-weight:900;cursor:pointer;">💰 Costo · CIF · Venta</button>' +
       '</div>' +
       '<div style="width:1px;height:44px;background:rgba(255,255,255,.15);margin:0 20px;"></div>' +
       // KPI 2 — Unidades
