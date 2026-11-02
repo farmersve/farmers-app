@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.11.02.406">
+<meta name="farmers-version" content="2026.11.02.407">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -62581,6 +62581,20 @@ setTimeout(function(){
 window.farmersRelevoEstado = function(){ var R = window._relevo342 || {}; console.log('[RELEVO]', R); return R; };
 
 window._custodioAvisados330 = {};
+/* v.407: lo que un pedido DEBE tener reservado por sucursal es lo que se pudo
+   despachar (desp ≤ pide), no lo que el cliente pidió. Si pidió 60 y había 40
+   (o el resto viene EN CAMINO / preventa), la reserva correcta es 40.
+   Antes el custodio comparaba contra 60 → falsa alarma "INCOMPLETA", y la
+   reconstrucción habría reservado 60 (más de lo que hay). */
+window._resDebe407 = function(sd){
+  sd = sd || {};
+  var pide = parseInt(sd.pide) || 0;
+  if (sd.desp !== undefined && sd.desp !== null && sd.desp !== '') return Math.max(0, Math.min(parseInt(sd.desp) || 0, pide));
+  return pide;
+};
+window._resLiberada407 = function(ref, numP){
+  try { return (window.libGetLog ? libGetLog() : []).some(function(l){ return l && l.ref === ref && (l.pedidosAfectados || []).some(function(a){ return a && a.numP === numP; }); }); } catch(e){ return false; }
+};
 window.farmersCustodioReservas = function(manual){
   try {
     var comp = getComprometido();
@@ -62588,29 +62602,34 @@ window.farmersCustodioReservas = function(manual){
     getMsPedidos().forEach(function(ped){
       var e = String(ped.estado||'').toUpperCase();
       if (e !== 'RESERVADO' && e !== 'PARCIAL') return;
-      var faltantes = 0, refsTot = 0;
+      var faltantes = 0, refsTot = 0, det = null;
       (ped.items||[]).forEach(function(i){
         var deb = 0;
         Object.keys(i.sucursales||{}).forEach(function(su){
           var sEst = String((ped.sucursalesEstado||{})[su]||'').toUpperCase();
           if (sEst === 'DESPACHADO') return;  // lo despachado ya no retiene reserva
-          deb += parseInt((i.sucursales[su]||{}).pide)||0;
+          deb += _resDebe407(i.sucursales[su]);
         });
         if (deb <= 0) return;
         refsTot++;
         var tiene = (((comp[i.ref]||{}).pedidos)||[]).filter(function(x){return x.numP===ped.numP;})
                       .reduce(function(a,x){return a+(parseInt(x.qty)||0);},0);
-        if (tiene !== deb) faltantes++;  /* v.350: también detecta respaldo desfasado (de más o de menos) */
+        if (tiene !== deb) {  /* v.350: también detecta respaldo desfasado (de más o de menos) */
+          if (tiene < deb && _resLiberada407(i.ref, ped.numP)) return; // v.407: liberado a propósito (queda en la bitácora)
+          faltantes++;
+          (det = det || []).push({ ref: i.ref, desc: i.desc || '', debe: deb, tiene: tiene });
+        }
       });
-      if (faltantes > 0) males.push({numP: ped.numP, faltantes: faltantes, refsTot: refsTot});
+      if (faltantes > 0) males.push({numP: ped.numP, faltantes: faltantes, refsTot: refsTot, cliente: ped.cliente || (ped.sucursales || []).join(', '), det: det || []});
     });
     if (males.length) {
+      var _nuevos407 = 0;
       males.forEach(function(m){
         if (!manual && window._custodioAvisados330[m.numP]) return;
-        window._custodioAvisados330[m.numP] = true;
+        window._custodioAvisados330[m.numP] = true; _nuevos407++;
         console.error('[CUSTODIO v.350] ⛔ '+m.numP+': reserva DESFASADA ('+m.faltantes+' de '+m.refsTot+' refs con respaldo distinto al pedido). Repara con: farmersReconstruirReserva(\''+m.numP+'\')');
-        try { if (typeof showToast === 'function') showToast('⛔ CUSTODIO: la reserva del pedido '+m.numP+' está INCOMPLETA ('+m.faltantes+' refs). Corre farmersReconstruirReserva(\''+m.numP+'\') en la consola — o avísale a Claude. (Si liberaste piezas a propósito, ignora este aviso.)','error',{duration:20000,title:'Reserva en riesgo'}); } catch(e2){}
       });
+      try { if (manual || _nuevos407) custodioPanel407(males.filter(function(m){ return manual || !window._custodioPanelIgn407[m.numP]; })); } catch(e2){ console.warn('[v.407 panel]', e2); }
     } else if (manual) {
       alert('✅ CUSTODIO: todas las reservas de pedidos RESERVADOS/PARCIALES están completas y respaldadas en el comprometido.');
     } else {
@@ -62622,6 +62641,38 @@ window.farmersCustodioReservas = function(manual){
 setTimeout(function(){ try { farmersCustodioReservas(false); } catch(e){} }, 20000);
 setInterval(function(){ try { farmersCustodioReservas(false); } catch(e){} }, 600000);
 
+window._custodioPanelIgn407 = {};
+window.custodioPanel407 = function(males){
+  var prev = document.getElementById('custodio-407'); if (prev) prev.remove();
+  if (!males || !males.length) return;
+  var disp = function(r){ try { return getDisponible(r); } catch(e){ return '—'; } };
+  var esc = function(t){ return String(t == null ? '' : t).replace(/[&<>"]/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); };
+  var html = '<div id="custodio-407" style="position:fixed;right:16px;bottom:56px;z-index:99760;background:#fff;border:2px solid #dc2626;border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,.25);padding:12px 14px;width:390px;max-height:70vh;overflow:auto;color:#000;font-size:.76rem;">' +
+    '<div style="font-weight:900;font-size:.85rem;margin-bottom:6px;">⛔ Reserva en riesgo</div>' +
+    '<div style="font-size:.7rem;color:#334155;margin-bottom:8px;">El pedido tiene menos (o más) inventario apartado del que le corresponde. Mientras no se repare, otro pedido podría tomar esas piezas.</div>' +
+    males.map(function(m){
+      return '<div style="border:1px solid #e2e8f0;border-radius:8px;padding:8px;margin-bottom:8px;">' +
+        '<div style="font-weight:900;">' + esc(m.numP) + '</div><div style="font-size:.68rem;color:#334155;margin-bottom:4px;">' + esc(m.cliente || '') + '</div>' +
+        '<table style="width:100%;border-collapse:collapse;font-size:.7rem;"><tr style="background:#0f172a;color:#fff;"><th style="padding:3px 5px;text-align:left;">Ref</th><th style="padding:3px 5px;">Debe</th><th style="padding:3px 5px;">Apartado</th><th style="padding:3px 5px;">Disp.</th></tr>' +
+        (m.det || []).map(function(d){ return '<tr><td style="padding:3px 5px;font-weight:800;">' + esc(d.ref) + '</td><td style="padding:3px 5px;text-align:center;">' + d.debe + '</td><td style="padding:3px 5px;text-align:center;color:#991b1b;font-weight:900;">' + d.tiene + '</td><td style="padding:3px 5px;text-align:center;">' + disp(d.ref) + '</td></tr>'; }).join('') +
+        '</table><div style="display:flex;gap:6px;margin-top:6px;">' +
+        '<button onclick="custodioReparar407(\'' + esc(m.numP) + '\')" style="flex:1;background:#0f172a;color:#fff;border:none;border-radius:6px;padding:6px;font-weight:900;cursor:pointer;font-size:.72rem;">🔧 Reparar reserva</button>' +
+        '<button onclick="custodioIgnorar407(\'' + esc(m.numP) + '\')" style="background:#fff;color:#000;border:1.5px solid #0f172a;border-radius:6px;padding:6px 8px;font-weight:800;cursor:pointer;font-size:.68rem;" title="Úsalo solo si liberaste esas piezas a propósito">Lo liberé a propósito</button>' +
+        '</div></div>';
+    }).join('') +
+    '<div style="text-align:right;"><button onclick="document.getElementById(\'custodio-407\').remove()" style="background:none;border:none;color:#334155;cursor:pointer;font-size:.7rem;text-decoration:underline;">Cerrar</button></div></div>';
+  document.body.insertAdjacentHTML('beforeend', html);
+};
+window.custodioReparar407 = function(numP){
+  var ok = farmersReconstruirReserva(numP);
+  var rest = (farmersCustodioReservas(true) || []).filter(function(m){ return m.numP !== numP || !ok; });
+  if (!rest.length) { var p = document.getElementById('custodio-407'); if (p) p.remove(); }
+};
+window.custodioIgnorar407 = function(numP){
+  window._custodioPanelIgn407[numP] = true;
+  var rest = (farmersCustodioReservas(false) || []).filter(function(m){ return !window._custodioPanelIgn407[m.numP]; });
+  custodioPanel407(rest);
+};
 window.farmersReconstruirReserva = function(numP){
   try{
     var ped=getMsPedidos().find(function(p){return p.numP===numP;});
@@ -62633,7 +62684,7 @@ window.farmersReconstruirReserva = function(numP){
       var t=0; Object.keys(i.sucursales||{}).forEach(function(su){
         var sEst=String((ped.sucursalesEstado||{})[su]||'').toUpperCase();
         if(sEst==='DESPACHADO') return;
-        t+=parseInt((i.sucursales[su]||{}).pide)||0;
+        t+=_resDebe407(i.sucursales[su]);  /* v.407: lo reservable (desp), no lo pedido */
       });
       if(t>0) refsQty[i.ref]=t;
     });
@@ -62747,7 +62798,7 @@ window.farmersAuditoriaIntegral = function(){
       if(String(p.estado||'').toUpperCase()!=='RESERVADO') return;
       var falta=[];
       (p.items||[]).forEach(function(i){
-        var deb=0; Object.keys(i.sucursales||{}).forEach(function(su){ deb+=parseInt((i.sucursales[su]||{}).pide)||0; });
+        var deb=0; Object.keys(i.sucursales||{}).forEach(function(su){ deb+=_resDebe407(i.sucursales[su]); }); /* v.407 */
         var tiene=(((comp[i.ref]||{}).pedidos)||[]).filter(function(x){return x.numP===p.numP;}).reduce(function(a,x){return a+(parseInt(x.qty)||0);},0);
         if(deb>0 && tiene<deb) falta.push(i.ref+' (reservado '+tiene+'/'+deb+')');
       });
