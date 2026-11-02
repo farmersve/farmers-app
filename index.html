@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.11.02.402">
+<meta name="farmers-version" content="2026.11.02.403">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -6579,9 +6579,49 @@ document.addEventListener('DOMContentLoaded', function(){ initBrandGrid(); });
 // INVENTARIO + REGISTRO DE VENTAS (localStorage)
 // ══════════════════════════════════════════════════════════════════
 function getInventory() {
-  try { const r=localStorage.getItem('farmers_inv'); if(r) return JSON.parse(r); } catch(e){}
-  const inv={}; PRODUCTS.forEach(p=>{ inv[p.r]=p.ex; }); saveInventory(inv); return inv;
+  var inv = null;
+  try { const r=localStorage.getItem('farmers_inv'); if(r) inv = JSON.parse(r); } catch(e){}
+  if (!inv || typeof inv !== 'object') { inv={}; PRODUCTS.forEach(p=>{ inv[p.r]=p.ex; }); saveInventory(inv); return inv; }
+  // v.403: farmers_inv es una copia legacy que se quedaba vieja (ej. al recibir una OC):
+  // el Inventario/Productos mostraba lo recibido y el Catálogo/PDF/Excel/Portal no.
+  // Regla única: si el producto tiene exNE/exAN/exTF, ESA es la existencia real.
+  try {
+    if (Array.isArray(PRODUCTS)) for (var i = 0; i < PRODUCTS.length; i++) {
+      var p = PRODUCTS[i]; if (!p || !p.r) continue;
+      var tNE = (p.exNE !== undefined && p.exNE !== null && p.exNE !== '');
+      var tAN = (p.exAN !== undefined && p.exAN !== null && p.exAN !== '');
+      var tTF = (p.exTF !== undefined && p.exTF !== null && p.exTF !== '');
+      if (tNE || tAN || tTF) inv[p.r] = (parseInt(p.exNE)||0) + (parseInt(p.exAN)||0) + (parseInt(p.exTF)||0);
+    }
+  } catch(e403){}
+  return inv;
 }
+// v.403: alinea la copia de inventario (local + NUBE) con la existencia real de PRODUCTS.
+// Compara contra lo último que vimos/subimos a la nube, no contra la copia local.
+window.farmersAlinearInventario403 = function(motivo){
+  try {
+    if (!Array.isArray(PRODUCTS) || PRODUCTS.length === 0) return { cambios: 0 };
+    var inv = getInventory(); // ya trae la existencia real
+    var base = {};
+    try { base = JSON.parse(localStorage.getItem('farmers_inv_nube') || 'null') || {}; } catch(e){ base = {}; }
+    var sinBase = !localStorage.getItem('farmers_inv_nube');
+    var cambios = 0, ej = [];
+    Object.keys(inv).forEach(function(r){
+      if (sinBase || String(base[r]) !== String(inv[r])) { cambios++; if (ej.length < 5) ej.push(r + ': ' + (base[r] === undefined ? '—' : base[r]) + '→' + inv[r]); }
+    });
+    try { localStorage.setItem('farmers_inv', JSON.stringify(inv)); } catch(e){}
+    if (cambios > 0 && window.fbSaveInventory) {
+      return Promise.resolve(window.fbSaveInventory(inv)).then(function(res){
+        if (res && res.ok === false) return { cambios: cambios, ok: false, ej: ej, motivo: res.bloqueado || 'no subió' };
+        if (window.fbTriggerPortalSnapshot) window.fbTriggerPortalSnapshot('alinear-inv-' + (motivo || ''));
+        console.log('[v.403 inventario] ' + cambios + ' refs alineadas en la nube (' + (motivo || '') + '): ' + ej.join(', '));
+        return { cambios: cambios, ok: true, ej: ej };
+      }).catch(function(e){ return { cambios: cambios, ok: false, ej: ej, motivo: e && e.message }; });
+    }
+    if (window.fbTriggerPortalSnapshot) window.fbTriggerPortalSnapshot('alinear-inv-' + (motivo || ''));
+    return { cambios: 0, ok: true };
+  } catch(e){ return { cambios: 0, ok: false, motivo: e.message }; }
+};
 function saveInventory(inv){
   localStorage.setItem('farmers_inv', JSON.stringify(inv));
   if(window.fbSaveInventory) window.fbSaveInventory(inv);
@@ -8459,10 +8499,12 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
     await _fbEsperarSyncListo('inventario'); // v.262: candado — espera confirmación de carga antes de subir
     var payload = v || {};
     if (!(await _gmeOkEscribir('inventory', 'inventario'))) return { ok: false, bloqueado: 'guardia-v364' };
+    var _invStr403 = JSON.stringify(payload);
     await _fbConReintento(function(){ return setDoc(doc(db,'data','inventory'), {
-      v: JSON.stringify(payload),
+      v: _invStr403,
       updatedAt: Date.now()
     }); }, 30000, 'inventario', 3);
+    try { localStorage.setItem('farmers_inv_nube', _invStr403); } catch(e403){}
     _gmeStamp('inventory');   // v.364
     return { ok: true };
   };
@@ -8583,23 +8625,33 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
       onSnapshot(doc(db,'data','inventory'), s => {
         try { if (s && s.exists && s.exists()) _gmeStamp('inventory', (s.data()||{}).updatedAt); } catch(eG364){}
         if (s.exists()) {
-          localStorage.setItem('farmers_inv', s.data().v);
-          // Cuando el cambio viene de Firebase: propaga inv → p.exNE
-          // (otra sesión modificó el inventario y debemos respetarlo)
+          var _vInv403 = s.data().v;
+          var _base403 = null; try { _base403 = JSON.parse(localStorage.getItem('farmers_inv_nube') || 'null'); } catch(eB){ _base403 = null; }
+          localStorage.setItem('farmers_inv', _vInv403);
+          // v.403: antes TODA la copia de la nube pisaba p.exNE. Si esa copia estaba vieja
+          // (ej. una OC recibida que solo actualizó productos), al recargar se perdía lo recibido.
+          // Ahora solo se aplica a exNE lo que CAMBIÓ en la nube desde la última vez que la vimos
+          // (otra sesión ajustó el inventario). Sin base previa: manda PRODUCTS (exNE siempre gana).
           try {
-            var invFB = JSON.parse(s.data().v || '{}');
-            if (typeof PRODUCTS !== 'undefined' && Array.isArray(PRODUCTS)) {
+            var invFB = JSON.parse(_vInv403 || '{}');
+            if (_base403 && typeof PRODUCTS !== 'undefined' && Array.isArray(PRODUCTS)) {
+              var _cam403 = 0;
               PRODUCTS.forEach(function(p){
                 if (!p || !p.r) return;
-                if (invFB[p.r] !== undefined) {
-                  var nuevo = parseInt(invFB[p.r])||0;
-                  p.exNE = nuevo;
-                  p.exAN = 0;
-                  p.ex = nuevo;
-                }
+                if (invFB[p.r] === undefined) return;
+                if (_base403[p.r] !== undefined && String(_base403[p.r]) === String(invFB[p.r])) return; // no cambió en la nube
+                var tf = parseInt(p.exTF)||0;
+                var nuevo = parseInt(invFB[p.r])||0;
+                var ne = Math.max(0, nuevo - tf);
+                if ((parseInt(p.exNE)||0) === ne && !(parseInt(p.exAN)||0)) return;
+                p.exNE = ne;
+                p.exAN = 0;
+                p.ex = ne + tf;
+                _cam403++;
               });
-              if (typeof saveProducts === 'function') saveProducts(PRODUCTS);
+              if (_cam403 > 0 && typeof saveProducts === 'function') saveProducts(PRODUCTS);
             }
+            localStorage.setItem('farmers_inv_nube', _vInv403 || '{}');
           } catch(eFB) { console.warn('[onSnap inv] propagación:', eFB); }
           if (typeof renderTable === 'function') renderTable();
           if (typeof renderInvTable === 'function') renderInvTable();
@@ -10937,8 +10989,8 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
       // 2) Inventario actual (real)
       var inv = {};
       try {
-        var invStr = localStorage.getItem('farmers_inv');
-        if (invStr) inv = JSON.parse(invStr);
+        if (typeof window.getInventory === 'function') inv = window.getInventory(); // v.403: exNE+exAN+exTF
+        else { var invStr = localStorage.getItem('farmers_inv'); if (invStr) inv = JSON.parse(invStr); }
       } catch(e) {}
 
       // 3) Comprometido — leer farmers_inv_comprometido (FUENTE OFICIAL DEL ADMIN)
@@ -13011,6 +13063,7 @@ async function loadFromFirebase() {
       var inv = await window.fbGetInventory();
       if (inv) {
         localStorage.setItem('farmers_inv', JSON.stringify(inv));
+        try { if (!localStorage.getItem('farmers_inv_nube')) localStorage.setItem('farmers_inv_nube', JSON.stringify(inv)); } catch(e403){}
         // ═══ Modo Firebase: PRODUCTS.exNE/exAN ya viene fresco, inv legacy debe alinearse ═══
         // (Antes esto pisaba NE/AN con valores viejos de inv — el bug raíz)
         syncInventoryToProducts(true);
@@ -22689,6 +22742,30 @@ window._ocRecepValidar = function(input) {
   }
 };
 
+// v.403: sube productos e inventario tras recibir/revertir una OC y AVISA si no se pudo
+window._ocSubirExistencia403 = function(etiqueta, detalle){
+  var fallas = [];
+  var pProd = (typeof window.fbSaveProducts === 'function')
+    ? Promise.resolve().then(function(){ return window.fbSaveProducts(PRODUCTS); }).catch(function(e){ fallas.push('Productos: ' + (e && e.message || e)); })
+    : Promise.resolve();
+  return pProd.then(function(){
+    return Promise.resolve(window.farmersAlinearInventario403 ? window.farmersAlinearInventario403('oc') : null);
+  }).then(function(r){
+    if (r && r.ok === false) fallas.push('Inventario: ' + (r.motivo || 'no subió'));
+    if (fallas.length) {
+      var tx = '⚠ ' + etiqueta + ': la existencia quedó bien en ESTE equipo, pero NO terminó de subir a la nube.\n\n' +
+        fallas.join('\n') + '\n\nRefs: ' + (detalle || []).slice(0, 8).join(', ') + ((detalle || []).length > 8 ? '…' : '') +
+        '\n\nNo cierres esta página. Si dice "otra máquina guardó algo más reciente", recarga y verifica la existencia de esas refs en Inventario.';
+      try { if (typeof showToast === 'function') showToast('⚠ ' + etiqueta + ': no subió a la nube', 'error', { duration: 15000 }); } catch(e){}
+      alert(tx);
+    } else {
+      try { if (typeof showToast === 'function') showToast('☁️ ' + etiqueta + ': existencia actualizada en la nube, catálogo y portal', 'success'); } catch(e){}
+    }
+    try { if (typeof doRefSearch === 'function' && document.getElementById('ref-search-results')) doRefSearch(); } catch(e){}
+    try { if (typeof renderInvTable === 'function') renderInvTable(); } catch(e){}
+    return fallas;
+  });
+};
 window._ocRecepGuardar = function(ocId) {
   var oc = _ocDB.find(function(x){ return x.id === ocId; });
   if (!oc) return;
@@ -22747,8 +22824,8 @@ window._ocRecepGuardar = function(ocId) {
         var prod = PRODUCTS.find(function(p){ return p.r === ri.refFarmers; });
         if (prod) {
           prod.exNE = (parseInt(prod.exNE) || 0) + ri.cantidadRecibida;
-          prod.ex = prod.exNE; // mantener ex sincronizado con exNE por compatibilidad
           prod.exAN = 0; // AN sigue eliminado permanentemente
+          prod.ex = prod.exNE + (parseInt(prod.exTF) || 0); // v.403: total real (NE + TF)
           aplicados++;
         } else {
           console.warn('Recepción: ref no encontrada en PRODUCTS:', ri.refFarmers);
@@ -22767,8 +22844,8 @@ window._ocRecepGuardar = function(ocId) {
 
     // Persistir PRODUCTS si hay función saveProducts o similar
     if (typeof saveProducts === 'function') saveProducts();
-    // Firebase sync para productos si existe
-    if (typeof window.fbSaveProducts === 'function') window.fbSaveProducts(PRODUCTS);
+    // v.403: productos + inventario a la nube, con aviso VISIBLE si algo no sube
+    window._ocSubirExistencia403(recepcion.numero, itemsRec.map(function(ri){ return ri.refFarmers + ' +' + ri.cantidadRecibida; }));
 
     // Guardar recepción en la OC
     if (!oc.recepciones) oc.recepciones = [];
@@ -22865,8 +22942,8 @@ window.ocRecepEliminar = function(ocId, recId) {
         var prod = PRODUCTS.find(function(p){ return p.r === ri.refFarmers; });
         if (prod) {
           prod.exNE = Math.max(0, (parseInt(prod.exNE) || 0) - ri.cantidadRecibida);
-          prod.ex = prod.exNE; // mantener ex sincronizado
           prod.exAN = 0;
+          prod.ex = prod.exNE + (parseInt(prod.exTF) || 0); // v.403
         }
       }
       // Sumar de vuelta a exOrdenada
@@ -22877,7 +22954,7 @@ window.ocRecepEliminar = function(ocId, recId) {
     ptSaveData(ptData);
     if (typeof window.ptData !== 'undefined') window.ptData = ptData;
     if (typeof saveProducts === 'function') saveProducts();
-    if (typeof window.fbSaveProducts === 'function') window.fbSaveProducts(PRODUCTS);
+    window._ocSubirExistencia403('reverso ' + rec.numero, (rec.items || []).map(function(ri){ return ri.refFarmers + ' −' + ri.cantidadRecibida; })); // v.403
 
     // Eliminar recepción del array
     oc.recepciones = oc.recepciones.filter(function(r){ return r.id !== recId; });
@@ -27579,6 +27656,17 @@ function _ciMarcasExcl(P){
   return String(P.excluir || '').toUpperCase().split(/[,;]+/).map(function(x){ return x.trim(); }).filter(Boolean);
 }
 window._ciMarcasExcl = _ciMarcasExcl;
+// v.403: alineación inicial inventario ← productos (repara recepciones de OC que no llegaron al catálogo)
+setTimeout(function(){
+  try {
+    if (!window._farmersCatalogoDeNube || !Array.isArray(PRODUCTS) || PRODUCTS.length < 50) return;
+    if (typeof window.farmersAlinearInventario403 !== 'function') return;
+    Promise.resolve(window.farmersAlinearInventario403('arranque')).then(function(r){
+      if (r && r.cambios > 0 && r.ok) { try { if (typeof showToast === 'function') showToast('🔄 Inventario alineado: ' + r.cambios + ' refs del catálogo/portal actualizadas con la existencia real', 'success', { duration: 8000 }); } catch(e){} }
+      try { if (typeof doRefSearch === 'function' && document.getElementById('ref-search-results')) doRefSearch(); } catch(e){}
+    });
+  } catch(e){ console.warn('[v.403 alinear arranque]', e); }
+}, 20000);
 // ═══ v.402 ANULAR UNA NOTA DE CRÉDITO (y emitirla de nuevo con el monto correcto) ═══
 // La NC no se borra: queda en el historial como ANULADA (con fecha, usuario y motivo)
 // y se revierte TODO lo que hizo: saldo y monto de la factura en CxC, inventario
