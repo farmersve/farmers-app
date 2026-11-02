@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.11.02.399">
+<meta name="farmers-version" content="2026.11.02.401">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -27579,6 +27579,145 @@ function _ciMarcasExcl(P){
   return String(P.excluir || '').toUpperCase().split(/[,;]+/).map(function(x){ return x.trim(); }).filter(Boolean);
 }
 window._ciMarcasExcl = _ciMarcasExcl;
+// ═══ v.400 RELACIÓN DE PAGOS DEL CLIENTE (Excel) — lectura directa, sin IA ═══
+// Grupo Abreu manda 2 archivos: el comprobante del banco (PDF) y la relación en
+// Excel con cada factura pagada (# Doc., Pago Index $, NC descontadas, tasa, ref).
+// La relación se lee DIRECTO (exacta, sin límite de líneas), se cruza con la CxC
+// por N° de factura y se carga el pago con el monto de cada una.
+(function(){
+  function n0(v){ if (typeof v === 'number') return isFinite(v) ? v : 0; var s = String(v == null ? '' : v).trim(); if (!s) return 0; if (/,\d{1,4}$/.test(s) && s.indexOf('.') >= 0 && s.lastIndexOf(',') > s.lastIndexOf('.')) s = s.replace(/\./g, '').replace(',', '.'); else s = s.replace(/,/g, ''); var x = parseFloat(s); return isFinite(x) ? x : 0; }
+  function r2(v){ return Math.round(n0(v) * 100) / 100; }
+  function fmt(v){ return (typeof cxcFmt === 'function') ? cxcFmt(v) : r2(v).toFixed(2); }
+  function fmtBs(v){ return n0(v).toLocaleString('es-VE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+  function iso(s){ s = String(s || '').trim(); var a = s.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/); if (a) return a[3] + '-' + String(a[2]).padStart(2, '0') + '-' + String(a[1]).padStart(2, '0'); var b = s.match(/(\d{4})-(\d{2})-(\d{2})/); return b ? b[0] : ''; }
+  function digitos(s){ return String(s || '').replace(/\D/g, '').replace(/^0+/, ''); }
+  function pend(f){ return (typeof cxcEstado === 'function') ? cxcEstado(f) !== 'PAGADA' : n0(f.saldo) > 0.009; }
+
+  // Detecta la relación en las filas del Excel. Devuelve null si no parece una relación de pagos.
+  window.cxcRelacionParse = function(rows){
+    if (!Array.isArray(rows) || rows.length < 2) return null;
+    var hi = -1, H = null;
+    for (var i = 0; i < Math.min(rows.length, 15); i++) {
+      var h = (rows[i] || []).map(function(c){ return String(c == null ? '' : c).trim(); });
+      var tieneDoc = h.some(function(c){ return /(^#?\s*doc\b)|(n[°º]?\s*factura)|(^factura$)|(^#\s*fact)/i.test(c) && !/afectada/i.test(c); });
+      var tieneMonto = h.some(function(c){ return /\$|usd|monto|pago index/i.test(c); });
+      if (tieneDoc && tieneMonto) { hi = i; H = h; break; }
+    }
+    if (hi < 0) return null;
+    var col = function(re, no){ for (var k = 0; k < H.length; k++) { if (re.test(H[k]) && !(no && no.test(H[k]))) return k; } return -1; };
+    var C = {
+      doc: col(/(^#?\s*doc\b)|(n[°º]?\s*factura)|(^factura$)|(^#\s*fact)/i, /afectada/i),
+      control: col(/control/i), tipo: col(/tipo/i), afect: col(/afectada/i),
+      usd: col(/(index\s*\$)|(\$)|(usd)/i, /hist|sub/i), bs: col(/bs\.?$|bol[ií]var|pago index bs/i),
+      tasa: col(/tasa/i), fecha: col(/fecha/i), ref: col(/referencia|ref\.?\s*pago/i), suc: col(/suc/i),
+      rif: col(/^rif/i), prov: col(/proveedor|beneficiario/i), banco: col(/banco/i)
+    };
+    if (C.doc < 0 || (C.usd < 0 && C.bs < 0)) return null;
+    var lineas = [];
+    for (var j = hi + 1; j < rows.length; j++) {
+      var r = rows[j] || [], doc = String(r[C.doc] == null ? '' : r[C.doc]).trim();
+      if (!doc) continue;
+      var tipo = C.tipo >= 0 ? String(r[C.tipo] || '').trim() : '';
+      var af = C.afect >= 0 ? String(r[C.afect] || '').trim() : '';
+      var usd = C.usd >= 0 ? n0(r[C.usd]) : 0, bs = C.bs >= 0 ? n0(r[C.bs]) : 0, tasa = C.tasa >= 0 ? n0(r[C.tasa]) : 0;
+      if (C.usd < 0 && tasa > 0) usd = bs / tasa;
+      var esNC = /\bnc\b|nota\s*de\s*cr/i.test(tipo) || usd < 0;
+      var fac = (esNC && /\d/.test(af)) ? af : doc;
+      lineas.push({ doc: doc, fac: fac, key: digitos(fac), tipo: tipo, nc: esNC, usd: usd, bs: bs, tasa: tasa,
+        fecha: C.fecha >= 0 ? iso(r[C.fecha]) : '', ref: C.ref >= 0 ? String(r[C.ref] || '').trim() : '',
+        suc: C.suc >= 0 ? String(r[C.suc] || '').trim() : '', rif: C.rif >= 0 ? String(r[C.rif] || '').trim() : '',
+        prov: C.prov >= 0 ? String(r[C.prov] || '').trim() : '', banco: C.banco >= 0 ? String(r[C.banco] || '').trim() : '' });
+    }
+    if (!lineas.length) return null;
+    var porFac = {}, orden = [];
+    lineas.forEach(function(l){
+      if (!porFac[l.key]) { porFac[l.key] = { fac: l.fac, key: l.key, suc: l.suc, bruto: 0, nc: 0, neto: 0, bs: 0 }; orden.push(l.key); }
+      var g = porFac[l.key]; if (l.nc) g.nc += l.usd; else g.bruto += l.usd; g.neto += l.usd; g.bs += l.bs;
+    });
+    var moda = function(arr){ var m = {}, best = '', bc = 0; arr.forEach(function(x){ if (!x) return; m[x] = (m[x] || 0) + 1; if (m[x] > bc) { bc = m[x]; best = x; } }); return best; };
+    return {
+      lineas: lineas, facturas: orden.map(function(k){ return porFac[k]; }),
+      totalUSD: lineas.reduce(function(s, l){ return s + l.usd; }, 0), totalBs: lineas.reduce(function(s, l){ return s + l.bs; }, 0),
+      tasa: n0(moda(lineas.map(function(l){ return l.tasa ? String(l.tasa) : ''; }))), fecha: moda(lineas.map(function(l){ return l.fecha; })),
+      ref: moda(lineas.map(function(l){ return l.ref; })), banco: moda(lineas.map(function(l){ return l.banco; })),
+      rifPagador: moda(lineas.map(function(l){ return l.rif; })), nNC: lineas.filter(function(l){ return l.nc; }).length
+    };
+  };
+
+  // Cruza la relación con la CxC y carga el pago
+  window.cxcmpRelacion400 = function(rel, nombreArchivo){
+    var todas = (typeof cxcFacs === 'function') ? cxcFacs() : [], pends = todas.filter(pend);
+    var ok = [], noEsta = [], yaPagada = [], ambigua = [], difs = [];
+    rel.facturas.forEach(function(g){
+      var m = window.cxcMatchFactura(g.fac, pends);
+      if (m.length === 1) {
+        var f = m[0], neto = r2(g.neto), saldo = r2(f.saldo), ab = Math.min(neto, saldo);
+        ok.push({ g: g, f: f, abono: r2(ab) });
+        if (Math.abs(neto - saldo) > 0.01) difs.push({ g: g, f: f, neto: neto, saldo: saldo });
+      } else if (m.length > 1) ambigua.push(g);
+      else { var p = window.cxcMatchFactura(g.fac, todas.filter(function(f){ return !pend(f); })); if (p.length) yaPagada.push({ g: g, f: p[0] }); else noEsta.push(g); }
+    });
+    var totAb = ok.reduce(function(s, x){ return s + x.abono; }, 0), sobra = r2(rel.totalUSD - totAb);
+    var L = [];
+    L.push('📄 RELACIÓN DE PAGO' + (nombreArchivo ? ' (' + nombreArchivo + ')' : ''));
+    L.push('Ref. ' + (rel.ref || '—') + ' · ' + (rel.fecha ? rel.fecha.split('-').reverse().join('/') : '—') + (rel.banco ? ' · desde ' + rel.banco : ''));
+    L.push('Total: $' + fmt(rel.totalUSD) + (rel.totalBs ? ' = Bs ' + fmtBs(rel.totalBs) + (rel.tasa ? ' (tasa ' + fmtBs(rel.tasa) + ')' : '') : ''));
+    L.push(rel.facturas.length + ' factura(s)' + (rel.nNC ? ' · ' + rel.nNC + ' nota(s) de crédito descontada(s) por el cliente' : ''));
+    L.push('');
+    L.push('✅ Encontradas pendientes en CxC: ' + ok.length + ' → se abonan $' + fmt(totAb));
+    if (difs.length) { L.push(''); L.push('⚠ PAGADO ≠ SALDO (' + difs.length + '):'); difs.slice(0, 12).forEach(function(d){ L.push('  • ' + d.g.fac + ': pagó $' + fmt(d.neto) + ' · saldo $' + fmt(d.saldo) + (d.g.nc ? ' (descontó NC $' + fmt(-d.g.nc) + ')' : '') + (d.neto < d.saldo ? ' → queda $' + fmt(d.saldo - d.neto) : ' → sobra $' + fmt(d.neto - d.saldo))); }); if (difs.length > 12) L.push('  … y ' + (difs.length - 12) + ' más'); }
+    if (yaPagada.length) { L.push(''); L.push('ℹ Ya estaban PAGADAS en el sistema (' + yaPagada.length + '): ' + yaPagada.map(function(x){ return x.g.fac; }).join(', ')); }
+    if (noEsta.length) { L.push(''); L.push('⛔ NO EXISTEN en CxC (' + noEsta.length + '): ' + noEsta.map(function(x){ return x.fac + ' ($' + fmt(x.neto) + ')'; }).join(', ')); }
+    if (ambigua.length) { L.push(''); L.push('⛔ Número repetido en varias facturas (' + ambigua.length + '): ' + ambigua.map(function(x){ return x.fac; }).join(', ') + ' — asígnalas tú.'); }
+    if (sobra > 0.01) { L.push(''); L.push('Queda sin asignar: $' + fmt(sobra) + ' (de facturas no encontradas, ya pagadas o pagadas de más).'); }
+    if (!ok.length) { alert(L.join('\n') + '\n\nNo hay facturas pendientes que coincidan: no se carga nada.'); return false; }
+    if (!confirm(L.join('\n') + '\n\n¿Cargar este pago con esas ' + ok.length + ' facturas? (podrás revisar cada monto antes de aplicar)')) return false;
+
+    var ids = ok.map(function(x){ return x.f.id; });
+    window.cxcmpCargarSeleccion(ids, { keepIA: true, silencioso: true });
+    var setV = function(id, v){ var e = document.getElementById(id); if (e) e.value = v; };
+    setV('cxcmp-moneda', 'USD'); if (typeof cxcmpMonedaChange === 'function') cxcmpMonedaChange();
+    setV('cxcmp-ia-monto', r2(rel.totalUSD).toFixed(2));
+    setV('cxcmp-ia-fecha', rel.fecha || new Date().toISOString().slice(0, 10));
+    setV('cxcmp-ia-ref', rel.ref || '');
+    var enBs = rel.totalBs > 0 && rel.tasa > 0;
+    var sel = document.getElementById('cxcmp-ia-modal');
+    if (sel && enBs && (window._CXC_MODAL_BS || ['bdv', 'banesco', 'bs_ef']).indexOf(sel.value) < 0) sel.value = 'banesco';
+    if (typeof cxcmpModalChange === 'function') cxcmpModalChange();
+    if (enBs) { setV('cxcmp-monto-bs-input', r2(rel.totalBs)); setV('cxcmp-tasa-bs-input', rel.tasa); window._cxcmpTasaBsVal = rel.tasa; window._cxcmpMontoBsVal = r2(rel.totalBs); }
+    setV('cxcmp-ia-notas', 'Relación de pago ' + (rel.ref ? 'ref. ' + rel.ref : '') + ' · ' + rel.facturas.length + ' facturas' + (rel.nNC ? ' · ' + rel.nNC + ' NC descontadas' : '') + (enBs ? ' · Bs ' + fmtBs(rel.totalBs) + ' a tasa ' + fmtBs(rel.tasa) : '') + (rel.banco ? ' · desde ' + rel.banco : ''));
+    window._cxcmpRelacion400 = rel;
+    var ld = document.getElementById('cxcmp-ia-loading'); if (ld) ld.style.display = 'none';
+    var rs = document.getElementById('cxcmp-ia-result'); if (rs) rs.style.display = 'block';
+    cxcmpDistribuir();
+    var mapa = {}; ok.forEach(function(x){ mapa[x.f.id] = x.abono; });
+    setTimeout(function(){
+      document.querySelectorAll('#cxcmp-dist-tabla input[data-fid]').forEach(function(inp){ if (mapa[inp.dataset.fid] != null) { inp.value = mapa[inp.dataset.fid].toFixed(2); inp.style.background = '#dcfce7'; inp.style.border = '1.5px solid #16a34a'; inp.title = 'Según la relación del cliente'; } });
+      if (typeof cxcmpRecalcResumen === 'function') cxcmpRecalcResumen();
+    }, 180);
+    if (typeof showToast === 'function') showToast('📄 Relación cargada: ' + ok.length + ' facturas · $' + fmt(totAb), 'success');
+    return true;
+  };
+
+  // Verificación cruzada con el comprobante del banco (PDF/imagen) cuando llegan los dos
+  window.cxcmpVerificarComprobante400 = function(parsed){
+    var rel = window._cxcmpRelacion400; if (!rel || !parsed) return;
+    var mBs = n0(parsed.monto_total), refC = digitos(parsed.referencia), refR = digitos(rel.ref);
+    var okMonto = rel.totalBs > 0 ? Math.abs(mBs - rel.totalBs) <= 1 : Math.abs(mBs - rel.totalUSD) <= 0.05;
+    var okRef = !refR || !refC || refC === refR || refC.slice(-6) === refR.slice(-6);
+    // cuenta que recibió el pago → modalidad (0134 Banesco · 0102 BDV)
+    var cta = String(parsed.cuenta_destino || '').replace(/\D/g, ''), banco = '';
+    if (cta.length >= 4) { var pre = cta.slice(0, 4); var selM = document.getElementById('cxcmp-ia-modal'); if (pre === '0134') banco = 'banesco'; else if (pre === '0102') banco = 'bdv'; if (banco && selM) { selM.value = banco; if (typeof cxcmpModalChange === 'function') cxcmpModalChange(); var sv = function(id, v){ var e = document.getElementById(id); if (e) e.value = v; }; sv('cxcmp-monto-bs-input', r2(rel.totalBs)); sv('cxcmp-tasa-bs-input', rel.tasa); window._cxcmpTasaBsVal = rel.tasa; } }
+    var box = document.getElementById('cxcmp-rel-check'), host = document.getElementById('cxcmp-ia-result');
+    if (!box && host) { box = document.createElement('div'); box.id = 'cxcmp-rel-check'; host.parentNode.insertBefore(box, host); }
+    if (!box) return;
+    box.style.cssText = 'margin:10px 0;padding:10px 12px;border-radius:9px;font-size:.76rem;font-weight:800;' + (okMonto && okRef ? 'background:#ecfdf5;border:1.5px solid #16a34a;color:#065f46;' : 'background:#fef2f2;border:1.5px solid #dc2626;color:#991b1b;');
+    box.innerHTML = (okMonto && okRef ? '✅ El comprobante del banco CUADRA con la relación' : '⚠ El comprobante del banco NO cuadra con la relación — revisa antes de aplicar') +
+      '<div style="font-weight:600;margin-top:4px;">Banco: ' + (rel.totalBs ? 'Bs ' + fmtBs(mBs) : '$' + fmt(mBs)) + ' · ref. ' + (parsed.referencia || '—') + ' &nbsp;|&nbsp; Relación: ' + (rel.totalBs ? 'Bs ' + fmtBs(rel.totalBs) : '$' + fmt(rel.totalUSD)) + ' · ref. ' + (rel.ref || '—') + '</div>' +
+      '<div style="font-weight:600;margin-top:2px;">' + (banco ? 'Entró a la cuenta ' + cta.slice(0, 4) + '…' + cta.slice(-4) + ' → modalidad <b>' + (banco === 'banesco' ? 'Banesco' : 'BDV') + '</b>' : 'Revisa la modalidad (banco donde entró el dinero) antes de aplicar') + '</div>';
+  };
+})();
+
 // ═══ v.399 CxC — SELECCIÓN LIBRE DE FACTURAS + COMPROBANTES INTELIGENTES ═══
 // Omar (02/11/2026): "quiero poder seleccionarlas todas a mi placer" y que al
 // enviar los comprobantes el sistema determine a qué factura pertenece cada uno.
@@ -27626,11 +27765,25 @@ window._ciMarcasExcl = _ciMarcasExcl;
     bar.innerHTML = '<div style="flex:1;min-width:220px;font-size:.8rem;font-weight:800;">' + sel.length + ' factura' + (sel.length !== 1 ? 's' : '') + ' seleccionada' + (sel.length !== 1 ? 's' : '') +
         ' · ' + Object.keys(cls).length + ' cliente' + (Object.keys(cls).length !== 1 ? 's' : '') + ' · Saldo <span style="font-size:1rem;">$ ' + fmt(tot) + '</span></div>' +
       '<button onclick="cxcSelLimpiar()" style="background:transparent;color:#fff;border:1.5px solid #fff;border-radius:8px;padding:8px 12px;font-weight:800;font-size:.72rem;cursor:pointer;">Quitar selección</button>' +
+      '<label style="background:transparent;color:#fff;border:1.5px solid #fff;border-radius:8px;padding:8px 12px;font-weight:800;font-size:.72rem;cursor:pointer;">🧾 Subir comprobante<input type="file" multiple accept="image/*,.pdf,.xlsx,.xls,.csv" style="display:none;" onchange="if(this.files.length)cxcSubirDesdeFacturas401(Array.from(this.files));this.value=\'\';"></label>' +
       '<button onclick="cxcSelProcesar()" style="background:#fff;color:#000;border:none;border-radius:8px;padding:9px 16px;font-weight:900;font-size:.76rem;cursor:pointer;">💳 PROCESAR PAGO DE LAS ' + sel.length + ' →</button>';
     var h = document.getElementById('cxc-sel-all');
     if (h) { var vis = Array.prototype.slice.call(document.querySelectorAll('.cxc-sel-chk')); h.checked = vis.length > 0 && vis.every(function(c){ return c.checked; }); }
   };
   window.cxcSelLimpiar = function(){ window._cxcSel.clear(); document.querySelectorAll('.cxc-sel-chk').forEach(function(c){ c.checked = false; }); window.cxcSelBarra(); };
+  // v.401: comprobante subido desde la tabla de Facturas (con o sin facturas marcadas)
+  window.cxcSubirDesdeFacturas401 = async function(files){
+    var lista = Array.from(files || []); if (!lista.length) return;
+    var ids = Array.from(window._cxcSel || []);
+    cxcAbrirMultiPago();
+    await new Promise(function(r){ setTimeout(r, 80); });
+    if (!ids.length) { await window.cxcmpSubirDesdeInicio(lista); return; }
+    // con facturas marcadas: se cargan esas y el comprobante se aplica sobre ellas
+    window.cxcmpCargarSeleccion(ids, { silencioso: true });
+    var esRel = function(f){ return /\.(xlsx|xls|csv|txt)$/i.test(f.name || ''); };
+    lista.sort(function(a, b){ return (esRel(a) ? 0 : 1) - (esRel(b) ? 0 : 1); });
+    for (var i = 0; i < lista.length; i++) { await cxcmpProcesarArchivo(lista[i]); }
+  };
   window.cxcSelProcesar = function(){
     var ids = Array.from(window._cxcSel);
     if (!ids.length) { alert('Marca al menos una factura.'); return; }
@@ -27806,8 +27959,19 @@ window._ciMarcasExcl = _ciMarcasExcl;
   };
 
   // Subir el comprobante desde el paso ① (sin elegir cliente antes)
-  window.cxcmpSubirDesdeInicio = function(file){
+  window.cxcmpSubirDesdeInicio = async function(file){
+    // v.400: acepta varios archivos — la relación (Excel/CSV) primero, luego el comprobante del banco
+    if (Array.isArray(file) || (file && typeof file.length === 'number' && !file.name)) {
+      var lista = Array.from(file);
+      var esRel = function(f){ return /\.(xlsx|xls|csv|txt)$/i.test(f.name || ''); };
+      lista.sort(function(a, b){ return (esRel(a) ? 0 : 1) - (esRel(b) ? 0 : 1); });
+      if (!lista.length) return;
+      await window.cxcmpSubirDesdeInicio(lista[0]);
+      for (var q = 1; q < lista.length; q++) { await cxcmpProcesarArchivo(lista[q]); }
+      return;
+    }
     if (!file) return;
+    window._cxcmpRelacion400 = null; var _rc = document.getElementById('cxcmp-rel-check'); if (_rc) _rc.remove();
     _cxcmpCliente = null; _cxcmpSelFacs = new Set(); window._cxcmpClientesAcumulados = [];
     document.getElementById('cxcmp-paso1').style.display = 'none';
     document.getElementById('cxcmp-paso2').style.display = 'block';
@@ -27817,7 +27981,7 @@ window._ciMarcasExcl = _ciMarcasExcl;
     document.getElementById('cxcmp-facs-lista').innerHTML = '';
     ['cxcmp-dist-section', 'cxcmp-btn-aplicar'].forEach(function(i){ var e = document.getElementById(i); if (e) e.style.display = 'none'; });
     if (typeof cxcmpRenderClientesAcumulados === 'function') cxcmpRenderClientesAcumulados();
-    cxcmpProcesarArchivo(file);
+    await cxcmpProcesarArchivo(file);
   };
 })();
 
@@ -70199,6 +70363,19 @@ function cxcTabFacturas(body){
     newBtn.onclick=cxcAgregarFactura;
     toolbar.appendChild(newBtn);
     body.appendChild(toolbar);
+    // v.401: subir el comprobante (o la relación del cliente + comprobante) AQUÍ MISMO, sin entrar a Multi-Factura
+    var up401=document.createElement('label');
+    up401.id='cxc-up-fac';
+    up401.style.cssText='display:flex;align-items:center;gap:12px;border:2px dashed #000;border-radius:10px;padding:10px 14px;margin:10px 0 4px;cursor:pointer;background:#fafafa;';
+    up401.innerHTML='<span style="font-size:1.4rem;">🧾</span><span style="flex:1;font-size:.76rem;color:#000;"><b>Subir comprobante de pago</b> (foto, PDF o Excel). Si el cliente manda la relación en Excel + el comprobante del banco, súbelos juntos. '
+      +'Si ya marcaste facturas, el pago se aplica a esas; si no, el sistema busca solo a qué facturas corresponde.</span>'
+      +'<span style="background:#000;color:#fff;border-radius:7px;padding:7px 12px;font-size:.7rem;font-weight:900;white-space:nowrap;">SUBIR</span>'
+      +'<input type="file" multiple accept="image/*,.pdf,.xlsx,.xls,.csv" style="display:none;">';
+    up401.querySelector('input').onchange=function(){ if(this.files.length) cxcSubirDesdeFacturas401(Array.from(this.files)); this.value=''; };
+    up401.ondragover=function(e){ e.preventDefault(); this.style.background='#eef2ff'; };
+    up401.ondragleave=function(){ this.style.background='#fafafa'; };
+    up401.ondrop=function(e){ e.preventDefault(); this.style.background='#fafafa'; if(e.dataTransfer.files.length) cxcSubirDesdeFacturas401(Array.from(e.dataTransfer.files)); };
+    body.appendChild(up401);
   }
 
   // Actualizar pills activas
@@ -73408,6 +73585,7 @@ function cxcAbrirMultiPago(){
   // v.249: mostrar de una vez todos los clientes con deuda (sin tener que escribir)
   if (typeof cxcmpListarClientes === 'function') cxcmpListarClientes('');
   if (typeof window.cxcmpGlobalBar === 'function') window.cxcmpGlobalBar(); // v.399
+  window._cxcmpRelacion400 = null; var _rc400 = document.getElementById('cxcmp-rel-check'); if (_rc400) _rc400.remove(); // v.400
 }
 window.cxcAbrirMultiPago=cxcAbrirMultiPago;
 
@@ -73899,6 +74077,24 @@ async function cxcmpProcesarArchivo(file){
     var contentParts=[];
     var promptText = '';
 
+    // ═══ v.400: ¿es la RELACIÓN de pago del cliente (factura por factura)? → lectura directa, sin IA ═══
+    if ((esExcel || esCSV) && typeof window.cxcRelacionParse === 'function') {
+      try {
+        var _hojas400 = [];
+        if (esCSV) {
+          var _txt400 = await file.text();
+          var _sep400 = (_txt400.split('\n')[0].split(';').length > _txt400.split('\n')[0].split(',').length) ? ';' : (_txt400.indexOf('\t') >= 0 ? '\t' : ',');
+          _hojas400.push(_txt400.split(/\r?\n/).map(function(l){ return l.split(_sep400).map(function(c){ return c.replace(/^"|"$/g, ''); }); }));
+        } else if (typeof XLSX !== 'undefined') {
+          var _wb400 = XLSX.read(new Uint8Array(await file.arrayBuffer()), { type: 'array' });
+          _wb400.SheetNames.forEach(function(sn){ _hojas400.push(XLSX.utils.sheet_to_json(_wb400.Sheets[sn], { header: 1, defval: '', raw: true })); });
+        }
+        for (var _h400 = 0; _h400 < _hojas400.length; _h400++) {
+          var _rel400 = window.cxcRelacionParse(_hojas400[_h400]);
+          if (_rel400) { document.getElementById('cxcmp-ia-loading').style.display = 'none'; window.cxcmpRelacion400(_rel400, file.name); return; }
+        }
+      } catch(eRel400) { console.warn('[v.400] relación:', eRel400); }
+    }
     if (esExcel || esCSV) {
       // ═══ Excel/CSV: extraer texto plano y enviarlo como texto ═══
       try {
@@ -73991,6 +74187,7 @@ async function cxcmpProcesarArchivo(file){
       '    { "factura": "N4319", "monto": 1190.29, "concepto": "abono parcial" },\n' +
       '    { "factura": "N4318", "monto": 1372.28, "concepto": "" }\n' +
       '  ],\n' +
+      '  "cuenta_destino": "número de cuenta (20 dígitos) que RECIBIÓ el pago, si aparece",\n' +
       '  "facturas_mencionadas": ["todo número de factura, pedido o nota de entrega que aparezca en el comprobante (concepto, descripción, referencia del cliente), aunque no tenga monto"],\n' +
       '  "confianza_general": número (0-100, cuán seguro estás de los datos extraídos),\n' +
       '  "advertencias": ["lista de cosas que debas advertir al usuario, ej: imagen borrosa"]\n' +
@@ -74024,6 +74221,15 @@ async function cxcmpProcesarArchivo(file){
       raw = raw.substring(firstBrace, lastBrace+1);
     }
     var parsed = JSON.parse(raw);
+
+    // v.400: si ya se cargó la relación del cliente, el comprobante del banco solo se VERIFICA contra ella
+    if (window._cxcmpRelacion400 && typeof window.cxcmpVerificarComprobante400 === 'function' && (window.cxcmpObtenerTodasFacturasSeleccionadas() || []).length) {
+      window._cxcmpIAResultado = parsed;
+      document.getElementById('cxcmp-ia-loading').style.display = 'none';
+      document.getElementById('cxcmp-ia-result').style.display = 'block';
+      window.cxcmpVerificarComprobante400(parsed);
+      return;
+    }
 
     // ═══ Guardar respuesta IA en variable global para uso en panel de auditoría ═══
     window._cxcmpIAResultado = parsed;
@@ -77900,11 +78106,11 @@ window.cxcMostrarReconciliacion = cxcMostrarReconciliacion;
         <div style="font-size:.72rem;font-weight:800;text-transform:uppercase;letter-spacing:.8px;color:var(--cxc-navy);margin-bottom:12px;">① Seleccionar Cliente</div>
         <label id="cxcmp-up1" style="display:flex;align-items:center;gap:12px;border:2px dashed #000;border-radius:10px;padding:10px 14px;margin-bottom:10px;cursor:pointer;background:#fafafa;"
           ondragover="event.preventDefault();this.style.background='#eef2ff';" ondragleave="this.style.background='#fafafa';"
-          ondrop="event.preventDefault();this.style.background='#fafafa';if(event.dataTransfer.files[0])cxcmpSubirDesdeInicio(event.dataTransfer.files[0]);">
+          ondrop="event.preventDefault();this.style.background='#fafafa';if(event.dataTransfer.files.length)cxcmpSubirDesdeInicio(Array.from(event.dataTransfer.files));">
           <span style="font-size:1.4rem;">🧾</span>
-          <span style="flex:1;font-size:.76rem;color:#000;"><b>¿Tienes el comprobante?</b> Súbelo aquí (foto, PDF o Excel) y el sistema busca solo a qué cliente y facturas corresponde.</span>
+          <span style="flex:1;font-size:.76rem;color:#000;"><b>¿Tienes el comprobante?</b> Súbelo aquí (foto, PDF o Excel) y el sistema busca solo a qué cliente y facturas corresponde. Si el cliente manda la <b>relación en Excel + el comprobante del banco</b>, súbelos juntos.</span>
           <span style="background:#000;color:#fff;border-radius:7px;padding:7px 12px;font-size:.7rem;font-weight:900;white-space:nowrap;">SUBIR</span>
-          <input type="file" accept="image/*,.pdf,.xlsx,.xls,.csv" style="display:none;" onchange="if(this.files[0])cxcmpSubirDesdeInicio(this.files[0]);this.value='';">
+          <input type="file" multiple accept="image/*,.pdf,.xlsx,.xls,.csv" style="display:none;" onchange="if(this.files.length)cxcmpSubirDesdeInicio(Array.from(this.files));this.value='';">
         </label>
         <div id="cxcmp-global-bar"></div>
         <input id="cxcmp-cl-search" type="text" placeholder="Buscar cliente, RIF o N° de factura..."
