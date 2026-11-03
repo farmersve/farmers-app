@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.11.02.407">
+<meta name="farmers-version" content="2026.11.03.408">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -8753,6 +8753,24 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
           payload = [];
         }
 
+        // v.408: FUSIÓN con la nube factura por factura (nunca más pisar lo que cobró otro equipo)
+        var _borr408 = window.cxcBorradas408 ? cxcBorradas408() : {};
+        try {
+          var _loc408 = window.cxcNormalizar408 ? cxcNormalizar408(JSON.parse(localStorage.getItem('farmers_cxc') || '{}')) : null;
+          if (Array.isArray(_loc408) && _loc408.length >= payload.length) payload = _loc408; // lo más reciente de este equipo
+          var _pN408 = await getDoc(doc(db,'data','cxc'));
+          if (_pN408.exists() && window.cxcFusionar408) {
+            var _nArr408 = cxcNormalizar408(JSON.parse(_pN408.data().v || '[]')) || [];
+            var _nB408 = {}; try { _nB408 = JSON.parse(_pN408.data().borradas || '{}') || {}; } catch(eB){}
+            _borr408 = cxcGuardarBorradas408(cxcUnirBorradas408(_borr408, _nB408));
+            var _F408 = cxcFusionar408(payload, _nArr408, _borr408);
+            if (_F408.cuarentena.length) cxcAgregarCuarentena408(_F408.cuarentena);
+            payload = _F408.arr;
+            if (_F408.cambiosLocal) { cxcEscribirLocal408(payload); setTimeout(cxcRefrescarUI408, 30); }
+            if (!_F408.cambiosNube) return { count: payload.length, ok: true, sinCambios: true };
+          }
+        } catch(eF408){ console.warn('[v.408 fusión CxC]', eF408); }
+
         // 2) Anti-pisado: si voy a guardar [] pero Firebase tiene >0, rechazar
         if (payload.length === 0) {
           try {
@@ -8780,6 +8798,7 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
         await setDoc(doc(db,'data','cxc'), {
           v: payloadStr,
           count: payload.length,
+          borradas: JSON.stringify(_borr408 || {}), // v.408
           updatedAt: Date.now()
         });
         window._fbBackupColeccion('cxc', payloadStr, payload.length); // v.310
@@ -8823,6 +8842,16 @@ document.getElementById('l-u').addEventListener('keydown', function(e){
           var localData = localRaw ? JSON.parse(localRaw) : {facturas:[]};
           if (!Array.isArray(localData.facturas)) localData.facturas = [];
           var localFacs = localData.facturas;
+          // v.408: fusión factura por factura (gana lo modificado más recientemente)
+          if (window.cxcFusionar408 && !(fbFacs.length === 0 && localFacs.length > 0)) {
+            var _bL = cxcBorradas408(), _bN = {}; try { _bN = JSON.parse(s.data().borradas || '{}') || {}; } catch(eB){}
+            var _bb = cxcGuardarBorradas408(cxcUnirBorradas408(_bL, _bN));
+            var _F = cxcFusionar408(localFacs, fbFacs, _bb);
+            if (_F.cuarentena.length) cxcAgregarCuarentena408(_F.cuarentena);
+            if (_F.cambiosLocal) { cxcEscribirLocal408(_F.arr); cxcRefrescarUI408(); if (typeof fbLog === 'function') fbLog('↓ CXC fusionado (' + _F.arr.length + ' facturas)', 'ok'); }
+            if (_F.cambiosNube) { clearTimeout(window._cxcPush408); window._cxcPush408 = setTimeout(function(){ try { window.fbSaveCXC(cxcGet()); } catch(eP){} }, 3000); }
+            return;
+          }
 
           // v.71 anti-pisado: si Firebase llega vacío y local tiene datos, NO sincronizar.
           // Esto evita que un save accidental con [] en Firebase borre cartera local.
@@ -13371,8 +13400,19 @@ async function loadFromFirebase() {
           // Merge: Firebase gana en facturas, local mantiene pagos recientes no sincronizados
           var localCXC = {};
           try { localCXC = JSON.parse(localStorage.getItem('farmers_cxc') || '{}'); } catch(e4) {}
-          var merged = Object.assign({}, localCXC, cxcData);
-          localStorage.setItem('farmers_cxc', JSON.stringify(merged));
+          // v.408: fusión real factura por factura
+          var _nube408 = window.cxcNormalizar408 ? cxcNormalizar408(cxcData) : null;
+          if (_nube408 && window.cxcFusionar408) {
+            var _locA408 = cxcNormalizar408(localCXC) || [];
+            var _F408c = cxcFusionar408(_locA408, _nube408, cxcBorradas408());
+            if (_F408c.cuarentena.length) cxcAgregarCuarentena408(_F408c.cuarentena);
+            cxcEscribirLocal408(_F408c.arr);
+            if (_F408c.cambiosNube && window.fbSaveCXC) setTimeout(function(){ try { window.fbSaveCXC(cxcGet()); } catch(eP){} }, 6000);
+            console.log('[v.408] CXC fusionado al cargar: ' + _F408c.arr.length + ' facturas (' + _F408c.cambiosLocal + ' actualizadas aquí, ' + _F408c.cambiosNube + ' por subir)');
+          } else {
+            var merged = Object.assign({}, localCXC, cxcData);
+            localStorage.setItem('farmers_cxc', JSON.stringify(merged));
+          }
           console.log('CXC cargado desde Firebase');
         }
       } catch(eCXC) { console.warn('loadFromFirebase CXC:', eCXC); }
@@ -27774,6 +27814,121 @@ function _ciMarcasExcl(P){
   return String(P.excluir || '').toUpperCase().split(/[,;]+/).map(function(x){ return x.trim(); }).filter(Boolean);
 }
 window._ciMarcasExcl = _ciMarcasExcl;
+// ═══ v.408 CxC: SINCRONIZACIÓN POR FACTURA ENTRE EQUIPOS ═══════════════════
+// Problema (03/11): cobranza hecha en la Mac no aparecía en la PC.
+// Causas: (1) al abrir CxC, el sistema leía mal el formato de la nube (lista)
+// y creía que estaba vacía → SUBÍA la copia local completa y pisaba lo que había
+// cobrado el otro equipo; (2) al iniciar sesión la copia local vieja se quedaba.
+// Ahora cada factura lleva su sello de modificación (_ts) y la nube y el equipo
+// se FUSIONAN factura por factura: gana la versión modificada más recientemente.
+// Facturas viejas sin sello: gana la que tiene más actividad (más pagos, más NC,
+// menor saldo). Borradas: quedan registradas (borradas) para no resucitar.
+// Facturas que solo existen en este equipo y nunca se tocaron con v.408 no se
+// suben solas: van a CUARENTENA para que tú decidas (probablemente se borraron
+// en otro equipo).
+(function(){
+  var BORR_KEY = 'farmers_cxc_borradas', CUAR_KEY = 'farmers_cxc_cuarentena408';
+  function J(o){ var c = {}; Object.keys(o || {}).sort().forEach(function(k){ if (k !== '_ts') c[k] = o[k]; }); return JSON.stringify(c); }
+  function n(v){ var x = parseFloat(v); return isFinite(x) ? x : 0; }
+  function score(f){
+    var nc = (f.notasCredito || []).length;
+    return [(f.pagos || []).length, nc, -Math.round(n(f.saldo) * 100)];
+  }
+  function mejor(l, c){ // true si l gana
+    var tl = n(l._ts), tc = n(c._ts);
+    if (tl !== tc) return tl > tc;
+    var a = score(l), b = score(c);
+    for (var i = 0; i < a.length; i++) if (a[i] !== b[i]) return a[i] > b[i];
+    return false; // empate → nube
+  }
+  window.cxcBorradas408 = function(){ try { return JSON.parse(localStorage.getItem(BORR_KEY) || '{}') || {}; } catch(e){ return {}; } };
+  window.cxcGuardarBorradas408 = function(b){
+    var lim = Date.now() - 120 * 864e5, o = {};
+    Object.keys(b || {}).forEach(function(k){ if (n(b[k]) >= lim) o[k] = b[k]; });
+    try { localStorage.setItem(BORR_KEY, JSON.stringify(o)); } catch(e){}
+    return o;
+  };
+  window.cxcUnirBorradas408 = function(a, b){ var o = Object.assign({}, a || {}); Object.keys(b || {}).forEach(function(k){ o[k] = Math.max(n(o[k]), n(b[k])); }); return o; };
+  window.cxcNormalizar408 = function(d){
+    if (Array.isArray(d)) return d;
+    if (d && Array.isArray(d.facturas)) return d.facturas;
+    return null;
+  };
+  // Fusión factura por factura. Devuelve { arr, cambiosLocal, cambiosNube, cuarentena }
+  window.cxcFusionar408 = function(localArr, nubeArr, borr){
+    localArr = localArr || []; nubeArr = nubeArr || []; borr = borr || {};
+    var L = {}, C = {}, orden = [], vistos = {};
+    localArr.forEach(function(f){ if (f && f.id != null) { L[f.id] = f; if (!vistos[f.id]) { vistos[f.id] = 1; orden.push(f.id); } } });
+    nubeArr.forEach(function(f){ if (f && f.id != null) { C[f.id] = f; if (!vistos[f.id]) { vistos[f.id] = 1; orden.push(f.id); } } });
+    var out = [], cambiosLocal = 0, cambiosNube = 0, cuarentena = [];
+    orden.forEach(function(id){
+      var l = L[id], c = C[id], r;
+      if (l && c) r = mejor(l, c) ? l : c;
+      else if (c) r = c;
+      else { // solo en este equipo
+        if (!n(l._ts) && nubeArr.length) { cuarentena.push(l); cambiosLocal++; return; }
+        r = l;
+      }
+      if (borr[id] && n(borr[id]) >= n(r._ts)) { if (l) cambiosLocal++; if (c) cambiosNube++; return; }
+      if (!l || J(l) !== J(r) || n(l._ts) !== n(r._ts)) cambiosLocal++;
+      if (!c || J(c) !== J(r) || n(c._ts) !== n(r._ts)) cambiosNube++;
+      out.push(r);
+    });
+    return { arr: out, cambiosLocal: cambiosLocal, cambiosNube: cambiosNube, cuarentena: cuarentena };
+  };
+  // Escribe la cartera local conservando el resto del objeto y limpiando las claves numéricas basura
+  window.cxcEscribirLocal408 = function(arr){
+    var d = {}; try { d = JSON.parse(localStorage.getItem('farmers_cxc') || '{}') || {}; } catch(e){ d = {}; }
+    if (Array.isArray(d)) d = {};
+    Object.keys(d).forEach(function(k){ if (/^\d+$/.test(k)) delete d[k]; });
+    d.facturas = arr;
+    localStorage.setItem('farmers_cxc', JSON.stringify(d));
+  };
+  window.cxcAgregarCuarentena408 = function(lista){
+    if (!lista || !lista.length) return;
+    var q = []; try { q = JSON.parse(localStorage.getItem(CUAR_KEY) || '[]') || []; } catch(e){}
+    var ids = {}; q.forEach(function(f){ ids[f.id] = 1; });
+    lista.forEach(function(f){ if (!ids[f.id]) { q.push(f); ids[f.id] = 1; } });
+    try { localStorage.setItem(CUAR_KEY, JSON.stringify(q)); } catch(e){}
+    try { if (typeof showToast === 'function') showToast('🔎 CxC: ' + lista.length + ' factura(s) que solo estaban en este equipo quedaron en revisión (CxC → botón "En revisión").', 'warning', { duration: 12000 }); } catch(e){}
+  };
+  window.cxcRefrescarUI408 = function(){
+    try { if (typeof cxcUpdateBadge === 'function') cxcUpdateBadge(); } catch(e){}
+    try { var m = document.getElementById('cxc-modal'); if (m && m.classList.contains('open') && typeof cxcGoTab === 'function' && typeof _cxcTab !== 'undefined') cxcGoTab(_cxcTab); } catch(e){}
+  };
+  // Panel de cuarentena
+  window.cxcCuarentena408 = function(){
+    var q = []; try { q = JSON.parse(localStorage.getItem(CUAR_KEY) || '[]') || []; } catch(e){}
+    var prev = document.getElementById('cxc-cuar-408'); if (prev) prev.remove();
+    if (!q.length) { alert('✅ No hay facturas en revisión.'); return; }
+    var fm = function(v){ return '$' + n(v).toFixed(2); };
+    var html = '<div id="cxc-cuar-408" style="position:fixed;inset:0;background:rgba(15,23,42,.6);z-index:99900;display:flex;align-items:center;justify-content:center;padding:14px;">' +
+      '<div style="background:#fff;border-radius:12px;max-width:820px;width:100%;max-height:90vh;overflow:auto;color:#000;">' +
+      '<div style="background:#0f172a;color:#fff;padding:12px 16px;border-radius:12px 12px 0 0;display:flex;"><div style="flex:1;font-weight:900;">🔎 Facturas en revisión (solo estaban en este equipo)</div><button onclick="document.getElementById(\'cxc-cuar-408\').remove()" style="background:#fff;border:none;border-radius:6px;padding:4px 10px;font-weight:900;cursor:pointer;">✕</button></div>' +
+      '<div style="padding:12px 16px;font-size:.78rem;">Estas facturas estaban en la copia de este equipo pero NO en la nube. Lo normal es que se hayan borrado o regenerado en otro equipo. <b>Restaura</b> solo las que de verdad existen y siguen vigentes.</div>' +
+      '<table style="width:100%;border-collapse:collapse;font-size:.76rem;"><tr style="background:#0f172a;color:#fff;"><th style="padding:6px;text-align:left;">Cliente</th><th style="padding:6px;">Factura</th><th style="padding:6px;">Emisión</th><th style="padding:6px;text-align:right;">Monto</th><th style="padding:6px;text-align:right;">Saldo</th><th></th></tr>' +
+      q.map(function(f, i){ return '<tr style="border-bottom:1px solid #e2e8f0;"><td style="padding:6px;">' + (f.clienteNombre || f.cliente || '') + '</td><td style="padding:6px;text-align:center;">' + (f.nFactura || f.numpedido || f.id) + '</td><td style="padding:6px;text-align:center;">' + (f.fechaEmision || '') + '</td><td style="padding:6px;text-align:right;">' + fm(f.monto) + '</td><td style="padding:6px;text-align:right;">' + fm(f.saldo) + '</td>' +
+        '<td style="padding:6px;white-space:nowrap;"><button onclick="cxcCuarAccion408(' + i + ',true)" style="background:#0f172a;color:#fff;border:none;border-radius:5px;padding:4px 8px;font-weight:800;cursor:pointer;font-size:.7rem;">Restaurar</button> <button onclick="cxcCuarAccion408(' + i + ',false)" style="background:#fff;border:1.5px solid #0f172a;border-radius:5px;padding:4px 8px;font-weight:800;cursor:pointer;font-size:.7rem;">Descartar</button></td></tr>'; }).join('') +
+      '</table></div></div>';
+    document.body.insertAdjacentHTML('beforeend', html);
+  };
+  window.cxcCuarAccion408 = function(i, restaurar){
+    var q = []; try { q = JSON.parse(localStorage.getItem(CUAR_KEY) || '[]') || []; } catch(e){}
+    var f = q[i]; if (!f) return;
+    if (restaurar) {
+      if (!confirm('¿Restaurar la factura ' + (f.nFactura || f.numpedido || f.id) + ' de ' + (f.clienteNombre || '') + ' con saldo $' + n(f.saldo).toFixed(2) + '?\nVolverá a la cartera en todos los equipos.')) return;
+      var facs = cxcFacs(); if (!facs.some(function(x){ return x.id === f.id; })) { f._ts = Date.now(); facs.push(f); }
+      var b = cxcBorradas408(); delete b[f.id]; cxcGuardarBorradas408(b);
+      cxcSaveFacs(facs);
+    }
+    q.splice(i, 1);
+    try { localStorage.setItem(CUAR_KEY, JSON.stringify(q)); } catch(e){}
+    cxcRefrescarUI408();
+    if (q.length) cxcCuarentena408(); else { var p = document.getElementById('cxc-cuar-408'); if (p) p.remove(); alert('✅ Revisión terminada.'); }
+  };
+  window.cxcCuarentenaCount408 = function(){ try { return (JSON.parse(localStorage.getItem(CUAR_KEY) || '[]') || []).length; } catch(e){ return 0; } };
+})();
+
 // ═══ v.405 INVENTARIO VALORIZADO (costo FOB · costo CIF · venta USD/BCV/TF) ═══
 // Datos en vivo: existencia real (exNE+exAN+exTF) × costo de cada ref.
 // Costo = costoFOB del producto (si no, el costo del Master Data).
@@ -70571,6 +70726,24 @@ window.farmersIDBProbar = async function(){
 };
 
 function cxcSave(d){
+  // v.408: sellar cada factura que cambió (o es nueva) y registrar las borradas
+  try {
+    var _prev408 = []; try { _prev408 = (window.cxcNormalizar408 ? cxcNormalizar408(JSON.parse(localStorage.getItem('farmers_cxc') || '{}')) : null) || []; } catch(eP){ _prev408 = []; }
+    var _pm408 = {}; _prev408.forEach(function(f){ if (f && f.id != null) _pm408[f.id] = f; });
+    var _J408 = function(o){ var c = {}; Object.keys(o || {}).sort().forEach(function(k){ if (k !== '_ts') c[k] = o[k]; }); return JSON.stringify(c); };
+    var _now408 = Date.now(), _ids408 = {};
+    (d && Array.isArray(d.facturas) ? d.facturas : []).forEach(function(f){
+      if (!f || f.id == null) return; _ids408[f.id] = 1;
+      var p = _pm408[f.id];
+      if (!p || _J408(p) !== _J408(f)) f._ts = _now408;
+    });
+    if (window.cxcBorradas408 && d && Array.isArray(d.facturas)) {
+      var _b408 = cxcBorradas408(), _nb = 0;
+      Object.keys(_pm408).forEach(function(id){ if (!_ids408[id]) { _b408[id] = _now408; _nb++; } });
+      if (_nb) cxcGuardarBorradas408(_b408);
+    }
+    if (d && !Array.isArray(d)) Object.keys(d).forEach(function(k){ if (/^\d+$/.test(k)) delete d[k]; });
+  } catch(e408){ console.warn('[v.408 cxcSave sello]', e408); }
   // Guardar en localStorage
   localStorage.setItem('farmers_cxc',JSON.stringify(d));
   // ─────────────────────────────────────────────────────────────
@@ -70616,6 +70789,13 @@ function cxcLoadFromFirebase(){
       return; // formato desconocido o null
     }
     if (!facsFB.length) return;
+    if (window.cxcFusionar408) { // v.408
+      var _F = cxcFusionar408(cxcFacs(), facsFB, cxcBorradas408());
+      if (_F.cuarentena.length) cxcAgregarCuarentena408(_F.cuarentena);
+      if (_F.cambiosLocal) { cxcEscribirLocal408(_F.arr); cxcRefrescarUI408(); }
+      if (_F.cambiosNube && window.fbSaveCXC) window.fbSaveCXC(cxcGet());
+      return;
+    }
     var local = cxcGet();
     if (!Array.isArray(local.facturas)) local.facturas = [];
     var localIds = local.facturas.map(function(f){return f.id;});
@@ -70713,6 +70893,17 @@ function cxcSyncBidireccional(){
 
   window.fbGetCXC().then(function(fbData){
     var fbFacs = (fbData && fbData.facturas) ? fbData.facturas : [];
+    // v.408: la nube guarda una LISTA; antes se leía como vacía y se subía la copia local encima
+    if (window.cxcFusionar408) {
+      var _nb = cxcNormalizar408(fbData);
+      if (_nb && _nb.length) {
+        var _F = cxcFusionar408(cxcFacs(), _nb, cxcBorradas408());
+        if (_F.cuarentena.length) cxcAgregarCuarentena408(_F.cuarentena);
+        if (_F.cambiosLocal) { cxcEscribirLocal408(_F.arr); cxcRefrescarUI408(); showToast('CxC al día con los otros equipos (' + _F.arr.length + ' facturas) ✅', 'success'); }
+        if (_F.cambiosNube) window.fbSaveCXC(cxcGet());
+        return;
+      }
+    }
 
     if(fbFacs.length === 0 && localFacs.length > 0){
       // Firebase vacío pero local tiene datos → SUBIR todo a Firebase
@@ -70977,6 +71168,7 @@ function cxcTabFacturas(body){
     newBtn.onclick=cxcAgregarFactura;
     var ncBtn402=document.createElement('button'); ncBtn402.className='cxc-btn cxc-btn-sm'; ncBtn402.textContent='📋 Notas de crédito'; ncBtn402.title='Ver, anular o reemitir notas de crédito'; ncBtn402.style.cssText='background:#fff;color:#000;border:1.5px solid #000;'; ncBtn402.onclick=function(){ ncVerHistorial(); }; toolbar.appendChild(ncBtn402); // v.402
     toolbar.appendChild(newBtn);
+    try { var _cq408 = window.cxcCuarentenaCount408 ? cxcCuarentenaCount408() : 0; if (_cq408) { var cqB = document.createElement('button'); cqB.className = 'cxc-btn cxc-btn-sm'; cqB.textContent = '🔎 En revisión (' + _cq408 + ')'; cqB.title = 'Facturas que solo estaban en este equipo'; cqB.style.cssText = 'background:#fff;color:#000;border:1.5px solid #dc2626;'; cqB.onclick = function(){ cxcCuarentena408(); }; toolbar.appendChild(cqB); } } catch(eCq){}
     body.appendChild(toolbar);
     // v.401: subir el comprobante (o la relación del cliente + comprobante) AQUÍ MISMO, sin entrar a Multi-Factura
     var up401=document.createElement('label');
