@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.11.03.408">
+<meta name="farmers-version" content="2026.11.04.410">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -27814,6 +27814,99 @@ function _ciMarcasExcl(P){
   return String(P.excluir || '').toUpperCase().split(/[,;]+/).map(function(x){ return x.trim(); }).filter(Boolean);
 }
 window._ciMarcasExcl = _ciMarcasExcl;
+// ═══ v.410 RECUPERAR UN PEDIDO CANCELADO ═════════════════════════════════
+// Caso 04/11: Omar canceló un pedido para volver a hacerlo con la lista de precios
+// del cliente. Dos caminos, según de dónde vino el pedido:
+//  A) Vino del PORTAL → el pedido del portal vuelve a "pendiente" y reaparece en
+//     Portal Cliente → Pedidos, listo para importarlo otra vez.
+//  B) Vino de un archivo / carga manual → se reabre en el procesador de pedidos con
+//     las mismas referencias, sucursales y cantidades, y los precios del cliente que
+//     traía el archivo, para escoger "precio cliente" y emitirlo de nuevo con el
+//     MISMO número (reemplaza al cancelado; no quedan dos pedidos).
+(function(){
+  function hoy(){ return new Date().toLocaleDateString('es-VE', { day: '2-digit', month: '2-digit', year: 'numeric' }); }
+  function usr(){ return window.FARMERS_USER || 'OGK'; }
+
+  window.msRecuperarCancelado410 = async function(numP){
+    var peds = getMsPedidos(), ped = peds.find(function(p){ return p.numP === numP; });
+    if (!ped) { alert('⛔ No encontré el pedido ' + numP + '.'); return; }
+    if (String(ped.estado || '').toUpperCase() !== 'CANCELADO') { alert('ℹ️ El pedido ' + numP + ' no está cancelado (estado: ' + ped.estado + ').'); return; }
+    if (ped.portalId) return msDevolverAPortal410(ped);
+    return msReabrirEnProcesador410(ped);
+  };
+
+  // A) Portal
+  window.msDevolverAPortal410 = async function(ped){
+    if (typeof window.fbGetPortalPedido !== 'function' || typeof window.fbSavePortalPedido !== 'function') { alert('⛔ El módulo del portal no está listo. Recarga e intenta de nuevo.'); return; }
+    var p = await window.fbGetPortalPedido(ped.portalId);
+    if (!p) { alert('⛔ No encontré en la nube el pedido del portal de ' + ped.numP + '. Te lo abro en el procesador para rehacerlo.'); return msReabrirEnProcesador410(ped); }
+    var cli = (p.cliente && (p.cliente.razon || p.cliente.nombre)) || '';
+    if (!confirm('↩ DEVOLVER AL PORTAL · ' + ped.numP + '\n\nCliente: ' + cli + '\n\nEl pedido del portal vuelve a PENDIENTE y aparece de nuevo en Portal Cliente → Pedidos, para importarlo otra vez (esta vez con la lista de precios del cliente).\n\n¿Continuar?')) return;
+    var hist = Array.isArray(p.reaperturas) ? p.reaperturas : [];
+    hist.push({ numPCancelado: ped.numP, fecha: new Date().toISOString(), por: usr() });
+    p.reaperturas = hist;
+    p.estado = 'pendiente';
+    p.sincronizadoAFarmers = false;
+    p.numPedidoMonitor = '';
+    p.enProceso = null;
+    p.confirmadoPor = null; p.fechaConfirmado = null;
+    try { await window.fbSavePortalPedido(ped.portalId, p); }
+    catch(e){ alert('⛔ No se pudo guardar en la nube: ' + (e && e.message) + '\nNo se cambió nada.'); return; }
+    try { var loc = (window.portalPedidos || []).find(function(x){ return x.id === ped.portalId; }); if (loc) Object.keys(p).forEach(function(k){ loc[k] = p[k]; }); } catch(e){}
+    var peds = getMsPedidos(), i = peds.findIndex(function(x){ return x.numP === ped.numP; });
+    if (i >= 0) { peds[i].devueltoAPortal = { fecha: new Date().toISOString(), por: usr() }; saveMsPedidos(peds); }
+    alert('✅ Listo. El pedido de ' + cli + ' volvió a PENDIENTE en el portal.\n\nVe a Portal Cliente → Pedidos e impórtalo de nuevo. Al revisar los precios, escoge "precio cliente".');
+    try { var ov = document.getElementById('ms-monitor-ov'); if (ov) ov.remove(); } catch(e){}
+    try { if (typeof pcAbrirModulo === 'function') pcAbrirModulo(); } catch(e){}
+  };
+
+  // B) Procesador
+  window.msReabrirEnProcesador410 = function(ped){
+    var data = Array.isArray(ped.data) && ped.data.length ? ped.data : null;
+    if (!data) { // reconstruir desde items
+      data = (ped.items || []).map(function(it){
+        var pe = {}, di = {};
+        Object.keys(it.sucursales || {}).forEach(function(s){ var sd = it.sucursales[s] || {}; pe[s] = parseInt(sd.pide) || 0; di[s] = parseInt(sd.desp) || 0; });
+        return { ref: it.ref, desc: it.desc || it.ref, pedidos: pe, dist: di, enSistema: true };
+      });
+    }
+    if (!data.length) { alert('⛔ El pedido ' + ped.numP + ' no tiene líneas para reabrir.'); return; }
+    var conPrecioCli = data.filter(function(d){ return parseFloat(d._precioCliente || d.precioPedido || d.precio_usd || d.precioNegociado || 0) > 0; }).length;
+    if (!confirm('↩ REABRIR ' + ped.numP + ' PARA REHACERLO\n\n' + data.length + ' referencias · ' + (ped.sucursales || []).length + ' sucursal(es)\n' +
+      (conPrecioCli ? conPrecioCli + ' referencias traen el precio del cliente.' : '⚠ Este pedido no guardó precios del cliente: tendrás que cargar de nuevo el archivo del cliente.') +
+      '\n\nSe abre en el procesador con las mismas cantidades. Revisa, escoge "precio cliente" y emite: quedará con el MISMO número ' + ped.numP + ' (reemplaza al cancelado).\n\n¿Continuar?')) return;
+    // Mismo formato que dejan los importadores (archivo/PDF/IA) antes de calcular la distribución
+    var prods = JSON.parse(JSON.stringify(data)).map(function(d){
+      var pcli = parseFloat(d._precioCliente || d.precioPedido || d.precio_usd || d.precioNegociado || 0) || 0;
+      var o = { ref: d.ref, desc: d.desc || d._descCliente || d.ref, pedidos: Object.assign({}, d.pedidos || {}),
+                codigoBarra: d.codigoBarra || '', codigoProv: d.codigoProv || '', marca: d.marca || '', empaque: d.empaque || '', udsBulto: d.udsBulto || 0,
+                _descCliente: d._descCliente, _barraCliente: d._barraCliente, _diferencias: d._diferencias || [] };
+      if (pcli > 0) { o._precioCliente = pcli; o.precio_usd = pcli; }
+      return o;
+    });
+    MS.sucursales = (ped.sucursales || []).slice();
+    MS.clientesPorSucursal = Object.assign({}, ped.clientesPorSucursal || {});
+    MS.moneda = ped.moneda || 'USD';
+    MS.numPedido = ped.numP;           // se re-emite con el mismo número (reemplaza al cancelado)
+    MS.fechaEmision = hoy();
+    MS.fase = 'borrador';
+    MS.sucursalesEstado = {};
+    MS._precioOverride = {};
+    MS._portalPedidoId = null;
+    if (ped.datosFiscales) MS.datosFiscales = ped.datosFiscales;
+    MS._reabierto410 = ped.numP;
+    try { var ov = document.getElementById('ms-monitor-ov'); if (ov) ov.remove(); } catch(e){}
+    if (typeof openMultiSucursal === 'function') openMultiSucursal();
+    msCalcularDistribucion(prods);
+    MS.numPedido = ped.numP; MS.fase = 'borrador';
+    setTimeout(function(){
+      msRenderResultados();
+      try { if (typeof msSelectMoneda === 'function') msSelectMoneda(ped.moneda || 'USD'); } catch(e){}
+    }, 300);
+    try { if (typeof showToast === 'function') showToast('↩ ' + ped.numP + ' reabierto. Escoge "precio cliente" en la columna de precios y luego Emitir.', 'info', { duration: 9000 }); } catch(e){}
+  };
+})();
+
 // ═══ v.408 CxC: SINCRONIZACIÓN POR FACTURA ENTRE EQUIPOS ═══════════════════
 // Problema (03/11): cobranza hecha en la Mac no aparecía en la PC.
 // Causas: (1) al abrir CxC, el sistema leía mal el formato de la nube (lista)
@@ -58546,6 +58639,26 @@ window.msCongelarPreciosEnData = function(data) {
 
 // Helper para leer el precio congelado de una línea según moneda
 // Devuelve null si la línea no tiene precios congelados (pedido viejo).
+/* v.409 — PRECIO DE UNA LÍNEA DE PEDIDO (regla única para Monitor, documento y Excel)
+   1) override numérico manual · 2) precio del cliente / manual negociado
+   3) precio congelado al emitir (moneda del pedido) · 4) catálogo actual (solo pedidos viejos)
+   Antes el Excel del pedido leía ped.items (que no guarda precios) y caía al
+   precio del catálogo aunque el pedido se hubiera hecho con la lista del cliente. */
+window.msPrecioLineaPedido409 = function(ped, ref, item){
+  ped = ped || {};
+  var mon = ped.moneda || 'USD';
+  var linea = null;
+  if (Array.isArray(ped.data)) linea = ped.data.find(function(d){ return d && (d.ref || d.r) === ref; }) || null;
+  var fuentes = [item, linea].filter(Boolean);
+  for (var i = 0; i < fuentes.length; i++) { var nv = _ovrNum(fuentes[i].precioOverride); if (nv !== null) return nv; }
+  for (var j = 0; j < fuentes.length; j++) {
+    var f = fuentes[j];
+    if ((f.precioOverride === 'cliente' || f.precioOverride === 'manual') && parseFloat(f.precioNegociado) > 0) return parseFloat(f.precioNegociado);
+  }
+  for (var k = fuentes.length - 1; k >= 0; k--) { var c = window.msGetPrecioCongelado(fuentes[k], mon); if (c !== null) return c; }
+  var p = (PRODUCTS || []).find(function(x){ return x.r === ref; });
+  return p ? ((mon === 'BCV' ? p.bv : mon === 'USD' ? p.u : p.t) || 0) : 0;
+};
 window.msGetPrecioCongelado = function(linea, moneda) {
   if (!linea) return null;
   var m = (moneda || 'USD').toUpperCase();
@@ -63852,6 +63965,7 @@ window.msAbrirMonitor = function() {
       return ((p.sucursalesEstado||{})[s]||'').toUpperCase() === 'EMBALADO';
     });
   }).length;
+  var _cntCancelado410 = pedidos.filter(function(p){ return (p.estado||'').toUpperCase() === 'CANCELADO'; }).length; // v.410
   var _cntDespachado = pedidos.filter(function(p){
     return (p.estado||'').toUpperCase() === 'DESPACHADO';
   }).length;
@@ -63897,6 +64011,7 @@ window.msAbrirMonitor = function() {
   tabBar.appendChild(mkTab('embalado',    '🟡 EMBALADOS',   _cntEmbalado,   '#f59e0b',             false));
   tabBar.appendChild(mkTab('parcial',     '⚡ PARCIALES',   _cntParcial,    '#a855f7',             false));
   tabBar.appendChild(mkTab('despachado',  '🟢 DESPACHADOS', _cntDespachado, GREEN,                 false));
+  if (_cntCancelado410) tabBar.appendChild(mkTab('cancelado', '✕ CANCELADOS', _cntCancelado410, '#cbd5e1', false)); // v.410
   tabBar.appendChild(mkTab('comprometido','🔒 INV. COMPROMETIDO', null,    TEAL,                  false));
   box.appendChild(tabBar);
   box.appendChild(tabContent);
@@ -64005,6 +64120,10 @@ window.msAbrirMonitor = function() {
       pedFiltrados = pedidos.filter(function(p){
         return (p.estado||'').toUpperCase() === 'DESPACHADO';
       });
+    } else if (filtro === 'cancelado') { // v.410
+      pedFiltrados = pedidos.filter(function(p){
+        return (p.estado||'').toUpperCase() === 'CANCELADO';
+      });
     }
     // 'todos' → sin filtro adicional
 
@@ -64068,14 +64187,16 @@ window.msAbrirMonitor = function() {
         'reservado':  '🔵 RESERVADOS',
         'embalado':   '🟡 CON SUCURSALES EMBALADAS',
         'parcial':    '⚡ PARCIALES (parte despachada)',
-        'despachado': '🟢 DESPACHADOS'
+        'despachado': '🟢 DESPACHADOS',
+        'cancelado':  '✕ CANCELADOS — se pueden reabrir o devolver al portal'
       }[filtro] || filtro.toUpperCase();
       var lbl=document.createElement('div');
       lbl.style.cssText='font-size:.6rem;font-weight:900;color:'+headerColor+';text-transform:uppercase;letter-spacing:1.2px;display:flex;align-items:center;gap:8px;margin-bottom:2px;';
       lbl.innerHTML='<span style="width:7px;height:7px;border-radius:50%;background:'+headerColor+';display:inline-block;box-shadow:0 0 8px '+headerColor+'88;"></span>'+headerLbl+' ('+pedFiltrados.length+')';
       wrap.appendChild(lbl);
       pedFiltrados.forEach(function(p){
-        var esActivo = (p.estado||'').toUpperCase() !== 'DESPACHADO';
+        var _e410 = (p.estado||'').toUpperCase();
+        var esActivo = _e410 !== 'DESPACHADO' && _e410 !== 'CANCELADO'; // v.410
         wrap.appendChild(mkPedidoCard(p, esActivo));
       });
     }
@@ -64470,6 +64591,10 @@ window.msAbrirMonitor = function() {
         }
       }));
     } else {
+      // v.410: pedido CANCELADO → recuperarlo para rehacerlo / reimportarlo
+      if (String(ped.estado||'').toUpperCase() === 'CANCELADO') {
+        btnLeft.appendChild(_btn(ped.portalId ? '↩ DEVOLVER AL PORTAL' : '↩ REABRIR PARA REHACER','#ffffff','#0f172a','#ffffff55',function(){ msRecuperarCancelado410(ped.numP); }));
+      }
       // Pedido despachado — doc, excel, ETIQUETAS (siguen disponibles tras despacho)
       btnLeft.appendChild(_btn('🏷 ETIQUETAS','#7c3aed','rgba(124,58,237,.15)','rgba(124,58,237,.4)',function(){
         // Cargar datos del pedido en MS para el form de etiquetas
@@ -64530,16 +64655,22 @@ window.msAbrirMonitor = function() {
           if(typeof getComprometido==='function'&&typeof saveComprometido==='function'){
             var c2=getComprometido();
             (ped.items||[]).forEach(function(item){
-              if(c2[item.ref]){
-                var uds=Object.values(item.sucursales||{}).reduce(function(s,sd){return s+(parseInt(sd.desp)||0);},0);
-                c2[item.ref].qty=Math.max(0,(c2[item.ref].qty||0)-uds);
-                if(c2[item.ref].qty===0) delete c2[item.ref];
-              }
+              if(!c2[item.ref]) return;
+              /* v.410: liberar exactamente lo que ESTE pedido tenía apartado y quitar su anotación */
+              var ents=((c2[item.ref].pedidos)||[]).filter(function(e){return e && e.numP===ped.numP;});
+              var uds=ents.length ? ents.reduce(function(s,e){return s+(parseInt(e.qty)||0);},0)
+                                  : Object.values(item.sucursales||{}).reduce(function(s,sd){return s+(parseInt(sd.desp)||0);},0);
+              c2[item.ref].qty=Math.max(0,(parseInt(c2[item.ref].qty)||0)-uds);
+              if(Array.isArray(c2[item.ref].pedidos)) c2[item.ref].pedidos=c2[item.ref].pedidos.filter(function(e){return !(e && e.numP===ped.numP);});
+              if(c2[item.ref].qty<=0) delete c2[item.ref];
             });
             saveComprometido(c2);
           }
           showToast('Pedido '+ped.numP+' CANCELADO','success');
           ov.remove(); msAbrirMonitor();
+          setTimeout(function(){ /* v.410 */
+            if(confirm('Pedido '+ped.numP+' CANCELADO.\n\n¿Quieres '+(ped.portalId?'devolverlo al PORTAL para importarlo de nuevo':'reabrirlo ahora para rehacerlo (por ejemplo con la lista de precios del cliente)')+'?\n\n(Puedes hacerlo luego desde el pedido cancelado en el Monitor.)')) msRecuperarCancelado410(ped.numP);
+          }, 400);
         }
       }));
     }
@@ -66997,7 +67128,7 @@ window.msExportarPedidoExcel = async function(ped) {
       totalUnidades+=desp;
       
       var p=PRODUCTS.find(function(x){return x.r===item.ref;});
-      var precio=item.precioOverride||(p?(mon==='BCV'?p.bv:mon==='USD'?p.u:p.t)||0:0);
+      var precio=msPrecioLineaPedido409(ped, item.ref, item); // v.409: precio con que se hizo el pedido
       var stockReal=parseInt(inv[item.ref])||0;
       var venta=fmt2(precio*desp);
       totalVenta+=venta;
@@ -67164,7 +67295,7 @@ window.msExportarPedidoExcel = async function(ped) {
 
     items.forEach(function(item){
       var p=PRODUCTS.find(function(x){return x.r===item.ref;});
-      var precio=item.precioOverride||(p?(mon==='BCV'?p.bv:mon==='USD'?p.u:p.t)||0:0);
+      var precio=msPrecioLineaPedido409(ped, item.ref, item); // v.409: precio con que se hizo el pedido
       var stockReal=parseInt(inv[item.ref])||0;
       var totalPide=0,totalDesp=0;
       subs.forEach(function(s){
