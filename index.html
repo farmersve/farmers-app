@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.11.04.410">
+<meta name="farmers-version" content="2026.11.09.412">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -27814,6 +27814,185 @@ function _ciMarcasExcl(P){
   return String(P.excluir || '').toUpperCase().split(/[,;]+/).map(function(x){ return x.trim(); }).filter(Boolean);
 }
 window._ciMarcasExcl = _ciMarcasExcl;
+// ═══ v.412 EXCEL DEL CATÁLOGO CON FORMATO (encabezado, bordes, alineación) ═══
+// SheetJS (versión libre) no escribe estilos, así que el archivo se arma normal
+// y luego se le inyecta la hoja de estilos y el formato de cada celda en el XML.
+// Resultado: título, encabezado navy con letra blanca, bordes finos en toda la
+// tabla, columnas centradas/numéricas según su contenido, la columna ORDEN
+// resaltada para que el cliente sepa dónde escribir, encabezado fijo al bajar
+// y página horizontal ajustada al ancho para imprimir.
+(function(){
+  var STYLES =
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+    '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
+    '<numFmts count="1"><numFmt numFmtId="164" formatCode="#,##0.00"/></numFmts>' +
+    '<fonts count="5">' +
+      '<font><sz val="10"/><color rgb="FF000000"/><name val="Arial"/><family val="2"/></font>' +
+      '<font><b/><sz val="14"/><color rgb="FF000000"/><name val="Arial"/><family val="2"/></font>' +
+      '<font><b/><sz val="10"/><color rgb="FFFFFFFF"/><name val="Arial"/><family val="2"/></font>' +
+      '<font><b/><sz val="10"/><color rgb="FF000000"/><name val="Arial"/><family val="2"/></font>' +
+      '<font><sz val="9"/><color rgb="FF000000"/><name val="Arial"/><family val="2"/></font>' +
+    '</fonts>' +
+    '<fills count="5">' +
+      '<fill><patternFill patternType="none"/></fill>' +
+      '<fill><patternFill patternType="gray125"/></fill>' +
+      '<fill><patternFill patternType="solid"><fgColor rgb="FF0F172A"/><bgColor indexed="64"/></patternFill></fill>' +
+      '<fill><patternFill patternType="solid"><fgColor rgb="FFE2E8F0"/><bgColor indexed="64"/></patternFill></fill>' +
+      '<fill><patternFill patternType="solid"><fgColor rgb="FFEEF2FF"/><bgColor indexed="64"/></patternFill></fill>' +
+    '</fills>' +
+    '<borders count="2">' +
+      '<border><left/><right/><top/><bottom/><diagonal/></border>' +
+      '<border><left style="thin"><color rgb="FF94A3B8"/></left><right style="thin"><color rgb="FF94A3B8"/></right><top style="thin"><color rgb="FF94A3B8"/></top><bottom style="thin"><color rgb="FF94A3B8"/></bottom><diagonal/></border>' +
+    '</borders>' +
+    '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>' +
+    '<cellXfs count="13">' +
+      /* 0 normal */      '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>' +
+      /* 1 título */      '<xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/>' +
+      /* 2 dato cabecera*/'<xf numFmtId="0" fontId="4" fillId="0" borderId="0" xfId="0" applyFont="1"/>' +
+      /* 3 encabezado */  '<xf numFmtId="0" fontId="2" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf>' +
+      /* 4 texto izq */   '<xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1" applyAlignment="1"><alignment horizontal="left" vertical="center"/></xf>' +
+      /* 5 texto centro*/ '<xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf>' +
+      /* 6 entero */      '<xf numFmtId="3" fontId="0" fillId="0" borderId="1" xfId="0" applyNumberFormat="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf>' +
+      /* 7 dinero */      '<xf numFmtId="164" fontId="0" fillId="0" borderId="1" xfId="0" applyNumberFormat="1" applyBorder="1" applyAlignment="1"><alignment horizontal="right" vertical="center"/></xf>' +
+      /* 8 ORDEN */       '<xf numFmtId="3" fontId="3" fillId="4" borderId="1" xfId="0" applyNumberFormat="1" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf>' +
+      /* 9 total etiq. */ '<xf numFmtId="0" fontId="3" fillId="3" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="left" vertical="center"/></xf>' +
+      /* 10 total entero*/'<xf numFmtId="3" fontId="3" fillId="3" borderId="1" xfId="0" applyNumberFormat="1" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf>' +
+      /* 11 total dinero*/'<xf numFmtId="164" fontId="3" fillId="3" borderId="1" xfId="0" applyNumberFormat="1" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="right" vertical="center"/></xf>' +
+      /* 12 ref negrita*/ '<xf numFmtId="0" fontId="3" fillId="0" borderId="1" xfId="0" applyFont="1" applyBorder="1" applyAlignment="1"><alignment horizontal="left" vertical="center"/></xf>' +
+    '</cellXfs>' +
+    '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>' +
+    '</styleSheet>';
+
+  // Tipo de columna según su encabezado
+  function tipoCol(h){
+    h = String(h || '').toUpperCase().trim();
+    if (h === 'REFERENCIA') return 'ref';
+    if (h === 'DESCRIPCION' || h === 'MARCA' || h === 'COD. INTERNO') return 'txt';
+    if (h === 'CODIGO BARRA' || h === 'EMPAQUE') return 'ctr';
+    if (h === 'ORDEN') return 'orden';
+    if (h.indexOf('PRECIO') === 0 || h === 'TOTAL ($)') return 'din';
+    if (!h) return 'vacia';
+    return 'ent'; // MED/CAJA, MED/DISPLAY, EXISTENCIA/STOCK, ORDENADA, EXIST. TOTAL, RESTANTE
+  }
+  function colIdx(letras){ var n = 0; for (var i = 0; i < letras.length; i++) n = n * 26 + (letras.charCodeAt(i) - 64); return n - 1; }
+  function colLetra(i){ var s = ''; i++; while (i > 0) { var m = (i - 1) % 26; s = String.fromCharCode(65 + m) + s; i = Math.floor((i - 1) / 26); } return s; }
+
+  function estiloCelda(meta, fila, col){
+    var t = meta.tipos[col];
+    if (fila === 1) return col === 0 ? 1 : 0;
+    if (fila === 2 || fila === 3) return 2;
+    if (fila === meta.headerRow) return t === 'vacia' ? 0 : 3;
+    if (fila >= meta.firstData && fila <= meta.lastData) {
+      return ({ ref: 12, txt: 4, ctr: 5, orden: 8, din: 7, ent: 6, vacia: 0 })[t];
+    }
+    if (fila === meta.totRow) {
+      if (col === 0) return 9;
+      return ({ din: 11, orden: 10, ent: 10, vacia: 0 })[t] !== undefined ? ({ din: 11, orden: 10, ent: 10, vacia: 0 })[t] : 9;
+    }
+    return 0;
+  }
+
+  function estilarHoja(xml, meta){
+    // 1) celdas existentes → atributo s
+    xml = xml.replace(/<c r="([A-Z]+)(\d+)"([^>]*?)(\/?)>/g, function(m, L, F, rest, cierre){
+      var s = estiloCelda(meta, +F, colIdx(L));
+      rest = rest.replace(/\s+s="\d+"/, '');
+      return '<c r="' + L + F + '"' + (s ? ' s="' + s + '"' : '') + rest + cierre + '>';
+    });
+    // 2) crear las celdas vacías de la tabla (para que tengan borde y la columna ORDEN se vea)
+    xml = xml.replace(/<row r="(\d+)"([^>]*)>([\s\S]*?)<\/row>/g, function(m, F, attrs, cont){
+      var f = +F;
+      var enTabla = (f === meta.headerRow) || (f >= meta.firstData && f <= meta.lastData) || f === meta.totRow;
+      if (f === meta.headerRow && !/\sht=/.test(attrs)) attrs += ' ht="30" customHeight="1"';
+      if (!enTabla) return '<row r="' + F + '"' + attrs + '>' + cont + '</row>';
+      var celdas = {}, re = /<c r="([A-Z]+)\d+"[\s\S]*?(?:\/>|<\/c>)/g, x;
+      while ((x = re.exec(cont))) celdas[colIdx(x[1])] = x[0];
+      var out = '';
+      for (var c = 0; c < meta.ncols; c++) {
+        if (celdas[c]) out += celdas[c];
+        else { var s = estiloCelda(meta, f, c); if (s) out += '<c r="' + colLetra(c) + F + '" s="' + s + '"/>'; }
+      }
+      Object.keys(celdas).forEach(function(k){ if (+k >= meta.ncols) out += celdas[k]; });
+      return '<row r="' + F + '"' + attrs + '>' + out + '</row>';
+    });
+    // 3) encabezado fijo al bajar
+    var pane = '<sheetViews><sheetView workbookViewId="0"><pane ySplit="' + meta.headerRow + '" topLeftCell="A' + (meta.headerRow + 1) + '" activePane="bottomLeft" state="frozen"/><selection pane="bottomLeft" activeCell="A' + (meta.headerRow + 1) + '" sqref="A' + (meta.headerRow + 1) + '"/></sheetView></sheetViews>';
+    if (/<sheetViews>[\s\S]*?<\/sheetViews>/.test(xml)) xml = xml.replace(/<sheetViews>[\s\S]*?<\/sheetViews>/, pane);
+    else if (/<sheetViews\/>/.test(xml)) xml = xml.replace('<sheetViews/>', pane);
+    else xml = xml.replace(/(<sheetFormatPr|<cols>|<sheetData)/, pane + '$1');
+    // 4) impresión: horizontal, ajustada al ancho
+    if (!/<sheetPr/.test(xml)) xml = xml.replace(/(<worksheet[^>]*>)/, '$1<sheetPr><pageSetUpPr fitToPage="1"/></sheetPr>');
+    var ps = '<pageSetup paperSize="1" orientation="landscape" fitToWidth="1" fitToHeight="0"/>';
+    if (/<pageMargins[^>]*\/>/.test(xml)) xml = xml.replace(/(<pageMargins[^>]*\/>)/, '$1' + ps);
+    else xml = xml.replace('</worksheet>', '<pageMargins left="0.4" right="0.4" top="0.5" bottom="0.5" header="0.3" footer="0.3"/>' + ps + '</worksheet>');
+    return xml;
+  }
+
+  // wb: libro de SheetJS; cada hoja trae ws['!est412'] = {heads, headerRow, firstData, lastData, totRow, ncols}
+  window._catEstilarExcel412 = async function(wb, fname){
+    if (typeof JSZip === 'undefined') { XLSX.writeFile(wb, fname); return false; }
+    try {
+      var nombres = wb.SheetNames.slice();
+      var buf = XLSX.write(wb, { type: 'array', bookType: 'xlsx' });
+      var zip = await JSZip.loadAsync(buf);
+      zip.file('xl/styles.xml', STYLES);
+      for (var i = 0; i < nombres.length; i++) {
+        var ws = wb.Sheets[nombres[i]], meta = ws && ws['!est412'];
+        var ruta = 'xl/worksheets/sheet' + (i + 1) + '.xml';
+        if (!meta || !zip.file(ruta)) continue;
+        meta.tipos = meta.heads.map(tipoCol);
+        for (var k = meta.heads.length; k < meta.ncols; k++) meta.tipos[k] = 'vacia';
+        var xml = await zip.file(ruta).async('string');
+        zip.file(ruta, estilarHoja(xml, meta));
+      }
+      var blob = await zip.generateAsync({ type: 'blob', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+      window.__ultimoExcel412 = blob;
+      var url = URL.createObjectURL(blob), a = document.createElement('a');
+      a.href = url; a.download = fname; document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      setTimeout(function(){ URL.revokeObjectURL(url); }, 4000);
+      return true;
+    } catch(e) {
+      console.warn('[v.412] No se pudo dar formato al Excel, se descarga simple:', e);
+      XLSX.writeFile(wb, fname);
+      return false;
+    }
+  };
+})();
+
+// ═══ v.411 PIEZAS POR DISPLAY (inner packing del Master Data) ══════════════
+// El cliente pregunta cuántas piezas trae cada display.
+// En el Master Data: UNIDADES_POR_BULTO = piezas del bulto e INNER_PACKING =
+// CUÁNTOS inners (displays) trae el bulto. Por lo tanto:
+//     piezas por display = unidadesPorBulto ÷ innerPacking
+// (ej. EXC001: 144 ÷ 24 = 6 piezas por display).
+// Se muestra en el catálogo PDF (UDS/DISPLAY) y en el Excel (MED/DISPLAY).
+// Solo si la división es exacta; si no cuadra, no se inventa: queda "—" y
+// la ref aparece en catInnerRevisar411() para corregir el Master Data.
+(function(){
+  function master(){
+    var m = window.MASTER;
+    if (!m || typeof m !== 'object') { try { m = JSON.parse(localStorage.getItem('farmers_pt_master') || '{}') || {}; } catch(e){ m = {}; } }
+    return m;
+  }
+  window.catInner411 = function(ref, prod){
+    var m = master()[ref] || {};
+    var inners = parseInt(m.innerPacking, 10) || 0;      // displays por bulto
+    var ub = parseInt(m.unidadesPorBulto, 10) || parseInt(prod && prod.m, 10) || 0;
+    if (inners <= 0 || ub <= 0) return null;
+    if (inners > ub || ub % inners !== 0) return null;    // no cuadra: no se inventa
+    return { inner: ub / inners, inners: inners, ub: ub }; // inner = PIEZAS por display
+  };
+  // Lista de refs con el dato incoherente (para revisar en Master Data)
+  window.catInnerRevisar411 = function(){
+    var M = master(), malas = [];
+    Object.keys(M).forEach(function(r){
+      var m = M[r] || {}, inner = parseInt(m.innerPacking, 10) || 0, ub = parseInt(m.unidadesPorBulto, 10) || 0;
+      if (inner > 0 && ub > 0 && (inner > ub || ub % inner !== 0)) malas.push(r + ': bulto ' + ub + ' · inner ' + inner);
+    });
+    return malas;
+  };
+})();
+
 // ═══ v.410 RECUPERAR UN PEDIDO CANCELADO ═════════════════════════════════
 // Caso 04/11: Omar canceló un pedido para volver a hacerlo con la lista de precios
 // del cliente. Dos caminos, según de dónde vino el pedido:
@@ -37678,46 +37857,46 @@ function catDownloadExcel(monedasParam) {
         // ── SIN PRECIO — sin columnas PRECIO, TOTAL, EXIST. TOTAL, RESTANTE ──
         // Modo Cliente solo oculta código interno; el resto siempre visible.
         if (!modoCliente) {
-          heads  = ['REFERENCIA','COD. BARRAS','COD. INTERNO','DESCRIPCION',
-                    'EMPAQUE','MED/CAJA','MARCA',
+          heads  = ['REFERENCIA','CODIGO BARRA','COD. INTERNO','DESCRIPCION',
+                    'EMPAQUE','MED/CAJA','MED/DISPLAY','MARCA',
                     'ORDEN'].concat(depoExtras).concat(trailHeadsBase);
-          widths = [13,17,15,48,10,10,12,9].concat(depoExtrasWidths).concat(trailWidthsBase);
+          widths = [13,17,15,48,10,10,12,12,9].concat(depoExtrasWidths).concat(trailWidthsBase);
+          colO=9;
+          colOrd = incluirOrdenada ? (10 + depoExtras.length + 1) : null;
+          ncols = 10 + depoExtras.length + trailHeadsBase.length;
+        } else {
+          // Cliente: oculta COD. INTERNO. Mantiene depósitos, EXISTENCIA y ORDENADA si los toggles los pidieron.
+          heads  = ['REFERENCIA','CODIGO BARRA','DESCRIPCION',
+                    'EMPAQUE','MED/CAJA','MED/DISPLAY','MARCA',
+                    'ORDEN'].concat(depoExtras).concat(trailHeadsBase);
+          widths = [13,17,52,10,10,12,12,9].concat(depoExtrasWidths).concat(trailWidthsBase);
           colO=8;
           colOrd = incluirOrdenada ? (9 + depoExtras.length + 1) : null;
           ncols = 9 + depoExtras.length + trailHeadsBase.length;
-        } else {
-          // Cliente: oculta COD. INTERNO. Mantiene depósitos, EXISTENCIA y ORDENADA si los toggles los pidieron.
-          heads  = ['REFERENCIA','COD. BARRAS','DESCRIPCION',
-                    'EMPAQUE','MED/CAJA','MARCA',
-                    'ORDEN'].concat(depoExtras).concat(trailHeadsBase);
-          widths = [13,17,52,10,10,12,9].concat(depoExtrasWidths).concat(trailWidthsBase);
-          colO=7;
-          colOrd = incluirOrdenada ? (8 + depoExtras.length + 1) : null;
-          ncols = 8 + depoExtras.length + trailHeadsBase.length;
         }
       } else if (!modoCliente) {
         // Interno: muestra todo (incluye PRECIO, TOTAL, EXIST. TOTAL, RESTANTE)
         var internoTrail = trailHeadsBase.concat(['EXIST. TOTAL','RESTANTE']);
         var internoTrailW = trailWidthsBase.concat([12,12]);
-        heads  = ['REFERENCIA','COD. BARRAS','COD. INTERNO','DESCRIPCION',
-                  'EMPAQUE','MED/CAJA','MARCA',
+        heads  = ['REFERENCIA','CODIGO BARRA','COD. INTERNO','DESCRIPCION',
+                  'EMPAQUE','MED/CAJA','MED/DISPLAY','MARCA',
                   'PRECIO '+monLabel+' ($)','ORDEN','TOTAL ($)'].concat(depoExtras).concat(internoTrail);
-        widths = [13,17,15,48,10,10,12,14,9,14].concat(depoExtrasWidths).concat(internoTrailW);
-        colP=8; colO=9; colT=10;
-        colOrd = incluirOrdenada ? (11 + depoExtras.length + 1) : null;
-        ncols = 10 + depoExtras.length + internoTrail.length;
+        widths = [13,17,15,48,10,10,12,12,14,9,14].concat(depoExtrasWidths).concat(internoTrailW);
+        colP=9; colO=10; colT=11;
+        colOrd = incluirOrdenada ? (12 + depoExtras.length + 1) : null;
+        ncols = 11 + depoExtras.length + internoTrail.length;
       } else {
         // Cliente con precio: oculta COD. INTERNO + EXIST. TOTAL.
         // Mantiene PRECIO/ORDEN/TOTAL + depósitos + EXISTENCIA + (ORDENADA si toggle ON) + RESTANTE.
         var clienteTrail = trailHeadsBase.concat(['RESTANTE']);
         var clienteTrailW = trailWidthsBase.concat([12]);
-        heads  = ['REFERENCIA','COD. BARRAS','DESCRIPCION',
-                  'EMPAQUE','MED/CAJA','MARCA',
+        heads  = ['REFERENCIA','CODIGO BARRA','DESCRIPCION',
+                  'EMPAQUE','MED/CAJA','MED/DISPLAY','MARCA',
                   'PRECIO '+monLabel+' ($)','ORDEN','TOTAL ($)'].concat(depoExtras).concat(clienteTrail);
-        widths = [13,17,52,10,10,12,14,9,14].concat(depoExtrasWidths).concat(clienteTrailW);
-        colP=7; colO=8; colT=9;
-        colOrd = incluirOrdenada ? (10 + depoExtras.length + 1) : null;
-        ncols = 9 + depoExtras.length + clienteTrail.length;
+        widths = [13,17,52,10,10,12,12,14,9,14].concat(depoExtrasWidths).concat(clienteTrailW);
+        colP=8; colO=9; colT=10;
+        colOrd = incluirOrdenada ? (11 + depoExtras.length + 1) : null;
+        ncols = 10 + depoExtras.length + clienteTrail.length;
       }
 
       // ═══ Calcular ORDENADA REAL una sola vez antes del map (de OCs vivas) ═══
@@ -37741,16 +37920,18 @@ function catDownloadExcel(monedasParam) {
         var trailBase = [ex];
         if (incluirOrdenada) trailBase.push(exOrdenada);
 
+        var _in411 = window.catInner411 ? catInner411(p.r, p) : null; /* v.411 */
+        var _pzD = _in411 ? _in411.inner : '';
         if (sinPrecio) {
           // ── Filas sin precio (sin PRECIO, TOTAL, EXIST. TOTAL, RESTANTE) ──
           if (!modoCliente) {
             return [p.r||'', String(p.b||''), p.c||'', p.d||'',
-                    p.e||'UNIDAD', p.m||'', p.br||'',
+                    p.e||'UNIDAD', p.m||'', _pzD, p.br||'',
                     null].concat(depoVals).concat(trailBase);
           } else {
             // Cliente: oculta COD. INTERNO.
             return [p.r||'', String(p.b||''), p.d||'',
-                    p.e||'UNIDAD', p.m||'', p.br||'',
+                    p.e||'UNIDAD', p.m||'', _pzD, p.br||'',
                     null].concat(depoVals).concat(trailBase);
           }
         }
@@ -37762,14 +37943,14 @@ function catDownloadExcel(monedasParam) {
         if (!modoCliente) {
           // Interno: incluye COD. INTERNO + EXIST. TOTAL + RESTANTE (los dos se calculan después como fórmulas vivas)
           return [p.r||'', String(p.b||''), p.c||'', p.d||'',
-                  p.e||'UNIDAD', p.m||'', p.br||'',
+                  p.e||'UNIDAD', p.m||'', _pzD, p.br||'',
                   precio, null, {f: ordRef+'*'+preRef}].concat(depoVals).concat(trailBase).concat([ex, null]);
         } else {
           // Cliente: oculta COD. INTERNO + EXIST. TOTAL.
           // Mantiene PRECIO/ORDEN/TOTAL + depo + EXISTENCIA + (ORDENADA si toggle ON) + RESTANTE.
           // El último null se reemplaza con fórmula RESTANTE = EXISTENCIA - ORDEN
           return [p.r||'', String(p.b||''), p.d||'',
-                  p.e||'UNIDAD', p.m||'', p.br||'',
+                  p.e||'UNIDAD', p.m||'', _pzD, p.br||'',
                   precio, null, {f: ordRef+'*'+preRef}].concat(depoVals).concat(trailBase).concat([null]);
         }
       });
@@ -37812,9 +37993,9 @@ function catDownloadExcel(monedasParam) {
         // CLIENTE con precio: REF(0) BARRAS(1) DESC(2) EMPAQUE(3) MEDCJA(4) MARCA(5)
         //                     PRECIO(6) ORDEN(7) TOTAL(8) [depoExtras] EXISTENCIA [ORDENADA?] RESTANTE
 
-        var baseTrasTotal;        // índice donde inicia depoExtras
-        if (!modoCliente) baseTrasTotal = 10;
-        else baseTrasTotal = 9;
+        var baseTrasTotal;        // índice donde inicia depoExtras (v.411: +1 por PZAS/DISPLAY)
+        if (!modoCliente) baseTrasTotal = 11;
+        else baseTrasTotal = 10;
 
         var existenciaIdx = baseTrasTotal + depoExtras.length;
         var ordenadaIdx   = incluirOrdenada ? (existenciaIdx + 1) : null;
@@ -37843,6 +38024,7 @@ function catDownloadExcel(monedasParam) {
       }
       ws['!calcpr'] = { fullCalcOnLoad: true };
       ws['!cols']   = widths.map(function(w){ return {wch:w}; });
+      ws['!est412'] = { heads: heads.slice(), headerRow: 5, firstData: 6, lastData: 5 + prods.length, totRow: 6 + prods.length, ncols: ncols }; // v.412 formato
       ws['!merges'] = [{s:{r:0,c:0}, e:{r:0,c:ncols-1}}];
       XLSX.utils.book_append_sheet(wb, ws, '('+monLabel+')');
     });
@@ -37854,7 +38036,8 @@ function catDownloadExcel(monedasParam) {
     if (filtroStock.has('OUT')) parts.push('AGOTADOS');
     if (filtroStock.has('ORD')) parts.push('CON_ORDENADA');
     if (modoCliente) parts.push('CLIENTE');
-    XLSX.writeFile(wb, parts.join('_') + '.xlsx');
+    if (typeof window._catEstilarExcel412 === 'function') window._catEstilarExcel412(wb, parts.join('_') + '.xlsx'); // v.412: con formato
+    else XLSX.writeFile(wb, parts.join('_') + '.xlsx');
 
     if (btn) { btn.textContent = '\ud83d\udcca Cat\u00e1logo Excel'; btn.disabled = false; }
     showToast('\u2705 Excel: ' + prods.length + ' productos \u00b7 ' + monedas.map(function(m){return m.label;}).join(', '), 'success');
@@ -39671,14 +39854,19 @@ function _catDownloadPDFWithImgs(_prodImgsLocal) {
           // Descripción 2 líneas fijas
           '<div class="prod-desc">' + _desc382(p) + '</div>' +
           // Código barra + código
-          '<div class="meta-grid">' +
-            '<div class="meta-cell"><div class="meta-label">CÓD. BARRA</div><div class="meta-val">' + (p.b||'—') + '</div></div>' +
-            '<div class="meta-cell"><div class="meta-label">CÓDIGO</div><div class="meta-val">' + (p.c||'—') + '</div></div>' +
+          /* v.411: las dos filas comparten la MISMA rejilla de 4 columnas, así todo queda alineado
+             a la mitad de la tarjeta (igual que antes) y el display entra sin desordenar:
+             CÓD. BARRA (2) | CÓDIGO (2)
+             EMPAQUE (2)    | UDS/BULTO (1) | UDS/DISPLAY (1) */
+          '<div class="meta-grid meta-g4">' +
+            '<div class="meta-cell" style="grid-column:span 2;"><div class="meta-label">CÓDIGO BARRA</div><div class="meta-val">' + (p.b||'—') + '</div></div>' +
+            '<div class="meta-cell" style="grid-column:span 2;"><div class="meta-label">CÓDIGO</div><div class="meta-val">' + (p.c||'—') + '</div></div>' +
           '</div>' +
-          // Empaque + medida
-          '<div class="meta-grid">' +
-            '<div class="meta-cell"><div class="meta-label">EMPAQUE</div><div class="meta-val">' + (p.e||'—') + '</div></div>' +
-            '<div class="meta-cell"><div class="meta-label">MEDIDA</div><div class="meta-val">' + (p.m||'—') + '</div></div>' +
+          '<div class="meta-grid meta-g4">' +
+            '<div class="meta-cell" style="grid-column:span 2;"><div class="meta-label">EMPAQUE</div><div class="meta-val">' + (p.e||'—') + '</div></div>' +
+            '<div class="meta-cell"><div class="meta-label">UDS/BULTO</div><div class="meta-val">' + (p.m||'—') + '</div></div>' +
+            (function(){ var _in = window.catInner411 ? catInner411(p.r, p) : null;
+              return '<div class="meta-cell"><div class="meta-label">UDS/DISPLAY</div><div class="meta-val">' + (_in ? _in.inner : '—') + '</div></div>'; })() +
           '</div>' +
           // Vol ft³ (siempre reservado)
           _ocStrip391(p) +
@@ -39768,6 +39956,8 @@ function _catDownloadPDFWithImgs(_prodImgsLocal) {
       '.prod-desc{font-weight:700;color:#1a2050;font-size:.7rem;line-height:1.2;height:1.7em;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;flex-shrink:0;padding:0 1px;}' +
       // Meta grid 2 columnas — ULTRA compacto
       '.meta-grid{display:grid;grid-template-columns:1fr 1fr;gap:2px;flex-shrink:0;}' +
+      '.meta-grid.meta-g4{grid-template-columns:repeat(4,minmax(0,1fr));}' +
+      '.meta-g4 .meta-label{white-space:nowrap;}' +
       '.meta-cell{background:#f5f7fb;border-radius:4px;padding:2px 6px;border:1px solid #e4e9f4;}' +
       '.meta-label{color:#94a3b8;font-size:.46rem;font-weight:800;text-transform:uppercase;letter-spacing:.5px;margin-bottom:0;line-height:1.1;}' +
       '.meta-val{font-weight:800;color:#1a2050;font-size:.7rem;line-height:1.1;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;}' +
@@ -55528,7 +55718,7 @@ function parserC_ExcelFarmers(rows) {
       return c === 'DESCRIPCION' || c === 'DESC' || c === 'PRODUCTO' || c === 'NOMBRE' || c === 'ARTICULO';
     });
     var iBarra = norm.findIndex(function(c){
-      return c === 'COD.BARRA' || c === 'CODIGO DE BARRA' || c === 'COD BARRA' ||
+      return c === 'COD.BARRA' || c === 'CODIGO DE BARRA' || c === 'COD BARRA' || c === 'CODIGO BARRA' ||
              c === 'CODIGO BARRAS' || c === 'BARRA' || c === 'BARRAS' || c === 'EAN';
     });
     var iCodigo = norm.findIndex(function(c){
@@ -55545,9 +55735,9 @@ function parserC_ExcelFarmers(rows) {
       }
     });
     var reservadas = ['REFERENCIA','REF','DESCRIPCION','DESC','PRODUCTO','NOMBRE','ARTICULO',
-      'COD.BARRA','CODIGO DE BARRA','BARRA','BARRAS','EAN','CODIGO','COD','SKU',
+      'COD.BARRA','CODIGO DE BARRA','CODIGO BARRA','BARRA','BARRAS','EAN','CODIGO','COD','SKU',
       'STOCK','EXISTENCIA','DESPACHO','DIFERENCIA','PRECIO','P.BCV $','P.USD','VENTA','TOTAL','MARCA',
-      'EMPAQUE','MEDIDA','UBICACION'];
+      'EMPAQUE','MEDIDA','UBICACION','MED/CAJA','MED/DISPLAY','PZAS/DISPLAY'];
     if (iCants.length === 0) {
       norm.forEach(function(c, idx){
         if (!c || c.length < 2) return;
@@ -56366,7 +56556,7 @@ async function msDetectarEstructura(rows) {
       else if (h === 'CÓD.BARRA' || h === 'COD.BARRA' || h === 'CÓDIGO DE BARRA' ||
                h === 'CODIGO DE BARRA' || h === 'CÓDIGO BARRAS' || h === 'CODIGO BARRAS' ||
                h === 'BARRA' || h === 'BARRAS' || h === 'EAN' || h === 'UPC' ||
-               h === 'COD. BARRAS' || h === 'COD BARRAS')                            barraCol = idx;
+               h === 'COD. BARRAS' || h === 'COD BARRAS' || h === 'CODIGO BARRA' || h === 'CÓDIGO BARRA') barraCol = idx;
       else if (h === 'CÓDIGO' || h === 'CODIGO' || h === 'COD' || h === 'COD.PROV' ||
                h === 'COD. INTERNO' || h === 'SKU')                                   codigoCol = idx;
       else if (h === 'STOCK' || h === 'EXISTENCIA' || h === 'INVENTARIO' ||
@@ -56459,7 +56649,7 @@ async function msDetectarEstructura(rows) {
     // y tiene al menos 1 fila con número > 0 o "X" en las filas de productos.
     var colsReservadas = [refCol, descCol, barraCol, codigoCol, invCol].filter(function(c){ return c >= 0; });
     // Lista de headers que se IGNORAN siempre (no son cantidades aunque tengan números)
-    var headersIgnorables = ['EMPAQUE', 'MED/CAJA', 'MEDIDA', 'MARCA', 'TOTAL ($)', 'PRECIO BCV ($)',
+    var headersIgnorables = ['EMPAQUE', 'MED/CAJA', 'MED/DISPLAY', 'PZAS/DISPLAY', 'MEDIDA', 'MARCA', 'TOTAL ($)', 'PRECIO BCV ($)',
                               'PRECIO', 'TOTAL', 'PRECIO BCV', 'PRECIO USD', 'PRECIO BS', 'BCV', 'TF',
                               'RESTANTE', 'DESPACHO', 'DIFERENCIA', 'OBSERVACIONES', 'OBS',
                               'NOTAS', 'FECHA', 'IMPORTE', 'SUBTOTAL', 'IVA'];
@@ -94107,7 +94297,9 @@ function pcRenderConfig(body) {
       ? String(p.ftCarac).split(/\n/).map(function(t){ return t.trim(); }).filter(Boolean)
       : ftCaracteristicas(p);
     var uds = parseInt(p.unidadesPorBulto) || 0;
-    var inner = parseInt(p.innerPacking) || 0;
+    // v.411: innerPacking = cuántos displays trae el bulto → piezas por display = bulto ÷ inner
+    var _inners411 = parseInt(p.innerPacking) || 0;
+    var inner = (_inners411 > 0 && uds > 0 && _inners411 <= uds && uds % _inners411 === 0) ? (uds / _inners411) : 0;
     var pesoPza = (parseFloat(p.pesoNetoKg) > 0 && uds > 0) ? (parseFloat(p.pesoNetoKg) / uds) : 0;
     var presentacion = p.empaque || 'Pza.';
     var lblPeso = ftEtiquetaPeso(presentacion);
