@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.11.09.412">
+<meta name="farmers-version" content="2026.11.09.413">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -27922,9 +27922,17 @@ window._ciMarcasExcl = _ciMarcasExcl;
     else xml = xml.replace(/(<sheetFormatPr|<cols>|<sheetData)/, pane + '$1');
     // 4) impresión: horizontal, ajustada al ancho
     if (!/<sheetPr/.test(xml)) xml = xml.replace(/(<worksheet[^>]*>)/, '$1<sheetPr><pageSetUpPr fitToPage="1"/></sheetPr>');
+    // El orden de los elementos del XML es OBLIGATORIO para Excel (LibreOffice perdona, Excel no):
+    // … mergeCells → pageMargins → pageSetup → headerFooter … → ignoredErrors … (v.412b)
     var ps = '<pageSetup paperSize="1" orientation="landscape" fitToWidth="1" fitToHeight="0"/>';
-    if (/<pageMargins[^>]*\/>/.test(xml)) xml = xml.replace(/(<pageMargins[^>]*\/>)/, '$1' + ps);
-    else xml = xml.replace('</worksheet>', '<pageMargins left="0.4" right="0.4" top="0.5" bottom="0.5" header="0.3" footer="0.3"/>' + ps + '</worksheet>');
+    if (/<pageSetup[^>]*\/>/.test(xml)) xml = xml.replace(/<pageSetup[^>]*\/>/, ps);
+    else if (/<pageMargins[^>]*\/>/.test(xml)) xml = xml.replace(/(<pageMargins[^>]*\/>)/, '$1' + ps);
+    else {
+      var bloque = '<pageMargins left="0.4" right="0.4" top="0.5" bottom="0.5" header="0.3" footer="0.3"/>' + ps;
+      var m = xml.match(/<(headerFooter|rowBreaks|colBreaks|customProperties|cellWatches|ignoredErrors|smartTags|drawing|legacyDrawing|legacyDrawingHF|picture|oleObjects|controls|webPublishItems|tableParts|extLst)[\s>\/]/);
+      if (m) xml = xml.slice(0, m.index) + bloque + xml.slice(m.index);
+      else xml = xml.replace('</worksheet>', bloque + '</worksheet>');
+    }
     return xml;
   }
 
@@ -37921,7 +37929,7 @@ function catDownloadExcel(monedasParam) {
         if (incluirOrdenada) trailBase.push(exOrdenada);
 
         var _in411 = window.catInner411 ? catInner411(p.r, p) : null; /* v.411 */
-        var _pzD = _in411 ? _in411.inner : '';
+        var _pzD = _in411 ? _in411.inner : null; /* v.412b: sin dato → celda vacía (no texto vacío) */
         if (sinPrecio) {
           // ── Filas sin precio (sin PRECIO, TOTAL, EXIST. TOTAL, RESTANTE) ──
           if (!modoCliente) {
