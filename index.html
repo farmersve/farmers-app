@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.11.10.418">
+<meta name="farmers-version" content="2026.11.10.419">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -7640,6 +7640,8 @@ function lLogin() {
 
 function lShowApp(username) {
   window.FARMERS_USER = String(username || '').toUpperCase(); // v.393: quién hace cada paso
+  // v.419: recordar la sesión SOLO en esta pestaña (si el navegador recarga la pestaña al abrir un PDF pesado, no te saca)
+  try { sessionStorage.setItem('farmers_sesion_v419', JSON.stringify({ u: window.FARMERS_USER, rol: window.FARMERS_ROL || 'ADMIN', t: Date.now() })); } catch(eS419){}
   // ════════════════════════════════════════════════════════════════════════
   // PROTECCIÓN 1: Auto-eliminación de basura legacy ANTES de cualquier escritura
   // farmers_product_images_hq es código obsoleto que ocupaba 3.28 MB. Si vuelve
@@ -8110,6 +8112,7 @@ window.homeUpdateBadges = homeUpdateBadges;
 
 function doLogout() {
   if (!confirm('¿Cerrar sesión?')) return;
+  try { sessionStorage.removeItem('farmers_sesion_v419'); } catch(eS419){} // v.419
   document.getElementById('ls').classList.remove('gone');
   document.getElementById('app-header').style.display   = 'none';
   document.getElementById('main-steps').style.display   = 'none';
@@ -8128,6 +8131,30 @@ document.getElementById('l-p').addEventListener('keydown', function(e){
 });
 document.getElementById('l-u').addEventListener('keydown', function(e){
   if (e.key === 'Enter') document.getElementById('l-p').focus();
+});
+
+/* v.419 — SESIÓN QUE NO SE PIERDE AL ABRIR UN PDF
+   Safari (Mac) y Chrome con "Ahorro de memoria" recargan la pestaña del sistema cuando se abre
+   otra pestaña pesada (el catálogo con fotos). La sesión vivía solo en memoria, así que al
+   recargar volvía la pantalla de entrada. Ahora la sesión se recuerda en ESTA pestaña
+   (sessionStorage: se borra al cerrar la pestaña o con "Cerrar sesión") y vence a las 12 horas. */
+window.addEventListener('load', function(){
+  try {
+    var raw = sessionStorage.getItem('farmers_sesion_v419'); if (!raw) return;
+    var ses = JSON.parse(raw);
+    var ok = ses && ses.u && (Date.now() - (ses.t || 0)) < 12 * 3600 * 1000 && _lUsers.some(function(x){ return x.u === ses.u; });
+    if (!ok) { sessionStorage.removeItem('farmers_sesion_v419'); return; }
+    var ls = document.getElementById('ls');
+    if (!ls || ls.classList.contains('gone')) return; // ya hay sesión abierta
+    setTimeout(function(){
+      try {
+        var m = _lUsers.find(function(x){ return x.u === ses.u; });
+        window.FARMERS_ROL = m ? (m.rol || 'ADMIN') : (ses.rol || 'ADMIN');
+        lShowApp(ses.u);
+        if (typeof showToast === 'function') showToast('🔐 Sesión de ' + ses.u + ' recuperada', 'success');
+      } catch(eR){ console.warn('[v.419] no se pudo recuperar la sesión:', eR); }
+    }, 300);
+  } catch(e419){ try { sessionStorage.removeItem('farmers_sesion_v419'); } catch(e2){} }
 });
 
 </script>
@@ -22478,7 +22505,7 @@ window.ocExportarPDF = function(id) {
   var w = window.open('', '_blank');
   if (!w) { alert('Permite las ventanas emergentes para generar el PDF'); return; }
   w.document.open();
-  w.document.write(html);
+  w.document.write(_fkKit419(html));
   w.document.close();
 };
 
@@ -23634,7 +23661,7 @@ window.ocRecepEtiquetasGenerar = function(ocId, recepcionId, modo, orientacion) 
       return;
     }
     win.document.open();
-    win.document.write(html);
+    win.document.write(_fkKit419(html));
     win.document.close();
 
     if (typeof showToast === 'function') {
@@ -27815,6 +27842,105 @@ function _ciMarcasExcl(P){
   return String(P.excluir || '').toUpperCase().split(/[,;]+/).map(function(x){ return x.trim(); }).filter(Boolean);
 }
 window._ciMarcasExcl = _ciMarcasExcl;
+/* ═══ v.419 — KIT DE IMPRESIÓN PARA MAC (Safari) ════════════════════════════════════════════
+   Comprobado con los PDF reales hechos en la Mac de Omar: Safari IGNORA el tamaño A4 del
+   documento y siempre imprime en papel CARTA (279 mm de alto en vez de 297 mm), respetando
+   la orientación y los márgenes. Todo lo que fue diseñado para caber justo en una hoja A4
+   (notificaciones de cobranza, comprobantes, hojas de etiquetas) se desbordaba y partía en
+   2 páginas. Este kit, SOLO en Safari, mide cada hoja del documento con las reglas de
+   impresión y, si se pasa de la hoja carta, la reduce lo justo (zoom) para que quepa
+   completa. En Windows/Chrome no hace absolutamente nada: el diseño queda idéntico. */
+function _fkKitRuntime419(){
+  var ua = navigator.userAgent || '';
+  var sf = (/Safari\//.test(ua) && !/(Chrome|Chromium|CriOS|Edg|EdgA|OPR|Firefox|FxiOS)\//.test(ua)) || /[?&#]fksf=1/.test(String(location.href));
+  window.__fkSafari = sf;
+  if (!sf) return;
+  var de = document.documentElement; de.classList.add('fk-sf');
+  var MM = 96 / 25.4, zEl = null, ocupado = false;
+  function aMM(v){
+    v = String(v || '').trim(); if (!v || v === 'auto') return null;
+    var n = parseFloat(v); if (isNaN(n)) return null;
+    if (/mm$/i.test(v)) return n; if (/cm$/i.test(v)) return n * 10; if (/in$/i.test(v)) return n * 25.4;
+    if (/pt$/i.test(v)) return n * 25.4 / 72; if (/px$/i.test(v) || n === 0) return n / MM; return null;
+  }
+  function hojas(){ var out = []; for (var k = 0; k < document.styleSheets.length; k++) { var s = document.styleSheets[k]; if (s.ownerNode && /^fk-/.test(s.ownerNode.id || '')) continue; try { out.push(s.cssRules); } catch(e){} } return out; }
+  function reglasPagina(){
+    var r = { t:null, r:null, b:null, l:null, land:false };
+    function walk(rules){ for (var i = 0; i < rules.length; i++) { var x = rules[i];
+      if (x.type === 6) { if (x.selectorText && x.selectorText.trim()) continue; var s = x.style;
+        var sz = s.getPropertyValue('size') || ''; if (/landscape/i.test(sz)) r.land = true; else if (/portrait/i.test(sz)) r.land = false;
+        var t = aMM(s.marginTop), rr = aMM(s.marginRight), b = aMM(s.marginBottom), l = aMM(s.marginLeft);
+        if (t !== null) r.t = t; if (rr !== null) r.r = rr; if (b !== null) r.b = b; if (l !== null) r.l = l;
+      } else if (x.cssRules) { var mt = (x.media && x.media.mediaText) || ''; if (!mt || /print|all/i.test(mt)) walk(x.cssRules); } } }
+    hojas().forEach(walk);
+    ['t','r','b','l'].forEach(function(k){ if (r[k] === null) r[k] = 10; });
+    return r;
+  }
+  function reglasPrint(){
+    var out = [];
+    function walk(rules, enPrint){ for (var i = 0; i < rules.length; i++) { var x = rules[i];
+      if (x.type === 4) { if (/print/i.test(x.media.mediaText || '') && !/not\s+print/i.test(x.media.mediaText || '')) walk(x.cssRules, true); }
+      else if (x.type === 1 && enPrint) out.push(x.cssText);
+      else if (x.type === 12 && x.cssRules) walk(x.cssRules, enPrint); } }
+    hojas().forEach(function(rs){ walk(rs, false); });
+    return out.join('\n');
+  }
+  function calcular(){
+    if (ocupado || !document.body || !document.head) return; ocupado = true;
+    var tmp = null, sx = window.scrollX || 0, sy = window.scrollY || 0;
+    try {
+      var pg = reglasPagina();
+      var W = pg.land ? 279.4 : 215.9, H = pg.land ? 215.9 : 279.4;      // papel CARTA (lo que usa Safari)
+      var availW = (W - pg.l - pg.r) * MM, availH = (H - pg.t - pg.b) * MM;
+      tmp = document.createElement('style'); tmp.id = 'fk-tmp';
+      tmp.textContent = reglasPrint() + '\nhtml{width:' + availW.toFixed(1) + 'px!important;min-width:0!important;max-width:none!important;height:auto!important;min-height:0!important;}body{height:auto!important;min-height:0!important;}';
+      document.head.appendChild(tmp);
+      var body = document.body, br = body.getBoundingClientRect();
+      var fin = br.bottom + sy + (parseFloat(getComputedStyle(body).marginBottom) || 0);
+      var cortes = [0, fin], els = body.getElementsByTagName('*'), n = Math.min(els.length, 25000);
+      var RX = /^(page|always|left|right|recto|verso)$/;
+      for (var i = 0; i < n; i++) { var e = els[i], cs = getComputedStyle(e);
+        var fb = RX.test(cs.breakBefore || '') || RX.test(cs.pageBreakBefore || ''), fa = RX.test(cs.breakAfter || '') || RX.test(cs.pageBreakAfter || '');
+        if (!fb && !fa) continue; if (cs.display === 'none') continue;
+        var r = e.getBoundingClientRect(); if (!r.width && !r.height) continue;
+        if (fb) cortes.push(r.top + sy); if (fa) cortes.push(r.bottom + sy); }
+      cortes.sort(function(a, b){ return a - b; });
+      var segs = []; for (var j = 1; j < cortes.length; j++) { var h = cortes[j] - cortes[j-1]; if (h > 2) segs.push(h); }
+      var bcs = getComputedStyle(body), ancho = body.scrollWidth + (parseFloat(bcs.marginLeft) || 0) + (parseFloat(bcs.marginRight) || 0);
+      var z = 1; if (ancho > availW + 2) z = availW / ancho;
+      segs.forEach(function(h){ var hz = h * z; if (hz > availH * 1.003 && hz <= availH * 1.30) z = Math.min(z, z * availH / hz); });
+      if (z < 0.999) z = Math.max(0.70, z * 0.985); else z = 1;
+      if (!zEl) { zEl = document.createElement('style'); zEl.id = 'fk-zoom'; }
+      zEl.textContent = '@media print{html.fk-sf,html.fk-sf body{min-height:0!important;}' + (z < 1 ? 'html.fk-sf body{zoom:' + z.toFixed(4) + '!important;}' : '') + '}';
+      document.head.appendChild(zEl);
+      window.__fkInfo = { zoom: +z.toFixed(4), hojas: segs.length, altoHoja: Math.round(availH), anchoHoja: Math.round(availW), anchoDoc: Math.round(ancho), horizontal: pg.land, segs: segs.map(Math.round) };
+    } catch(eK){ try { console.warn('[kit Mac v.419]', eK); } catch(_){} }
+    try { if (tmp && tmp.parentNode) tmp.parentNode.removeChild(tmp); } catch(_){}
+    try { window.scrollTo(sx, sy); } catch(_){}
+    ocupado = false;
+  }
+  function titulo(){ try { if (!document.title || !document.title.trim()) { var h = document.querySelector('h1,h2,.title,.titulo,.hdr-title'); document.title = 'FARMERS C.A.' + (h ? ' — ' + h.textContent.replace(/\s+/g,' ').trim().slice(0,70) : ''); } } catch(_){} }
+  function prog(){ titulo(); calcular(); }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', prog); else setTimeout(prog, 0);
+  window.addEventListener('load', prog);
+  setTimeout(prog, 700); setTimeout(prog, 1800);
+  try { if (document.fonts && document.fonts.ready) document.fonts.ready.then(prog); } catch(_){}
+  window.addEventListener('beforeprint', calcular);
+}
+window._fkKit419 = function(html){
+  try {
+    if (typeof html !== 'string' || html.indexOf('_fkKitRuntime419') >= 0) return html;
+    var kit = '<scr' + 'ipt id="fk-printkit-419">(' + _fkKitRuntime419.toString() + ')();</scr' + 'ipt>';
+    // v.419: el kit va AL FINAL del documento: el <meta charset> queda primero (acentos correctos) y,
+    // aunque una hoja de estilos externa (Google Fonts) tarde en cargar, el documento ya está completo.
+    var iB = html.toLowerCase().lastIndexOf('</body>');
+    if (iB >= 0) return html.slice(0, iB) + kit + html.slice(iB);
+    var iH = html.toLowerCase().lastIndexOf('</html>');
+    if (iH >= 0) return html.slice(0, iH) + kit + html.slice(iH);
+    return html + kit;
+  } catch(e){ return html; }
+};
+
 // ═══ v.412 EXCEL DEL CATÁLOGO CON FORMATO (encabezado, bordes, alineación) ═══
 // SheetJS (versión libre) no escribe estilos, así que el archivo se arma normal
 // y luego se le inyecta la hoja de estilos y el formato de cada celda en el XML.
@@ -29400,7 +29526,7 @@ window.pcSmsTodos398 = async function(){
     document.body.appendChild(ov);
     ov.querySelectorAll('[data-tab]').forEach(function(b){ b.onclick = function(){ window.admCentro(b.dataset.tab); }; });
     ov.querySelector('#adm-refresh').onclick = async function(){ try { if (typeof window.fbGetPortalPedidos === 'function') window.portalPedidos = await window.fbGetPortalPedidos(); } catch(e){} window.admCentro(); };
-    ov.querySelector('#adm-salir').onclick = function(){ if (confirm('¿Cerrar sesión?')) location.reload(); };
+    ov.querySelector('#adm-salir').onclick = function(){ if (confirm('¿Cerrar sesión?')) { try { sessionStorage.removeItem('farmers_sesion_v419'); } catch(e){} location.reload(); } };
     ov.querySelectorAll('[data-rev]').forEach(function(b){ b.onclick = function(){ window.admRevisar(b.dataset.rev); }; });
     ov.querySelectorAll('[data-traza]').forEach(function(b){ b.onclick = function(){ admTraza(b.dataset.traza); }; });
   };
@@ -34091,7 +34217,7 @@ function printSale(saleId) {
   parts.push('</div>');
   parts.push('</'+'body></'+'html>');
 
-  doc.write(parts.join(''));
+  doc.write(_fkKit419(parts.join('')));
   doc.close();
   w.focus();
   setTimeout(function(){ w.print(); }, 500);
@@ -34220,7 +34346,7 @@ function importPreviewPDF() {
   var w = window.open('', '_blank', 'width=1150,height=760');
   if (!w) { toastWarn('Activa las ventanas emergentes en tu navegador.', 'Popup bloqueado'); return; }
   w.document.open();
-  w.document.write(p.join(''));
+  w.document.write(_fkKit419(p.join('')));
   w.document.close();
   w.focus();
 }
@@ -35382,7 +35508,7 @@ function impExportarPDF() {
   +'</div>'
   +'</'+'body></'+'html>';
 
-  var blob = new Blob([html],{type:'text/html;charset=utf-8'});
+  var blob = new Blob([_fkKit419(html)],{type:'text/html;charset=utf-8'});
   window.open(URL.createObjectURL(blob),'_blank');
   showToast('✅ PDF listo ('+monedaLabel+') — usa Ctrl+P para imprimir','success');
 }
@@ -49053,7 +49179,7 @@ window.rvExportarPDF = function() {
     '<div class="footer">Farmers C.A. · Generado el ' + new Date().toLocaleString('es-VE') + ' · Documento confidencial</div>' +
     '<script>window.onload=function(){setTimeout(function(){window.print();},400);};<' + '/script>' +
     '</body></html>';
-  w.document.write(html);
+  w.document.write(_fkKit419(html));
   w.document.close();
 };
 
@@ -61632,7 +61758,7 @@ function _msFacturaRenderizar(numP, suc) {
     showToast('⚠️ Permite ventanas emergentes para ver la factura', 'warn');
     return;
   }
-  w.document.write(html);
+  w.document.write(_fkKit419(html));
   w.document.close();
 }
 
@@ -66339,7 +66465,7 @@ window.msGenerarDocPedido = function(numP, sel) {
   // Restaurar moneda original
   MS.moneda = _monedaOrig || moneda;
 
-  var blob = new Blob([html],{type:'text/html;charset=utf-8'});
+  var blob = new Blob([_fkKit419(html)],{type:'text/html;charset=utf-8'});
   var url  = URL.createObjectURL(blob);
   // Abrir en nueva pestaña para poder imprimir/guardar PDF
   var win = window.open(url,'_blank');
@@ -68267,7 +68393,7 @@ window.depAbrirCentroPicking = function(){
     }catch(e){ depAbrirCentroPicking(); }
   };
   var bS=ov.querySelector('#dep-salir');
-  if(bS) bS.onclick=function(){ if(confirm('¿Cerrar la sesión de depósito?')) location.reload(); };
+  if(bS) bS.onclick=function(){ if(confirm('¿Cerrar la sesión de depósito?')) { try { sessionStorage.removeItem('farmers_sesion_v419'); } catch(e){} location.reload(); } };
 };
 // v.182: resumen DESPACHABLE de un pedido (desp; respaldo pide solo si el
 // pedido entero no registra desp — pedidos antiguos)
@@ -69131,7 +69257,7 @@ window.msGenerarEtiquetasPDF = function(sucsFiltradas) {
   var done=document.getElementById('ms-done-overlay');if(done)done.remove();
 
   var w=window.open('','_blank','width=900,height=950');
-  if(w){w.document.write(html);w.document.close();}
+  if(w){w.document.write(_fkKit419(html));w.document.close();}
   else showToast('Permite ventanas emergentes para las etiquetas','warn');
   showToast('🏷️ '+etiquetas.length+' etiquetas generadas','success');
 };
@@ -69359,7 +69485,7 @@ window.msExportarPDF = function(){
     +'<button onclick="window.close()" style="background:#f1f5f9;color:#475569;border:1px solid #cbd5e1;border-radius:8px;padding:9px 18px;cursor:pointer;font-size:.88rem;">Cerrar</button>'
     +'</div></div></body></html>';
   var w=window.open('','_blank','width=1100,height=900');
-  if(w){w.document.write(html);w.document.close();}
+  if(w){w.document.write(_fkKit419(html));w.document.close();}
   else showToast('Permite ventanas emergentes','warn');
   showToast('📄 PDF generado','success');
 };
@@ -70714,7 +70840,7 @@ window.coDescargarExcel = function() {
     + '</div></div>'
     + '</'+'body></'+'html>';
 
-  var blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+  var blob = new Blob([_fkKit419(html)], { type: 'text/html;charset=utf-8' });
   var url  = URL.createObjectURL(blob);
   var w    = window.open(url, '_blank');
   if (w) setTimeout(function(){ URL.revokeObjectURL(url); }, 15000);
@@ -71731,7 +71857,7 @@ function cxcComprobantePago(facId, pagoTs, options) {
     return { html: html, filename: filename, factura: f, pago: pago };
   }
 
-  var blob = new Blob([html], {type:'text/html'});
+  var blob = new Blob([_fkKit419(html)], {type:'text/html'});
   var url  = URL.createObjectURL(blob);
   var a    = document.createElement('a');
   a.href   = url;
@@ -73779,7 +73905,7 @@ function cxcDescargarPagosPDF(){
   var nombreCliente=(f.clienteNombre||'cliente').replace(/[^a-zA-Z0-9áéíóúÁÉÍÓÚñÑ\s]/g,'').replace(/\s+/g,'_').substring(0,40);
   var nombreArchivo='Comprobante_'+nombreCliente+'_'+f.numpedido+'.html';
 
-  var blob=new Blob([html],{type:'text/html;charset=utf-8'});
+  var blob=new Blob([_fkKit419(html)],{type:'text/html;charset=utf-8'});
   var url=URL.createObjectURL(blob);
 
   // Abrir en ventana para imprimir/ver — misma apariencia que el preview
@@ -74146,7 +74272,7 @@ function cxcNotifFactura(facId) {
 
   +'</div></div></body></html>';
 
-  var blob = new Blob([html],{type:'text/html;charset=utf-8'});
+  var blob = new Blob([_fkKit419(html)],{type:'text/html;charset=utf-8'});
   var url  = URL.createObjectURL(blob);
   var a    = document.createElement('a');
   a.href   = url;
@@ -74507,7 +74633,7 @@ function cxcNotifCliente(id,nombreEnc){
 
   // Descargar y abrir
   var nombreArch=(nombre||'cliente').replace(/[^a-zA-Z0-9áéíóúÁÉÍÓÚñÑ\s]/g,'').replace(/\s+/g,'_').substring(0,40);
-  var blob=new Blob([html],{type:'text/html;charset=utf-8'});
+  var blob=new Blob([_fkKit419(html)],{type:'text/html;charset=utf-8'});
   var url=URL.createObjectURL(blob);
   window.open(url,'_blank','width=900,height=720,menubar=no,toolbar=no,location=no');
   var a=document.createElement('a');
@@ -74717,7 +74843,7 @@ function cxcResumenCartera(){
 
   var w=window.open('','_blank');
   if(!w){ showToast('Permite las ventanas emergentes para ver el resumen','warn'); return; }
-  w.document.write(html); w.document.close();
+  w.document.write(_fkKit419(html)); w.document.close();
 }
 window.cxcResumenCartera=cxcResumenCartera;
 
@@ -76221,7 +76347,7 @@ function cxcmpDescargarComprobante(){
     + '</div>'
     + '</'+'body></'+'html>';
 
-  var blob = new Blob([html], {type:'text/html'});
+  var blob = new Blob([_fkKit419(html)], {type:'text/html'});
   var url  = URL.createObjectURL(blob);
   var a    = document.createElement('a');
   a.href   = url;
@@ -77525,7 +77651,7 @@ function nomRecibo(pagoId){
         '<div style="text-align:center;flex:1;border-top:1.5px solid #1B1F6B;padding-top:6px;font-size:.68rem;color:#64748b;">Por Farmers C.A.</div>'+
       '</div>'+
     '</div></body></html>';
-  var blob=new Blob([html],{type:'text/html'});
+  var blob=new Blob([_fkKit419(html)],{type:'text/html'});
   var url=URL.createObjectURL(blob);
   window.open(url,'_blank');
   setTimeout(function(){URL.revokeObjectURL(url);},10000);
@@ -79083,7 +79209,7 @@ function bkImprimirDetalle() {
     + '<scr'+'ipt>window.onload=function(){window.print();}<\/scr'+'ipt>'
     + '</'+'body></'+'html>';
 
-  var blob = new Blob([html], { type: 'text/html' });
+  var blob = new Blob([_fkKit419(html)], { type: 'text/html' });
   var url  = URL.createObjectURL(blob);
   var w    = window.open(url, '_blank');
   if (w) setTimeout(function(){ URL.revokeObjectURL(url); }, 10000);
@@ -86333,7 +86459,7 @@ function ncGenerarPDF(ncId) {
 
     '</body></html>';
 
-  var blob = new Blob([html], {type:'text/html'});
+  var blob = new Blob([_fkKit419(html)], {type:'text/html'});
   var url  = URL.createObjectURL(blob);
   var a    = document.createElement('a');
   a.href   = url;
@@ -86841,7 +86967,7 @@ window.msGenerarEtiquetasDespacho = function(sucsFiltradas) {
 
   var ov=document.getElementById('ms-etiquetas-overlay');if(ov)ov.remove();
   var w=window.open('','_blank','width=900,height=950');
-  if(w){w.document.write(html);w.document.close();}
+  if(w){w.document.write(_fkKit419(html));w.document.close();}
   else showToast('Permite ventanas emergentes','warn');
   showToast('📦 '+etiquetasDespacho.length+' etiquetas de despacho generadas','success');
 };
@@ -88019,7 +88145,7 @@ function pcReportePDF(){
     +'</div></body></html>';
   var w=window.open('','_blank');
   if(!w){ showToast('Permite las ventanas emergentes','warn'); return; }
-  w.document.write(html); w.document.close();
+  w.document.write(_fkKit419(html)); w.document.close();
 }
 window.pcReportePDF=pcReportePDF;
 
@@ -88546,7 +88672,7 @@ function pcDescargarPedidoPDF(id) {
 
   var w = window.open('', '_blank');
   if (!w) { alert('Habilita las ventanas emergentes para descargar el PDF.'); return; }
-  w.document.write(html);
+  w.document.write(_fkKit419(html));
   w.document.close();
   w.document.title = filename;
 }
