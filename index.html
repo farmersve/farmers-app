@@ -27854,8 +27854,10 @@ function _fkKitRuntime419(){
   var ua = navigator.userAgent || '';
   var sf = (/Safari\//.test(ua) && !/(Chrome|Chromium|CriOS|Edg|EdgA|OPR|Firefox|FxiOS)\//.test(ua)) || /[?&#]fksf=1/.test(String(location.href));
   window.__fkSafari = sf;
-  if (!sf) return;
-  var de = document.documentElement; de.classList.add('fk-sf');
+  // v.419b: activo en TODOS los navegadores (Mac y Windows). Safari imprime siempre en CARTA;
+  // los demás usan el tamaño que pide el documento (A4) o, si no lo pide, CARTA (el más bajo, lo seguro).
+  var unaHoja = !!window.__fkUnaHoja;   // documentos de 1 hoja: notificaciones, comprobantes, notas de crédito, recibos
+  var de = document.documentElement; de.classList.add('fk-on'); if (sf) de.classList.add('fk-sf');
   var MM = 96 / 25.4, zEl = null, ocupado = false;
   function aMM(v){
     v = String(v || '').trim(); if (!v || v === 'auto') return null;
@@ -27865,10 +27867,11 @@ function _fkKitRuntime419(){
   }
   function hojas(){ var out = []; for (var k = 0; k < document.styleSheets.length; k++) { var s = document.styleSheets[k]; if (s.ownerNode && /^fk-/.test(s.ownerNode.id || '')) continue; try { out.push(s.cssRules); } catch(e){} } return out; }
   function reglasPagina(){
-    var r = { t:null, r:null, b:null, l:null, land:false };
+    var r = { t:null, r:null, b:null, l:null, land:false, papel:null };
     function walk(rules){ for (var i = 0; i < rules.length; i++) { var x = rules[i];
       if (x.type === 6) { if (x.selectorText && x.selectorText.trim()) continue; var s = x.style;
         var sz = s.getPropertyValue('size') || ''; if (/landscape/i.test(sz)) r.land = true; else if (/portrait/i.test(sz)) r.land = false;
+        if (/\ba4\b/i.test(sz)) r.papel = 'a4'; else if (/letter/i.test(sz)) r.papel = 'letter'; else if (/legal/i.test(sz)) r.papel = 'legal';
         var t = aMM(s.marginTop), rr = aMM(s.marginRight), b = aMM(s.marginBottom), l = aMM(s.marginLeft);
         if (t !== null) r.t = t; if (rr !== null) r.r = rr; if (b !== null) r.b = b; if (l !== null) r.l = l;
       } else if (x.cssRules) { var mt = (x.media && x.media.mediaText) || ''; if (!mt || /print|all/i.test(mt)) walk(x.cssRules); } } }
@@ -27890,7 +27893,9 @@ function _fkKitRuntime419(){
     var tmp = null, sx = window.scrollX || 0, sy = window.scrollY || 0;
     try {
       var pg = reglasPagina();
-      var W = pg.land ? 279.4 : 215.9, H = pg.land ? 215.9 : 279.4;      // papel CARTA (lo que usa Safari)
+      var PAP = { a4:[210,297], letter:[215.9,279.4], legal:[215.9,355.6] };
+      var pp = (!sf && pg.papel && PAP[pg.papel]) ? PAP[pg.papel] : PAP.letter;   // Safari → siempre CARTA
+      var W = pg.land ? pp[1] : pp[0], H = pg.land ? pp[0] : pp[1];
       var availW = (W - pg.l - pg.r) * MM, availH = (H - pg.t - pg.b) * MM;
       tmp = document.createElement('style'); tmp.id = 'fk-tmp';
       tmp.textContent = reglasPrint() + '\nhtml{width:' + availW.toFixed(1) + 'px!important;min-width:0!important;max-width:none!important;height:auto!important;min-height:0!important;}body{height:auto!important;min-height:0!important;}';
@@ -27908,12 +27913,22 @@ function _fkKitRuntime419(){
       var segs = []; for (var j = 1; j < cortes.length; j++) { var h = cortes[j] - cortes[j-1]; if (h > 2) segs.push(h); }
       var bcs = getComputedStyle(body), ancho = body.scrollWidth + (parseFloat(bcs.marginLeft) || 0) + (parseFloat(bcs.marginRight) || 0);
       var z = 1; if (ancho > availW + 2) z = availW / ancho;
-      segs.forEach(function(h){ var hz = h * z; if (hz > availH * 1.003 && hz <= availH * 1.30) z = Math.min(z, z * availH / hz); });
-      if (z < 0.999) z = Math.max(0.70, z * 0.985); else z = 1;
+      var minZ = 0.70;
+      if (unaHoja) {
+        // TODO en una sola hoja: se reduce lo necesario (hasta 60 %) para que quepa completo
+        var tot = 0; segs.forEach(function(h){ tot += h; });
+        var hz1 = tot * z; if (hz1 > availH * 1.003) z = z * availH / hz1;
+        minZ = 0.60;
+      } else {
+        segs.forEach(function(h){ var hz = h * z; if (hz > availH * 1.003 && hz <= availH * 1.30) z = Math.min(z, z * availH / hz); });
+      }
+      if (z < 0.999) z = Math.max(minZ, z * 0.985); else z = 1;
       if (!zEl) { zEl = document.createElement('style'); zEl.id = 'fk-zoom'; }
-      zEl.textContent = '@media print{html.fk-sf,html.fk-sf body{min-height:0!important;}' + (z < 1 ? 'html.fk-sf body{zoom:' + z.toFixed(4) + '!important;}' : '') + '}';
+      zEl.textContent = '@media print{html.fk-on tr,html.fk-on img{break-inside:avoid;page-break-inside:avoid;}'
+        + (z < 1 || unaHoja ? 'html.fk-on,html.fk-on body{min-height:0!important;}' : '')
+        + (z < 1 ? 'html.fk-on body{zoom:' + z.toFixed(4) + '!important;}' : '') + '}';
       document.head.appendChild(zEl);
-      window.__fkInfo = { zoom: +z.toFixed(4), hojas: segs.length, altoHoja: Math.round(availH), anchoHoja: Math.round(availW), anchoDoc: Math.round(ancho), horizontal: pg.land, segs: segs.map(Math.round) };
+      window.__fkInfo = { unaHoja: unaHoja, papel: (sf ? 'letter(safari)' : (pg.papel || 'letter')), zoom: +z.toFixed(4), hojas: segs.length, altoHoja: Math.round(availH), anchoHoja: Math.round(availW), anchoDoc: Math.round(ancho), horizontal: pg.land, segs: segs.map(Math.round) };
     } catch(eK){ try { console.warn('[kit Mac v.419]', eK); } catch(_){} }
     try { if (tmp && tmp.parentNode) tmp.parentNode.removeChild(tmp); } catch(_){}
     try { window.scrollTo(sx, sy); } catch(_){}
@@ -27927,10 +27942,10 @@ function _fkKitRuntime419(){
   try { if (document.fonts && document.fonts.ready) document.fonts.ready.then(prog); } catch(_){}
   window.addEventListener('beforeprint', calcular);
 }
-window._fkKit419 = function(html){
+window._fkKit419 = function(html, unaHoja){
   try {
     if (typeof html !== 'string' || html.indexOf('_fkKitRuntime419') >= 0) return html;
-    var kit = '<scr' + 'ipt id="fk-printkit-419">(' + _fkKitRuntime419.toString() + ')();</scr' + 'ipt>';
+    var kit = '<scr' + 'ipt id="fk-printkit-419">' + (unaHoja ? 'window.__fkUnaHoja=true;' : '') + '(' + _fkKitRuntime419.toString() + ')();</scr' + 'ipt>';
     // v.419: el kit va AL FINAL del documento: el <meta charset> queda primero (acentos correctos) y,
     // aunque una hoja de estilos externa (Google Fonts) tarde en cargar, el documento ya está completo.
     var iB = html.toLowerCase().lastIndexOf('</body>');
@@ -70840,7 +70855,7 @@ window.coDescargarExcel = function() {
     + '</div></div>'
     + '</'+'body></'+'html>';
 
-  var blob = new Blob([_fkKit419(html)], { type: 'text/html;charset=utf-8' });
+  var blob = new Blob([_fkKit419(html, true)], { type: 'text/html;charset=utf-8' });
   var url  = URL.createObjectURL(blob);
   var w    = window.open(url, '_blank');
   if (w) setTimeout(function(){ URL.revokeObjectURL(url); }, 15000);
@@ -71857,7 +71872,7 @@ function cxcComprobantePago(facId, pagoTs, options) {
     return { html: html, filename: filename, factura: f, pago: pago };
   }
 
-  var blob = new Blob([_fkKit419(html)], {type:'text/html'});
+  var blob = new Blob([_fkKit419(html, true)], {type:'text/html'});
   var url  = URL.createObjectURL(blob);
   var a    = document.createElement('a');
   a.href   = url;
@@ -73905,7 +73920,7 @@ function cxcDescargarPagosPDF(){
   var nombreCliente=(f.clienteNombre||'cliente').replace(/[^a-zA-Z0-9áéíóúÁÉÍÓÚñÑ\s]/g,'').replace(/\s+/g,'_').substring(0,40);
   var nombreArchivo='Comprobante_'+nombreCliente+'_'+f.numpedido+'.html';
 
-  var blob=new Blob([_fkKit419(html)],{type:'text/html;charset=utf-8'});
+  var blob=new Blob([_fkKit419(html, true)],{type:'text/html;charset=utf-8'});
   var url=URL.createObjectURL(blob);
 
   // Abrir en ventana para imprimir/ver — misma apariencia que el preview
@@ -74272,7 +74287,7 @@ function cxcNotifFactura(facId) {
 
   +'</div></div></body></html>';
 
-  var blob = new Blob([_fkKit419(html)],{type:'text/html;charset=utf-8'});
+  var blob = new Blob([_fkKit419(html, true)],{type:'text/html;charset=utf-8'});
   var url  = URL.createObjectURL(blob);
   var a    = document.createElement('a');
   a.href   = url;
@@ -74633,7 +74648,7 @@ function cxcNotifCliente(id,nombreEnc){
 
   // Descargar y abrir
   var nombreArch=(nombre||'cliente').replace(/[^a-zA-Z0-9áéíóúÁÉÍÓÚñÑ\s]/g,'').replace(/\s+/g,'_').substring(0,40);
-  var blob=new Blob([_fkKit419(html)],{type:'text/html;charset=utf-8'});
+  var blob=new Blob([_fkKit419(html, true)],{type:'text/html;charset=utf-8'});
   var url=URL.createObjectURL(blob);
   window.open(url,'_blank','width=900,height=720,menubar=no,toolbar=no,location=no');
   var a=document.createElement('a');
@@ -76347,7 +76362,7 @@ function cxcmpDescargarComprobante(){
     + '</div>'
     + '</'+'body></'+'html>';
 
-  var blob = new Blob([_fkKit419(html)], {type:'text/html'});
+  var blob = new Blob([_fkKit419(html, true)], {type:'text/html'});
   var url  = URL.createObjectURL(blob);
   var a    = document.createElement('a');
   a.href   = url;
@@ -77651,7 +77666,7 @@ function nomRecibo(pagoId){
         '<div style="text-align:center;flex:1;border-top:1.5px solid #1B1F6B;padding-top:6px;font-size:.68rem;color:#64748b;">Por Farmers C.A.</div>'+
       '</div>'+
     '</div></body></html>';
-  var blob=new Blob([_fkKit419(html)],{type:'text/html'});
+  var blob=new Blob([_fkKit419(html, true)],{type:'text/html'});
   var url=URL.createObjectURL(blob);
   window.open(url,'_blank');
   setTimeout(function(){URL.revokeObjectURL(url);},10000);
@@ -86459,7 +86474,7 @@ function ncGenerarPDF(ncId) {
 
     '</body></html>';
 
-  var blob = new Blob([_fkKit419(html)], {type:'text/html'});
+  var blob = new Blob([_fkKit419(html, true)], {type:'text/html'});
   var url  = URL.createObjectURL(blob);
   var a    = document.createElement('a');
   a.href   = url;
