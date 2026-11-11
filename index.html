@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.11.10.419">
+<meta name="farmers-version" content="2026.11.11.420">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -4830,18 +4830,86 @@ window.getDisponible = function(ref) {
   return Math.max(0, real - comp_qty);
 };
 window.getMsPedidos = function() {
+  // v.420: si el equipo se llenó, la versión vigente (con el pedido nuevo) vive en memoria hasta que se libere espacio
+  if (Array.isArray(window._msPedPend420)) { try { return JSON.parse(JSON.stringify(window._msPedPend420)); } catch(eP){} }
   try { var r=localStorage.getItem(MS_PEDIDOS_KEY); if(r) return JSON.parse(r); } catch(e){}
   return [];
 };
+/* v.420 — ESPACIO LLENO SIN PERDER PEDIDOS (11/11, Omar procesando un pedido)
+   Antes: si el almacenamiento del equipo estaba lleno, el pedido NO se guardaba
+   en ningún lado (ni en el equipo ni en la nube). Ahora:
+   1) se borra basura segura (cachés, logs, duplicados) y se reintenta;
+   2) si aún no cabe, el pedido se guarda IGUAL en la nube y queda vigente en
+      memoria, se aligera automáticamente lo viejo que ya está respaldado en la
+      nube y se vuelve a guardar en el equipo. Todo con aviso visible. */
+window._lsLiberarSeguro420 = function(){
+  var lib = 0;
+  function quitar(k){ try { var v = localStorage.getItem(k); if (v !== null) { lib += v.length; localStorage.removeItem(k); } } catch(e){} }
+  try {
+    ['farmers_product_images_hq','farmers_product_images'].forEach(quitar);
+    if (localStorage.getItem('farmers_hcl_v7_facturas')) quitar('farmers_hcl_facturas');
+    ['farmers_react_log','farmers_recalc_comp_log'].forEach(function(k){
+      try { var a = JSON.parse(localStorage.getItem(k) || 'null'); if (Array.isArray(a) && a.length > 40) { var antes = localStorage.getItem(k).length; localStorage.setItem(k, JSON.stringify(a.slice(-40))); lib += antes - localStorage.getItem(k).length; } } catch(e){}
+    });
+    Object.keys(localStorage).forEach(function(k){
+      if (k.indexOf('ms_reserva_') === 0) { try { var rv = JSON.parse(localStorage.getItem(k) || '{}'); if (!rv || !rv.items || !rv.items.length) quitar(k); } catch(e){} }
+    });
+  } catch(eL){}
+  return lib;
+};
+window._msGuardadoPendiente420 = async function(){
+  if (window._msPend420Corriendo) return; window._msPend420Corriendo = true;
+  try {
+    if (typeof showToast === 'function') showToast('🪶 Liberando espacio en este equipo (solo lo viejo que ya está completo en la nube)…','info',{duration:7000});
+    try { if (typeof farmersAligerarPedidos === 'function') await farmersAligerarPedidos(30, true); } catch(e1){ console.warn('[v.420] aligerar pedidos:', e1); }
+    try { if (typeof farmersAligerarHistorico === 'function') await farmersAligerarHistorico(60, true); } catch(e2){ console.warn('[v.420] aligerar histórico:', e2); }
+    var pend = window._msPedPend420;
+    if (!Array.isArray(pend)) return;
+    try {
+      localStorage.setItem(MS_PEDIDOS_KEY, JSON.stringify(pend));
+      window._msPedPend420 = null;
+      try { localStorage.setItem('farmers_ms_pedidos_savedAt', String(Date.now())); } catch(e){}
+      if (typeof window._lsQuotaCheck === 'function') { try { window._lsQuotaCheck(); } catch(e){} }
+      alert('✅ ESPACIO LIBERADO Y PEDIDO GUARDADO\n\nEl pedido ya quedó guardado en este equipo y en la nube.\nPuedes seguir trabajando normalmente.');
+    } catch(e3){
+      alert('⚠️ EL PEDIDO ESTÁ GUARDADO EN LA NUBE, pero este equipo sigue sin espacio.\n\nNo recargues todavía. Avísale a Claude con esta pantalla.\n(' + ((e3&&e3.name)||'') + ')');
+    }
+  } finally { window._msPend420Corriendo = false; }
+};
 window.saveMsPedidos = function(pedidos) {
-  try { localStorage.setItem(MS_PEDIDOS_KEY, JSON.stringify(pedidos)); }
+  var _js420 = JSON.stringify(pedidos);
+  try { localStorage.setItem(MS_PEDIDOS_KEY, _js420); window._msPedPend420 = null; }
   catch(e){
+    var _cuota420 = e && (e.name === 'QuotaExceededError' || e.code === 22 || e.code === 1014 || /quota/i.test(e.message||''));
+    if (_cuota420) {
+      // 1) basura segura fuera y reintento inmediato
+      var _lib420 = window._lsLiberarSeguro420();
+      var _ok420 = false;
+      try { localStorage.setItem(MS_PEDIDOS_KEY, _js420); _ok420 = true; window._msPedPend420 = null; } catch(eR){}
+      if (_ok420) {
+        console.log('[v.420] espacio liberado (' + Math.round(_lib420/1024) + ' KB) y pedidos guardados al reintentar');
+      } else {
+        // 2) el pedido NO se pierde: vigente en memoria + nube YA, y se libera espacio en segundo plano
+        window._msPedPend420 = JSON.parse(_js420);
+        try { localStorage.setItem('farmers_ms_pedidos_savedAt', String(Date.now())); } catch(eS){}
+        if (window.fbSaveMsPedidos) {
+          Promise.resolve(window.fbSaveMsPedidos(window._msPedPend420)).then(function(okN){
+            if (okN === false) alert('⛔ EL EQUIPO ESTÁ LLENO Y LA NUBE NO RESPONDIÓ\n\nNO recargues ni cierres esta pantalla. Revisa la conexión a internet y avísale a Claude.');
+            else if (typeof showToast === 'function') showToast('☁️ Pedido guardado en la nube. Liberando espacio en el equipo…','success',{duration:6000});
+          }).catch(function(){});
+        }
+        if (window.fbTriggerPortalSnapshot) window.fbTriggerPortalSnapshot('saveMsPedidos');
+        setTimeout(function(){ window._msGuardadoPendiente420(); }, 200);
+        return true;
+      }
+    } else {
     /* v.323: NUNCA tragarse un guardado fallido. Con el almacenamiento lleno
        (QuotaExceeded) el pedido "se emitía" pero no quedaba guardado — caso
        MS-260921-1352 del 21/09. Ahora se grita y se deja constancia. */
     console.error('[saveMsPedidos] ⛔ GUARDADO FALLIDO ('+(e&&e.name)+'): '+(e&&e.message));
     try{ alert('⛔ EL PEDIDO NO SE PUDO GUARDAR EN ESTE EQUIPO\n\nMotivo: '+(e&&e.name==='QuotaExceededError'?'ALMACENAMIENTO LLENO ('+((JSON.stringify(pedidos).length)/1048576).toFixed(1)+' MB no caben) — hay que liberar espacio':((e&&e.name)||'error')+' · '+((e&&e.message)||''))+'\n\nNO cierres esta pantalla y avísale a Claude.'); }catch(e2){}
     return false;
+    }
   }
   // v.172: sello de tiempo del guardado local — los sincronizadores NO deben
   // pisar este estado con una versión remota MÁS VIEJA (revertía ediciones de
@@ -27842,6 +27910,37 @@ function _ciMarcasExcl(P){
   return String(P.excluir || '').toUpperCase().split(/[,;]+/).map(function(x){ return x.trim(); }).filter(Boolean);
 }
 window._ciMarcasExcl = _ciMarcasExcl;
+/* v.420 — VENTANAS LARGAS SIEMPRE CON BARRA PARA BAJAR (11/11)
+   Las ventanas centradas (Pedido emitido, Inventario reservado, Despacho, etc.)
+   no tenían desplazamiento: con muchas sucursales quedaban más altas que la
+   pantalla y los botones de abajo eran inalcanzables. Ahora toda ventana a
+   pantalla completa centrada se puede desplazar, y si cabe sigue centrada igual. */
+(function(){
+  function arreglar(el){
+    try {
+      if (!el || el.nodeType !== 1 || el._ovScroll420) return;
+      var st = el.style; if (!st || st.position !== 'fixed') return;
+      var cs = getComputedStyle(el);
+      if (cs.display !== 'flex' || cs.alignItems !== 'center') return;
+      if ((parseInt(cs.zIndex) || 0) < 1000) return;
+      var r = el.getBoundingClientRect();
+      if (r.height < window.innerHeight * 0.9 || r.width < window.innerWidth * 0.9) return;
+      el._ovScroll420 = true;
+      if (cs.overflowY !== 'auto' && cs.overflowY !== 'scroll') st.overflowY = 'auto';
+      st.alignItems = 'flex-start';
+      if (!st.paddingTop || parseFloat(cs.paddingTop) < 12) { st.paddingTop = '16px'; st.paddingBottom = '16px'; }
+      Array.prototype.forEach.call(el.children, function(ch){ ch.style.marginTop = 'auto'; ch.style.marginBottom = 'auto'; ch.style.flexShrink = '0'; });
+    } catch(e){}
+  }
+  function iniciar(){
+    if (!document.body) return setTimeout(iniciar, 200);
+    new MutationObserver(function(muts){
+      muts.forEach(function(m){ Array.prototype.forEach.call(m.addedNodes || [], arreglar); });
+    }).observe(document.body, { childList: true });
+    Array.prototype.forEach.call(document.body.children, arreglar);
+  }
+  iniciar();
+})();
 /* ═══ v.419 — KIT DE IMPRESIÓN PARA MAC (Safari) ════════════════════════════════════════════
    Comprobado con los PDF reales hechos en la Mac de Omar: Safari IGNORA el tamaño A4 del
    documento y siempre imprime en papel CARTA (279 mm de alto en vez de 297 mm), respetando
@@ -62848,7 +62947,7 @@ window.farmersEdoCtaWhatsApp = function(cl, deuda){
    Faltantes) el histórico completo se trae solo de la nube — una vez — y el
    módulo trabaja con datos íntegros. Recoges cuando quieras con 🪶. */
 window._B2_CAMPOS_PESADOS = ['items','productos','lineas','detalle'];
-window.farmersAligerarHistorico = async function(dias){
+window.farmersAligerarHistorico = async function(dias, silencioso){
   dias = parseInt(dias) || 60;
   var defs = [
     { nom:'VENTAS', key:'farmers_sales', motor: window._salesV2 },
@@ -62897,7 +62996,7 @@ window.farmersAligerarHistorico = async function(dias){
     } else resumen.push(df.nom + ': nada nuevo (recientes: '+recientes+' · sin fecha legible: '+sinFecha+' · sin respaldo nube: '+sinNube+')');
   }
   var msg = 'FASE B2 — HISTÓRICO LIGERO (>'+dias+' días)\n\n' + resumen.join('\n') + (totalLib ? ('\n\nLiberados en total: ~' + totalLib + ' KB') : '');
-  console.log('[FaseB2]', msg.replace(/\n/g,' · ')); alert(msg);
+  console.log('[FaseB2]', msg.replace(/\n/g,' · ')); if (!silencioso) alert(msg);
   if (typeof window._lsQuotaCheck === 'function') { try { window._lsQuotaCheck(); } catch(e){} }
   return totalLib;
 };
@@ -62976,10 +63075,10 @@ window.farmersHidratarPedido = async function(numP){
     return true;
   } catch(e){ console.warn('[FaseB1] hidratar:', e); return false; }
 };
-window.farmersAligerarPedidos = async function(dias){
+window.farmersAligerarPedidos = async function(dias, silencioso){
   dias = parseInt(dias) || 30;
   var nube = await fbGetMsPedidosV2();
-  if (!nube || !nube.length) { alert('⛔ La nube v2 no respondió: no se aligera NADA sin respaldo verificado.'); return null; }
+  if (!nube || !nube.length) { if (!silencioso) alert('⛔ La nube v2 no respondió: no se aligera NADA sin respaldo verificado.'); return null; }
   var mapa = {}; nube.forEach(function(p){ if (p && p.numP) mapa[p.numP] = p; });
   function fMs(p){
     var m = String(p.fechaDespacho||'').match(/(\d{2})\/(\d{2})\/(\d{4})/);
@@ -63000,15 +63099,15 @@ window.farmersAligerarPedidos = async function(dias){
     if (!full || full._ligero || !Array.isArray(full.data) || !full.data.length) return; // nube sin detalle completo → intocable
     cand.push(p.numP);
   });
-  if (!cand.length) { alert('Nada que aligerar: no hay despachados de más de '+dias+' días con respaldo completo verificado en la nube.'); return null; }
-  if (!confirm('FASE B1 — ALIGERAR '+cand.length+' pedido(s) DESPACHADOS de más de '+dias+' días.\n\n· Sus tarjetas y totales en el Monitor NO cambian\n· Su detalle completo queda en la nube v2 (verificado ahora mismo) y se trae solo al abrir su DOC/PDF\n· Reversa total en cualquier momento: farmersRehidratarTodo()\n\n¿Proceder?')) return null;
+  if (!cand.length) { if (!silencioso) alert('Nada que aligerar: no hay despachados de más de '+dias+' días con respaldo completo verificado en la nube.'); return null; }
+  if (!silencioso && !confirm('FASE B1 — ALIGERAR '+cand.length+' pedido(s) DESPACHADOS de más de '+dias+' días.\n\n· Sus tarjetas y totales en el Monitor NO cambian\n· Su detalle completo queda en la nube v2 (verificado ahora mismo) y se trae solo al abrir su DOC/PDF\n· Reversa total en cualquier momento: farmersRehidratarTodo()\n\n¿Proceder?')) return null;
   peds.forEach(function(p){ if (cand.indexOf(p.numP) < 0) return; p._ligero = true; p.data = []; });
   var okG = saveMsPedidos(peds);
   var kbDesp = Math.round((localStorage.getItem('farmers_ms_pedidos')||'').length/1024);
   var msg = (okG === false)
     ? '⛔ El guardado falló y lo gritó — nada quedó a medias. Avísale a Claude.'
     : ('✅ FASE B1 APLICADA\nAligerados: '+cand.length+' pedidos\nfarmers_ms_pedidos: '+kbAntes+' KB → '+kbDesp+' KB (liberados ~'+(kbAntes-kbDesp)+' KB)\n\nMonitor intacto; detalle de viejos se trae de la nube al abrirlos.');
-  alert(msg); console.log('[FaseB1]', msg.replace(/\n/g,' · '));
+  if (!silencioso) alert(msg); console.log('[FaseB1]', msg.replace(/\n/g,' · '));
   return { aligerados: cand, antes: kbAntes, despues: kbDesp };
 };
 window.farmersRehidratarTodo = async function(){
