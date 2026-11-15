@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.11.14.427">
+<meta name="farmers-version" content="2026.11.15.428">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -27920,7 +27920,31 @@ window._ciMarcasExcl = _ciMarcasExcl;
 (function(){
   var ASIS = window.FarmersAsistente = window.FarmersAsistente || {};
   var LS_URL = 'farmers_asis_url', LS_CLAVE = 'farmers_asis_clave', LS_LOG = 'farmers_asis_bitacora';
-  var MAX_VUELTAS = 14;
+  var MAX_VUELTAS = 8;
+  // ═══ v.428 — AHORRO: control de gasto de FARMI ═══
+  var LS_MOD = 'farmers_asis_modelo', LS_TOPE = 'farmers_asis_tope_dia', LS_GASTO = 'farmers_asis_gasto_';
+  var PRECIOS = { // USD por millón de tokens (lista oficial de Anthropic): entrada, escribir caché, leer caché, salida
+    haiku: { n: 'Haiku 5.5', i: 0.10, cw: 0.125, cr: 0.01, o: 0.50, largo: 5 },
+    sonnet: { n: 'Sonnet 5.5', i: 2, cw: 2.5, cr: 0.10, o: 10 },
+    opus: { n: 'Opus 5.5', i: 4, cw: 5, cr: 0.20, o: 20 } };
+  function modeloAct(){ var m = localStorage.getItem(LS_MOD) || 'haiku'; return PRECIOS[m] ? m : 'haiku'; }
+  function costoUso(u){ if (!u) return 0; var P = PRECIOS[modeloAct()], ent = (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0) + (u.cache_read_input_tokens || 0), f = (P.largo && ent > 100000) ? P.largo : 1;
+    return f * ((u.input_tokens || 0) * P.i + (u.cache_creation_input_tokens || 0) * P.cw + (u.cache_read_input_tokens || 0) * P.cr + (u.output_tokens || 0) * P.o) / 1e6; }
+  function claveGasto(){ var d = new Date(); return LS_GASTO + d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0'); }
+  ASIS.gastoHoy = function(){ try { return JSON.parse(localStorage.getItem(claveGasto()) || '{"usd":0,"preguntas":0,"llamadas":0}'); } catch(e){ return { usd: 0, preguntas: 0, llamadas: 0 }; } };
+  function sumarGasto(usd, nueva){ var g = ASIS.gastoHoy(); g.usd = (g.usd || 0) + usd; g.llamadas = (g.llamadas || 0) + 1; if (nueva) g.preguntas = (g.preguntas || 0) + 1; try { localStorage.setItem(claveGasto(), JSON.stringify(g)); } catch(e){} return g; }
+  ASIS.topeDia = function(){ var t = parseFloat(localStorage.getItem(LS_TOPE)); return t > 0 ? t : 2; };
+  // Lo que se envía a Claude: solo las últimas preguntas, con los resultados viejos resumidos (la caché abarata lo repetido)
+  var TURNOS_MAX = 4, CHARS_MAX = 90000;
+  function inicioTurnos(H){ var ix = []; H.forEach(function(m, k){ if (m.role === 'user' && Array.isArray(m.content) ? m.content.some(function(b){ return b && b.type === 'text'; }) && !m.content.some(function(b){ return b && b.type === 'tool_result'; }) : (m.role === 'user')) ix.push(k); }); return ix; }
+  function mensajesParaEnviar(){
+    var H = ASIS.historial, ix = inicioTurnos(H), desde = ix.length > TURNOS_MAX ? ix[ix.length - TURNOS_MAX] : 0, M = H.slice(desde);
+    while (JSON.stringify(M).length > CHARS_MAX) { var ix2 = inicioTurnos(M); if (ix2.length < 2) break; M = M.slice(ix2[1]); }
+    M = M.map(function(m){ return { role: m.role, content: Array.isArray(m.content) ? m.content.map(function(b){ var c = {}; for (var k in b) if (k !== 'cache_control' && k.charAt(0) !== '_') c[k] = b[k]; return c; }) : m.content }; });
+    var ult = M[M.length - 1]; if (ult && Array.isArray(ult.content) && ult.content.length) ult.content[ult.content.length - 1].cache_control = { type: 'ephemeral' };
+    else if (ult && typeof ult.content === 'string') ult.content = [{ type: 'text', text: ult.content, cache_control: { type: 'ephemeral' } }];
+    return M;
+  }
   ASIS.historial = [];          // mensajes en formato API
   ASIS.ocupado = false;
 
@@ -28650,7 +28674,7 @@ window._ciMarcasExcl = _ciMarcasExcl;
       var res = EJ[nombre](entrada || {});
       if (res && typeof res.then === 'function') res = await res;
       if (h.accion) bitacora('accion', { herramienta: nombre, resultado: res });
-      var s = ajustarTamano(res, 30000);
+      var s = ajustarTamano(res, 14000);
       return { error: false, texto: s };
     } catch(e){ return { error: true, texto: 'Error en ' + nombre + ': ' + (e && e.message || e) }; }
   };
@@ -28697,13 +28721,21 @@ window._ciMarcasExcl = _ciMarcasExcl;
     return j;
   };
   ASIS.aligerarHistorial = function(){
-    ASIS.historial.forEach(function(m){ if (m.role !== 'user' || !Array.isArray(m.content)) return;
+    ASIS.historial.forEach(function(m){ if (!Array.isArray(m.content)) return;
+      m.content.forEach(function(b){
+        if (b && b.type === 'tool_result' && typeof b.content === 'string' && b.content.length > 1200) b.content = b.content.slice(0, 1200) + '…[resultado de una pregunta anterior, resumido para ahorrar. Si necesitas el detalle, vuelve a consultar la herramienta.]';
+        if (b && b.type === 'tool_use' && b.input && JSON.stringify(b.input).length > 1500) b.input = { nota: 'entrada larga de un paso anterior, resumida para ahorrar' };
+      });
+      if (m.role !== 'user') return;
       m.content = m.content.map(function(b){ return (b && (b.type === 'image' || b.type === 'document')) ? { type: 'text', text: '[Imagen/PDF ya analizado en un mensaje anterior: ' + (b._nombre || 'adjunto') + '. Si necesitas verlo de nuevo, pide a Omar que lo adjunte otra vez.]' } : b; }); });
   };
   ASIS.detener = function(){ ASIS.cancelado = true; try { if (ASIS._ctrl) ASIS._ctrl.abort(); } catch(e){} };
   ASIS.preguntar = async function(texto, ui, extras){
     ASIS.cancelado = false;
     function chk(){ if (ASIS.cancelado) { var ec = new Error('DETENIDO'); ec.detenido = true; throw ec; } }
+    var g0 = ASIS.gastoHoy(), tope = ASIS.topeDia();
+    if (g0.usd >= tope) { var eG = new Error('TOPE'); eG.tope = true; eG.gasto = g0; throw eG; }
+    ASIS.costoPregunta = 0; ASIS.pasosPregunta = 0;
     var base = ASIS.historial.length;   // si algo falla, la conversación vuelve a este punto (nunca queda a medias)
     ASIS.historial.push({ role: 'user', content: (extras || []).concat([{ type: 'text', text: texto }]) });
     var tools = ASIS.herramientas.map(function(t){ return { name: t.name, description: t.description, input_schema: t.input_schema }; });
@@ -28712,7 +28744,7 @@ window._ciMarcasExcl = _ciMarcasExcl;
       chk(); if (ui && ui.vuelta) ui.vuelta(v + 1);
       var resp = null;
       for (var intento = 1; intento <= 4; intento++) {
-        try { resp = await ASIS.transporte({ system: ASIS.sistema(), tools: tools, messages: ASIS.historial }); break; }
+        try { resp = await ASIS.transporte({ system: ASIS.sistema(), tools: tools, messages: mensajesParaEnviar() }); break; }
         catch(eT){
           var reint = eT && (eT.status === 429 || eT.status === 529 || eT.status === 503 || eT.status === 502 || /rate|overload|sobrecarg/i.test(eT.message || ''));
           if (!reint || intento === 4) throw eT;
@@ -28722,6 +28754,7 @@ window._ciMarcasExcl = _ciMarcasExcl;
         }
       }
       var cont = (resp && resp.content) || [];
+      var cu = costoUso(resp && resp.usage); ASIS.costoPregunta += cu; ASIS.pasosPregunta++; sumarGasto(cu, v === 0);
       ASIS.historial.push({ role: 'assistant', content: cont });
       cont.forEach(function(b){ if (b.type === 'text' && b.text && ui && ui.texto) ui.texto(b.text); });
       var usos = cont.filter(function(b){ return b.type === 'tool_use'; });
@@ -28734,8 +28767,10 @@ window._ciMarcasExcl = _ciMarcasExcl;
         res.push({ type: 'tool_result', tool_use_id: u.id, content: out.texto, is_error: !!out.error });
       }
       chk(); ASIS.historial.push({ role: 'user', content: res });
+      if (ASIS.gastoHoy().usd >= tope) { ASIS.aligerarHistorial(); if (ui && ui.texto) ui.texto('⛔ Me detuve: se alcanzó el **tope de gasto de hoy** (USD ' + tope.toFixed(2) + '). Puedes subirlo en ⚙.'); return; }
     }
     } catch(eP){ ASIS.historial.length = base; throw eP; }
+    ASIS.aligerarHistorial();
     if (ui && ui.texto) ui.texto('Me detuve porque el trabajo requería demasiados pasos seguidos. Dime si continúo.');
   };
 
@@ -28892,8 +28927,11 @@ window._ciMarcasExcl = _ciMarcasExcl;
         actividad: function(x){ etiqueta = x; if (!pens) nuevoPens(x); estadoAvatar('pensando'); },
         confirmar: function(nm, a){ if (pens) { pens.remove(); pens = null; } return confirmarUI(nm, a).then(function(v){ etiqueta = 'Trabajando'; nuevoPens('Trabajando'); estadoAvatar('pensando'); return v; }); }
       }, extras);
+      var gH = ASIS.gastoHoy();
+      agregar('<div style="font-size:10.5px;opacity:.6;text-align:right;margin:-2px 2px 4px">💲 esta respuesta ≈ USD ' + ((ASIS.costoPregunta || 0) < 0.01 ? (ASIS.costoPregunta || 0).toFixed(4) : (ASIS.costoPregunta || 0).toFixed(3)) + ' · ' + (ASIS.pasosPregunta || 0) + ' paso(s) · hoy ≈ USD ' + (gH.usd || 0).toFixed(2) + ' de ' + ASIS.topeDia().toFixed(2) + ' (' + PRECIOS[modeloAct()].n + ')</div>', 'asis-costo');
     } catch(e){
-      if (e && e.detenido) agregar('<p>⏹ Detenido. Cuando quieras, me dices cómo seguimos.</p>', 'asis-m asis-a');
+      if (e && e.tope) agregar('<p>⛔ <b>Tope de gasto de hoy alcanzado</b>: ≈ USD ' + (e.gasto.usd || 0).toFixed(2) + ' en ' + (e.gasto.preguntas || 0) + ' preguntas (tope USD ' + ASIS.topeDia().toFixed(2) + '). Mañana se reinicia solo; si lo necesitas hoy, súbelo en <b>⚙</b>.</p>', 'asis-m asis-a');
+      else if (e && e.detenido) agregar('<p>⏹ Detenido. Cuando quieras, me dices cómo seguimos.</p>', 'asis-m asis-a');
       else if (e && e.sinServidor) agregar('<p><b>Todavía no estoy conectado.</b> Toca <b>⚙</b> arriba y pega la dirección y la clave del servidor del asistente.</p>', 'asis-m asis-a');
       else agregar('<p>⛔ No pude completar: ' + esc(e && e.message || e) + '</p>', 'asis-m asis-a');
     }
@@ -29085,7 +29123,12 @@ window._ciMarcasExcl = _ciMarcasExcl;
       var u = prompt('Dirección del servidor del asistente:', localStorage.getItem(LS_URL) || ''); if (u === null) return;
       localStorage.setItem(LS_URL, u.trim());
       var c = prompt('Clave de acceso del asistente para ESTE equipo:', localStorage.getItem(LS_CLAVE) ? '••••••' : ''); if (c !== null && c !== '••••••') localStorage.setItem(LS_CLAVE, c.trim());
-      alert(u.trim() ? '✅ FARMI quedó conectado en este equipo.' : 'Se quitó la conexión del asistente en este equipo.');
+      var mm = prompt('¿Qué modelo tiene el servidor? (solo para calcular el gasto)\n1 = Haiku 5.5 (el más económico)\n2 = Sonnet 5.5\n3 = Opus 5.5 (el más caro)', { haiku: '1', sonnet: '2', opus: '3' }[modeloAct()]);
+      if (mm !== null && { '1': 1, '2': 1, '3': 1 }[mm.trim()]) localStorage.setItem(LS_MOD, { '1': 'haiku', '2': 'sonnet', '3': 'opus' }[mm.trim()]);
+      var tp = prompt('Tope de gasto diario de FARMI en USD (al llegar, se detiene hasta mañana):', String(ASIS.topeDia()));
+      if (tp !== null && parseFloat(String(tp).replace(',', '.')) > 0) localStorage.setItem(LS_TOPE, String(parseFloat(String(tp).replace(',', '.'))));
+      var gH = ASIS.gastoHoy();
+      alert((u.trim() ? '✅ FARMI quedó conectado en este equipo.' : 'Se quitó la conexión del asistente en este equipo.') + '\n\nModelo: ' + PRECIOS[modeloAct()].n + '\nTope diario: USD ' + ASIS.topeDia().toFixed(2) + '\nGastado hoy en este equipo: ≈ USD ' + (gH.usd || 0).toFixed(2) + ' (' + (gH.preguntas || 0) + ' preguntas)');
     };
     p.querySelector('#asis-go').onclick = enviar;
     var ta = p.querySelector('#asis-txt');
