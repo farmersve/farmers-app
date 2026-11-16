@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.11.16.431">
+<meta name="farmers-version" content="2026.11.16.432">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -27921,6 +27921,7 @@ window._ciMarcasExcl = _ciMarcasExcl;
   // ── íconos (trazo) ──
   var IC = {
     home: 'M3 11l9-7 9 7v9a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z',
+    shield: 'M12 3l7 3v6c0 4.5-3 7.6-7 9-4-1.4-7-4.5-7-9V6zM9 12l2 2 4-4',
     clip: 'M9 4h6v3H9zM9 5H6a1 1 0 0 0-1 1v14a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V6a1 1 0 0 0-1-1h-3M9 12h6M9 16h4',
     plus: 'M12 8v8M8 12h8M12 3a9 9 0 1 0 0 18a9 9 0 0 0 0-18z',
     upload: 'M12 15V3M7 8l5-5 5 5M4 21h16',
@@ -27968,14 +27969,15 @@ window._ciMarcasExcl = _ciMarcasExcl;
     ordenes:   { ov: 'ordenes-modal', cerrar: 'closeOrdenesCompra', abrir: function(){ fn('openOrdenesCompra') && openOrdenesCompra(); } },
     bancos:    { ov: 'bancos-modal', cerrar: 'closeBancos', abrir: function(){ fn('openBancos') && openBancos(); } },
     nomina:    { ov: 'nomina-modal', cerrar: 'closeNomina', abrir: function(){ fn('openNomina') && openNomina(); } },
-    control:   { ov: 'ce-modal', cerrar: 'closeControlEjecutivo', abrir: function(){ fn('openControlEjecutivo') && openControlEjecutivo(); } } };
+    control:   { ov: 'ce-modal', cerrar: 'closeControlEjecutivo', abrir: function(){ fn('openControlEjecutivo') && openControlEjecutivo(); } },
+    revision:  { ov: 'fk-rev-ov', quitar: true, abrir: function(){ fn('fkRevision') && fkRevision(); } } };
   var GRUPOS = [
     { t: '', it: [['inicio', 'Inicio', IC.home]] },
     { t: 'Pedidos', it: [['pedido', 'Pedido en curso', IC.clip], ['nuevo', 'Nuevo pedido', IC.plus], ['importar', 'Importar pedido', IC.upload], ['multi', 'Multi-sucursal', IC.store], ['monitor', 'Monitor de pedidos', IC.list], ['historial', 'Historial de ventas', IC.hist]] },
     { t: 'Comercial', it: [['ventas', 'Ventas', IC.cart], ['clientes', 'Clientes', IC.users], ['catalogo', 'Catálogo', IC.book], ['hcl', 'Historial de clientes', IC.file], ['ventasia', 'Ventas IA', IC.spark], ['cxc', 'Cuentas por cobrar', IC.wallet]] },
     { t: 'Inventario', it: [['inventario', 'Inventario', IC.box], ['traslados', 'Traslados', IC.truck], ['reposicion', 'Reposición', IC.target], ['master', 'Master Data', IC.db]] },
     { t: 'Compras', it: [['proveedores', 'Proveedores', IC.factory], ['ordenes', 'Órdenes de compra', IC.file]] },
-    { t: 'Administración', it: [['bancos', 'Bancos', IC.bank], ['nomina', 'Nómina', IC.users], ['control', 'Control ejecutivo', IC.chart]] } ];
+    { t: 'Administración', it: [['bancos', 'Bancos', IC.bank], ['nomina', 'Nómina', IC.users], ['control', 'Control ejecutivo', IC.chart], ['revision', 'Revisión del sistema', IC.shield]] } ];
   function abierto(m){ var e = document.getElementById(m.ov); if (!e) return false; var cs = getComputedStyle(e); return cs.display !== 'none' && cs.visibility !== 'hidden' && e.offsetWidth > 0; }
   function cerrarTodo(){
     Object.keys(MOD).forEach(function(k){ var m = MOD[k]; if (!abierto(m)) return;
@@ -63993,6 +63995,17 @@ window.msComprometerInventario = function(numP, sel, data, clientesPorSucursal, 
     return false;
   }
 
+  // v.432: si este mismo pedido ya tenía reserva (se vuelve a emitir o se rescata),
+  // la nueva REEMPLAZA a la anterior en vez de sumarse encima (antes la cantidad
+  // reservada quedaba inflada: se sumaba otra vez y el registro por pedido se pisaba).
+  Object.keys(comp).forEach(function(ref){
+    var c = comp[ref]; if (!c || !Array.isArray(c.pedidos)) return;
+    var prev = c.pedidos.filter(function(e){ return e && e.numP === numP; }).reduce(function(s, e){ return s + (parseInt(e.qty)||0); }, 0);
+    if (!prev) return;
+    c.qty = Math.max(0, (c.qty||0) - prev);
+    c.pedidos = c.pedidos.filter(function(e){ return !(e && e.numP === numP); });
+    if (c.qty <= 0 && !c.pedidos.length && !refs[ref]) delete comp[ref];
+  });
   // Actualizar comprometido
   Object.keys(refs).forEach(function(ref){
     if(!comp[ref]) comp[ref] = {qty:0, pedidos:[]};
@@ -73216,6 +73229,15 @@ function cxcUpdateBadge(){
 // ══════════════════════════════════════════════════════════
 //  TAB 1 - RESUMEN
 // ══════════════════════════════════════════════════════════
+/* v.432: los montos de USD, BCV y TF son listas distintas (BCV y TF se cobran en Bs a la tasa del día);
+   nunca se suman entre sí. Esta función los muestra por separado. */
+function cxcPorLista432(arr, sep){
+  var t = { TF:0, BCV:0, USD:0 }, orden = ['TF','BCV','USD'];
+  (arr||[]).forEach(function(f){ var m = String(f.moneda||'TF').toUpperCase(); if (t[m] === undefined) { t[m] = 0; orden.push(m); } t[m] += Math.round((f.saldo||0)*100)/100; }); // cada factura al céntimo, como se factura
+  var partes = orden.filter(function(m){ return Math.abs(t[m]) >= 0.005; }).map(function(m){ return '<span style="white-space:nowrap;"><span style="opacity:.7;font-weight:700;font-size:.78em;">'+m+'</span> $ '+cxcFmt(t[m])+'</span>'; });
+  return partes.length ? partes.join(sep || '<br>') : '$ 0.00';
+}
+window.cxcPorLista432 = cxcPorLista432;
 function cxcTabResumen(body){
   cxcUpdateBadge();
   var facs=cxcFacs();
@@ -73225,22 +73247,22 @@ function cxcTabResumen(body){
   var vig =pend.filter(function(f){return cxcEstado(f)==='VIGENTE';});
   var sum=function(arr){return arr.reduce(function(s,f){return s+(f.saldo||0);},0);};
   var clientes={};
-  pend.forEach(function(f){clientes[f.clienteId||f.clienteNombre||'?']=true;});
+  pend.forEach(function(f){clientes[String(f.rif||'').replace(/[^A-Za-z0-9]/g,'').toUpperCase()||f.clienteId||f.clienteNombre||'?']=true;}); // v.432: un cliente = un RIF
 
   // ── KPIs ──────────────────────────────────────────────
   var kpiGrid=document.createElement('div');
   kpiGrid.className='cxc-kpi-grid cxc-fadein';
   [
-    {icon:'💰',label:'Total Pendiente',val:'$ '+cxcFmt(sum(pend)),
+    {icon:'💰',label:'Total Pendiente',val:cxcPorLista432(pend),
       sub:pend.length+' facturas · '+Object.keys(clientes).length+' clientes',
       color:'var(--cxc-navy)',bg:'var(--cxc-navy-pale)', kpiColor:'var(--cxc-navy)'},
-    {icon:'🚨',label:'Vencido',val:'$ '+cxcFmt(sum(venc)),
+    {icon:'🚨',label:'Vencido',val:cxcPorLista432(venc),
       sub:venc.length+' factura'+(venc.length!==1?'s':''),
       color:'var(--cxc-red)',bg:'var(--cxc-red-bg)', kpiColor:'var(--cxc-red)'},
-    {icon:'⏳',label:'Por Vencer ≤7d',val:'$ '+cxcFmt(sum(pxv)),
+    {icon:'⏳',label:'Por Vencer ≤7d',val:cxcPorLista432(pxv),
       sub:pxv.length+' factura'+(pxv.length!==1?'s':''),
       color:'var(--cxc-amber)',bg:'var(--cxc-amber-bg)', kpiColor:'var(--cxc-amber)'},
-    {icon:'✅',label:'Vigente',val:'$ '+cxcFmt(sum(vig)),
+    {icon:'✅',label:'Vigente',val:cxcPorLista432(vig),
       sub:vig.length+' factura'+(vig.length!==1?'s':''),
       color:'var(--cxc-green)',bg:'var(--cxc-green-bg)', kpiColor:'var(--cxc-green)'}
   ].forEach(function(k,i){
@@ -73250,7 +73272,7 @@ function cxcTabResumen(body){
     card.classList.add('cxc-fadein');
     card.innerHTML=
       '<div class="cxc-kpi-icon">'+k.icon+'</div>'+
-      '<div class="cxc-kpi-val">'+k.val+'</div>'+
+      '<div class="cxc-kpi-val"'+(String(k.val).indexOf('<br>')>=0?' style="font-size:1.15rem;line-height:1.35;"':'')+'>'+k.val+'</div>'+
       '<div class="cxc-kpi-label">'+k.label+'</div>'+
       '<div class="cxc-kpi-sub">'+k.sub+'</div>';
     kpiGrid.appendChild(card);
@@ -73267,7 +73289,7 @@ function cxcTabResumen(body){
       '<div style="width:36px;height:36px;border-radius:9px;background:var(--cxc-red);color:#fff;'+
         'display:flex;align-items:center;justify-content:center;font-size:1.1rem;flex-shrink:0;">⚠</div>'+
       '<div style="flex:1;">' +
-        '<div style="font-size:.8rem;font-weight:800;color:var(--cxc-red);">'+venc.length+' factura'+(venc.length!==1?'s':'')+' vencida'+(venc.length!==1?'s':'')+' — $ '+cxcFmt(sum(venc))+'</div>'+
+        '<div style="font-size:.8rem;font-weight:800;color:var(--cxc-red);">'+venc.length+' factura'+(venc.length!==1?'s':'')+' vencida'+(venc.length!==1?'s':'')+' — '+cxcPorLista432(venc,' · ')+'</div>'+
         '<div style="font-size:.7rem;color:var(--cxc-red);opacity:.75;margin-top:1px;">Requiere gestión de cobro inmediata</div>'+
       '</div>';
     var vBtn=document.createElement('button');
@@ -73282,8 +73304,8 @@ function cxcTabResumen(body){
   var porCl={};
   pend.forEach(function(f){
     var k=f.clienteId||f.clienteNombre||'?';
-    if(!porCl[k]) porCl[k]={id:f.clienteId||'',nombre:f.clienteNombre||'?',saldo:0,n:0,urgente:false};
-    porCl[k].saldo+=f.saldo||0; porCl[k].n++;
+    if(!porCl[k]) porCl[k]={id:f.clienteId||'',nombre:f.clienteNombre||'?',saldo:0,n:0,urgente:false,facs:[]};
+    porCl[k].saldo+=f.saldo||0; porCl[k].n++; porCl[k].facs.push(f);
     if(cxcEstado(f)==='VENCIDA'||cxcEstado(f)==='POR_VENCER') porCl[k].urgente=true;
   });
   var topCl=Object.values(porCl).sort(function(a,b){return b.saldo-a.saldo;}).slice(0,6);
@@ -73317,7 +73339,7 @@ function cxcTabResumen(body){
           '</div>'+
         '</div>'+
         '<div style="text-align:right;flex-shrink:0;">' +
-          '<div style="font-size:.85rem;font-weight:800;color:'+accentColor+';font-family:var(--cxc-font);">$ '+cxcFmt(cl.saldo)+'</div>'+
+          '<div style="font-size:.85rem;font-weight:800;color:'+accentColor+';font-family:var(--cxc-font);">'+cxcPorLista432(cl.facs)+'</div>'+
           '<div style="font-size:.62rem;color:var(--cxc-muted);margin-top:1px;">'+cl.n+' factura'+(cl.n!==1?'s':'')+(isUrgent?' · <span style="color:var(--cxc-red);font-weight:700;">Urgente</span>':'')+'</div>'+
         '</div>'+
         '<div style="color:var(--cxc-muted);font-size:.85rem;padding-left:4px;">›</div>';
@@ -86398,6 +86420,18 @@ function hclGuardarFactura(data, fuente) {
         return s.nroFacturaExternal === factura.nroFactura &&
                (s.rif === factura.rif || s.cliente === factura.clienteNombre);
       });
+      /* v.432: tampoco se crea si esa factura YA está registrada como venta del sistema
+         (despacho de un pedido). Antes se duplicaba: 80 facturas quedaron dos veces en
+         ventas y las ventas en USD se veían infladas. Se compara el número sin ceros
+         a la izquierda y el RIF sin guiones. */
+      if (!yaExiste) {
+        var _nf432 = function(x){ return String(x||'').replace(/\D/g,'').replace(/^0+/,''); };
+        var _rf432 = function(r){ return String(r||'').replace(/[^A-Za-z0-9]/g,'').toUpperCase(); };
+        var _fn432 = _nf432(factura.nroFactura), _fr432 = _rf432(factura.rif);
+        if (_fn432) yaExiste = sales.find(function(s){
+          return s && s.fuente !== 'hcl_import' && _nf432(s.nFactura) === _fn432 && (!_fr432 || !_rf432(s.rif) || _rf432(s.rif) === _fr432);
+        });
+      }
       // Buscar nombre correcto del cliente por RIF en el directorio
       var normRifSync = function(r){ return (r||'').replace(/[-. ]/g,'').toUpperCase(); };
       var clDB2 = typeof getClientsDB === 'function' ? getClientsDB() : [];
@@ -100327,6 +100361,243 @@ window.mdConfirmarCandidatosIA = async function() {
     document.body.appendChild(b); pintar();
   }
   if (document.body) poner(); else document.addEventListener('DOMContentLoaded', poner);
+})();
+</script>
+<script>
+/* ═══ v.432 — 🩺 REVISIÓN DEL SISTEMA ═══════════════════════════════════════
+   Un clic revisa los datos REALES de este equipo (los mismos que usa el
+   sistema) y muestra en pantalla lo que está mal o incompleto, con el
+   detalle y dónde corregirlo. No cambia nada por sí sola: la única acción
+   que modifica datos (quitar ventas duplicadas exactas) pide confirmación
+   y antes descarga un respaldo de lo que se quita. */
+(function(){
+  if (window._fkRev432) return; window._fkRev432 = true;
+  var n0 = function(x){ x = parseFloat(x); return isFinite(x) ? x : 0; };
+  var r2 = function(x){ return Math.round((x + 1e-9) * 100) / 100; };
+  var esc = function(s){ return String(s == null ? '' : s).replace(/[&<>"']/g, function(c){ return { '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]; }); };
+  var fmt = function(v){ return n0(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); };
+  var nf = function(x){ return String(x || '').replace(/\D/g, '').replace(/^0+/, ''); };
+  var rifN = function(r){ return String(r || '').replace(/[^A-Za-z0-9]/g, '').toUpperCase(); };
+  function get(fnName, lsKey, def){
+    try { if (typeof window[fnName] === 'function') { var v = window[fnName](); if (v) return v; } } catch(e){}
+    try { var raw = localStorage.getItem(lsKey); if (raw) return JSON.parse(raw); } catch(e){}
+    return def;
+  }
+  function master(){ if (window.MASTER && typeof window.MASTER === 'object' && Object.keys(window.MASTER).length) return window.MASTER; try { return JSON.parse(localStorage.getItem('farmers_pt_master') || '{}') || {}; } catch(e){ return {}; } }
+  function ptData(){ try { return JSON.parse(localStorage.getItem('farmers_pt_data') || '{}') || {}; } catch(e){ return {}; } }
+
+  // ── ventas importadas del historial que repiten un despacho del sistema ──
+  function ventasDuplicadas(S){
+    var idx = {};
+    S.forEach(function(v){ if (v && v.fuente !== 'hcl_import') { var k = nf(v.nFactura); if (k) (idx[k] = idx[k] || []).push(v); } });
+    var exactas = [], dudosas = [];
+    S.forEach(function(v){
+      if (!v || v.fuente !== 'hcl_import') return;
+      var k = nf(v.nroFacturaExternal); if (!k || !idx[k]) return;
+      var o = idx[k].filter(function(x){ return !rifN(x.rif) || !rifN(v.rif) || rifN(x.rif) === rifN(v.rif); })[0];
+      if (!o) return;
+      var item = { imp: v, sis: o, fac: v.nroFacturaExternal, dif: r2(n0(v.total) - n0(o.total)) };
+      if (Math.abs(item.dif) <= 0.10) exactas.push(item); else dudosas.push(item);
+    });
+    return { exactas: exactas, dudosas: dudosas };
+  }
+
+  function revisar(){
+    var R = [], P = Array.isArray(window.PRODUCTS) ? window.PRODUCTS : get('', 'farmers_products', []);
+    var M = master(), PT = ptData();
+    var S = get('getSales', 'farmers_sales', []), C = get('getClientsDB', 'farmers_clients_v2', []);
+    var PED = get('getMsPedidos', 'farmers_ms_pedidos', []);
+    var add = function(o){ R.push(o); };
+
+    // 1. ventas duplicadas
+    var vd = ventasDuplicadas(S);
+    var sumMon = function(arr){ var t = {}; arr.forEach(function(x){ var m = x.imp.moneda || '?'; t[m] = (t[m] || 0) + n0(x.imp.total); }); return Object.keys(t).map(function(m){ return m + ' $' + fmt(t[m]); }).join(' · '); };
+    add({ id: 'ventas_dup', grave: true, titulo: 'Ventas repetidas (historial de clientes + despacho)', n: vd.exactas.length + vd.dudosas.length,
+      ok: 'Ninguna venta importada repite un despacho del sistema.',
+      resumen: vd.exactas.length + ' idéntica(s) a su despacho (' + (sumMon(vd.exactas) || '—') + ')' + (vd.dudosas.length ? ' · ' + vd.dudosas.length + ' con el mismo número de factura pero monto distinto (revisar a mano)' : ''),
+      explica: 'Facturas importadas desde el Historial de clientes que ya estaban registradas como venta de un despacho. Inflan los totales de ventas (sobre todo en USD) en Ventas, Reportes, Ventas IA y Control ejecutivo.',
+      filas: vd.exactas.concat(vd.dudosas).slice(0, 120).map(function(x){ return [x.fac, x.imp.cliente || '', (x.sis.moneda || '') + ' $' + fmt(x.sis.total) + ' (' + (x.sis.fecha || '') + ')', 'importada ' + (x.imp.moneda || '') + ' $' + fmt(x.imp.total), Math.abs(x.dif) <= 0.10 ? 'idéntica' : 'monto distinto']; }),
+      cols: ['Factura', 'Cliente', 'Venta del sistema', 'Copia importada', 'Tipo'],
+      accion: vd.exactas.length ? { txt: 'Quitar las ' + vd.exactas.length + ' copias idénticas', fn: function(){ quitarDuplicadas(vd.exactas); } } : null });
+
+    // 2. misma factura dos veces en ventas
+    var cf = {}; S.forEach(function(v){ var k = nf(v && v.nFactura); if (k && v.fuente !== 'hcl_import') (cf[k] = cf[k] || []).push(v); });
+    var rep = Object.keys(cf).filter(function(k){ return cf[k].length > 1; });
+    add({ id: 'fac_rep', grave: true, titulo: 'Número de factura repetido en ventas del sistema', n: rep.length, ok: 'Ningún número de factura se repite.',
+      explica: 'Dos ventas del sistema con el mismo número de factura. Puede ser un despacho registrado dos veces o un número mal escrito.',
+      filas: rep.map(function(k){ return [cf[k][0].nFactura, cf[k].map(function(v){ return (v.cliente || '') + ' ' + (v.sucursalCodigo || ''); }).join(' / '), cf[k].map(function(v){ return (v.moneda || '') + ' $' + fmt(v.total); }).join(' / '), cf[k].map(function(v){ return v.fecha || ''; }).join(' / ')]; }),
+      cols: ['Factura', 'Clientes', 'Montos', 'Fechas'] });
+
+    // 3. productos por docena
+    var doc = P.filter(function(p){ return /^DOC/i.test(String(p.e || '')); });
+    add({ id: 'docena', grave: true, titulo: 'Productos todavía por DOCENA', n: doc.length, ok: 'Todos los productos están por pieza.',
+      explica: 'Regla permanente: todo lo que viene por docena se pasa a PIEZA (×12): unidades, costo y precios por pieza. Corrígelo en Master Data.',
+      filas: doc.map(function(p){ return [p.r, p.d || '', p.e, 'USD $' + fmt(p.u)]; }), cols: ['Ref', 'Descripción', 'Unidad', 'Precio'] });
+
+    // 4. precios fuera de la regla
+    var fuera = [];
+    P.forEach(function(p){
+      var m = M[p.r] || {}, pt = PT[p.r] || {};
+      var costo = n0(pt.costo) || n0(m.costoFOB) || n0(m.costo) || n0(p.costoFOB), upb = n0(m.unidadesPorBulto) || n0(pt.unidadesPorBulto) || n0(p.m), vol = n0(m.volFt3PorBulto) || n0((pt.medidas || {}).volDirecto);
+      var u = n0(p.u); if (!(costo > 0 && upb > 0 && u > 0)) return;
+      var regla = (costo + (vol > 0 ? 15 * vol / upb : 0)) / 0.6, d = (u - regla) / regla * 100;
+      var bvOk = Math.abs(n0(p.bv) - u * 1.6) <= 0.02, tOk = Math.abs(n0(p.t) - u * 1.6 * 1.2) <= 0.03;
+      if (Math.abs(d) > 5 || !bvOk || !tOk) fuera.push({ p: p, regla: regla, d: d, bvOk: bvOk, tOk: tOk });
+    });
+    fuera.sort(function(a, b){ return a.d - b.d; });
+    add({ id: 'precios', grave: false, titulo: 'Precios que no cumplen la regla', n: fuera.length, ok: 'Todos los precios cumplen la regla.',
+      explica: 'Regla: USD = (costo + $15 por ft³ ÷ piezas del bulto) ÷ 0,60 · BCV = USD × 1,6 · TF = BCV × 1,2. Se marcan los que se alejan más de 5% del USD de la regla o tienen BCV/TF mal encadenados. Los primeros de la lista están por DEBAJO de la regla.',
+      filas: fuera.slice(0, 150).map(function(x){ return [x.p.r, (x.p.d || '').slice(0, 42), 'USD $' + fmt(x.p.u) + ' · regla $' + fmt(x.regla), (x.d > 0 ? '+' : '') + x.d.toFixed(1) + '%', (x.bvOk ? '' : 'BCV≠USD×1,6 ') + (x.tOk ? '' : 'TF≠BCV×1,2'), n0(x.p.ex) > 0 ? n0(x.p.ex) + ' en existencia' : 'sin existencia']; }),
+      cols: ['Ref', 'Descripción', 'Precio actual / regla', 'Diferencia', 'Cascada', 'Existencia'] });
+
+    // 5. productos sin ficha o con ficha incompleta
+    var sinFicha = [], incompleta = [];
+    P.forEach(function(p){
+      var m = M[p.r], pt = PT[p.r] || {};
+      if (!m) { sinFicha.push(p); return; }
+      if (n0(p.ex) <= 0) return;
+      var falta = [];
+      if (!(n0(m.unidadesPorBulto) || n0(pt.unidadesPorBulto))) falta.push('piezas por bulto');
+      if (!(n0(m.volFt3PorBulto) || n0((pt.medidas || {}).volDirecto))) falta.push('volumen');
+      if (!(n0(pt.costo) || n0(m.costoFOB) || n0(p.costoFOB))) falta.push('costo');
+      if (!n0(p.u)) falta.push('precio');
+      if (falta.length) incompleta.push([p.r, p.d || '', falta.join(', '), n0(p.ex) + ' pzs']);
+    });
+    add({ id: 'master', grave: false, titulo: 'Productos sin ficha Master o con datos incompletos', n: sinFicha.length + incompleta.length, ok: 'Todos los productos tienen ficha Master completa.',
+      explica: 'Sin piezas por bulto, volumen o costo el sistema no puede calcular bultos, peso, flete ni el precio por regla.',
+      filas: sinFicha.map(function(p){ return [p.r, p.d || '', 'NO TIENE FICHA MASTER', n0(p.ex) + ' pzs']; }).concat(incompleta), cols: ['Ref', 'Descripción', 'Falta', 'Existencia'] });
+
+    // 6. unidades de medida escritas distinto
+    var grupos = { 'PIEZA': /^(PIEZA|PZA\.?|PZ|PZS|UNIDAD|UNID\.?|UND)$/i, 'SET': /^SETS?$/i, 'BOLSA': /^(BAG\.?|BOLSA)$/i, 'ROLLO': /^(ROLLO|RLLO)$/i };
+    var variantes = {}, vacias = [];
+    P.forEach(function(p){ var e = String(p.e || '').trim(); if (!e) { vacias.push(p.r); return; } Object.keys(grupos).forEach(function(g){ if (grupos[g].test(e)) { (variantes[g] = variantes[g] || {})[e] = ((variantes[g] || {})[e] || 0) + 1; } }); });
+    var filasU = Object.keys(variantes).filter(function(g){ return Object.keys(variantes[g]).length > 1; }).map(function(g){ return [g, Object.keys(variantes[g]).map(function(e){ return e + ' (' + variantes[g][e] + ')'; }).join(' · ')]; });
+    if (vacias.length) filasU.push(['SIN UNIDAD', vacias.join(', ')]);
+    add({ id: 'unidades', grave: false, titulo: 'La misma unidad de medida escrita de varias formas', n: filasU.length, ok: 'Las unidades de medida están uniformes.',
+      explica: 'Ej.: PIEZA, PZA., PZA y UNIDAD significan lo mismo pero salen distinto en catálogo, documentos y reportes. Conviene dejar un solo nombre por unidad.',
+      filas: filasU, cols: ['Unidad', 'Formas en que aparece (productos)'] });
+
+    // 7. clientes con RIF repetido
+    var porRif = {};
+    C.forEach(function(c){ var k = rifN(c && c.rif); if (k) (porRif[k] = porRif[k] || []).push(c); });
+    var dupC = Object.keys(porRif).filter(function(k){ return porRif[k].length > 1; });
+    var sinRif = C.filter(function(c){ return c && !rifN(c.rif); });
+    add({ id: 'clientes', grave: false, titulo: 'Clientes repetidos (mismo RIF) o sin RIF', n: dupC.length + sinRif.length, ok: 'Cada cliente aparece una sola vez y todos tienen RIF.',
+      explica: 'Un cliente duplicado reparte sus facturas, pedidos y cobranza entre dos fichas y descuadra los conteos.',
+      filas: dupC.map(function(k){ return [porRif[k][0].rif, porRif[k].map(function(c){ return c.nombre; }).join('  /  '), porRif[k].length + ' fichas']; }).concat(sinRif.map(function(c){ return ['(sin RIF)', c.nombre || '(sin nombre)', c.id || '']; })),
+      cols: ['RIF', 'Fichas', 'Cantidad'] });
+
+    // 8. pedidos con estado incoherente
+    var inc = [];
+    PED.forEach(function(p){
+      var e = String(p.estado || '').toUpperCase(), se = p.sucursalesEstado || {}, ss = p.sucursales || [];
+      var v = ss.map(function(s){ return String(se[s] || '').toUpperCase(); });
+      if (e === 'DESPACHADO' && v.some(function(x){ return x !== 'DESPACHADO'; })) inc.push([p.numP, e, 'hay sucursales sin despachar: ' + ss.filter(function(s, i){ return v[i] !== 'DESPACHADO'; }).join(', ')]);
+      else if ((e === 'RESERVADO' || e === 'PARCIAL') && ss.length && v.every(function(x){ return x === 'DESPACHADO'; })) inc.push([p.numP, e, 'todas las sucursales ya están despachadas']);
+      else if (e === 'PARCIAL' && !v.some(function(x){ return x === 'DESPACHADO'; })) inc.push([p.numP, e, 'ninguna sucursal despachada']);
+      else if ((e === 'RESERVADO' || e === 'PARCIAL') && !ss.length) inc.push([p.numP, e, 'sin sucursales']);
+    });
+    add({ id: 'pedidos', grave: true, titulo: 'Pedidos con estado que no cuadra', n: inc.length, ok: 'El estado de cada pedido cuadra con el de sus despachos.',
+      explica: 'El estado general del pedido no coincide con el estado de sus despachos por sucursal.',
+      filas: inc, cols: ['Pedido', 'Estado', 'Detalle'] });
+
+    // 9. reservas (custodio)
+    var males = null; try { if (typeof window.farmersCustodioReservas === 'function') { var _cp = window.custodioPanel407; window.custodioPanel407 = function(){}; try { males = window.farmersCustodioReservas(false); } finally { window.custodioPanel407 = _cp; } } } catch(e){}
+    if (Array.isArray(males)) add({ id: 'reservas', grave: true, titulo: 'Reservas de inventario incompletas o de más', n: males.length, ok: 'Cada pedido reservado tiene apartado exactamente lo que le corresponde.',
+      explica: 'El pedido tiene menos (o más) inventario apartado del que le toca. Se repara desde el aviso "Reserva en riesgo" o el Monitor.',
+      filas: males.map(function(m){ return [m.numP, m.cliente || '', (m.det || []).map(function(d){ return d.ref + ' debe ' + d.debe + ' / tiene ' + d.tiene; }).join(' · ')]; }), cols: ['Pedido', 'Cliente', 'Diferencias'],
+      accion: males.length && typeof window.custodioPanel407 === 'function' ? { txt: 'Abrir el reparador de reservas', fn: function(){ cerrar(); window.custodioPanel407(males); } } : null });
+
+    // 10. existencias negativas / disponible negativo
+    var neg = [];
+    P.forEach(function(p){ var ex = n0(p.ex), dsp = null; try { if (typeof window.getDisponible === 'function') dsp = n0(window.getDisponible(p.r)); } catch(e){} if (ex < 0 || (dsp !== null && dsp < 0)) neg.push([p.r, p.d || '', ex, dsp === null ? '—' : dsp]); });
+    add({ id: 'stock', grave: true, titulo: 'Existencia o disponible negativo', n: neg.length, ok: 'No hay existencias ni disponibles negativos.',
+      explica: 'Disponible negativo = hay más reservado que lo que existe: algún pedido no se podrá despachar completo.',
+      filas: neg, cols: ['Ref', 'Descripción', 'Existencia', 'Disponible'] });
+
+    // 11. tasa BCV
+    var hist = get('getTasaHistory', 'farmers_tasa_bcv_history', []), ult = null;
+    (hist || []).forEach(function(t){ if (t && t.fecha && (!ult || String(t.fecha) > String(ult.fecha))) ult = t; });
+    var hoy = new Date(), hoyISO = hoy.getFullYear() + '-' + ('0' + (hoy.getMonth() + 1)).slice(-2) + '-' + ('0' + hoy.getDate()).slice(-2);
+    var dias = ult ? Math.round((new Date(hoyISO) - new Date(String(ult.fecha).slice(0, 10))) / 864e5) : null;
+    var finde = hoy.getDay() === 0 || hoy.getDay() === 6;
+    add({ id: 'tasa', grave: dias === null || dias > 3, titulo: 'Tasa BCV al día', n: (dias === null || dias > (finde ? 3 : 1)) ? 1 : 0,
+      ok: 'La tasa BCV está al día (' + (ult ? String(ult.fecha).split('-').reverse().join('/') + ' · Bs. ' + n0(ult.tasa).toLocaleString('es-VE') : '') + ').',
+      explica: 'Las listas BCV y TF se cobran en bolívares a la tasa del día. Con una tasa vieja los montos en Bs salen mal.',
+      filas: [[ult ? String(ult.fecha).split('-').reverse().join('/') : 'sin tasa', ult ? 'Bs. ' + n0(ult.tasa).toLocaleString('es-VE') : '—', dias === null ? '—' : dias + ' día(s) sin actualizar']], cols: ['Última tasa', 'Valor', 'Antigüedad'] });
+
+    return R;
+  }
+
+  function descargar(nombre, obj){
+    try { var b = new Blob([JSON.stringify(obj, null, 1)], { type: 'application/json' }); var a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = nombre; document.body.appendChild(a); a.click(); setTimeout(function(){ URL.revokeObjectURL(a.href); a.remove(); }, 1500); return true; } catch(e){ return false; }
+  }
+  function quitarDuplicadas(lista){
+    var ids = {}; lista.forEach(function(x){ ids[x.imp.id] = 1; });
+    var total = {}; lista.forEach(function(x){ var m = x.imp.moneda || '?'; total[m] = (total[m] || 0) + n0(x.imp.total); });
+    var txt = Object.keys(total).map(function(m){ return m + ' $' + fmt(total[m]); }).join(' · ');
+    if (!confirm('QUITAR VENTAS REPETIDAS\n\nSe quitarán ' + lista.length + ' copias importadas del Historial de clientes que son idénticas (mismo número de factura, mismo RIF y mismo monto) a una venta que el sistema ya registró al despachar.\n\nMonto de las copias: ' + txt + '\n\nLas ventas originales del sistema NO se tocan. El Historial de clientes NO se toca.\nAntes de quitarlas se descarga un respaldo con las copias.\n\n¿Continuar?')) return;
+    var S = get('getSales', 'farmers_sales', []);
+    var quitadas = S.filter(function(v){ return v && ids[v.id]; });
+    if (!descargar('respaldo_ventas_repetidas_' + new Date().toISOString().slice(0, 10) + '.json', { fecha: new Date().toISOString(), motivo: 'copias hcl_import idénticas a ventas del sistema', ventas: quitadas })) { alert('⛔ No se pudo descargar el respaldo. No se quitó nada.'); return; }
+    var quedan = S.filter(function(v){ return !(v && ids[v.id]); });
+    try {
+      if (typeof window.saveSales === 'function') window.saveSales(quedan); // guarda local y sube a la nube
+      else { localStorage.setItem('farmers_sales', JSON.stringify(quedan)); try { if (typeof window.fbSaveSales === 'function') window.fbSaveSales(quedan); } catch(e){} }
+    } catch(e){ alert('⛔ Error al guardar: ' + (e && e.message) + '\nNo se completó.'); return; }
+    alert('✅ Listo: se quitaron ' + quitadas.length + ' ventas repetidas (' + txt + ').\nRespaldo descargado. Las ventas ahora suman solo lo real.');
+    abrir();
+  }
+
+  var CSS = '#fk-rev-ov{position:fixed;inset:0;z-index:99500;background:var(--fk-bg,#F3F4F7);color:var(--fk-ink,#0B0F19);font-family:var(--fk-font,system-ui);overflow:auto}'
+    + 'html.fk-shell #fk-rev-ov{left:var(--fk-side)}'
+    + '#fk-rev-ov .rv-w{max-width:1180px;margin:0 auto;padding:28px 32px 120px;display:flex;flex-direction:column;gap:16px}'
+    + '#fk-rev-ov h1{margin:0;font-size:26px;font-weight:600;letter-spacing:-.02em}#fk-rev-ov .rv-sub{font-size:13px;color:var(--fk-muted,#596273)}'
+    + '#fk-rev-ov .rv-top{display:flex;align-items:flex-end;justify-content:space-between;gap:12px;flex-wrap:wrap}'
+    + '#fk-rev-ov .rv-b{height:38px;padding:0 14px;border-radius:10px;border:1px solid var(--fk-line,#E2E5EB);background:var(--fk-surface,#fff);color:var(--fk-ink,#0B0F19);font:500 13px var(--fk-font,system-ui);cursor:pointer;display:inline-flex;align-items:center;gap:6px}'
+    + '#fk-rev-ov .rv-b.p{background:var(--fk-brand,#14245C);color:var(--fk-brand-ink,#fff);border-color:var(--fk-brand,#14245C);font-weight:600}'
+    + '#fk-rev-ov .rv-res{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}'
+    + '#fk-rev-ov .rv-k{background:var(--fk-surface,#fff);border:1px solid var(--fk-line,#E2E5EB);border-radius:14px;padding:14px 18px}#fk-rev-ov .rv-k b{display:block;font-size:28px;font-weight:600;font-variant-numeric:tabular-nums}#fk-rev-ov .rv-k span{font-size:12px;color:var(--fk-muted,#596273)}'
+    + '#fk-rev-ov details{background:var(--fk-surface,#fff);border:1px solid var(--fk-line,#E2E5EB);border-radius:14px;overflow:hidden}'
+    + '#fk-rev-ov summary{list-style:none;display:flex;align-items:center;gap:12px;padding:14px 18px;cursor:pointer}#fk-rev-ov summary::-webkit-details-marker{display:none}'
+    + '#fk-rev-ov .rv-dot{width:10px;height:10px;border-radius:99px;flex-shrink:0}#fk-rev-ov .rv-t{flex:1;font-size:15px;font-weight:600}#fk-rev-ov .rv-t small{display:block;font-size:12px;font-weight:400;color:var(--fk-muted,#596273);margin-top:2px}'
+    + '#fk-rev-ov .rv-n{font-size:12px;font-weight:600;padding:3px 10px;border-radius:99px;white-space:nowrap}'
+    + '#fk-rev-ov .rv-body{padding:0 18px 16px;font-size:13px}#fk-rev-ov .rv-ex{color:var(--fk-muted,#596273);margin:0 0 10px}'
+    + '#fk-rev-ov .rv-tb{max-height:360px;overflow:auto;border:1px solid var(--fk-line,#E2E5EB);border-radius:10px}'
+    + '#fk-rev-ov table{width:100%;min-width:0!important;border-collapse:collapse;font-size:12.5px}#fk-rev-ov th{position:sticky;top:0;background:var(--fk-surface2,#F8F9FB);text-align:left;font-weight:500;color:var(--fk-muted,#596273);padding:8px 10px;text-transform:none!important;letter-spacing:normal!important}'
+    + '#fk-rev-ov td{padding:7px 10px;border-top:1px solid var(--fk-line,#E2E5EB);vertical-align:top}#fk-rev-ov td:first-child{font-family:var(--fk-mono,monospace);white-space:nowrap}'
+    + '#fk-rev-ov .rv-acc{margin-top:12px}'
+    + '@media (max-width:900px){html.fk-shell #fk-rev-ov{left:0}#fk-rev-ov .rv-w{padding:18px 14px 100px}#fk-rev-ov .rv-res{grid-template-columns:1fr}}';
+
+  function cerrar(){ var o = document.getElementById('fk-rev-ov'); if (o) o.remove(); }
+  function abrir(){
+    cerrar();
+    if (!document.getElementById('fk-rev-css')) { var st = document.createElement('style'); st.id = 'fk-rev-css'; st.textContent = CSS; document.head.appendChild(st); }
+    var R; try { R = revisar(); } catch(e){ alert('⛔ La revisión falló: ' + (e && e.message)); return; }
+    var malG = R.filter(function(x){ return x.n && x.grave; }).length, malL = R.filter(function(x){ return x.n && !x.grave; }).length, bien = R.filter(function(x){ return !x.n; }).length;
+    var ord = R.slice().sort(function(a, b){ return (b.n ? (b.grave ? 2 : 1) : 0) - (a.n ? (a.grave ? 2 : 1) : 0); });
+    var ov = document.createElement('div'); ov.id = 'fk-rev-ov';
+    var ahora = new Date().toLocaleString('es-VE', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+    ov.innerHTML = '<div class="rv-w"><div class="rv-top"><div><div class="rv-sub">Datos de este equipo · ' + esc(ahora) + '</div><h1>Revisión del sistema</h1></div>'
+      + '<div style="display:flex;gap:8px"><button class="rv-b p" data-a="otra">Revisar otra vez</button><button class="rv-b" data-a="cerrar">Cerrar</button></div></div>'
+      + '<div class="rv-res"><div class="rv-k"><b style="color:var(--fk-danger,#B42318)">' + malG + '</b><span>Errores que afectan cifras</span></div><div class="rv-k"><b style="color:var(--fk-warn,#6E5200)">' + malL + '</b><span>Datos por completar o uniformar</span></div><div class="rv-k"><b style="color:var(--fk-ok,#146C36)">' + bien + '</b><span>Revisiones en orden</span></div></div>'
+      + ord.map(function(x, i){
+          var col = !x.n ? 'var(--fk-ok,#146C36)' : x.grave ? 'var(--fk-danger,#B42318)' : 'var(--fk-warn,#6E5200)';
+          var bg = !x.n ? 'var(--fk-ok-bg,#E6F4EA)' : x.grave ? 'var(--fk-danger-bg,#FDECEC)' : 'var(--fk-warn-bg,#FFF4D6)';
+          var tabla = x.n && x.filas && x.filas.length ? '<div class="rv-tb"><table><tr>' + x.cols.map(function(c){ return '<th>' + esc(c) + '</th>'; }).join('') + '</tr>' + x.filas.map(function(f){ return '<tr>' + f.map(function(c){ return '<td>' + esc(c) + '</td>'; }).join('') + '</tr>'; }).join('') + '</table></div>' : '';
+          return '<details' + (x.n && x.grave ? ' open' : '') + '><summary><span class="rv-dot" style="background:' + col + '"></span><span class="rv-t">' + esc(x.titulo) + '<small>' + esc(x.n ? (x.resumen || (x.n + ' caso(s)')) : x.ok) + '</small></span><span class="rv-n" style="background:' + bg + ';color:' + col + '">' + (x.n ? x.n + (x.grave ? ' por corregir' : ' por revisar') : 'En orden') + '</span></summary>'
+            + (x.n ? '<div class="rv-body"><p class="rv-ex">' + esc(x.explica) + '</p>' + tabla + (x.accion ? '<div class="rv-acc"><button class="rv-b p" data-acc="' + i + '">' + esc(x.accion.txt) + '</button></div>' : '') + '</div>' : '') + '</details>';
+        }).join('')
+      + '</div>';
+    document.body.appendChild(ov);
+    ov.querySelector('[data-a="otra"]').onclick = abrir;
+    ov.querySelector('[data-a="cerrar"]').onclick = cerrar;
+    ov.querySelectorAll('[data-acc]').forEach(function(b){ var x = ord[+b.getAttribute('data-acc')]; b.onclick = function(){ x.accion.fn(); }; });
+    window._fkRevUltima = R;
+    return R;
+  }
+  window.fkRevision = abrir;
+  window.fkRevisionDatos = revisar;
 })();
 </script>
 </body>
