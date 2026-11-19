@@ -18,7 +18,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.11.18.441">
+<meta name="farmers-version" content="2026.11.19.443">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -104056,6 +104056,460 @@ window.mdConfirmarCandidatosIA = async function() {
     }
   } catch(e){ try { console.warn('[v.441] precio completo no aplicado:', e); } catch(_){} }
   window.msExcelConBordes._v441 = true;
+})();
+</script>
+
+<script>
+/* ═══ v.442 — ORDEN DE PEDIDO (PDF) RENOVADA ═══
+   Mismo documento (orden de pedido, no factura), rediseñado y estructurado:
+     · membrete con logo, RIF y contacto · estado REAL del pedido (no siempre "pendiente")
+     · ficha del pedido · indicadores (total, cumplimiento, referencias, carga física)
+     · índice de despachos en la primera hoja
+     · cada despacho en su propia página: datos de entrega, tabla con faltantes, subtotal y carga
+     · cierre con total general, condiciones y firmas · pie con número de página · tamaño carta
+   Cantidades: DESPACHO = lo distribuido a la sucursal (tope: lo pedido), la misma regla del
+   monitor y del Excel. Se eliminó la suposición vieja que daba por despachada toda línea en 0
+   cuando el pedido estaba "despachado" (inflaba el total). Precios: misma prioridad de siempre
+   (override → precio negociado → precio congelado del pedido → catálogo). */
+(function(){
+  if (window._fkDoc442) return; window._fkDoc442 = true;
+
+  function esc(s){ return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+  function sinEmoji(s){ return String(s == null ? '' : s).replace(/(?![©®™])\p{Extended_Pictographic}️?\s*/gu, '').trim(); }
+  function m2(n){ return (Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+  function mP(n){ return (Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 4 }); }
+  function ent(n){ return (Number(n) || 0).toLocaleString('en-US', { maximumFractionDigits: 0 }); }
+  function d1(n, d){ return (Number(n) || 0).toLocaleString('es-VE', { minimumFractionDigits: d, maximumFractionDigits: d }); }
+  function pl(n, s, p){ return ent(n) + ' ' + (n === 1 ? s : (p || s + 's')); }
+  function dosDig(n, w){ var s = String(n); while (s.length < w) s = '0' + s; return s; }
+  var M3 = 0.028316846592;
+
+  var ICO = {
+    print: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9V2h12v7"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><path d="M6 14h12v8H6z"/></svg>',
+    grid: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18M9 3v18"/></svg>'
+  };
+
+  // ── datos del documento (misma fuente y prioridad de precios que la versión anterior) ──
+  function armarDatos(numP, sel){
+    var peds = typeof getMsPedidos === 'function' ? getMsPedidos() : [];
+    var ped = peds.find(function(p){ return p.numP === numP; });
+    if (!ped) return { error: 'No se encontró el pedido ' + numP };
+    if (!sel || !sel.length) sel = ped.sucursales || [];
+    var estadoPed = String(ped.estado || '').toUpperCase();
+    var despachado = estadoPed === 'DESPACHADO';
+    var DOC = [];
+    if (Array.isArray(ped.data) && ped.data.length) {
+      DOC = ped.data.map(function(p){
+        var pedidos = {}, dist = {};
+        Object.keys(p.pedidos || {}).forEach(function(k){ pedidos[k] = p.pedidos[k] || 0; });
+        Object.keys(p.dist || {}).forEach(function(k){ dist[k] = p.dist[k] || 0; });
+        if (Object.keys(dist).length === 0 && despachado && Object.keys(pedidos).length > 0) dist = Object.assign({}, pedidos); // pedido antiguo sin distribución guardada
+        return { ref: p.ref, desc: p.desc || p.ref, pedidos: pedidos, dist: dist, precioOverride: p.precioOverride, precioNegociado: p.precioNegociado,
+          precioCongelado_USD: p.precioCongelado_USD, precioCongelado_BCV: p.precioCongelado_BCV, precioCongelado_TF: p.precioCongelado_TF, preciosCongeladosFecha: p.preciosCongeladosFecha };
+      });
+    } else if (Array.isArray(ped.items) && ped.items.length) {
+      DOC = ped.items.map(function(item){
+        var pedidos = {}, dist = {};
+        Object.keys(item.sucursales || {}).forEach(function(s){ pedidos[s] = parseInt((item.sucursales[s] || {}).pide) || 0; dist[s] = parseInt((item.sucursales[s] || {}).desp) || 0; });
+        var tot = Object.values(dist).reduce(function(a, b){ return a + (b || 0); }, 0);
+        if (tot === 0 && despachado) dist = Object.assign({}, pedidos);
+        return { ref: item.ref, desc: item.desc || item.ref, pedidos: pedidos, dist: dist, precioOverride: item.precioOverride, precioNegociado: item.precioNegociado };
+      });
+    }
+    if (!DOC.length) return { error: 'El pedido ' + numP + ' no tiene productos' };
+    var mon = ped.moneda || 'USD';
+    function precioDe(p){
+      var cong = (typeof window.msGetPrecioCongelado === 'function') ? window.msGetPrecioCongelado(p, mon) : null;
+      var ovr = (typeof _ovrNum === 'function') ? _ovrNum(p.precioOverride) : null;
+      if (ovr !== null) return ovr;
+      if (p.precioOverride === 'cliente' && parseFloat(p.precioNegociado) > 0) return parseFloat(p.precioNegociado);
+      if (cong !== null) return cong;
+      return (typeof msGetPrecio === 'function') ? (msGetPrecio(p.ref) || 0) : 0;
+    }
+    var MED = {};
+    function medida(ref){ if (!MED[ref]) { var m = null; try { m = typeof getMedidasProducto === 'function' ? getMedidasProducto(ref) : null; } catch(e){} MED[ref] = m || { udsBulto: 0, volFt3Bulto: 0, pesoBrutoKg: 0 }; } return MED[ref]; }
+    var clDB = typeof getClientsDB === 'function' ? getClientsDB() : [];
+    var cps = ped.clientesPorSucursal || {};
+    var etiq = {};
+    try { if (ped.etiqData) Object.assign(etiq, ped.etiqData); var lo = JSON.parse(localStorage.getItem('ms_etiq_' + numP) || '{}'); Object.keys(lo).forEach(function(s){ if (lo[s] && Object.keys(lo[s]).length) etiq[s] = lo[s]; }); } catch(e){}
+    var estS = ped.sucursalesEstado || {};
+    var nTot = (ped.sucursales || []).length || sel.length;
+    var w = String(nTot).length < 2 ? 2 : String(nTot).length;
+    var msPrev = (typeof MS !== 'undefined') ? { m: MS.moneda, c: MS.clientesPorSucursal } : null;
+    if (msPrev) { MS.moneda = mon; MS.clientesPorSucursal = cps; }
+    var secciones = [];
+    try {
+      sel.forEach(function(suc){
+        var items = [];
+        DOC.forEach(function(p){
+          var pide = (p.pedidos && p.pedidos[suc]) || 0; if (!pide) return;
+          var desp = Math.min((p.dist && p.dist[suc]) || 0, pide);
+          var pr = precioDe(p);
+          items.push({ ref: p.ref, desc: sinEmoji(p.desc), pide: pide, desp: desp, falta: Math.max(0, pide - desp), precio: pr, total: pr * desp });
+        });
+        if (!items.length) return;
+        var cl = null, id = cps[suc]; if (id) cl = clDB.find(function(x){ return x.id === id; }) || null;
+        var R = null; try { R = typeof resolverCliente === 'function' ? resolverCliente(suc) : null; } catch(e){}
+        var et = etiq[suc] || {};
+        var nomSuc = et.nom || (typeof window.msNombreSucursalOficial === 'function' ? window.msNombreSucursalOficial(suc) : null) || (R && R.nombreSucursalOficial) || (cl ? cl.nombre : suc);
+        var empresa = (cl && cl.nombre) || (R && R.matched && R.cli && R.cli.nombre) || et.rs || '';
+        var rif = (cl && cl.rif) || (R && R.rif) || et.rif || '';
+        var carga = { cajas: 0, vol: 0, kg: 0, sinMed: 0 };
+        items.forEach(function(it){ if (!(it.desp > 0)) return; var m = medida(it.ref);
+          if (m.udsBulto > 0) { var bc = it.desp / m.udsBulto; carga.cajas += bc; carga.vol += bc * (m.volFt3Bulto || 0); carga.kg += bc * (m.pesoBrutoKg || 0); }
+          if (!(m.udsBulto > 0) || !(m.volFt3Bulto > 0) || !(m.pesoBrutoKg > 0)) carga.sinMed++; });
+        var est = despachado ? 'DESPACHADO' : String(estS[suc] || (estadoPed === 'CANCELADO' ? 'CANCELADO' : 'RESERVADO')).toUpperCase();
+        var idx = (ped.sucursales || []).indexOf(suc);
+        secciones.push({
+          suc: suc, num: dosDig(idx >= 0 ? idx + 1 : secciones.length + 1, w) + '/' + dosDig(nTot, w),
+          nombre: sinEmoji(nomSuc), empresa: sinEmoji(empresa), rif: rif, oc: et.oc || '',
+          dir: sinEmoji((R && R.direccionDespacho) || (cl && cl.direccion) || ''), contacto: sinEmoji((R && R.contacto) || (R && R.sucObj && R.sucObj.contacto) || ''), tel: (R && R.telefono) || '',
+          estado: est, items: items,
+          pide: items.reduce(function(s, i){ return s + i.pide; }, 0), desp: items.reduce(function(s, i){ return s + i.desp; }, 0),
+          falta: items.reduce(function(s, i){ return s + i.falta; }, 0), total: items.reduce(function(s, i){ return s + i.total; }, 0),
+          perdido: items.reduce(function(s, i){ return s + i.precio * i.falta; }, 0), carga: carga,
+          credito: (R && R.diasCredito) ? R.diasCredito : (cl && cl.diasCredito) || '', vendedor: (R && R.vendedor) || (cl && cl.vendedor) || ''
+        });
+      });
+    } finally { if (msPrev) { MS.moneda = msPrev.m; MS.clientesPorSucursal = msPrev.c; } }
+    if (!secciones.length) return { error: 'El pedido ' + numP + ' no tiene líneas para las sucursales elegidas' };
+    var G = { total: 0, pide: 0, desp: 0, falta: 0, perdido: 0, cajas: 0, vol: 0, kg: 0, sinMed: 0, refs: {} };
+    secciones.forEach(function(s){ G.total += s.total; G.pide += s.pide; G.desp += s.desp; G.falta += s.falta; G.perdido += s.perdido; G.cajas += s.carga.cajas; G.vol += s.carga.vol; G.kg += s.carga.kg; G.sinMed += s.carga.sinMed; s.items.forEach(function(i){ G.refs[i.ref] = 1; }); });
+    G.nRefs = Object.keys(G.refs).length;
+    return { ped: ped, mon: mon, secciones: secciones, G: G, estadoPed: estadoPed };
+  }
+
+  var MON = { USD: 'USD $', BCV: 'BCV $', TF: 'TF $' };
+  var ESTADOS = {
+    RESERVADO: ['Reservado', 'Pendiente de despacho', 'info'], PENDIENTE: ['Pendiente', 'Pendiente de despacho', 'info'],
+    EMBALADO: ['Embalado', 'Listo para despachar', 'info'], PARCIAL: ['Despacho parcial', 'Quedan despachos por salir', 'warn'],
+    DESPACHADO: ['Despachado', 'Pedido entregado', 'ok'], CANCELADO: ['Cancelado', 'Pedido anulado', 'bad']
+  };
+  function chipEst(e){ var x = ESTADOS[e] || [e ? e.charAt(0) + e.slice(1).toLowerCase() : '—', '', 'info']; return '<span class="chip t-' + x[2] + '">' + esc(x[0]) + '</span>'; }
+
+  function construirHtml(D){
+    var ped = D.ped, G = D.G, S = D.secciones, ml = MON[D.mon] || D.mon;
+    var numP = ped.numP;
+    var hoy = new Date().toLocaleDateString('es-VE', { day: '2-digit', month: 'long', year: 'numeric' });
+    var est = ESTADOS[D.estadoPed] || ESTADOS.RESERVADO;
+    var cumpl = G.pide > 0 ? Math.round(G.desp / G.pide * 1000) / 10 : 0;
+    var empresas = {}; S.forEach(function(s){ var k = String(s.rif || s.empresa || s.suc).toUpperCase(); if (!empresas[k]) empresas[k] = s; });
+    var nEmp = Object.keys(empresas).length;
+    var cli0 = S[0];
+    var clienteTxt = (cli0.empresa || cli0.nombre) + (nEmp > 1 ? ' y ' + pl(nEmp - 1, 'empresa') + ' más' : '');
+    var rifTxt = nEmp > 1 ? 'Varios (ver índice)' : (cli0.rif || '—');
+    var vend = ped.vendedor || cli0.vendedor || '—';
+    var cred = cli0.credito ? cli0.credito + ' días' : '—';
+    var fDesp = ped.fechaDespacho || '';
+    var logo = (typeof FARMERS_LOGO_B64 !== 'undefined' && FARMERS_LOGO_B64) ? '<img class="logo" src="' + FARMERS_LOGO_B64 + '" alt="Farmers">' : '<b class="logo-txt">FARMERS</b>';
+    var pie = 'FARMERS C.A. · Orden de pedido ' + numP + ' · ' + ml;
+    // el estado por despacho solo se muestra en el índice cuando no todos están igual que el pedido
+    var colEst = S.some(function(s){ return s.estado !== (D.estadoPed || 'RESERVADO'); });
+
+    var css = ''
+      + '@page{size:letter portrait;margin:14mm 13mm 16mm 13mm;'
+      +   '@bottom-left{content:"' + pie.replace(/"/g, '') + '";font:500 7.5pt Geist,Arial,sans-serif;color:#64748b}'
+      +   '@bottom-right{content:"Página " counter(page) " de " counter(pages);font:500 7.5pt Geist,Arial,sans-serif;color:#64748b}}'
+      + '*{margin:0;padding:0;box-sizing:border-box;-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important}'
+      + ':root{--navy:#0F172A;--ink:#0F172A;--ink2:#334155;--mut:#64748B;--line:#CBD5E1;--line2:#E2E8F0;--soft:#F1F5F9;--soft2:#F8FAFC;--ok:#15803D;--okbg:#ECFDF3;--bad:#B91C1C;--badbg:#FEF2F2;--info:#1E3A8A;--infobg:#EEF2FF}'
+      + 'body{font-family:Geist,"Helvetica Neue",Arial,sans-serif;color:var(--ink);background:#E9EDF2;font-size:9pt;line-height:1.35;font-variant-numeric:tabular-nums}'
+      + '.barra{position:sticky;top:0;z-index:5;display:flex;align-items:center;justify-content:space-between;gap:10px;max-width:216mm;margin:0 auto;padding:12px 2px}'
+      + '.barra .id{font-size:12px;color:var(--mut)} .barra .id b{color:var(--ink);font-weight:600}'
+      + '.barra .bts{display:flex;gap:8px}'
+      + '.bt{display:inline-flex;align-items:center;gap:7px;height:36px;padding:0 16px;border-radius:9px;border:1px solid var(--line);background:#fff;color:var(--ink);font:600 12.5px Geist,Arial,sans-serif;cursor:pointer}'
+      + '.bt.pri{background:var(--navy);border-color:var(--navy);color:#fff}'
+      + '.hoja{width:216mm;min-height:279mm;margin:0 auto 14px;background:#fff;padding:14mm 13mm 16mm;box-shadow:0 1px 2px rgba(15,23,42,.06),0 10px 30px rgba(15,23,42,.10)}'
+      + '@media print{body{background:#fff}.no-print{display:none!important}.hoja{width:auto;min-height:0;margin:0;padding:0;box-shadow:none}.hoja+.hoja{break-before:page}.hoja.cierre{break-before:auto;break-inside:avoid;padding-top:18px}}'
+      /* membrete */
+      + '.memb{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;padding-bottom:12px;border-bottom:2px solid var(--navy)}'
+      + '.memb-l{display:flex;gap:14px;align-items:center}'
+      + '.logo{height:58px;width:auto;display:block}.logo-txt{font-size:20px;letter-spacing:.06em}'
+      + '.memb-emp b{display:block;font-size:12pt;font-weight:700;letter-spacing:.02em}'
+      + '.memb-emp span{display:block;font-size:8pt;color:var(--mut);line-height:1.55}'
+      + '.memb-r{text-align:right}'
+      + '.doc-t{font-size:7.5pt;font-weight:600;letter-spacing:.16em;color:var(--mut);text-transform:uppercase}'
+      + '.doc-n{font-size:17pt;font-weight:700;letter-spacing:-.01em;margin-top:2px}'
+      + '.doc-f{font-size:8pt;color:var(--mut);margin-top:2px}'
+      /* estado */
+      + '.estado{display:flex;align-items:center;gap:12px;margin:12px 0 14px;padding:9px 12px;border:1px solid var(--line2);border-radius:8px;background:var(--soft2)}'
+      + '.estado p{font-size:8pt;color:var(--ink2)}.estado p b{font-weight:600;color:var(--ink)}'
+      + '.chip{display:inline-flex;align-items:center;height:20px;padding:0 9px;border-radius:999px;font-size:7.5pt;font-weight:600;letter-spacing:.02em;white-space:nowrap}'
+      + '.t-info{background:var(--infobg);color:var(--info)}.t-ok{background:var(--okbg);color:var(--ok)}.t-bad{background:var(--badbg);color:var(--bad)}.t-warn{background:var(--badbg);color:var(--bad)}'
+      /* ficha */
+      + '.ficha{display:grid;grid-template-columns:2fr 1fr 1fr 1fr;border:1px solid var(--line);border-radius:8px;overflow:hidden}'
+      + '.ficha div{padding:7px 10px;border-right:1px solid var(--line2);border-bottom:1px solid var(--line2);min-width:0}'
+      + '.ficha div:nth-child(4n){border-right:0}.ficha div:nth-last-child(-n+4){border-bottom:0}'
+      + '.k{display:block;font-size:6.8pt;font-weight:600;letter-spacing:.09em;text-transform:uppercase;color:var(--mut);margin-bottom:2px}'
+      + '.v{display:block;font-size:9pt;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}'
+      /* indicadores */
+      + '.kpis{display:grid;grid-template-columns:1.35fr 1fr 1fr 1.35fr;gap:8px;margin:12px 0 16px}'
+      + '.kpi{border:1px solid var(--line);border-radius:8px;padding:9px 12px;min-width:0}'
+      + '.kpi.tot{background:var(--navy);border-color:var(--navy);color:#fff}.kpi.tot .k{color:rgba(255,255,255,.65)}'
+      + '.kpi b{display:block;font-size:14pt;font-weight:700;letter-spacing:-.01em;white-space:nowrap}'
+      + '.kpi small{display:block;font-size:7.5pt;color:var(--mut);margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.kpi.tot small{color:rgba(255,255,255,.65)}'
+      + '.barra-c{height:4px;border-radius:4px;background:var(--line2);margin-top:5px;overflow:hidden}.barra-c i{display:block;height:100%;background:var(--ok)}'
+      /* títulos de sección */
+      + 'h2{font-size:8pt;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--ink2);margin:0 0 6px;display:flex;justify-content:space-between;align-items:baseline}'
+      + 'h2 span{font-weight:500;letter-spacing:0;text-transform:none;color:var(--mut)}'
+      /* tablas */
+      + 'table{width:100%;border-collapse:collapse}'
+      + 'thead{display:table-header-group}tfoot{display:table-row-group}tr{break-inside:avoid}'
+      + 'tr.ident td{display:none;border:0;padding:0 0 5px;font-size:7.5pt;color:var(--mut);background:none!important}tr.ident td b{color:var(--ink)}'
+      + '@media print{tr.ident td{display:table-cell}}'
+      + 'th{background:var(--navy);color:#fff;font-size:7pt;font-weight:600;letter-spacing:.06em;text-transform:uppercase;padding:6px 7px;text-align:left;white-space:nowrap}'
+      + 'td{padding:4.6px 7px;border-bottom:1px solid var(--line2);font-size:8.2pt;vertical-align:middle}'
+      + '.r{text-align:right}.c{text-align:center}.mono{font-family:"Geist Mono",ui-monospace,Menlo,monospace;font-size:7.8pt}'
+      + '.b{font-weight:600}.mut{color:var(--mut)}.nw{white-space:nowrap}'
+      + 'tbody tr:nth-child(even) td{background:var(--soft2)}'
+      + 'tr.falta td{background:var(--badbg)!important}tr.falta td.fx{color:var(--bad);font-weight:700}'
+      + 'tfoot td{background:var(--soft)!important;border-top:1.5px solid var(--navy);border-bottom:0;font-weight:700;padding:6px 7px}'
+      + '.desc{max-width:0;width:100%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}'
+      + '.indice{table-layout:fixed}.indice td,.indice th{padding:4.2px 5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.indice td{font-size:7.9pt}.indice td.mono{font-size:7.4pt}'
+      /* despacho */
+      + '.d-hd{display:flex;justify-content:space-between;align-items:flex-end;gap:16px;padding-bottom:9px;border-bottom:2px solid var(--navy);margin-bottom:10px}'
+      + '.d-n{font-size:7.5pt;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--mut)}'
+      + '.d-t{font-size:15pt;font-weight:700;letter-spacing:-.01em;margin-top:1px}'
+      + '.d-e{font-size:8.5pt;color:var(--ink2);margin-top:2px}'
+      + '.d-r{text-align:right;display:flex;flex-direction:column;align-items:flex-end;gap:5px}'
+      + '.oc{font-family:"Geist Mono",ui-monospace,monospace;font-size:8.5pt;font-weight:600;color:var(--info);background:var(--infobg);border-radius:6px;padding:3px 8px}'
+      + '.d-ficha{display:grid;grid-template-columns:2.2fr 1fr 1fr;border:1px solid var(--line);border-radius:8px;overflow:hidden;margin-bottom:10px}'
+      + '.d-ficha div{padding:6px 10px;border-right:1px solid var(--line2);min-width:0}.d-ficha div:last-child{border-right:0}'
+      + '.d-ficha .v{font-weight:500}'
+      + '.d-pie{display:grid;grid-template-columns:repeat(5,1fr) 1.4fr;border:1px solid var(--line);border-radius:8px;overflow:hidden;margin-top:10px;break-inside:avoid}'
+      + '.d-pie div{padding:6px 10px;border-right:1px solid var(--line2)}.d-pie div:last-child{border-right:0;background:var(--navy);color:#fff}.d-pie div:last-child .k{color:rgba(255,255,255,.65)}'
+      + '.d-pie b{display:block;font-size:10.5pt;font-weight:700;white-space:nowrap}'
+      /* cierre */
+      + '.cierre-tot{display:grid;grid-template-columns:repeat(3,1fr) 1.6fr;border:1px solid var(--line);border-radius:8px;overflow:hidden;margin:4px 0 14px}'
+      + '.cierre-tot div{padding:10px 12px;border-right:1px solid var(--line2)}.cierre-tot div:last-child{border-right:0;background:var(--navy);color:#fff}.cierre-tot div:last-child .k{color:rgba(255,255,255,.65)}'
+      + '.cierre-tot b{display:block;font-size:12pt;font-weight:700;white-space:nowrap}.cierre-tot div:last-child b{font-size:17pt}'
+      + '.cond{border:1px solid var(--line2);border-radius:8px;padding:10px 14px;background:var(--soft2);margin-bottom:26px}'
+      + '.cond li{font-size:8.2pt;color:var(--ink2);margin:3px 0 3px 14px}'
+      + '.firmas{display:grid;grid-template-columns:1fr 1fr;gap:40px;margin-top:34px;break-inside:avoid}'
+      + '.firma .ln{border-top:1.5px solid var(--navy);padding-top:6px;text-align:center}'
+      + '.firma b{display:block;font-size:8.5pt;letter-spacing:.06em;text-transform:uppercase}'
+      + '.firma small{display:block;font-size:7.5pt;color:var(--mut);margin-top:1px}'
+      + '.firma .dt{display:flex;justify-content:space-between;font-size:7.8pt;color:var(--mut);margin-top:12px}'
+      + '.aviso{margin-top:8px;font-size:7.5pt;color:var(--bad)}'
+      + '@media screen and (max-width:900px){.hoja{width:100%;padding:16px}.barra{padding:10px}}';
+
+    var html = '<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
+      + '<title>Orden de pedido ' + esc(numP) + '</title>'
+      + '<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet">'
+      + '<style>' + css + '</style></head><body>';
+
+    html += '<div class="barra no-print"><div class="id">Orden de pedido <b>' + esc(numP) + '</b> · ' + esc(ml) + ' · ' + pl(S.length, 'despacho') + '</div>'
+      + '<div class="bts"><button class="bt" id="_docXlsBtn">' + ICO.grid + ' Descargar Excel</button><button class="bt pri" onclick="window.print()">' + ICO.print + ' Imprimir o guardar PDF</button></div></div>';
+
+    // ── HOJA 1: portada ──
+    html += '<section class="hoja portada">'
+      + '<header class="memb"><div class="memb-l">' + logo + '<div class="memb-emp"><b>FARMERS C.A.</b><span>RIF J-401008631 · Isla de Margarita, Nueva Esparta</span><span>0412-0445797 · farmersve@gmail.com</span></div></div>'
+      + '<div class="memb-r"><div class="doc-t">Orden de pedido</div><div class="doc-n">N° ' + esc(numP) + '</div><div class="doc-f">Emitida el ' + esc(hoy) + '</div></div></header>'
+      + '<div class="estado">' + chipEst(D.estadoPed || 'RESERVADO') + '<p><b>' + esc(est[1]) + (fDesp && D.estadoPed === 'DESPACHADO' ? ' el ' + esc(fDesp) : '') + '.</b> Este documento es una orden de pedido, no una factura: la venta se registra y la factura se emite al confirmar el despacho físico.</p></div>'
+      + '<div class="ficha">'
+        + '<div><span class="k">Cliente</span><span class="v" title="' + esc(clienteTxt) + '">' + esc(clienteTxt) + '</span></div>'
+        + '<div><span class="k">RIF</span><span class="v">' + esc(rifTxt) + '</span></div>'
+        + '<div><span class="k">Vendedor</span><span class="v">' + esc(vend) + '</span></div>'
+        + '<div><span class="k">Condición de crédito</span><span class="v">' + esc(cred) + '</span></div>'
+        + '<div><span class="k">Despachos</span><span class="v">' + pl(S.length, 'punto') + ' de entrega' + (nEmp > 1 ? ' · ' + pl(nEmp, 'empresa') : '') + '</span></div>'
+        + '<div><span class="k">Fecha del pedido</span><span class="v">' + esc(ped.fecha || '—') + '</span></div>'
+        + '<div><span class="k">Lista de precios</span><span class="v">' + esc(ml) + '</span></div>'
+        + '<div><span class="k">' + (fDesp ? 'Fecha de despacho' : 'Estado') + '</span><span class="v">' + esc(fDesp || est[0]) + '</span></div>'
+      + '</div>'
+      + '<div class="kpis">'
+        + '<div class="kpi tot"><span class="k">Total del pedido</span><b>' + esc(ml) + ' ' + m2(G.total) + '</b><small>' + (G.perdido > 0.004 ? 'No despachado: ' + esc(ml) + ' ' + m2(G.perdido) : 'Todo lo pedido está cubierto') + '</small></div>'
+        + '<div class="kpi"><span class="k">Piezas</span><b>' + ent(G.desp) + '</b><small>de ' + ent(G.pide) + ' pedidas · ' + d1(cumpl, 1) + '%</small><div class="barra-c"><i style="width:' + Math.min(100, cumpl) + '%"></i></div></div>'
+        + '<div class="kpi"><span class="k">Referencias</span><b>' + ent(G.nRefs) + '</b><small>' + pl(S.length, 'despacho') + '</small></div>'
+        + '<div class="kpi"><span class="k">Carga a despachar</span><b>' + (G.vol > 0 ? d1(G.vol, 2) + ' ft³' : '—') + '</b><small>' + (G.vol > 0 ? d1(G.vol * M3, 2) + ' m³ · ' + d1(G.kg, 1) + ' kg · ' + d1(G.cajas, 1) + ' cajas' : 'Sin medidas en Master Data') + '</small></div>'
+      + '</div>'
+      + '<h2>Índice de despachos <span>' + pl(S.length, 'punto') + ' de entrega · cada uno en su propia página' + (colEst ? '' : ' · todos: ' + esc(est[0].toLowerCase())) + '</span></h2>'
+      + '<table class="indice"><colgroup><col style="width:11mm"><col style="width:34mm"><col><col style="width:30mm"><col style="width:10mm"><col style="width:24mm"><col style="width:22mm">' + (colEst ? '<col style="width:22mm">' : '') + '</colgroup><thead><tr><th class="c">N°</th><th>Sucursal</th><th>Empresa</th><th>N° O/C</th><th class="r">Refs</th><th class="r">Piezas</th><th class="r">Total ' + esc(ml) + '</th>' + (colEst ? '<th class="c">Estado</th>' : '') + '</tr></thead><tbody>'
+      + S.map(function(s){
+          return '<tr' + (s.falta > 0 ? ' class="falta"' : '') + '><td class="c mono">' + esc(s.num) + '</td><td class="b nw" title="' + esc(s.nombre) + '">' + esc(s.nombre) + '</td><td title="' + esc(s.empresa + (s.rif ? ' · RIF ' + s.rif : '')) + '">' + esc(s.empresa || '—') + '</td>'
+            + '<td class="mono nw">' + esc(s.oc || '—') + '</td><td class="r">' + ent(s.items.length) + '</td><td class="r nw' + (s.falta > 0 ? ' fx' : '') + '">' + ent(s.desp) + (s.falta > 0 ? ' / ' + ent(s.pide) : '') + '</td><td class="r b nw">' + m2(s.total) + '</td>' + (colEst ? '<td class="c">' + chipEst(s.estado) + '</td>' : '') + '</tr>';
+        }).join('')
+      + '</tbody><tfoot><tr><td colspan="4">Total del pedido</td><td class="r">' + ent(G.nRefs) + '</td><td class="r">' + ent(G.desp) + '</td><td class="r nw">' + m2(G.total) + '</td>' + (colEst ? '<td></td>' : '') + '</tr></tfoot></table>'
+      + (S.some(function(s){ return s.falta > 0; }) ? '<p class="aviso">Las filas en rojo tienen piezas sin despachar (despachadas / pedidas).</p>' : '')
+      + '</section>';
+
+    // ── una hoja por despacho ──
+    S.forEach(function(s){
+      var cumplS = s.pide > 0 ? Math.round(s.desp / s.pide * 1000) / 10 : 0;
+      html += '<section class="hoja despacho" data-suc="' + esc(s.suc) + '">'
+        + '<header class="d-hd"><div><div class="d-n">Despacho ' + esc(s.num) + ' · Orden ' + esc(numP) + '</div><div class="d-t">' + esc(s.nombre) + '</div><div class="d-e">' + esc(s.empresa || '—') + (s.rif ? ' · RIF ' + esc(s.rif) : '') + '</div></div>'
+        + '<div class="d-r">' + (s.oc ? '<span class="oc">OC ' + esc(s.oc) + '</span>' : '<span class="chip t-info">Sin OC</span>') + chipEst(s.estado) + '</div></header>'
+        + '<div class="d-ficha"><div><span class="k">Dirección de despacho</span><span class="v" title="' + esc(s.dir) + '">' + esc(s.dir || '—') + '</span></div>'
+        + '<div><span class="k">Contacto</span><span class="v">' + esc(s.contacto || '—') + '</span></div><div><span class="k">Teléfono</span><span class="v">' + esc(s.tel || '—') + '</span></div></div>'
+        + '<table class="lineas" data-suc="' + esc(s.suc) + '" data-oc="' + esc(s.oc || '-') + '"><thead><tr class="ident"><td colspan="8">Despacho ' + esc(s.num) + ' · <b>' + esc(s.nombre) + '</b>' + (s.oc ? ' · OC ' + esc(s.oc) : '') + ' · Orden ' + esc(numP) + '</td></tr><tr><th class="c">#</th><th>Referencia</th><th>Descripción</th><th class="r">Pedido</th><th class="r">Despacho</th><th class="r">Faltante</th><th class="r">Precio ' + esc(ml) + '</th><th class="r">Total ' + esc(ml) + '</th></tr></thead><tbody>'
+        + s.items.map(function(it, i){
+            return '<tr' + (it.falta > 0 ? ' class="falta"' : '') + '><td class="c mut">' + (i + 1) + '</td><td class="mono b nw">' + esc(it.ref) + '</td><td class="desc" title="' + esc(it.desc) + '">' + esc(it.desc) + '</td>'
+              + '<td class="r">' + ent(it.pide) + '</td><td class="r b">' + ent(it.desp) + '</td><td class="r fx">' + (it.falta > 0 ? ent(it.falta) : '<span class="mut">–</span>') + '</td>'
+              + '<td class="r nw">' + mP(it.precio) + '</td><td class="r b nw">' + (it.total > 0 ? m2(it.total) : '<span class="mut">–</span>') + '</td></tr>';
+          }).join('')
+        + '</tbody><tfoot><tr><td colspan="3">Subtotal del despacho · ' + pl(s.items.length, 'referencia') + '</td><td class="r">' + ent(s.pide) + '</td><td class="r">' + ent(s.desp) + '</td><td class="r">' + (s.falta > 0 ? ent(s.falta) : '–') + '</td><td></td><td class="r nw">' + m2(s.total) + '</td></tr></tfoot></table>'
+        + '<div class="d-pie">'
+          + '<div><span class="k">Piezas</span><b>' + ent(s.desp) + '</b></div>'
+          + '<div><span class="k">Cumplimiento</span><b>' + d1(cumplS, 1) + '%</b></div>'
+          + '<div><span class="k">Cajas</span><b>' + (s.carga.cajas > 0 ? d1(s.carga.cajas, 1) : '—') + '</b></div>'
+          + '<div><span class="k">Volumen</span><b>' + (s.carga.vol > 0 ? d1(s.carga.vol, 2) + ' ft³' : '—') + '</b></div>'
+          + '<div><span class="k">Peso bruto</span><b>' + (s.carga.kg > 0 ? d1(s.carga.kg, 1) + ' kg' : '—') + '</b></div>'
+          + '<div><span class="k">Total del despacho</span><b>' + esc(ml) + ' ' + m2(s.total) + '</b></div>'
+        + '</div>'
+        + (s.carga.sinMed ? '<p class="aviso">' + pl(s.carga.sinMed, 'referencia') + ' sin medidas completas en Master Data: cajas, volumen y peso pueden quedar por debajo de lo real.</p>' : '')
+        + '</section>';
+    });
+
+    // ── cierre ──
+    html += '<section class="hoja cierre">'
+      + '<header class="d-hd"><div><div class="d-n">Resumen · Orden ' + esc(numP) + '</div><div class="d-t">Total general del pedido</div><div class="d-e">' + esc(clienteTxt) + '</div></div><div class="d-r">' + chipEst(D.estadoPed || 'RESERVADO') + '</div></header>'
+      + '<div class="cierre-tot">'
+        + '<div><span class="k">Despachos</span><b>' + ent(S.length) + '</b></div>'
+        + '<div><span class="k">Piezas</span><b>' + ent(G.desp) + '</b><span class="k" style="margin-top:3px">de ' + ent(G.pide) + ' · ' + d1(cumpl, 1) + '%</span></div>'
+        + '<div><span class="k">No despachado</span><b>' + (G.perdido > 0.004 ? esc(ml) + ' ' + m2(G.perdido) : '—') + '</b></div>'
+        + '<div><span class="k">Total del pedido</span><b>' + esc(ml) + ' ' + m2(G.total) + '</b></div>'
+      + '</div>'
+      + '<h2>Condiciones</h2><div class="cond"><ul>'
+        + '<li>Montos expresados en la lista de precios <b>' + esc(ml) + '</b>, con los precios vigentes al emitir el pedido.</li>'
+        + '<li>Condición de crédito: <b>' + esc(cred) + '</b>.</li>'
+        + '<li>Esta orden no es una factura. La venta se registra y la factura se emite al confirmar el despacho físico de cada punto de entrega.</li>'
+        + '<li>Las cantidades en "Faltante" no se despachan en esta orden por falta de disponibilidad.</li>'
+      + '</ul></div>'
+      + '<div class="firmas">'
+        + '<div class="firma"><div class="ln"><b>Elaborado por</b><small>Farmers C.A.</small></div><div class="dt"><span>Nombre: ______________________</span><span>Fecha: ___/___/______</span></div></div>'
+        + '<div class="firma"><div class="ln"><b>Recibido conforme</b><small>Cliente</small></div><div class="dt"><span>Nombre: ______________________</span><span>Fecha: ___/___/______</span></div></div>'
+      + '</div>'
+      + '</section>';
+
+    // datos para el botón Excel (mismas columnas de siempre)
+    var filasX = [['REF', 'DESCRIPCION', 'SUCURSAL', 'N_OC', 'PEDIDO', 'DESPACHO', 'P_UNIT', 'TOTAL']];
+    S.forEach(function(s){ s.items.forEach(function(it){ filasX.push([it.ref, it.desc, s.suc, s.oc || '-', it.pide, it.desp, Math.round(it.precio * 10000) / 10000, Math.round(it.total * 100) / 100]); }); });
+    html += '<script type="application/json" id="_docDatos">' + JSON.stringify(filasX).replace(/</g, '\\u003c') + '<\/script>'
+      + '<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"><\/script>'
+      + '<script>document.addEventListener("DOMContentLoaded",function(){var b=document.getElementById("_docXlsBtn");if(!b)return;b.onclick=function(){try{var rows=JSON.parse(document.getElementById("_docDatos").textContent);var wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(rows),"Pedido");XLSX.writeFile(wb,document.title.replace(/[^A-Z0-9]/gi,"_")+".xlsx");}catch(e){alert("No se pudo generar el Excel: "+e.message);}};});<\/script>'
+      + '</body></html>';
+    return html;
+  }
+
+  window.msGenerarDocPedido = function(numP, sel){
+    var n = numP || (typeof MS !== 'undefined' ? MS.numPedido : '');
+    if (!n) { if (typeof showToast === 'function') showToast('No hay pedido para generar el documento', 'warn'); return; }
+    var D = armarDatos(n, sel);
+    if (D.error) { if (typeof showToast === 'function') showToast(D.error, 'warn'); else alert(D.error); return; }
+    window.__ultimoDoc442 = D;
+    var html = construirHtml(D);
+    var blob = new Blob([typeof _fkKit419 === 'function' ? _fkKit419(html) : html], { type: 'text/html;charset=utf-8' });
+    var url = URL.createObjectURL(blob);
+    var win = window.open(url, '_blank');
+    if (!win) {
+      var a = document.createElement('a'); a.href = url; a.download = 'Orden_de_pedido_' + String(n).replace(/[^A-Z0-9]/gi, '_') + '.html';
+      document.body.appendChild(a); a.click(); setTimeout(function(){ URL.revokeObjectURL(url); a.remove(); }, 1200);
+    }
+  };
+  window.msGenerarDocPedido._v442 = true;
+  window.msArmarDatosDoc442 = armarDatos;   // para verificaciones
+})();
+</script>
+
+<script>
+/* ═══ v.443 — MODERNIZACIÓN TOTAL · FASE 1: MARCO ÚNICO ═══
+   Todos los departamentos de estilo antiguo se abren con el mismo marco del sistema:
+     · página del sistema (fondo claro/noche) en lugar de ventana flotante sobre fondo oscuro
+     · el contenido dentro de un panel enmarcado (borde, esquinas y sombra iguales en todo el sistema)
+     · encabezado limpio: título en tinta, subtítulo gris, línea inferior; sin degradados de colores
+     · botones del encabezado con el mismo estilo; el de cerrar, siempre igual y a la derecha
+   Solo capa visual: no toca funciones, datos ni documentos. Cada departamento conserva sus botones. */
+(function(){
+  if (window._fkMarco443) return; window._fkMarco443 = true;
+  // departamentos con ventana de estilo antiguo (los de página oscura completa van en la fase 2)
+  var IDS = ['import-modal', 'ms-modal', 'hcl-modal', 'ventas-ia-modal', 'tr-overlay', 'proveedores-modal', 'ordenes-modal', 'nomina-modal', 'inv-modal', 'bancos-modal'];
+  var css = ''
+    + '.fk-marco-ov{background:var(--fk-bg)!important;background-image:none!important;-webkit-backdrop-filter:none!important;backdrop-filter:none!important;padding:0!important;align-items:flex-start!important;justify-content:center!important;overflow-y:auto!important;overflow-x:hidden!important}'
+    + '.fk-marco-box{position:relative!important;top:auto!important;left:auto!important;right:auto!important;bottom:auto!important;transform:none!important;width:calc(100% - 40px)!important;max-width:none!important;margin:20px auto 32px!important;border-radius:14px!important;border:1px solid var(--fk-line)!important;box-shadow:var(--fk-shadow,0 1px 2px rgba(16,24,40,.05))!important;overflow-x:auto!important;animation:none!important}'
+    + '.fk-marco-box.fk-marco-alto{min-height:calc(100vh - 52px)}'
+    + '.fk-marco-pagina>.fk-marco-hd{margin:0!important}.fk-marco-ov.fk-marco-pagina{align-items:stretch!important}'
+    + '.fk-marco-hd{background:var(--fk-surface)!important;background-image:none!important;border:0!important;border-bottom:1px solid var(--fk-line)!important;border-radius:0!important;box-shadow:none!important;padding:16px 22px!important;min-height:68px;box-sizing:border-box;font-family:var(--fk-font)!important}'
+    + '.fk-marco-hd,.fk-marco-hd *{color:var(--fk-ink)!important;text-shadow:none!important;font-family:var(--fk-font)!important}'
+    + '.fk-marco-hd .fk-marco-sub,.fk-marco-hd .fk-marco-sub *{color:var(--fk-muted)!important;font-weight:400!important;letter-spacing:normal!important;text-transform:none!important}'
+    + '.fk-marco-hd .fk-marco-tit{font-size:18px!important;font-weight:600!important;letter-spacing:-.01em!important;text-transform:none!important}'
+    + '.fk-marco-hd button,.fk-marco-hd .btn,.fk-marco-hd a[role=button]{background:var(--fk-surface)!important;background-image:none!important;border:1px solid var(--fk-line)!important;color:var(--fk-ink)!important;box-shadow:none!important;border-radius:10px!important;font:500 13px var(--fk-font)!important;min-height:36px;padding:0 14px!important;text-transform:none!important;letter-spacing:normal!important;display:inline-flex!important;align-items:center;gap:6px;cursor:pointer;white-space:nowrap!important}'
+    + '.fk-marco-hd button:hover{border-color:var(--fk-brand)!important;background:var(--fk-surface2)!important}'
+    + '.fk-marco-hd button.fk-marco-x{width:36px;padding:0!important;justify-content:center;font-size:0!important}'
+    + '.fk-marco-hd button.fk-marco-x::before{content:"";width:14px;height:14px;background:currentColor;-webkit-mask:url("data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 24 24%27 fill=%27none%27 stroke=%27black%27 stroke-width=%272.2%27 stroke-linecap=%27round%27%3E%3Cpath d=%27M6 6l12 12M18 6L6 18%27/%3E%3C/svg%3E") center/contain no-repeat;mask:url("data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 24 24%27 fill=%27none%27 stroke=%27black%27 stroke-width=%272.2%27 stroke-linecap=%27round%27%3E%3Cpath d=%27M6 6l12 12M18 6L6 18%27/%3E%3C/svg%3E") center/contain no-repeat}'
+    + '.fk-marco-hd svg{color:var(--fk-ink)!important;stroke:currentColor}'
+    + '.fk-marco-hd .fk-marco-ico{background:var(--fk-brand-soft)!important;border-radius:10px!important;color:var(--fk-brand-tx)!important}'
+    + '.fk-marco-hd .fk-marco-ico *{color:var(--fk-brand-tx)!important}'
+    + '.fk-marco-hd .fk-marco-chip{background:var(--fk-surface2)!important;border:1px solid var(--fk-line)!important;border-radius:999px!important;color:var(--fk-muted)!important}';
+  var st = document.createElement('style'); st.id = 'fk-marco443-css'; st.textContent = css; document.head.appendChild(st);
+
+  function visible(e){ if (!e) return false; var cs = getComputedStyle(e); return cs.display !== 'none' && cs.visibility !== 'hidden' && e.offsetWidth > 0 && e.offsetHeight > 0; }
+  function alfa(c){ var m = String(c).match(/rgba?\(([^)]+)\)/); if (!m) return 1; var p = m[1].split(',').map(parseFloat); return p.length > 3 ? p[3] : 1; }
+  function claro(c){ var m = String(c).match(/rgba?\(([^)]+)\)/); if (!m) return false; var p = m[1].split(',').map(parseFloat); return (p[0] + p[1] + p[2]) / 3 > 200; }
+  function fondoOscuroOColor(e){
+    var cs = getComputedStyle(e);
+    if (/gradient/.test(cs.backgroundImage)) return true;
+    var m = String(cs.backgroundColor).match(/rgba?\(([^)]+)\)/); if (!m) return false;
+    var p = m[1].split(',').map(parseFloat); if (p.length > 3 && p[3] < 0.3) return false;
+    var lum = (p[0] * 0.3 + p[1] * 0.59 + p[2] * 0.11);
+    var sat = Math.max(p[0], p[1], p[2]) - Math.min(p[0], p[1], p[2]);
+    return lum < 140 || sat > 60;
+  }
+  // algunos departamentos traen estilos en línea con prioridad máxima: se reemplazan en línea
+  function forzar(el, props){ if (!el) return; Object.keys(props).forEach(function(k){ try { el.style.setProperty(k, props[k], 'important'); } catch(e){} }); }
+  function marcarHeader(hd){
+    if (!hd || hd.classList.contains('fk-marco-hd')) return;
+    forzar(hd, { 'background': 'var(--fk-surface)', 'background-image': 'none', 'border-radius': '0', 'box-shadow': 'none', 'border-bottom': '1px solid var(--fk-line)' });
+    // antes de aplicar el estilo: subtítulos (texto blanco translúcido), título (el texto más grande), íconos y chips
+    var mayor = null, tam = 0;
+    hd.querySelectorAll('*').forEach(function(el){
+      if (el.closest('button')) return;
+      var cs = getComputedStyle(el);
+      var tieneTexto = [].some.call(el.childNodes, function(n){ return n.nodeType === 3 && n.nodeValue.trim(); });
+      if (tieneTexto) {
+        var fs = parseFloat(cs.fontSize) || 0;
+        if (claro(cs.color) && (alfa(cs.color) < 0.9 || parseFloat(cs.opacity) < 0.95)) el.classList.add('fk-marco-sub');
+        if (fs > tam) { tam = fs; mayor = el; }
+      }
+      // chips/etiquetas dentro del encabezado (fondo propio, redondeado)
+      if (!el.children.length && tieneTexto && /px/.test(cs.borderRadius) && parseFloat(cs.borderRadius) >= 8 && alfa(cs.backgroundColor) > 0.05 && fs < 13) el.classList.add('fk-marco-chip');
+    });
+    if (mayor) { mayor.classList.remove('fk-marco-sub'); mayor.classList.add('fk-marco-tit'); }
+    // botones del encabezado: todos con el mismo estilo (también los que traen colores en línea)
+    hd.querySelectorAll('button').forEach(function(b){ forzar(b, { 'background': 'var(--fk-surface)', 'background-image': 'none', 'color': 'var(--fk-ink)', 'border': '1px solid var(--fk-line)', 'box-shadow': 'none' }); });
+    // botón de cerrar: × / Cerrar / Salir
+    hd.querySelectorAll('button').forEach(function(b){
+      var t = (b.textContent || '').replace(/\s+/g, ' ').trim();
+      var oc = String(b.getAttribute('onclick') || '');
+      if (/^(×|✕|✖|x|X)$/.test(t) || /^(cerrar|salir)$/i.test(t.replace(/[^\wáéíóúñ]/gi, '')) || (!t && /(close|cerrar)\w*\(/i.test(oc))) { b.classList.add('fk-marco-x'); b.title = b.title || 'Cerrar'; b.setAttribute('aria-label', 'Cerrar'); }
+    });
+    hd.classList.add('fk-marco-hd');
+  }
+  function marcar(ov){
+    if (!ov || !visible(ov)) return;
+    var hijos = [].filter.call(ov.children, function(c){ return visible(c) && c.tagName !== 'STYLE' && c.tagName !== 'SCRIPT'; });
+    var box = hijos[0];
+    if (!box) return;
+    ov.classList.add('fk-marco-ov');
+    forzar(ov, { 'background': 'var(--fk-bg)', 'background-image': 'none', 'backdrop-filter': 'none', '-webkit-backdrop-filter': 'none' });
+    // departamento armado como página (encabezado, pestañas y contenido sueltos): el encabezado es el primer bloque
+    if (hijos.length > 1 && box.getBoundingClientRect().height < 160) {
+      ov.classList.add('fk-marco-pagina');
+      if (fondoOscuroOColor(box)) { marcarHeader(box); forzar(box, { 'margin': '0', 'width': 'auto', 'max-width': 'none' }); }
+      return;
+    }
+    // el panel: si el contenido ocupa toda la pantalla, el propio overlay hace de página
+    var r = box.getBoundingClientRect();
+    if (!box.classList.contains('fk-marco-box')) {
+      box.classList.add('fk-marco-box');
+      forzar(box, { 'position': 'relative', 'top': 'auto', 'left': 'auto', 'right': 'auto', 'bottom': 'auto', 'transform': 'none', 'width': 'calc(100% - 40px)', 'max-width': 'none', 'margin': '20px auto 32px', 'border-radius': '14px', 'border': '1px solid var(--fk-line)', 'overflow-x': 'auto', 'overflow-y': 'visible' });
+      if (r.height > window.innerHeight * 0.55) box.classList.add('fk-marco-alto');
+    }
+    // encabezado: el primer bloque visible del panel con fondo de color/degradado
+    var hd = [].find.call(box.children, function(c){ return visible(c); });
+    if (hd && fondoOscuroOColor(hd)) marcarHeader(hd);
+  }
+  function revisar(){ IDS.forEach(function(id){ var ov = document.getElementById(id); if (ov && visible(ov)) marcar(ov); }); }
+  setInterval(revisar, 600);
+  document.addEventListener('click', function(){ setTimeout(revisar, 60); setTimeout(revisar, 350); }, true);
+  window.fkMarcoRevisar443 = revisar;
 })();
 </script>
 
