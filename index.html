@@ -124,7 +124,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.11.20.455">
+<meta name="farmers-version" content="2026.11.20.456">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -107669,6 +107669,7 @@ html[data-fk-tema="noche"] #ms-monitor-ov,html[data-fk-tema="noche"] #mo-edit{--
   /* ════════ formulario del link: "Sucursales de este link" ════════ */
   var F = null; // { on, sel:{id:true}, grupo, base (cliente) }
   function clienteDelForm(){
+    if (window.__pf456Grupo) { var g6 = grupos().find(function(g){ return g.id === window.__pf456Grupo; }); if (g6) { var cl6 = clientes(); var c6 = (g6.clientIds || []).map(function(id){ return cl6.find(function(x){ return x.id === id; }); }).filter(Boolean); return c6[0] || null; } }
     var nom = ((document.getElementById('pc-nombre') || {}).value || '').trim(), rif = ((document.getElementById('pc-rif') || {}).value || '').trim();
     try { return (typeof buscarClienteCRM === 'function') ? buscarClienteCRM(nom, rif) : null; } catch(e){ return null; }
   }
@@ -107710,6 +107711,12 @@ html[data-fk-tema="noche"] #ms-monitor-ov,html[data-fk-tema="noche"] #mo-edit{--
     var pts = []; empresasForm().forEach(function(e){ pts = pts.concat(puntosDe(e)); });
     return pts.filter(function(p){ return F.sel[p.id]; });
   }
+  window.pm455Form = {
+    puntos: function(){ return F ? puntosElegidosForm() : []; },
+    todas: function(){ if (!F) return; F.on = true; F.grupo = true; F.sel = {}; empresasForm().forEach(function(e){ puntosDe(e).forEach(function(p){ F.sel[p.id] = true; }); }); pintarForm(); },
+    reset: function(){ if (!F) return; F.on = false; F.grupo = false; F.sel = {}; pintarForm(); },
+    pintar: function(){ pintarForm(); }
+  };
   var css = '#pm455{margin-top:16px;border:1px solid #E3E6EC;border-radius:12px;padding:14px;background:#F8F9FB;font-family:Geist,system-ui,sans-serif;color:#0B0F19}'
     + '#pm455 .pm5-h{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap}#pm455 .pm5-h b{display:flex;align-items:center;gap:7px;font-size:13.5px;font-weight:600}#pm455 .pm5-h span{display:block;font-size:12px;color:#5B6474;margin-top:3px}'
     + '#pm455 .pm5-seg{display:inline-flex;background:#fff;border:1px solid #E3E6EC;border-radius:9px;padding:3px;gap:2px}#pm455 .pm5-seg button{border:0;background:transparent;height:28px;padding:0 11px;border-radius:6px;font-size:12.5px;font-weight:500;color:#5B6474;cursor:pointer}#pm455 .pm5-seg button.on{background:#14245C;color:#fff}'
@@ -107750,6 +107757,7 @@ html[data-fk-tema="noche"] #ms-monitor-ov,html[data-fk-tema="noche"] #mo-edit{--
           if (F.on && !pts.length) { alert('Marcaste "Elegir sucursales" pero ninguna sucursal está marcada.\n\nMarca al menos una o elige "Sin sucursales".'); return Promise.reject(new Error('Sin sucursales marcadas')); }
           if (pts.length) data.multi = { puntos: pts, grupo: !!F.grupo, at: new Date().toISOString() };
           else delete data.multi;
+          if (pts.length && window.__pf456Grupo) { var g7 = grupos().find(function(g){ return g.id === window.__pf456Grupo; }); data.multi.grupo = true; data.multi.grupoId = window.__pf456Grupo; data.multi.grupoNombre = g7 ? g7.nombre : (data.clienteNombre || ''); }
         }
       } catch(e){ console.warn('[v.455] guardar sucursales del link:', e); }
       return o.apply(this, arguments);
@@ -107787,6 +107795,488 @@ html[data-fk-tema="noche"] #ms-monitor-ov,html[data-fk-tema="noche"] #mo-edit{--
       }
     };
   };
+})();
+</script>
+
+<script>
+/* ═══ v.456 — PORTAL DE CLIENTES: panel y "Nuevo link" modernizados ═══
+   · El link se crea para un CLIENTE o para un GRUPO de clientes (todas sus empresas y sucursales).
+   · Panel más simple: buscador, filtro Todos / Clientes / Grupos / Desactivados, tarjetas limpias.
+   · El guardado es el mismo de siempre (mismos datos, mismo código SMS, mismas marcas):
+     el formulario nuevo maneja los controles originales, que siguen haciendo el trabajo. */
+(function(){
+  if (window.__pc456) return; window.__pc456 = true;
+  function ic(k, s){ return (typeof window.fkIcono === 'function') ? window.fkIcono(k, s || 16) : ''; }
+  function esc(s){ return String(s == null ? '' : s).replace(/[&<>"']/g, function(c){ return { '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]; }); }
+  function clientes(){ try { return (typeof getClientsDB === 'function' ? getClientsDB() : []) || []; } catch(e){ return []; } }
+  function grupos(){ try { return (typeof getGroupsDB === 'function' ? getGroupsDB() : []) || []; } catch(e){ return []; } }
+  function tokens(){ return window.portalTokens || []; }
+  function norm(s){ return String(s || '').toUpperCase().replace(/[\s\-\.]/g, ''); }
+  function sinAcento(s){ return String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase(); }
+  var X = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>';
+  function esGrupo(t){ return !!(t && t.multi && t.multi.grupoId); }
+  function nSuc(t){ return (t && t.multi && Array.isArray(t.multi.puntos)) ? t.multi.puntos.length : 0; }
+  function nEmp(t){ var o = {}; ((t && t.multi && t.multi.puntos) || []).forEach(function(p){ o[p.clienteId] = 1; }); return Object.keys(o).length; }
+  function sucDe(c){ return ((c && c.sucursales) || []).filter(function(s){ return s && String(s.nombre || '').trim(); }).length; }
+  function empresasDeGrupo(g){ var cl = clientes(); return ((g && g.clientIds) || []).map(function(id){ return cl.find(function(x){ return x.id === id; }); }).filter(Boolean); }
+  var STOCK = { oculto: 'Existencia oculta', disponibilidad: 'Disponible / agotado', exacto: 'Cantidad exacta' };
+  var MON = { USD: 'Precio USD', BCV: 'Precio BCV', TF: 'Precio Tierra Firme' };
+
+  /* ════════ estilos ════════ */
+  var css = ''
+    + '@media (min-width:761px){html.fk-shell #pc-modal.pc6,html.fk-shell #pc-form-ov.pf6{left:var(--fk-side)!important}}'
+    /* panel */
+    + '#pc-modal.pc6{background:rgba(11,15,25,.55)!important;backdrop-filter:blur(3px);font-family:Geist,system-ui,-apple-system,sans-serif}'
+    + '#pc-modal.pc6>div{border-radius:16px!important;box-shadow:0 30px 80px rgba(11,15,25,.35)!important;max-height:calc(100vh - 32px)}'
+    + '#pc-modal .pc6-hd{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:18px 24px;background:#fff;border-bottom:1px solid #E3E6EC;flex-shrink:0}'
+    + '#pc-modal .pc6-hd .pc6-t{display:flex;align-items:center;gap:12px;min-width:0}'
+    + '#pc-modal .pc6-hd .pc6-lg{width:38px;height:38px;border-radius:11px;background:#14245C;color:#fff;display:grid;place-items:center;flex-shrink:0}'
+    + '#pc-modal .pc6-hd h2{margin:0;font-size:17px;font-weight:650;color:#0B0F19;letter-spacing:-.01em}'
+    + '#pc-modal .pc6-hd p{margin:2px 0 0;font-size:12.5px;color:#5B6474}'
+    + '.pc6-x{width:34px;height:34px;border:1px solid #E3E6EC;border-radius:9px;background:#fff;color:#2A3140;display:grid;place-items:center;cursor:pointer;flex-shrink:0}.pc6-x:hover{background:#F3F4F7}'
+    + '#pc-modal .pc6-tabs{display:flex!important;gap:2px!important;background:#fff!important;border-bottom:1px solid #E3E6EC!important;padding:0 16px;overflow-x:auto;scrollbar-width:none}'
+    + '#pc-modal .pc6-tabs .pc-tab{flex:0 0 auto!important;display:inline-flex;align-items:center;gap:7px;padding:12px 12px!important;background:transparent!important;color:#5B6474!important;border:0!important;border-bottom:2px solid transparent!important;font-size:13px!important;font-weight:550!important;font-family:inherit;white-space:nowrap;cursor:pointer}'
+    + '#pc-modal .pc6-tabs .pc-tab:hover{color:#0B0F19!important}'
+    + '#pc-modal .pc6-tabs .pc-tab.active{color:#14245C!important;border-bottom-color:#14245C!important;font-weight:650!important}'
+    + '#pc-modal .pc6-tabs #pc-pedidos-badge{margin-left:2px}'
+    + '#pc-modal #pc-body.pc6-body{background:#F6F7F9!important;padding:18px 24px 96px!important}'
+    + '.pc6-kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-bottom:14px}'
+    + '.pc6-kpi{background:#fff;border:1px solid #E3E6EC;border-radius:12px;padding:12px 14px;display:flex;align-items:center;gap:11px;min-width:0}'
+    + '.pc6-kpi .i{width:32px;height:32px;border-radius:9px;display:grid;place-items:center;flex-shrink:0;background:#EEF1F8;color:#14245C}'
+    + '.pc6-kpi .i.g{background:#EEEEFC;color:#5B5BD6}.pc6-kpi .i.s{background:#E8F6F0;color:#0E9F6E}.pc6-kpi .i.p{background:#F8F1E1;color:#A0730E}'
+    + '.pc6-kpi b{display:block;font-size:18px;font-weight:650;color:#0B0F19;line-height:1.1;font-variant-numeric:tabular-nums}.pc6-kpi small{display:block;font-size:11.5px;color:#5B6474;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}'
+    + '.pc6-bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px}'
+    + '.pc6-search{flex:1 1 240px;display:flex;align-items:center;gap:8px;height:38px;padding:0 12px;background:#fff;border:1px solid #D5DAE3;border-radius:10px;color:#5B6474;min-width:0}'
+    + '.pc6-search:focus-within{border-color:#14245C;box-shadow:0 0 0 3px rgba(20,36,92,.12)}'
+    + '.pc6-search input{flex:1;border:0!important;outline:0;background:transparent;font-size:13.5px;color:#0B0F19;font-family:inherit;min-width:0;padding:0!important;margin:0!important;box-shadow:none!important}'
+    + '.pc6-seg{display:inline-flex;background:#fff;border:1px solid #E3E6EC;border-radius:10px;padding:3px;gap:2px;flex-wrap:wrap}'
+    + '.pc6-seg button{border:0;background:transparent;height:30px;padding:0 11px;border-radius:7px;font-size:12.5px;font-weight:550;color:#5B6474;cursor:pointer;font-family:inherit;display:inline-flex;align-items:center;gap:6px}'
+    + '.pc6-seg button i{font-style:normal;font-size:11px;color:#8A93A3;font-variant-numeric:tabular-nums}'
+    + '.pc6-seg button.on{background:#14245C;color:#fff}.pc6-seg button.on i{color:rgba(255,255,255,.7)}'
+    + '.pc6-btn{height:38px;padding:0 14px;border-radius:10px;font-size:13px;font-weight:600;font-family:inherit;cursor:pointer;display:inline-flex;align-items:center;gap:7px;white-space:nowrap;border:1px solid #D5DAE3;background:#fff;color:#0B0F19}'
+    + '.pc6-btn:hover{background:#F3F4F7}.pc6-btn.pri{background:#14245C;border-color:#14245C;color:#fff}.pc6-btn.pri:hover{background:#0F1C49}'
+    + '.pc6-btn.sm{height:32px;padding:0 11px;font-size:12.5px;border-radius:8px}'
+    + '.pc6-list{display:flex;flex-direction:column;gap:10px}'
+    + '.pc6-card{background:#fff;border:1px solid #E3E6EC;border-radius:14px;overflow:hidden;box-shadow:0 1px 2px rgba(11,15,25,.04)}'
+    + '.pc6-card.off{background:#FBFBFC}.pc6-card.off .pc6-nm{color:#5B6474}'
+    + '.pc6-main{display:flex;gap:14px;align-items:flex-start;padding:14px 16px}'
+    + '.pc6-av{width:40px;height:40px;border-radius:11px;display:grid;place-items:center;flex-shrink:0;background:#EEF1F8;color:#14245C}'
+    + '.pc6-av.g{background:#EEEEFC;color:#5B5BD6}'
+    + '.pc6-tx{flex:1;min-width:0}'
+    + '.pc6-nm{font-size:14.5px;font-weight:650;color:#0B0F19;display:flex;align-items:center;gap:8px;flex-wrap:wrap;letter-spacing:-.005em}'
+    + '.pc6-tag{font-size:10.5px;font-weight:650;letter-spacing:.05em;text-transform:uppercase;padding:2px 7px;border-radius:6px;background:#EEF1F8;color:#14245C}'
+    + '.pc6-tag.g{background:#EEEEFC;color:#4A4AC4}.pc6-tag.off{background:#FBEDEB;color:#B03A2E}'
+    + '.pc6-sub{font-size:12.5px;color:#5B6474;margin-top:3px}'
+    + '.pc6-chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:9px}'
+    + '.pc6-chips span{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;font-weight:550;color:#2A3140;background:#F3F4F7;border:1px solid #E8EAEF;border-radius:7px;padding:3px 8px}'
+    + '.pc6-chips span.ok{background:#E8F6F0;border-color:#CDEBDD;color:#0B7A55}.pc6-chips span.mu{color:#8A93A3;background:#fff}'
+    + '.pc6-st{display:flex;gap:18px;flex-shrink:0;text-align:right}'
+    + '.pc6-st b{display:block;font-size:15px;font-weight:650;color:#0B0F19;font-variant-numeric:tabular-nums}.pc6-st small{display:block;font-size:11px;color:#5B6474;white-space:nowrap}'
+    + '.pc6-ft{display:flex;align-items:center;gap:10px;padding:10px 16px;border-top:1px solid #EEF0F3;background:#FAFBFC;flex-wrap:wrap}'
+    + '.pc6-url{flex:1 1 260px;min-width:0;font-family:"Geist Mono",ui-monospace,Menlo,monospace;font-size:11.5px;color:#5B6474;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}'
+    + '.pc6-acts{display:flex;gap:6px;flex-wrap:wrap}'
+    + '.pc6-btn.ok{color:#0B7A55;border-color:#CDEBDD;background:#F2FAF6}.pc6-btn.dn{color:#B03A2E}'
+    + '.pc6-empty{text-align:center;padding:38px 20px;background:#fff;border:1px dashed #D5DAE3;border-radius:14px;color:#5B6474;font-size:13.5px}'
+    + '.pc6-empty b{display:block;color:#0B0F19;font-size:14.5px;margin-bottom:4px}'
+    + '@media (max-width:760px){#pc-modal.pc6{padding:0!important}#pc-modal.pc6>div{border-radius:0!important;height:100vh!important;max-height:none}#pc-modal .pc6-hd{padding:14px 16px}#pc-modal #pc-body.pc6-body{padding:14px 14px 96px!important}'
+    + '.pc6-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}.pc6-main{flex-wrap:wrap}.pc6-st{width:100%;justify-content:flex-start;text-align:left;padding-left:54px}.pc6-bar .pc6-btn{flex:1}.pc6-seg{width:100%}.pc6-seg button{flex:1;justify-content:center}}'
+    /* formulario */
+    + '#pc-form-ov.pf6{background:rgba(11,15,25,.55)!important;backdrop-filter:blur(3px);padding:16px 16px 88px!important;font-family:Geist,system-ui,-apple-system,sans-serif;align-items:center!important}'
+    + '#pc-form-ov.pf6>.pf6-old{display:none!important}'
+    + '.pf6-card{background:#fff;border-radius:16px;width:100%;max-width:760px;max-height:100%;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 30px 80px rgba(11,15,25,.35);color:#0B0F19}'
+    + '.pf6-hd{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:16px 22px;border-bottom:1px solid #E3E6EC;flex-shrink:0}'
+    + '.pf6-hd small{display:block;font-size:11px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:#5B6474}'
+    + '.pf6-hd h3{margin:2px 0 0;font-size:17px;font-weight:650;letter-spacing:-.01em}'
+    + '.pf6-body{flex:1;overflow-y:auto;padding:18px 22px;background:#F6F7F9;display:flex;flex-direction:column;gap:14px}'
+    + '.pf6-sec{background:#fff;border:1px solid #E3E6EC;border-radius:14px;padding:16px}'
+    + '.pf6-st{display:flex;gap:11px;align-items:flex-start;margin-bottom:14px}'
+    + '.pf6-st .n{width:26px;height:26px;border-radius:8px;background:#14245C;color:#fff;font-size:12.5px;font-weight:650;display:grid;place-items:center;flex-shrink:0}'
+    + '.pf6-st b{display:block;font-size:14px;font-weight:650}.pf6-st small{display:block;font-size:12.5px;color:#5B6474;margin-top:1px}'
+    + '.pf6-lb{display:block;font-size:12px;font-weight:600;color:#2A3140;margin:0 0 6px}'
+    + '.pf6-seg{display:flex;background:#F3F4F7;border:1px solid #E3E6EC;border-radius:11px;padding:3px;gap:3px}'
+    + '.pf6-seg button{flex:1;border:0;background:transparent;min-height:36px;padding:6px 10px;border-radius:8px;font-size:13px;font-weight:550;color:#5B6474;cursor:pointer;font-family:inherit;display:inline-flex;align-items:center;justify-content:center;gap:7px;line-height:1.2;text-align:center}'
+    + '.pf6-seg button:hover{color:#0B0F19}.pf6-seg button.on{background:#fff;color:#14245C;font-weight:650;box-shadow:0 1px 3px rgba(11,15,25,.12),0 0 0 1px #E3E6EC}'
+    + '.pf6-seg.big button{min-height:44px;font-size:13.5px}'
+    + '.pf6-pick{margin-top:12px;border:1px solid #E3E6EC;border-radius:12px;overflow:hidden}'
+    + '.pf6-pick .s{display:flex;align-items:center;gap:8px;padding:0 12px;height:40px;border-bottom:1px solid #EEF0F3;color:#5B6474;background:#fff}'
+    + '.pf6-pick .s input{flex:1;border:0!important;outline:0;font-size:13.5px;font-family:inherit;background:transparent;color:#0B0F19;min-width:0;padding:0!important;box-shadow:none!important}'
+    + '.pf6-pick .s em{font-style:normal;font-size:11.5px;color:#8A93A3;white-space:nowrap}'
+    + '.pf6-ls{max-height:216px;overflow-y:auto;background:#fff}'
+    + '.pf6-it{display:flex;align-items:center;gap:10px;width:100%;text-align:left;border:0;border-bottom:1px solid #F1F2F5;background:#fff;padding:9px 12px;cursor:pointer;font-family:inherit;color:#0B0F19}'
+    + '.pf6-it:hover{background:#F6F7FA}.pf6-it.on{background:#EEF1F8;box-shadow:inset 3px 0 0 #14245C}'
+    + '.pf6-it .a{width:30px;height:30px;border-radius:8px;background:#F3F4F7;color:#5B6474;display:grid;place-items:center;flex-shrink:0}.pf6-it.on .a{background:#14245C;color:#fff}'
+    + '.pf6-it .x{flex:1;min-width:0}.pf6-it b{display:block;font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}'
+    + '.pf6-it small{display:block;font-size:11.5px;color:#5B6474;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}'
+    + '.pf6-it .k{font-size:10.5px;font-weight:650;letter-spacing:.04em;text-transform:uppercase;padding:2px 7px;border-radius:6px;background:#EEF1F8;color:#14245C;white-space:nowrap}'
+    + '.pf6-nada{padding:16px 12px;font-size:12.5px;color:#5B6474;text-align:center;background:#fff}'
+    + '.pf6-g2{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:14px}'
+    + '#pc-form-ov.pf6 .pf6-in,#pc-form-ov.pf6 #pc-nombre,#pc-form-ov.pf6 #pc-rif,#pc-form-ov.pf6 #pc-sms-tel{width:100%!important;height:40px!important;padding:0 12px!important;border:1px solid #D5DAE3!important;border-radius:10px!important;font-size:13.5px!important;font-weight:550!important;font-family:inherit!important;color:#0B0F19!important;background:#fff!important;box-sizing:border-box!important;outline:0;margin:0!important}'
+    + '#pc-form-ov.pf6 #pc-nombre:focus,#pc-form-ov.pf6 #pc-rif:focus,#pc-form-ov.pf6 #pc-sms-tel:focus{border-color:#14245C!important;box-shadow:0 0 0 3px rgba(20,36,92,.12)}'
+    + '#pc-form-ov.pf6 #pc-rif:disabled{background:#F3F4F7!important;color:#8A93A3!important}'
+    + '.pf6-av{margin-top:10px;font-size:12.5px;padding:9px 11px;border-radius:10px;display:flex;gap:8px;align-items:flex-start;line-height:1.4}'
+    + '.pf6-av.w{background:#FBF4E4;border:1px solid #EEDDB4;color:#6B4E0A}.pf6-av.i{background:#EEF1F8;border:1px solid #DCE2F0;color:#14245C}'
+    + '.pf6-av svg{flex-shrink:0;margin-top:1px}'
+    + '#pc-form-ov.pf6 #pm455{margin-top:14px;background:#FAFBFC}'
+    + '#pc-form-ov.pf6.modo-grupo #pm455 .pm5-seg,#pc-form-ov.pf6.modo-grupo #pm455 .pm5-g{display:none!important}'
+    + '.pf6-row{display:grid;grid-template-columns:160px 1fr;gap:12px;align-items:center;padding:11px 0;border-top:1px solid #F1F2F5}'
+    + '.pf6-row:first-of-type{border-top:0;padding-top:0}'
+    + '.pf6-row>.l b{display:block;font-size:13px;font-weight:600}.pf6-row>.l small{display:block;font-size:11.5px;color:#5B6474;margin-top:1px}'
+    + '.pf6-sw{display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;border:0;background:transparent;padding:0;cursor:pointer;font-family:inherit;text-align:left;color:#0B0F19}'
+    + '.pf6-sw .tg{width:40px;height:23px;border-radius:999px;background:#D5DAE3;position:relative;flex-shrink:0;transition:background .15s}'
+    + '.pf6-sw .tg::after{content:"";position:absolute;top:3px;left:3px;width:17px;height:17px;border-radius:50%;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.2);transition:left .15s}'
+    + '.pf6-sw.on .tg{background:#14245C}.pf6-sw.on .tg::after{left:20px}'
+    + '.pf6-sw span b{display:block;font-size:13px;font-weight:600}.pf6-sw span small{display:block;font-size:11.5px;color:#5B6474;margin-top:1px}'
+    + '.pf6-sub{margin-top:10px}'
+    + '.pf6-mc{display:flex;flex-wrap:wrap;gap:6px}'
+    + '.pf6-mc button{border:1px solid #D5DAE3;background:#fff;color:#2A3140;height:30px;padding:0 11px;border-radius:8px;font-size:12px;font-weight:600;letter-spacing:.03em;text-transform:uppercase;cursor:pointer;font-family:inherit}'
+    + '.pf6-mc button.on{background:#14245C;border-color:#14245C;color:#fff}'
+    + '.pf6-mh{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:8px;font-size:12px;color:#5B6474}'
+    + '.pf6-mh a{color:#14245C;font-weight:600;cursor:pointer;text-decoration:none}'
+    + '.pf6-tel{margin-top:10px;display:flex;flex-direction:column;gap:6px}'
+    + '.pf6-tel .h{font-size:12px;color:#5B6474}.pf6-tel .h a{color:#14245C;font-weight:600;cursor:pointer}'
+    + '.pf6-ft{display:flex;align-items:center;gap:10px;padding:12px 22px;border-top:1px solid #E3E6EC;background:#fff;flex-shrink:0}'
+    + '.pf6-res{flex:1;min-width:0;font-size:12.5px;color:#5B6474;line-height:1.35}.pf6-res b{color:#0B0F19;font-weight:650}'
+    + '@media (max-width:760px){body:has(#pc-form-ov.pf6) #asis-btn,body:has(#pc-modal.pc6) #asis-btn{display:none!important}}'
+    + '@media (max-width:760px){#pc-form-ov.pf6{padding:0 0 0!important;align-items:stretch!important}.pf6-card{border-radius:0;max-width:none;height:100%}'
+    + '.pf6-body{padding:14px}.pf6-hd{padding:14px 16px}.pf6-ft{padding:10px 14px 108px;flex-wrap:wrap}.pf6-res{flex-basis:100%}.pf6-ft .pc6-btn{flex:1;justify-content:center}'
+    + '.pf6-g2{grid-template-columns:1fr}.pf6-row{grid-template-columns:1fr;gap:8px}.pf6-seg button{font-size:12.5px;padding:6px 6px}}';
+  function ponerCss(){ if (document.getElementById('pc456-css')) return; var st = document.createElement('style'); st.id = 'pc456-css'; st.textContent = css; document.head.appendChild(st); }
+
+  /* ════════ PANEL ════════ */
+  var TABS = { tokens: ['link', 'Links'], pedidos: ['inbox', 'Pedidos entrantes'], reactivacion: ['megaphone', 'Reactivación'], actividad: ['activity', 'Actividad en vivo'], config: ['gear', 'Configuración'] };
+  function vestirPanel(){
+    var ov = document.getElementById('pc-modal'); if (!ov || ov.classList.contains('pc6')) return;
+    ponerCss(); ov.classList.add('pc6');
+    var box = ov.firstElementChild; if (!box) return;
+    var hdr = box.children[0], tabs = box.children[1], body = document.getElementById('pc-body');
+    if (hdr) {
+      hdr.removeAttribute('style'); hdr.className = 'pc6-hd';
+      hdr.innerHTML = '<div class="pc6-t"><span class="pc6-lg">' + ic('globe', 19) + '</span><div><h2>Portal de clientes</h2><p>Links para que cada cliente o grupo vea tu catálogo y haga sus pedidos</p></div></div>'
+        + '<button id="pc-close" class="pc6-x" title="Cerrar" aria-label="Cerrar">' + X + '</button>';
+      hdr.querySelector('#pc-close').addEventListener('click', function(){ ov.remove(); });
+    }
+    if (tabs) {
+      tabs.classList.add('pc6-tabs');
+      tabs.querySelectorAll('.pc-tab').forEach(function(t){
+        var d = TABS[t.dataset.tab]; if (!d) return;
+        var badge = t.querySelector('#pc-pedidos-badge');
+        t.innerHTML = ic(d[0], 15) + '<span>' + d[1] + '</span>';
+        if (badge) t.appendChild(badge);
+      });
+    }
+    if (body) body.classList.add('pc6-body');
+  }
+  var oMod = window.pcAbrirModulo;
+  if (typeof oMod === 'function') window.pcAbrirModulo = function(){
+    var p = oMod.apply(this, arguments);
+    try { vestirPanel(); } catch(e){ console.warn('[v.456] panel portal:', e); }
+    return p;
+  };
+
+  function filtroTipo(){ return window._pc6Tipo || 'todos'; }
+  window.pcRenderTokens = function(body){
+    ponerCss();
+    var T = tokens(), act = T.filter(function(t){ return t.activo !== false; });
+    var nG = T.filter(esGrupo).length, nSms = act.filter(function(t){ return !!t.telHash; }).length;
+    var nPed = (window.portalPedidos || []).length, nOff = T.length - act.length;
+    var f = filtroTipo();
+    var seg = [['todos', 'Todos', T.length], ['clientes', 'Clientes', T.length - nG], ['grupos', 'Grupos', nG], ['inactivos', 'Desactivados', nOff]];
+    body.innerHTML =
+      '<div class="pc6-kpis">'
+        + '<div class="pc6-kpi"><span class="i">' + ic('link', 16) + '</span><div><b>' + act.length + '</b><small>Links activos</small></div></div>'
+        + '<div class="pc6-kpi"><span class="i g">' + ic('users', 16) + '</span><div><b>' + nG + '</b><small>Links de grupo</small></div></div>'
+        + '<div class="pc6-kpi"><span class="i s">' + ic('lock', 16) + '</span><div><b>' + nSms + '</b><small>Con código SMS</small></div></div>'
+        + '<div class="pc6-kpi"><span class="i p">' + ic('inbox', 16) + '</span><div><b>' + nPed + '</b><small>Pedidos recibidos</small></div></div>'
+      + '</div>'
+      + '<div class="pc6-bar">'
+        + '<label class="pc6-search">' + ic('search', 15) + '<input id="pc-token-buscar" value="' + esc(window._pcTokenFiltro || '') + '" placeholder="Buscar por cliente, grupo, RIF o token" autocomplete="off"></label>'
+        + '<div class="pc6-seg" id="pc6-tipo">' + seg.map(function(s){ return '<button type="button" data-t="' + s[0] + '" class="' + (f === s[0] ? 'on' : '') + '">' + s[1] + ' <i>' + s[2] + '</i></button>'; }).join('') + '</div>'
+      + '</div>'
+      + '<div class="pc6-bar">'
+        + '<button id="pc-new-token" class="pc6-btn pri">' + ic('plus', 15) + 'Nuevo link</button>'
+        + '<button class="pc6-btn" id="pc6-vend">' + ic('briefcase', 15) + 'Vendedores</button>'
+        + '<button class="pc6-btn" id="pc6-sms" title="Toma el teléfono de cada cliente en Clientes y le activa el código SMS">' + ic('lock', 15) + 'Código SMS a todos</button>'
+      + '</div>'
+      + '<div id="pc-tokens-list" class="pc6-list"></div>';
+    var q = body.querySelector('#pc-token-buscar');
+    q.addEventListener('input', function(){ window._pcTokenFiltro = q.value; window.pcRenderTokensList(); });
+    body.querySelectorAll('#pc6-tipo [data-t]').forEach(function(b){ b.onclick = function(){ window._pc6Tipo = b.dataset.t; body.querySelectorAll('#pc6-tipo [data-t]').forEach(function(x){ x.classList.toggle('on', x === b); }); window.pcRenderTokensList(); }; });
+    body.querySelector('#pc-new-token').addEventListener('click', function(){ pcAbrirNuevoToken(clientes()); });
+    body.querySelector('#pc6-vend').addEventListener('click', function(){ if (typeof window.vdAbrirPanel === 'function') window.vdAbrirPanel(); });
+    body.querySelector('#pc6-sms').addEventListener('click', function(){ if (typeof window.pcSmsTodos398 === 'function') window.pcSmsTodos398(); });
+    window.pcRenderTokensList();
+  };
+
+  function iniciales(n){ var p = String(n || '').replace(/[^A-Za-zÁÉÍÓÚÑ0-9 ]/gi, ' ').trim().split(/\s+/).filter(function(w){ return w.length > 1 && !/^(C|CA|DE|LA|EL|Y|SA)$/i.test(w); }); return ((p[0] || '?')[0] + ((p[1] || '')[0] || '')).toUpperCase(); }
+  window.pcRenderTokensList = function(){
+    var cont = document.getElementById('pc-tokens-list'); if (!cont) return;
+    var T = tokens();
+    if (!T.length) { cont.innerHTML = '<div class="pc6-empty"><b>Aún no hay links</b>Crea el primero con "Nuevo link": puede ser para un cliente o para un grupo completo.</div>'; return; }
+    var f = filtroTipo(), q = sinAcento(String(window._pcTokenFiltro || '').trim());
+    var lista = T.filter(function(t){
+      if (f === 'clientes' && esGrupo(t)) return false;
+      if (f === 'grupos' && !esGrupo(t)) return false;
+      if (f === 'inactivos' && t.activo !== false) return false;
+      if (!q) return true;
+      var txt = sinAcento([t.clienteNombre, t.rifEsperado, t.token, t.multi && t.multi.grupoNombre].concat(((t.multi && t.multi.puntos) || []).map(function(p){ return p.empresa + ' ' + p.nombre; })).join(' '));
+      return txt.indexOf(q) >= 0;
+    });
+    if (!lista.length) { cont.innerHTML = '<div class="pc6-empty"><b>Sin coincidencias</b>Revisa lo escrito o cambia el filtro.</div>'; return; }
+    var base = (typeof getPortalBaseUrl === 'function') ? getPortalBaseUrl() : '';
+    cont.innerHTML = lista.map(function(t){
+      var url = base + '?token=' + t.token, act = t.activo !== false, g = esGrupo(t), cv = t.configVista || {};
+      var ns = nSuc(t), ne = nEmp(t);
+      var sub = g ? (ne + (ne === 1 ? ' empresa' : ' empresas') + ' · ' + ns + (ns === 1 ? ' sucursal' : ' sucursales'))
+        : ((t.rifEsperado ? 'RIF ' + esc(t.rifEsperado) : 'Sin RIF') + (ns ? ' · ' + (ns === 1 ? '1 sucursal (encargado)' : ns + ' sucursales') : ''));
+      var ped = (typeof pcContarPedidosDe === 'function') ? pcContarPedidosDe(t) : 0;
+      var acc = (typeof pcFmtFechaAcceso === 'function') ? pcFmtFechaAcceso(t.ultimoAcceso) : '';
+      var accCorta = acc && acc !== 'Nunca' ? acc.split(',')[0] : 'Nunca';
+      return '<article class="pc6-card' + (act ? '' : ' off') + '" data-token="' + esc(t.token) + '">'
+        + '<div class="pc6-main">'
+          + '<span class="pc6-av' + (g ? ' g' : '') + '">' + (g ? ic('users', 18) : '<b style="font-size:13px;font-weight:650">' + esc(iniciales(t.clienteNombre)) + '</b>') + '</span>'
+          + '<div class="pc6-tx">'
+            + '<div class="pc6-nm">' + esc(t.clienteNombre || '(sin nombre)') + (g ? '<span class="pc6-tag g">Grupo</span>' : '') + (act ? '' : '<span class="pc6-tag off">Desactivado</span>') + '</div>'
+            + '<div class="pc6-sub">' + sub + '</div>'
+            + '<div class="pc6-chips">'
+              + '<span>' + ic('dollar', 12) + (MON[cv.moneda || 'USD'] || cv.moneda) + '</span>'
+              + '<span>' + ic('box', 12) + (STOCK[cv.mostrarStock || 'disponibilidad'] || '') + '</span>'
+              + (cv.mostrarOrdenada ? '<span>' + ic('truck', 12) + 'En camino visible</span>' : '')
+              + ((cv.marcasVisibles || []).length ? '<span>' + ic('tag', 12) + cv.marcasVisibles.length + ' marcas</span>' : '')
+              + (t.telHash ? '<span class="ok">' + ic('lock', 12) + 'Código SMS ··' + esc(t.telHint || '??') + '</span>' : '<span class="mu">' + ic('lock', 12) + 'Sin código SMS</span>')
+            + '</div>'
+          + '</div>'
+          + '<div class="pc6-st"><div><b>' + ped + '</b><small>Pedidos</small></div><div><b>' + esc(accCorta) + '</b><small>Último acceso</small></div></div>'
+        + '</div>'
+        + '<div class="pc6-ft">'
+          + '<span class="pc6-url" title="' + esc(url) + '">' + esc(url) + '</span>'
+          + '<div class="pc6-acts">'
+            + '<button class="pc6-btn sm pri" data-action="copy" data-url="' + esc(url) + '">' + ic('copy', 14) + 'Copiar link</button>'
+            + '<button class="pc6-btn sm" data-action="edit" data-token="' + esc(t.token) + '">' + ic('edit', 14) + 'Editar</button>'
+            + '<button class="pc6-btn sm ' + (act ? 'dn' : 'ok') + '" data-action="toggle" data-token="' + esc(t.token) + '">' + (act ? ic('ban', 14) + 'Desactivar' : ic('check', 14) + 'Activar') + '</button>'
+          + '</div>'
+        + '</div>'
+      + '</article>';
+    }).join('');
+    cont.querySelectorAll('button[data-action]').forEach(function(btn){
+      btn.addEventListener('click', async function(){
+        var a = btn.dataset.action;
+        if (a === 'copy') {
+          try { await navigator.clipboard.writeText(btn.dataset.url); if (typeof showToast === 'function') showToast('Link copiado', 'success'); }
+          catch(e){ prompt('Copia el link:', btn.dataset.url); }
+        } else if (a === 'toggle') await pcToggleToken(btn.dataset.token);
+        else if (a === 'edit') pcEditarToken(btn.dataset.token);
+      });
+    });
+  };
+
+  /* ════════ FORMULARIO "NUEVO / EDITAR LINK" ════════ */
+  var oForm = window.pcAbrirFormToken;
+  if (typeof oForm === 'function') window.pcAbrirFormToken = function(existente){
+    window.__pf456Grupo = (existente && existente.multi && existente.multi.grupoId) || null;
+    var r = oForm.apply(this, arguments);
+    try { vestirForm(existente); } catch(e){ console.warn('[v.456] formulario del link:', e); }
+    return r;
+  };
+
+  function $(id){ return document.getElementById(id); }
+  function vestirForm(existente){
+    var ov = $('pc-form-ov'); if (!ov || !$('pc-form-save')) return;
+    ponerCss();
+    var old = ov.firstElementChild; old.classList.add('pf6-old');
+    ov.classList.add('pf6');
+    var isEdit = !!existente;
+    var S = { modo: window.__pf456Grupo ? 'grupo' : 'cliente', q: '', telHash: !!(existente && existente.telHash), telHint: existente && existente.telHint };
+    var marcas = Array.prototype.map.call(document.querySelectorAll('.pc-marca-chk'), function(c){ return c.value; });
+    var card = document.createElement('div'); card.className = 'pf6-card'; card.setAttribute('role', 'dialog');
+    card.innerHTML =
+      '<div class="pf6-hd"><div><small>Portal de clientes</small><h3>' + (isEdit ? 'Editar link' : 'Nuevo link') + '</h3></div><button type="button" class="pc6-x" id="pf6-x" aria-label="Cerrar">' + X + '</button></div>'
+      + '<div class="pf6-body">'
+        + '<section class="pf6-sec">'
+          + '<div class="pf6-st"><span class="n">1</span><div><b>Para quién es el link</b><small>Un cliente, o un grupo con todas sus empresas y sucursales.</small></div></div>'
+          + '<div class="pf6-seg big" id="pf6-modo"><button type="button" data-m="cliente">' + ic('user', 16) + 'Cliente</button><button type="button" data-m="grupo">' + ic('users', 16) + 'Grupo de clientes</button></div>'
+          + '<div class="pf6-pick"><div class="s">' + ic('search', 15) + '<input id="pf6-q" placeholder="Buscar" autocomplete="off"><em id="pf6-cnt"></em></div><div class="pf6-ls" id="pf6-ls"></div></div>'
+          + '<div class="pf6-g2"><div><label class="pf6-lb" for="pc-nombre">Nombre que verá el cliente</label><div id="pf6-nom"></div></div><div><label class="pf6-lb" for="pc-rif" id="pf6-riflb">RIF (opcional)</label><div id="pf6-rif"></div></div></div>'
+          + '<div id="pf6-av"></div>'
+          + '<div id="pf6-suc"></div>'
+        + '</section>'
+        + '<section class="pf6-sec">'
+          + '<div class="pf6-st"><span class="n">2</span><div><b>Qué verá en el catálogo</b><small>Precio, existencia y marcas que se muestran en su link.</small></div></div>'
+          + '<div class="pf6-row"><div class="l"><b>Precio</b><small>Lista que ve el cliente</small></div><div class="pf6-seg" id="pf6-mon"><button type="button" data-v="USD">USD</button><button type="button" data-v="BCV">BCV</button><button type="button" data-v="TF">Tierra Firme</button></div></div>'
+          + '<div class="pf6-row"><div class="l"><b>Existencia</b><small>Cómo ve el stock</small></div><div class="pf6-seg" id="pf6-stk"><button type="button" data-v="oculto">Oculta</button><button type="button" data-v="disponibilidad">Disponible / agotado</button><button type="button" data-v="exacto">Cantidad exacta</button></div></div>'
+          + '<div class="pf6-row"><div class="l"><b>Agotados</b><small>Productos sin existencia</small></div><button type="button" class="pf6-sw" data-sw="pc-ocultar-agotados"><span><b>Ocultar agotados</b><small>No se muestran los productos con existencia 0</small></span><i class="tg"></i></button></div>'
+          + '<div class="pf6-row"><div class="l"><b>En camino</b><small>Mercancía ordenada</small></div><div><button type="button" class="pf6-sw" data-sw="pc-mostrar-ordenada"><span><b>Mostrar mercancía en camino</b><small>El cliente ve lo que viene ordenado</small></span><i class="tg"></i></button>'
+            + '<div class="pf6-sub" id="pf6-ordw"><div class="pf6-seg" id="pf6-ord"><button type="button" data-v="exacto">Con la cantidad</button><button type="button" data-v="simple">Solo la palabra "Ordenada"</button></div></div></div></div>'
+          + '<div class="pf6-row"><div class="l"><b>Marcas</b><small>Ninguna marcada = todas</small></div><div><div class="pf6-mh"><span id="pf6-mres"></span><a id="pf6-mall">Mostrar todas</a></div><div class="pf6-mc" id="pf6-mc">'
+            + (marcas.length ? marcas.map(function(m){ return '<button type="button" data-m="' + esc(m) + '">' + esc(m) + '</button>'; }).join('') : '<span style="font-size:12px;color:#8A93A3">No hay marcas en el catálogo</span>') + '</div></div></div>'
+        + '</section>'
+        + '<section class="pf6-sec">'
+          + '<div class="pf6-st"><span class="n">3</span><div><b>Acceso</b><small>Protege el link con un código que llega por SMS.</small></div></div>'
+          + '<button type="button" class="pf6-sw" data-sw="pc-sms-on"><span><b>Pedir código SMS para entrar</b><small>El cliente confirma su teléfono una vez; en ese teléfono no se lo vuelve a pedir.</small></span><i class="tg"></i></button>'
+          + '<div class="pf6-tel" id="pf6-tel"><label class="pf6-lb" for="pc-sms-tel" style="margin:0">Teléfono que recibe el código</label><div id="pf6-telin"></div><div class="h" id="pf6-telh"></div></div>'
+        + '</section>'
+      + '</div>'
+      + '<div class="pf6-ft"><div class="pf6-res" id="pf6-res"></div><button type="button" class="pc6-btn" id="pf6-cancel">Cancelar</button><button type="button" class="pc6-btn pri" id="pf6-save">' + ic('check', 15) + (isEdit ? 'Guardar cambios' : 'Crear link') + '</button></div>';
+    ov.appendChild(card);
+    // mover los controles originales (conservan sus funciones)
+    $('pf6-nom').appendChild($('pc-nombre')); $('pf6-rif').appendChild($('pc-rif'));
+    var pm = $('pm455'); if (pm) $('pf6-suc').appendChild(pm);
+    var tel = $('pc-sms-tel'); if (tel) $('pf6-telin').appendChild(tel);
+    $('pc-nombre').setAttribute('placeholder', 'Ej: INVERSIONES ORIENTE');
+    // CRM: teléfono y "ya tiene link"
+    var telCRMOrig = ''; try { var u = $('pc-sms-usar'); if (u) { var b = u.parentNode.querySelector('b'); telCRMOrig = b ? b.textContent : ''; } } catch(e){}
+
+    function cerrar(){ window.__pf456Grupo = null; ov.remove(); }
+    $('pf6-x').onclick = cerrar; $('pf6-cancel').onclick = cerrar;
+
+    function grupoSel(){ return window.__pf456Grupo ? grupos().find(function(g){ return g.id === window.__pf456Grupo; }) : null; }
+    function clienteSel(){ var n = ($('pc-nombre').value || '').trim(), r = ($('pc-rif').value || '').trim(); try { return (n || r) && typeof buscarClienteCRM === 'function' ? buscarClienteCRM(n, r) : null; } catch(e){ return null; } }
+    function tokenDeCliente(c){ var k = norm(c.rif || c.nombre); return tokens().find(function(t){ return !esGrupo(t) && norm(t.rifEsperado || t.clienteNombre) === k && (!existente || t.token !== existente.token); }); }
+    function tokenDeGrupo(g){ return tokens().find(function(t){ return t.multi && t.multi.grupoId === g.id && (!existente || t.token !== existente.token); }); }
+    function listaClientes(){
+      var m = {}; clientes().forEach(function(c){ if (!c.nombre) return; var k = norm(c.rif || c.nombre); if (!m[k]) m[k] = c; });
+      return Object.keys(m).map(function(k){ return m[k]; }).sort(function(a, b){ return String(a.nombre).localeCompare(String(b.nombre), 'es', { numeric: true, sensitivity: 'base' }); });
+    }
+
+    function pintarLista(){
+      var ls = $('pf6-ls'), q = sinAcento(S.q), h = '', n = 0, tot = 0;
+      if (S.modo === 'cliente') {
+        var cs = listaClientes(), sel = clienteSel(); tot = cs.length;
+        cs.forEach(function(c){
+          if (q && sinAcento(c.nombre + ' ' + (c.rif || '')).indexOf(q) < 0) return;
+          n++; if (n > 150) return;
+          var on = sel && sel.id === c.id, tk = tokenDeCliente(c), ns = sucDe(c);
+          h += '<button type="button" class="pf6-it' + (on ? ' on' : '') + '" data-c="' + esc(c.id) + '"><span class="a">' + ic('user', 15) + '</span><span class="x"><b>' + esc(c.nombre) + '</b><small>' + (c.rif ? esc(c.rif) : 'Sin RIF') + (ns ? ' · ' + ns + (ns === 1 ? ' sucursal' : ' sucursales') : '') + '</small></span>' + (tk ? '<span class="k">Ya tiene link</span>' : '') + '</button>';
+        });
+        $('pf6-q').placeholder = 'Buscar cliente por nombre o RIF';
+      } else {
+        var gs = grupos().slice().sort(function(a, b){ return String(a.nombre).localeCompare(String(b.nombre), 'es', { sensitivity: 'base' }); }), gsel = grupoSel(); tot = gs.length;
+        gs.forEach(function(g){
+          var emp = empresasDeGrupo(g);
+          if (q && sinAcento(g.nombre + ' ' + emp.map(function(e){ return e.nombre; }).join(' ')).indexOf(q) < 0) return;
+          n++;
+          var ns = emp.reduce(function(a, e){ return a + sucDe(e); }, 0), tk = tokenDeGrupo(g);
+          h += '<button type="button" class="pf6-it' + (gsel && gsel.id === g.id ? ' on' : '') + '" data-g="' + esc(g.id) + '"><span class="a">' + ic('users', 15) + '</span><span class="x"><b>' + esc(g.nombre) + '</b><small>' + emp.length + (emp.length === 1 ? ' empresa' : ' empresas') + ' · ' + ns + (ns === 1 ? ' sucursal' : ' sucursales') + '</small></span>' + (tk ? '<span class="k">Ya tiene link</span>' : '') + '</button>';
+        });
+        if (!gs.length) h = '<div class="pf6-nada">Aún no tienes grupos. Créalos en Clientes con "Nuevo grupo" y vuelve aquí.</div>';
+        $('pf6-q').placeholder = 'Buscar grupo o empresa';
+      }
+      if (!h) h = '<div class="pf6-nada">Sin coincidencias.</div>';
+      ls.innerHTML = h;
+      $('pf6-cnt').textContent = (q ? n + ' de ' : '') + tot + (S.modo === 'cliente' ? ' clientes' : ' grupos');
+    }
+
+    function elegirCliente(id){
+      var c = clientes().find(function(x){ return x.id === id; }); if (!c) return;
+      var sel = $('pc-cliente'), val = encodeURIComponent(c.nombre);
+      if (!S.telHash && tel) tel.value = '';
+      var op = sel ? Array.prototype.find.call(sel.options, function(o){ return o.value === val; }) : null;
+      if (op) { sel.value = val; sel.dispatchEvent(new Event('change', { bubbles: true })); }
+      else { $('pc-nombre').value = c.nombre; $('pc-rif').value = c.rif || ''; $('pc-rif').dispatchEvent(new Event('change')); }
+      if (!S.telHash && tel && !tel.value) { var tc = c.cxcTel || c.telefono || c.gerenteTel || ''; if (tc) tel.value = tc; }
+      setTimeout(refrescar, 60);
+    }
+    function elegirGrupo(id){
+      var g = grupos().find(function(x){ return x.id === id; }); if (!g) return;
+      window.__pf456Grupo = g.id;
+      $('pc-nombre').value = g.nombre; $('pc-rif').value = '';
+      var sel = $('pc-cliente'); if (sel) sel.value = '';
+      if (window.pm455Form) window.pm455Form.todas();
+      refrescar();
+    }
+    function ponerModo(m){
+      if (m === S.modo) return;
+      S.modo = m; S.q = ''; $('pf6-q').value = '';
+      if (m === 'cliente') {
+        var g = grupoSel(); window.__pf456Grupo = null;
+        if (g && $('pc-nombre').value === g.nombre) $('pc-nombre').value = '';
+        if (window.pm455Form) window.pm455Form.reset();
+      } else {
+        var c = clienteSel();
+        if (c) { $('pc-nombre').value = ''; $('pc-rif').value = ''; if ($('pc-cliente')) $('pc-cliente').value = ''; }
+        var gc = c ? grupos().find(function(x){ return (x.clientIds || []).indexOf(c.id) >= 0; }) : null;
+        if (window.pm455Form) window.pm455Form.reset();
+        if (gc) { elegirGrupo(gc.id); return; }
+      }
+      refrescar();
+    }
+
+    function segOn(id, v){ card.querySelectorAll('#' + id + ' [data-v]').forEach(function(b){ b.classList.toggle('on', b.dataset.v === v); }); }
+    function refrescar(){
+      ov.classList.toggle('modo-grupo', S.modo === 'grupo');
+      card.querySelectorAll('#pf6-modo [data-m]').forEach(function(b){ b.classList.toggle('on', b.dataset.m === S.modo); });
+      pintarLista();
+      var rif = $('pc-rif'); rif.disabled = S.modo === 'grupo'; rif.placeholder = S.modo === 'grupo' ? 'No aplica' : 'Ej: J-40064057-1'; $('pf6-riflb').textContent = S.modo === 'grupo' ? 'RIF (cada empresa usa el suyo)' : 'RIF (opcional)';
+      // avisos
+      var av = '', c = S.modo === 'cliente' ? clienteSel() : null, g = grupoSel();
+      if (S.modo === 'cliente' && c && tokenDeCliente(c)) av = '<div class="pf6-av w">' + ic('alert', 15) + '<span><b>' + esc(c.nombre) + '</b> ya tiene un link. Puedes crear otro (por ejemplo, para el encargado de una sucursal) o editar el que ya tiene.</span></div>';
+      if (S.modo === 'grupo' && g && tokenDeGrupo(g)) av = '<div class="pf6-av w">' + ic('alert', 15) + '<span>El grupo <b>' + esc(g.nombre) + '</b> ya tiene un link.</span></div>';
+      if (S.modo === 'grupo' && g) {
+        var emp = empresasDeGrupo(g), sinS = emp.filter(function(e){ return !sucDe(e); });
+        if (sinS.length) av += '<div class="pf6-av i">' + ic('info', 15) + '<span>' + sinS.map(function(e){ return esc(e.nombre); }).join(', ') + (sinS.length === 1 ? ' no tiene' : ' no tienen') + ' sucursales en su ficha: agrégalas en Clientes para que aparezcan aquí.</span></div>';
+      }
+      if (S.modo === 'grupo' && !g) av += '<div class="pf6-av i">' + ic('info', 15) + '<span>Elige el grupo. El link incluye todas las sucursales de sus empresas; abajo puedes quitar las que no correspondan.</span></div>';
+      $('pf6-av').innerHTML = av;
+      $('pf6-suc').style.display = (S.modo === 'grupo' && !g) ? 'none' : '';
+      // vista
+      segOn('pf6-mon', ($('pc-moneda') || {}).value); segOn('pf6-stk', ($('pc-stock') || {}).value); segOn('pf6-ord', ($('pc-ord-modo') || {}).value || 'exacto');
+      card.querySelectorAll('[data-sw]').forEach(function(b){ var o = $(b.dataset.sw); b.classList.toggle('on', !!(o && o.checked)); });
+      var ordOn = !!($('pc-mostrar-ordenada') || {}).checked; $('pf6-ordw').style.display = ordOn ? '' : 'none';
+      var mk = {}; document.querySelectorAll('.pc-marca-chk').forEach(function(ch){ mk[ch.value] = ch.checked; });
+      var nm = 0; card.querySelectorAll('#pf6-mc [data-m]').forEach(function(b){ var on = !!mk[b.dataset.m]; b.classList.toggle('on', on); if (on) nm++; });
+      $('pf6-mres').textContent = nm ? nm + ' de ' + marcas.length + ' marcas visibles' : 'Todas las marcas visibles';
+      $('pf6-mall').style.display = nm ? '' : 'none';
+      // SMS
+      var smsOn = !!($('pc-sms-on') || {}).checked; $('pf6-tel').style.display = smsOn ? '' : 'none';
+      var th = '', tc = c ? (c.cxcTel || c.telefono || c.gerenteTel || '') : (S.modo === 'cliente' ? telCRMOrig : '');
+      if (S.telHash) th = 'Activo: el código llega al teléfono que termina en ··' + esc(S.telHint || '??') + '. Déjalo vacío para mantenerlo.';
+      else if (tc) th = 'En Clientes tiene <b>' + esc(tc) + '</b> · <a id="pf6-usar">usar este</a>';
+      else if (S.modo === 'grupo') th = 'Escribe el teléfono de quien hace las compras del grupo.';
+      else th = 'Este cliente no tiene teléfono en Clientes: escríbelo aquí.';
+      $('pf6-telh').innerHTML = th;
+      var us = $('pf6-usar'); if (us) us.onclick = function(){ tel.value = tc; };
+      // resumen
+      var nom = ($('pc-nombre').value || '').trim(), pts = window.pm455Form ? window.pm455Form.puntos() : [];
+      var res;
+      if (!nom) res = S.modo === 'grupo' ? 'Elige el grupo para el link.' : 'Elige el cliente o escribe el nombre.';
+      else {
+        var ce = {}; pts.forEach(function(p){ ce[p.clienteId] = 1; });
+        var ne = Object.keys(ce).length;
+        res = 'Link para <b>' + esc(nom) + '</b>' + (pts.length ? ' · ' + (ne > 1 ? ne + ' empresas · ' : '') + pts.length + (pts.length === 1 ? ' sucursal' : ' sucursales') : '') + ' · ' + esc(MON[($('pc-moneda') || {}).value] || '');
+      }
+      $('pf6-res').innerHTML = res;
+    }
+
+    // eventos
+    card.querySelectorAll('#pf6-modo [data-m]').forEach(function(b){ b.onclick = function(){ ponerModo(b.dataset.m); }; });
+    $('pf6-q').addEventListener('input', function(){ S.q = this.value; pintarLista(); });
+    $('pf6-ls').addEventListener('click', function(ev){
+      var b = ev.target.closest('.pf6-it'); if (!b) return;
+      if (b.dataset.c) elegirCliente(b.dataset.c); else if (b.dataset.g) elegirGrupo(b.dataset.g);
+    });
+    function proxyPill(sel, v){ var o = document.querySelector(sel + '[data-val="' + v + '"]'); if (o) o.click(); refrescar(); }
+    card.querySelectorAll('#pf6-mon [data-v]').forEach(function(b){ b.onclick = function(){ proxyPill('#pc-moneda-pills .pc-pill', b.dataset.v); }; });
+    card.querySelectorAll('#pf6-stk [data-v]').forEach(function(b){ b.onclick = function(){ proxyPill('#pc-stock-pills .pc-pill', b.dataset.v); }; });
+    card.querySelectorAll('#pf6-ord [data-v]').forEach(function(b){ b.onclick = function(){ proxyPill('.pc-ordmodo-pill', b.dataset.v); }; });
+    card.querySelectorAll('[data-sw]').forEach(function(b){ b.onclick = function(){ var o = $(b.dataset.sw); if (!o) return; o.checked = !o.checked; o.dispatchEvent(new Event('change', { bubbles: true })); refrescar(); }; });
+    card.querySelectorAll('#pf6-mc [data-m]').forEach(function(b){ b.onclick = function(){
+      var o = Array.prototype.find.call(document.querySelectorAll('.pc-marca-chk'), function(ch){ return ch.value === b.dataset.m; });
+      if (o) { o.checked = !o.checked; o.dispatchEvent(new Event('change', { bubbles: true })); } refrescar(); }; });
+    $('pf6-mall').onclick = function(){ document.querySelectorAll('.pc-marca-chk:checked').forEach(function(o){ o.checked = false; o.dispatchEvent(new Event('change', { bubbles: true })); }); refrescar(); };
+    $('pc-nombre').addEventListener('input', function(){ clearTimeout(S.t); S.t = setTimeout(refrescar, 250); });
+    if (pm) pm.addEventListener('click', function(){ setTimeout(refrescar, 60); });
+    if (pm) pm.addEventListener('change', function(){ setTimeout(refrescar, 60); });
+    $('pf6-save').onclick = function(){
+      if (S.modo === 'grupo') {
+        if (!grupoSel()) { alert('Elige el grupo para este link.'); return; }
+        var pts = window.pm455Form ? window.pm455Form.puntos() : [];
+        if (!pts.length) { alert('El link de grupo necesita al menos una sucursal marcada.\n\nRegistra las sucursales de sus empresas en Clientes, o márcalas en "Sucursales de este link".'); return; }
+      }
+      $('pc-form-save').click();
+    };
+    // al crear un link de grupo desde el cliente elegido, el modo y la lista quedan listos
+    refrescar();
+    setTimeout(function(){ try { $('pf6-q').focus({ preventScroll: true }); } catch(e){} }, 50);
+  }
 })();
 </script>
 
