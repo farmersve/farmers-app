@@ -124,7 +124,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.11.19.454">
+<meta name="farmers-version" content="2026.11.20.455">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -90203,12 +90203,15 @@ async function pcImportarPedido(id) {
   var p = window.portalPedidos.find(function(x){ return x.id === id; });
   if (!p) return;
   if (typeof window.ppVerificar === 'function') { var _f395 = await window.ppVerificar(id); if (!_f395) { try { var _b395 = document.getElementById('pc-body'); if (_b395 && typeof pcRenderPedidos === 'function') pcRenderPedidos(_b395); } catch(e){} return; } p = window.portalPedidos.find(function(x){ return x.id === id; }) || p; } // v.395
-  if (!confirm('¿Importar este pedido al Monitor de Pedidos?\n\nCliente: ' + p.cliente.razon + '\nProductos: ' + p.items.length + '\nTotal: $' + p.total.toFixed(2))) return;
+  var _pm455 = (typeof window.pm455Preparar === 'function') ? window.pm455Preparar(p) : null; // v.455: pedido repartido por sucursal
+  if (_pm455 === false) return;
+  if (!confirm('¿Importar este pedido al Monitor de Pedidos?\n\nCliente: ' + p.cliente.razon + (_pm455 ? '\nSucursales (' + _pm455.headers.length + '): ' + _pm455.headers.join(', ') : '') + '\nProductos: ' + p.items.length + '\nTotal: $' + p.total.toFixed(2))) return;
   if (typeof window.ppTomar === 'function') await window.ppTomar(id, 'importar'); // v.395: candado
 
   try {
     // Convertir pedido a formato MS (similar a QuickSell)
     var sucursales = [p.cliente.razon];
+    if (_pm455) sucursales = _pm455.headers.slice();
     // v.381: separar lo que viene EN CAMINO (preventa ligada) de lo que se procesa ahora
     var _part381 = (typeof window.pvPartirPedidoPortal === 'function') ? window.pvPartirPedidoPortal(p.items) : null;
     var _itemsAhora381 = p.items;
@@ -90232,7 +90235,7 @@ async function pcImportarPedido(id) {
     }
     var productosNorm = _itemsAhora381.map(function(it){
       var pedidos = {};
-      pedidos[p.cliente.razon] = it.qty;
+      if (_pm455) pedidos = _pm455.repartir(it); else pedidos[p.cliente.razon] = it.qty;
       return {
         ref: it.ref,
         desc: it.desc,
@@ -90258,6 +90261,7 @@ async function pcImportarPedido(id) {
       MS.sucursales = sucursales;
       MS._clienteUnica = { nombre: p.cliente.razon, rif: p.cliente.rif, telefono: p.cliente.telefono };
       MS._modoUnica = true;
+      if (_pm455) _pm455.asignar();
       // v.69b: Guardar referencia al pedido del portal para marcarlo como sincronizado
       // SOLO cuando realmente se complete (despache/reserve) en el Monitor.
       MS._portalPedidoId = id;
@@ -107391,8 +107395,8 @@ html[data-fk-tema="noche"] #ms-monitor-ov,html[data-fk-tema="noche"] #mo-edit{--
         var peds = getMsPedidos(), ped = peds.find(function(p){ return p.numP === numP; });
         if (ped) {
           if (Object.keys(sid).length) ped.sucursalIdsPorHeader = Object.assign({}, ped.sucursalIdsPorHeader || {}, sid);
-          if (cc && cc.firma === (ped.sucursales || []).join('\u0001')) {
-            ped.origen = ped.origen || 'CATALOGO_CLIENTE';
+          if (cc && (ped.sucursales || []).length && (ped.sucursales || []).every(function(h){ return cc.nombres && Object.prototype.hasOwnProperty.call(cc.nombres, h); })) {
+            ped.origen = ped.origen || cc.origen || 'CATALOGO_CLIENTE';
             ped.etiqData = ped.etiqData || {};
             var etq = {}; try { etq = JSON.parse(localStorage.getItem('ms_etiq_' + numP) || '{}') || {}; } catch(e){}
             Object.keys(cc.nombres).forEach(function(h){ if (!(ped.etiqData[h] && ped.etiqData[h].nom)) ped.etiqData[h] = Object.assign({}, ped.etiqData[h] || {}, { nom: cc.nombres[h] }); etq[h] = Object.assign({}, etq[h] || {}, ped.etiqData[h]); });
@@ -107628,6 +107632,160 @@ html[data-fk-tema="noche"] #ms-monitor-ov,html[data-fk-tema="noche"] #mo-edit{--
       });
     } catch(e){ console.warn('[v.453] lista de grupos:', e); }
     return r;
+  };
+})();
+</script>
+
+<script>
+/* ═══ v.455 — PORTAL MULTISUCURSAL (lado del sistema) ═══
+   · Al crear o editar el link de un cliente eliges qué sucursales puede pedir:
+       ninguna = como siempre · una = link del encargado de esa sucursal · varias = compras central.
+     Puede incluir las sucursales de todo su grupo.
+   · El pedido del portal llega con el reparto por sucursal y entra a Multi-sucursal con
+     cada sucursal ya asignada a su empresa (sin mapear). Tú apruebas todo o solo las
+     sucursales que quieras, como siempre en Multi-sucursal. */
+(function(){
+  if (window.pm455Preparar) return;
+  function ic(k, s){ return (typeof window.fkIcono === 'function') ? window.fkIcono(k, s || 16) : ''; }
+  function esc(s){ return String(s == null ? '' : s).replace(/[&<>"']/g, function(c){ return { '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]; }); }
+  function clientes(){ try { return (typeof getClientsDB === 'function' ? getClientsDB() : []) || []; } catch(e){ return []; } }
+  function grupos(){ try { return (typeof getGroupsDB === 'function' ? getGroupsDB() : []) || []; } catch(e){ return []; } }
+  function puntosDe(c){
+    return (c.sucursales || []).filter(function(s){ return s && String(s.nombre || '').trim(); }).map(function(s){
+      return { id: c.id + '|' + (s.id || s.nombre), clienteId: c.id, sucId: s.id || '', nombre: String(s.nombre).toUpperCase().trim(), empresa: c.nombre || '', rif: c.rif || '', dir: s.despacho || s.direccion || '' };
+    });
+  }
+  function nombresUnicos(pts){
+    var cuenta = {}, usados = {};
+    pts.forEach(function(p){ cuenta[p.nombre] = (cuenta[p.nombre] || 0) + 1; });
+    return pts.map(function(p){
+      var h = p.nombre;
+      if (cuenta[h] > 1) h = h + ' · ' + String(p.empresa || '').toUpperCase().replace(/,?\s*C\.?\s*A\.?$/, '').slice(0, 26).trim();
+      var b = h, n = 2; while (usados[h]) h = b + ' (' + (n++) + ')';
+      usados[h] = 1; return h;
+    });
+  }
+
+  /* ════════ formulario del link: "Sucursales de este link" ════════ */
+  var F = null; // { on, sel:{id:true}, grupo, base (cliente) }
+  function clienteDelForm(){
+    var nom = ((document.getElementById('pc-nombre') || {}).value || '').trim(), rif = ((document.getElementById('pc-rif') || {}).value || '').trim();
+    try { return (typeof buscarClienteCRM === 'function') ? buscarClienteCRM(nom, rif) : null; } catch(e){ return null; }
+  }
+  function grupoDe(c){ return c ? grupos().find(function(g){ return (g.clientIds || []).indexOf(c.id) >= 0 && (g.clientIds || []).length > 1; }) : null; }
+  function empresasForm(){
+    var c = clienteDelForm(); if (!c) return [];
+    if (F.grupo) { var g = grupoDe(c); if (g) { var cl = clientes(); return g.clientIds.map(function(id){ return cl.find(function(x){ return x.id === id; }); }).filter(Boolean); } }
+    return [c];
+  }
+  function pintarForm(){
+    var box = document.getElementById('pm455'); if (!box) return;
+    var c = clienteDelForm(), g = grupoDe(c), emp = empresasForm(), pts = [];
+    emp.forEach(function(e){ pts = pts.concat(puntosDe(e)); });
+    var nSel = pts.filter(function(p){ return F.sel[p.id]; }).length;
+    var h = '<div class="pm5-h"><div><b>' + ic('building', 15) + ' Sucursales de este link</b><span>Para clientes con varias sucursales: el pedido llega repartido por sucursal.</span></div>'
+      + '<div class="pm5-seg"><button type="button" data-on="0" class="' + (!F.on ? 'on' : '') + '">Sin sucursales</button><button type="button" data-on="1" class="' + (F.on ? 'on' : '') + '">Elegir sucursales</button></div></div>';
+    if (F.on) {
+      if (!c) h += '<div class="pm5-v">Elige primero el cliente (nombre y RIF de la ficha) para ver sus sucursales.</div>';
+      else if (!pts.length) h += '<div class="pm5-v">' + esc(c.nombre) + ' no tiene sucursales registradas en su ficha. Agrégalas en Clientes y vuelve aquí.</div>';
+      else {
+        h += '<div class="pm5-bar">' + (g ? '<label class="pm5-g"><input type="checkbox" id="pm5-grupo"' + (F.grupo ? ' checked' : '') + '> Incluir las sucursales de todo <b>' + esc(g.nombre) + '</b> (' + g.clientIds.length + ' empresas)</label>' : '<span></span>')
+          + '<span class="pm5-acc"><button type="button" id="pm5-todas">Todas</button><button type="button" id="pm5-ninguna">Ninguna</button></span></div>';
+        emp.forEach(function(e){
+          var pe = puntosDe(e); if (!pe.length) return;
+          if (emp.length > 1) h += '<div class="pm5-emp">' + esc(e.nombre) + (e.rif ? ' · ' + esc(e.rif) : '') + '</div>';
+          h += '<div class="pm5-pts">' + pe.map(function(p){ return '<label class="pm5-pt' + (F.sel[p.id] ? ' on' : '') + '"><input type="checkbox" data-pid="' + esc(p.id) + '"' + (F.sel[p.id] ? ' checked' : '') + '><span><b>' + esc(p.nombre) + '</b><small>' + esc(p.dir || 'Sin dirección de despacho') + '</small></span></label>'; }).join('') + '</div>';
+        });
+        h += '<div class="pm5-res">' + (nSel === 0 ? 'Marca al menos una sucursal.' : nSel === 1 ? '<b>Link de una sola sucursal:</b> ideal para el encargado de esa tienda. Pon abajo su teléfono para el código SMS.' : '<b>' + nSel + ' sucursales:</b> la persona de compras arma un solo pedido y lo reparte entre ellas.') + '</div>';
+      }
+    }
+    box.innerHTML = h;
+    box.querySelectorAll('[data-on]').forEach(function(b){ b.onclick = function(){ F.on = b.dataset.on === '1'; if (F.on && !Object.keys(F.sel).some(function(k){ return F.sel[k]; })) { var e0 = empresasForm(); e0.forEach(function(e){ puntosDe(e).forEach(function(p){ F.sel[p.id] = true; }); }); } pintarForm(); }; });
+    var gg = box.querySelector('#pm5-grupo'); if (gg) gg.onchange = function(){ F.grupo = gg.checked; if (F.grupo) empresasForm().forEach(function(e){ puntosDe(e).forEach(function(p){ if (!(p.id in F.sel)) F.sel[p.id] = true; }); }); pintarForm(); };
+    box.querySelectorAll('[data-pid]').forEach(function(ch){ ch.onchange = function(){ F.sel[ch.dataset.pid] = ch.checked; pintarForm(); }; });
+    var t = box.querySelector('#pm5-todas'); if (t) t.onclick = function(){ pts.forEach(function(p){ F.sel[p.id] = true; }); pintarForm(); };
+    var n = box.querySelector('#pm5-ninguna'); if (n) n.onclick = function(){ pts.forEach(function(p){ F.sel[p.id] = false; }); pintarForm(); };
+  }
+  function puntosElegidosForm(){
+    var pts = []; empresasForm().forEach(function(e){ pts = pts.concat(puntosDe(e)); });
+    return pts.filter(function(p){ return F.sel[p.id]; });
+  }
+  var css = '#pm455{margin-top:16px;border:1px solid #E3E6EC;border-radius:12px;padding:14px;background:#F8F9FB;font-family:Geist,system-ui,sans-serif;color:#0B0F19}'
+    + '#pm455 .pm5-h{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap}#pm455 .pm5-h b{display:flex;align-items:center;gap:7px;font-size:13.5px;font-weight:600}#pm455 .pm5-h span{display:block;font-size:12px;color:#5B6474;margin-top:3px}'
+    + '#pm455 .pm5-seg{display:inline-flex;background:#fff;border:1px solid #E3E6EC;border-radius:9px;padding:3px;gap:2px}#pm455 .pm5-seg button{border:0;background:transparent;height:28px;padding:0 11px;border-radius:6px;font-size:12.5px;font-weight:500;color:#5B6474;cursor:pointer}#pm455 .pm5-seg button.on{background:#14245C;color:#fff}'
+    + '#pm455 .pm5-v{margin-top:10px;font-size:12.5px;color:#5B6474;padding:10px;border:1px dashed #D5DAE3;border-radius:9px;background:#fff}'
+    + '#pm455 .pm5-bar{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:12px;flex-wrap:wrap}#pm455 .pm5-g{font-size:12.5px;display:flex;align-items:center;gap:7px;cursor:pointer}'
+    + '#pm455 .pm5-acc button{border:1px solid #E3E6EC;background:#fff;height:28px;padding:0 10px;border-radius:7px;font-size:12px;margin-left:4px;cursor:pointer}'
+    + '#pm455 .pm5-emp{font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:#5B6474;margin:12px 0 6px}'
+    + '#pm455 .pm5-pts{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:7px;margin-top:8px}'
+    + '#pm455 .pm5-pt{display:flex;gap:8px;align-items:flex-start;padding:8px 10px;border:1px solid #E3E6EC;border-radius:9px;background:#fff;cursor:pointer;min-width:0}#pm455 .pm5-pt.on{border-color:#14245C;background:#EAEEF8}'
+    + '#pm455 .pm5-pt input{margin-top:2px;accent-color:#14245C}#pm455 .pm5-pt b{display:block;font-size:12.5px;font-weight:600}#pm455 .pm5-pt small{display:block;font-size:11px;color:#5B6474;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;max-width:170px}'
+    + '#pm455 .pm5-res{margin-top:10px;font-size:12.5px;color:#2A3140;background:#fff;border:1px solid #E3E6EC;border-radius:9px;padding:9px 11px}';
+  var oForm = window.pcAbrirFormToken;
+  if (typeof oForm === 'function') window.pcAbrirFormToken = function(existente){
+    var r = oForm.apply(this, arguments);
+    try {
+      if (!document.getElementById('pm455-css')) { var st = document.createElement('style'); st.id = 'pm455-css'; st.textContent = css; document.head.appendChild(st); }
+      var rif = document.getElementById('pc-rif'); if (!rif) return r;
+      var grid = rif.closest('div[style*="grid-template-columns"]') || rif.parentNode;
+      var box = document.createElement('div'); box.id = 'pm455'; grid.parentNode.insertBefore(box, grid.nextSibling);
+      var m = existente && existente.multi && existente.multi.puntos;
+      F = { on: !!(m && m.length), sel: {}, grupo: false };
+      if (m) { var cs = {}; m.forEach(function(p){ F.sel[p.id] = true; cs[p.clienteId] = 1; }); F.grupo = Object.keys(cs).length > 1; }
+      pintarForm();
+      var re = function(){ setTimeout(pintarForm, 30); };
+      ['pc-nombre', 'pc-rif'].forEach(function(id){ var el = document.getElementById(id); if (el) el.addEventListener('change', re); });
+      var selc = document.getElementById('pc-cliente'); if (selc) selc.addEventListener('change', re);
+    } catch(e){ console.warn('[v.455] formulario del link:', e); }
+    return r;
+  };
+  var oSave = window.fbSavePortalToken;
+  function envolverSave(){
+    var o = window.fbSavePortalToken;
+    if (typeof o !== 'function' || o.__pm455) return;
+    var w = function(token, data){
+      try {
+        if (F && document.getElementById('pc-form-ov') && document.getElementById('pm455') && data && data.tipo !== 'vendedor') {
+          var pts = F.on ? puntosElegidosForm() : [];
+          if (F.on && !pts.length) { alert('Marcaste "Elegir sucursales" pero ninguna sucursal está marcada.\n\nMarca al menos una o elige "Sin sucursales".'); return Promise.reject(new Error('Sin sucursales marcadas')); }
+          if (pts.length) data.multi = { puntos: pts, grupo: !!F.grupo, at: new Date().toISOString() };
+          else delete data.multi;
+        }
+      } catch(e){ console.warn('[v.455] guardar sucursales del link:', e); }
+      return o.apply(this, arguments);
+    };
+    w.__pm455 = true; window.fbSavePortalToken = w;
+  }
+  envolverSave(); setTimeout(envolverSave, 3000); setTimeout(envolverSave, 12000);
+
+  /* ════════ importar el pedido del portal con su reparto ════════ */
+  window.pm455Preparar = function(p){
+    var pts = p && p.multi && Array.isArray(p.multi.puntos) ? p.multi.puntos.filter(function(x){ return x && x.id; }) : [];
+    if (!pts.length) return null;
+    var cl = clientes(), faltan = pts.filter(function(x){ return !cl.some(function(c){ return c.id === x.clienteId; }); });
+    if (faltan.length) { alert('Este pedido trae sucursales de un cliente que no está en este equipo (' + faltan.map(function(x){ return x.nombre; }).join(', ') + ').\n\nSincroniza los clientes y vuelve a importarlo.'); return false; }
+    var headers = nombresUnicos(pts), ids = pts.map(function(x){ return x.id; });
+    var cps = {}, sids = {}, nombres = {};
+    pts.forEach(function(x, i){ cps[headers[i]] = x.clienteId; if (x.sucId) sids[headers[i]] = x.sucId; nombres[headers[i]] = x.nombre; });
+    return {
+      headers: headers, ids: ids, puntos: pts,
+      // reparto de una línea; si la línea viene recortada (parte en camino), se recorta desde la última sucursal
+      repartir: function(it){
+        var o = {}, tot = 0; ids.forEach(function(id, i){ var q = parseInt(((it && it.porPunto) || {})[id]) || 0; o[headers[i]] = q; tot += q; });
+        var qty = parseInt(it && it.qty) || 0;
+        if (tot === 0 && qty > 0) { o[headers[0]] = qty; return o; }
+        var exceso = tot - qty;
+        for (var j = headers.length - 1; j >= 0 && exceso > 0; j--) { var quita = Math.min(o[headers[j]], exceso); o[headers[j]] -= quita; exceso -= quita; }
+        return o;
+      },
+      asignar: function(){
+        MS._modoUnica = false; MS._clienteUnica = null;
+        MS.sucursales = headers.slice();
+        MS.clientesPorSucursal = Object.assign({}, cps); MS.sucursalIdsPorHeader = Object.assign({}, sids);
+        MS._catalogoCliente452 = { fecha: new Date().toISOString(), firma: headers.join('\u0001'), nombres: nombres, origen: 'PORTAL' };
+        window.__cpc452Sucs = headers.join('\u0001');
+      }
+    };
   };
 })();
 </script>
