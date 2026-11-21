@@ -70890,6 +70890,7 @@ window.msGenerarEtiquetasPDF = function(sucsFiltradas) {
 
   // Recolectar cajas por sucursal
   var etiquetas=[];
+  var cajasEmitidas = Object.create(null);
   // Pre-cargar etiqData con prioridad para sincronización multi-dispositivo:
   // 1. Empezar con etiqData del pedido (sincronizado vía Firebase desde otros dispositivos como PC)
   // 2. Fusionar con localStorage local (que puede tener cambios más recientes hechos en este dispositivo)
@@ -70900,11 +70901,12 @@ window.msGenerarEtiquetasPDF = function(sucsFiltradas) {
     if (_pedFB && _pedFB.etiqData) Object.assign(_etiqFallback, _pedFB.etiqData);
   }
   // localStorage gana SOLO si tiene la sucursal (Object.assign sobrescribe solo claves presentes)
+  var _localOverride = {};
   try {
-    var _localOverride = JSON.parse(localStorage.getItem('ms_etiq_'+numP)||'{}');
+    _localOverride = JSON.parse(localStorage.getItem('ms_etiq_'+numP)||'{}') || {};
     Object.keys(_localOverride).forEach(function(s){
       if (_localOverride[s] && Object.keys(_localOverride[s]).length > 0) {
-        _etiqFallback[s] = _localOverride[s];
+        _etiqFallback[s] = Object.assign({}, _etiqFallback[s], _localOverride[s]);
       }
     });
   } catch(e){}
@@ -70987,6 +70989,7 @@ window.msGenerarEtiquetasPDF = function(sucsFiltradas) {
     var Rea = (typeof resolverCliente === 'function') ? resolverCliente(suc) : null;
     var clienteData = (Rea && Rea.cli) || {};
     var dirCliente = ((Rea && Rea.direccionDespacho) || (Rea && Rea.direccionFiscal) || clienteData.direccion || '').toUpperCase() || 'MARGARITA, NUEVA ESPARTA';
+    if (numCajas > 0) cajasEmitidas[suc] = numCajas;
     for(var i=1;i<=numCajas;i++){
       etiquetas.push({suc:suc,nom:nomSucursal,caja:i,total:numCajas,refs:totalRef,uds:totalUnd,vol:totalVol,peso:totalPeso,numP:numP,fecha:fecha,rif:rifCliente,rs:razonSocial,dir:dirCliente,oc:ordenCompra});
     }
@@ -70994,38 +70997,6 @@ window.msGenerarEtiquetasPDF = function(sucsFiltradas) {
 
   if(!etiquetas.length){showToast('No hay etiquetas para generar','warn');return;}
   window.msAvisarTotales(_diagLbl, 'ETIQUETAS BULTO');
-
-  // ── Marcar sucursales impresas como EMBALADO ────
-  if(!MS.sucursalesEstado) MS.sucursalesEstado = {};
-  sucsAImprimir.forEach(function(s) {
-    if(MS.sucursalesEstado[s] !== 'DESPACHADO' && MS.sucursalesEstado[s] !== 'despachado') {
-      MS.sucursalesEstado[s] = 'EMBALADO';
-    }
-  });
-  if(typeof getMsPedidos==='function' && MS.numPedido) {
-    var _peds = getMsPedidos();
-    var _pidx = _peds.findIndex(function(p){ return p.numP===MS.numPedido; });
-    if(_pidx >= 0) {
-      if(!_peds[_pidx].sucursalesEstado) _peds[_pidx].sucursalesEstado = {};
-      sucsAImprimir.forEach(function(s) {
-        if(_peds[_pidx].sucursalesEstado[s] !== 'DESPACHADO') {
-          _peds[_pidx].sucursalesEstado[s] = 'EMBALADO';
-        }
-      });
-      if(typeof saveMsPedidos==='function') saveMsPedidos(_peds);
-    }
-  }
-  // Actualizar badges visualmente en el formulario de etiquetas sin cerrarlo
-  sucsAImprimir.forEach(function(s) {
-    var idK = s.replace(/\W/g,'_');
-    var badgeEl = document.getElementById('badge-estado-etiq-'+idK);
-    if(badgeEl) {
-      badgeEl.textContent = '📦 EMBALADO';
-      badgeEl.style.background = '#d1fae5';
-      badgeEl.style.color = '#065f46';
-      badgeEl.style.borderColor = '#6ee7b7';
-    }
-  });
 
   // QR via API gratuita (no requiere librería externa)
   // QR con datos completos de la etiqueta via API externa
@@ -71133,13 +71104,39 @@ window.msGenerarEtiquetasPDF = function(sucsFiltradas) {
     +paginasHtml
     +'</body></html>';
 
-  // Cerrar overlay
+  var w=window.open('','_blank','width=900,height=950');
+  if (!w) {
+    showToast('Permite ventanas emergentes para las etiquetas','warn');
+    return;
+  }
+  w.document.write(_fkKit419(html));
+  w.document.close();
+
+  // Registrar el conteo emitido, incluso si el operador dejó 1 en el formulario.
+  var sucsEmitidas = Object.keys(cajasEmitidas);
+  if (MS.numPedido && typeof getMsPedidos === 'function' && typeof saveMsPedidos === 'function') {
+    var pedidos = getMsPedidos();
+    var pedido = pedidos.find(function(p){ return p.numP === numP; });
+    if (pedido) {
+      pedido.etiqData = pedido.etiqData || {};
+      pedido.sucursalesEstado = pedido.sucursalesEstado || {};
+      sucsEmitidas.forEach(function(s){
+        var datos = Object.assign({}, pedido.etiqData[s], _localOverride[s], { cajas: cajasEmitidas[s] });
+        pedido.etiqData[s] = datos;
+        _localOverride[s] = datos;
+        if (String(pedido.sucursalesEstado[s] || '').toUpperCase() !== 'DESPACHADO') {
+          pedido.sucursalesEstado[s] = 'EMBALADO';
+        }
+      });
+      if (saveMsPedidos(pedidos) === false) return;
+      try { localStorage.setItem('ms_etiq_' + numP, JSON.stringify(_localOverride)); } catch(e){}
+      MS.sucursalesEstado = pedido.sucursalesEstado;
+    }
+  }
+
   var ov=document.getElementById('ms-etiquetas-overlay');if(ov)ov.remove();
   var done=document.getElementById('ms-done-overlay');if(done)done.remove();
-
-  var w=window.open('','_blank','width=900,height=950');
-  if(w){w.document.write(_fkKit419(html));w.document.close();}
-  else showToast('Permite ventanas emergentes para las etiquetas','warn');
+  if (document.getElementById('ms-monitor-ov') && typeof msAbrirMonitor === 'function') msAbrirMonitor();
   showToast('🏷️ '+etiquetas.length+' etiquetas generadas','success');
 };
 
