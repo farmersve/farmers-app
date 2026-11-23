@@ -124,7 +124,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.11.23.466">
+<meta name="farmers-version" content="2026.11.23.467">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -73582,11 +73582,8 @@ function msHtmlEtiquetas(etiquetas, tipo){
     var mapa = item.envio.ubicacion.mapa;
     if (mapa && !qrs.has(mapa)) qrs.set(mapa, window.msImagenQrMapa(mapa));
   });
-  var qrGrande = Array.from(qrs.values()).some(function(qr){ return qr && qr.ladoMm > 19; });
   var paginas = [];
-  // Los códigos densos aumentan la altura de su fila. El navegador pagina esas filas según el espacio real.
-  if (qrGrande) paginas.push(etiquetas);
-  else for (var i = 0; i < etiquetas.length; i += 8) paginas.push(etiquetas.slice(i, i + 8));
+  for (var i = 0; i < etiquetas.length; i += 8) paginas.push(etiquetas.slice(i, i + 8));
   var contenido = paginas.map(function(p){ return '<section class="ms-rotulo-pagina">' + p.map(tarjeta).join('') + '</section>'; }).join('');
   var estilos = '<style>' + `
     @page { size: A4 portrait; margin: 8mm; }
@@ -73679,7 +73676,64 @@ function msHtmlEtiquetas(etiquetas, tipo){
     .noprint button { border: 1px solid var(--rule); border-radius: 7px; background: white; color: var(--ink); padding: 8px 12px; font: 600 13px Arial; cursor: pointer; text-transform: uppercase; }
     .noprint button:first-child { background: var(--navy); color: white; border-color: var(--navy); }
     .noprint label { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; cursor: pointer; text-transform: uppercase; }
-    @media print { .noprint { display: none; } * { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
+    @media print {
+      .noprint { display: none; }
+      * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      .ms-rotulo-pagina { gap: 2mm; }
+      /* El QR comparte la altura del destinatario y de la dirección.
+         Se conserva su tamaño calculado y la zona blanca de lectura. */
+      .etq {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        grid-template-areas:
+          "cabecera cantidad"
+          "datos mapa"
+          "totales mapa"
+          "direccion direccion"
+          "pie pie";
+        grid-template-rows: auto auto auto 1fr auto;
+        column-gap: 1.35mm;
+        row-gap: .45mm;
+        padding: 0 2mm;
+      }
+      .etq-body, .etq-ubicacion { display: contents; }
+      .etq-hdr { grid-area: cabecera; padding: .55mm 0 .65mm; gap: 1mm; }
+      .etq-marca { gap: .5mm .8mm; flex-wrap: nowrap; }
+      .etq-logo-marco { width: 16.1mm; height: 4.25mm; flex: none; }
+      .etq-logo { width: 21mm; height: 21mm; top: -7.6mm; left: -2.4mm; }
+      .etq-remitente { padding: 0 0 0 .8mm; }
+      .etq .etq-dato-hdr dd { font-size: 7.7pt; margin-top: .35mm; }
+      .etq .etq-pedido dd { white-space: nowrap; }
+      .etq-info { grid-area: datos; padding-top: .2mm; font-size: 8pt; line-height: 1.1; }
+      .etq-suc { font-size: 10pt; margin-bottom: .4mm; }
+      .etq-rs { font-size: 7.4pt; }
+      .etq-rif { font-size: 6.75pt; margin-top: .25mm; }
+      .etq-dest-lbl, .etq-direccion strong { margin-bottom: .35mm; }
+      .etq-meta { grid-template-columns: minmax(0, 1fr); margin-top: .65mm; padding-top: .4mm; gap: .35mm; }
+      .etq-meta > div, .etq-meta > div + div {
+        display: flex; align-items: baseline; gap: .7mm; border: 0; padding: 0;
+      }
+      .etq-meta dt { flex-shrink: 0; }
+      .etq-meta dd { font-size: 7.4pt; margin: 0; }
+      .etq-cantidad {
+        grid-area: cantidad; align-self: start; min-height: 0; padding: .45mm .75mm;
+        display: grid; grid-template-columns: minmax(0,1fr) auto; column-gap: 1mm;
+      }
+      .etq-cantidad-titulo, .etq-cantidad-total { font-size: 6.25pt; letter-spacing: .025em; }
+      .etq-cantidad-titulo { grid-column: 1 / -1; width: 100%; padding-bottom: .3mm; }
+      .etq-cantidad b, .etq-despacho .etq-cantidad b { font-size: 15pt; margin: .2mm 0; }
+      .etq-cantidad-total strong { font-size: 8.5pt; }
+      .etq-totales { grid-area: totales; grid-template-columns: 1.18fr repeat(3, minmax(0, 1fr)); }
+      .etq-totales dt { font-size: 6.3pt; letter-spacing: .01em; overflow-wrap: anywhere; }
+      .etq-totales > div { padding: .4mm .65mm; }
+      .etq-totales dd { font-size: 8pt; }
+      .etq-totales small { font-size: 6pt; margin-left: .35mm; }
+      .etq-direccion { grid-area: direccion; padding-bottom: .25mm; font-size: 8pt; line-height: 1.12; }
+      .etq-direccion strong { display: inline; margin-right: .75mm; }
+      .etq-direccion span { display: inline; font-size: 8pt; line-height: 1.12; }
+      .ms-rotulo-mapa { grid-area: mapa; align-self: center; }
+      .etq-footer { grid-area: pie; padding: .25mm 0 .35mm; }
+    }
     @media screen { body { padding: 0 8px 8px; } .ms-rotulo-pagina + .ms-rotulo-pagina { margin-top: 4mm; } }
     @media screen and (max-width: 640px) { .ms-rotulo-pagina { grid-template-columns: minmax(0, 1fr); } }
     @media screen and (max-width: 380px) {
