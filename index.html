@@ -124,7 +124,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.11.23.460">
+<meta name="farmers-version" content="2026.11.23.461">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -73323,7 +73323,9 @@ var qrcode = function() {
       qr.addData(url);
       qr.make();
       // Cuatro módulos libres por lado. Los enlaces densos necesitan más superficie.
-      return { fuente: qr.createDataURL(5, 20), ladoMm: Math.max(19, Math.ceil((qr.getModuleCount() + 8) * 0.31)) };
+      var svg = qr.createSvgTag({ cellSize: 1, margin: 4, scalable: true })
+        .replace('<svg ', '<svg aria-hidden="true" focusable="false" ');
+      return { svg: svg, ladoMm: Math.max(19, Math.ceil((qr.getModuleCount() + 8) * 0.31)) };
     } catch(e){
       console.warn('[Etiquetas] No se pudo generar el QR de ubicación:', e);
       return '';
@@ -73520,66 +73522,151 @@ function msHtmlEtiquetas(etiquetas, tipo){
   }
   function tarjeta(item){
     var e = item.envio, d = e.datos, t = e.totales, u = e.ubicacion;
-    if (u.mapa && !qrs.has(u.mapa)) qrs.set(u.mapa, window.msImagenQrMapa(u.mapa));
     var qr = qrs.get(u.mapa);
     var cantidad = item.bulto
-      ? '<div class="etq-cantidad-titulo">Bulto</div><b>#' + item.bulto + '</b><span>De</span><strong>#' + d.cajas + '</strong>'
-      : '<div class="etq-cantidad-titulo">Despacho</div><b>' + d.cajas + '</b><span>' + (d.cajas === 1 ? 'Bulto' : 'Bultos') + '</span>';
+      ? '<div class="etq-cantidad-titulo">Bulto</div><b>#' + item.bulto + '</b><div class="etq-cantidad-total">De <strong>#' + d.cajas + '</strong></div>'
+      : '<div class="etq-cantidad-titulo">Despacho</div><b>' + d.cajas + '</b><div class="etq-cantidad-total">' + (d.cajas === 1 ? 'Bulto' : 'Bultos') + '</div>';
     return '<article class="ms-rotulo etq etq-' + tipo + '">' +
-      '<header class="etq-hdr">' + (logo ? '<img class="etq-logo" src="' + esc(logo) + '" alt="Farmers">' : '<strong>FARMERS C.A.</strong>') +
-      '<span class="etq-pedido">N° ' + esc(e.numP) + '</span></header>' +
+      '<header class="etq-hdr"><div class="etq-marca">' +
+      (logo ? '<span class="etq-logo-marco"><img class="etq-logo" src="' + esc(logo) + '" alt="Farmers C.A."></span>' : '<strong>FARMERS C.A.</strong>') +
+      '<span class="etq-remitente">RIF J-401008631</span></div>' +
+      '<div class="etq-pedido"><span>Pedido</span><strong>' + esc(e.numP) + '</strong></div></header>' +
       '<div class="etq-body"><div class="etq-info">' +
-      '<div class="etq-empresa">Remitente: Farmers C.A. · RIF J-401008631</div>' +
-      '<div class="etq-dest-lbl">Destinatario:</div><h2 class="etq-suc">' + esc(d.nom) + '</h2>' +
+      '<div class="etq-dest-lbl">Destinatario</div><h2 class="etq-suc">' + esc(d.nom) + '</h2>' +
       '<div class="etq-rs">' + esc(d.rs || 'Cliente sin especificar') + '</div>' +
-      '<div class="etq-rif">RIF: ' + esc(d.rif || 'S/RIF') + '</div>' +
-      (d.oc ? '<div class="etq-oc">N° orden de compra: ' + esc(d.oc) + '</div>' : '') +
-      '<div class="etq-fecha">Fecha despacho: ' + esc(e.fecha) + '</div><div class="etq-totales">' +
-      stat(t.refs, 'REF') + stat(t.uds.toLocaleString('es-VE'), 'UDS') +
-      (t.vol > 0 ? stat(t.vol.toFixed(2), 'FT³') : '') + (t.peso > 0 ? stat(t.peso.toFixed(1), 'KG') : '') +
+      '<div class="etq-rif">RIF ' + esc(d.rif || 'S/RIF') + '</div>' +
+      '<div class="etq-meta">' +
+      (d.oc ? '<div><span>Orden de compra</span><strong>' + esc(d.oc) + '</strong></div>' : '') +
+      '<div><span>Fecha de despacho</span><strong>' + esc(e.fecha) + '</strong></div></div>' +
+      '<div class="etq-totales">' + stat(t.refs, 'Ref.') + stat(t.uds.toLocaleString('es-VE'), 'Uds.') +
+      (t.vol > 0 ? stat(t.vol.toFixed(2), 'ft³') : '') + (t.peso > 0 ? stat(t.peso.toFixed(1), 'kg') : '') +
       '</div></div><div class="etq-cantidad">' + cantidad + '</div></div>' +
       '<div class="etq-ubicacion"><div class="etq-direccion"><strong>Dirección de despacho</strong><span>' +
       esc(u.direccion || (u.tipo === 'gps' ? 'Consultar ubicación GPS' : 'Por registrar')) + '</span></div>' +
       '<div class="ms-rotulo-mapa">' + (qr ?
         '<a style="--etq-qr-lado:' + qr.ladoMm + 'mm" href="' + esc(u.mapa) + '" target="_blank" rel="noopener noreferrer">' +
-        '<img alt="QR de Google Maps" src="' + qr.fuente + '"><span>' +
-        (u.tipo === 'gps' ? 'Google Maps' : 'Buscar dirección') + '</span></a>' :
+        qr.svg + '<span>' + (u.tipo === 'gps' ? 'Google Maps' : 'Buscar dirección') + '</span></a>' :
         '<span>Sin QR de ubicación</span>') + '</div></div>' +
       '<footer class="etq-footer"><span>Margarita, Nueva Esparta · farmersve@gmail.com</span>' +
       '<strong>0412-044 5797</strong></footer></article>';
   }
-  var paginas = [];
-  for (var i = 0; i < etiquetas.length; i += 8) paginas.push(etiquetas.slice(i, i + 8));
+
+  var paginas = [], pagina = [], altoExtra = [0, 0, 0, 0];
+  etiquetas.forEach(function(item){
+    var mapa = item.envio.ubicacion.mapa;
+    if (mapa && !qrs.has(mapa)) qrs.set(mapa, window.msImagenQrMapa(mapa));
+    var qr = qrs.get(mapa), extra = qr ? qr.ladoMm - 19 : 0;
+    var fila = Math.floor(pagina.length / 2);
+    // Cada fila toma la altura del QR mayor. Si el lote trae enlaces muy densos, caben menos filas.
+    var diferencia = Math.max(0, extra - (altoExtra[fila] || 0));
+    if (pagina.length === 8 || (fila >= 3 && altoExtra.reduce(function(a, n){ return a + n; }, 0) + diferencia > 11)) {
+      paginas.push(pagina);
+      pagina = [];
+      altoExtra = [0, 0, 0, 0];
+      fila = 0;
+    }
+    altoExtra[fila] = Math.max(altoExtra[fila], extra);
+    pagina.push(item);
+  });
+  if (pagina.length) paginas.push(pagina);
   var contenido = paginas.map(function(p){ return '<section class="ms-rotulo-pagina">' + p.map(tarjeta).join('') + '</section>'; }).join('');
-  var estilos = '<style>' +
-    '@page{size:A4 portrait;margin:8mm}*{box-sizing:border-box}body{margin:0;font-family:Arial,sans-serif;background:white;color:#1a2050}' +
-    '.ms-rotulo-pagina{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7mm}.ms-rotulo-pagina+.ms-rotulo-pagina{break-before:page}' +
-    '.etq{border:2.5px solid #1a2050;border-radius:7px;padding:7px;display:flex;flex-direction:column;break-inside:avoid;text-transform:uppercase;min-width:0}' +
-    '.etq-hdr{background:#1a2050;color:white;padding:5px 10px;border-radius:4px;display:flex;align-items:center;justify-content:space-between;gap:6px;margin-bottom:6px;font-size:10px;letter-spacing:1.2px}' +
-    '.etq-logo{height:22px;max-width:40%;object-fit:contain}.etq-pedido{font-size:8px;font-weight:900;letter-spacing:1px;background:rgba(255,255,255,.15);border-radius:3px;padding:2px 6px;text-align:right}' +
-    '.etq-body{display:flex;align-items:center;gap:8px;flex:1}.etq-info{flex:1;min-width:0;overflow-wrap:anywhere}' +
-    '.etq-empresa{font-size:7.5px;font-weight:700;color:#bb4b17;letter-spacing:.65px;border-bottom:1px solid #e2e8f0;padding-bottom:3px;margin-bottom:3px}' +
-    '.etq-dest-lbl{font-size:8px;font-weight:700;color:#64748b;letter-spacing:.8px;margin-bottom:2px}.etq-suc{font-size:14px;font-weight:900;line-height:1.1;margin:0 0 2px}' +
-    '.etq-rs,.etq-rif,.etq-oc,.etq-fecha{font-size:9px;font-weight:700;line-height:1.25}.etq-rif,.etq-fecha{color:#475569}.etq-oc{color:#0d766e}.etq-fecha{margin-top:4px}' +
-    '.etq-totales{display:flex;flex-wrap:wrap;gap:4px;margin-top:4px}.etq-stat{display:flex;flex-direction:column;align-items:center;gap:2px;background:#f8fafc;border:1px solid #dbe2ea;border-radius:4px;padding:2px 6px;min-width:30px;line-height:1}' +
-    '.etq-stat-val{font-size:10.5px;font-weight:900}.etq-stat-lbl{font-size:6px;font-weight:800;color:#64748b;letter-spacing:.35px}' +
-    '.etq-cantidad{width:95px;min-height:95px;border:2px solid #1a2050;border-radius:5px;display:flex;flex-direction:column;align-items:center;justify-content:center;flex-shrink:0;text-align:center;padding:4px;line-height:1}' +
-    '.etq-cantidad-titulo{width:100%;border-bottom:1px solid #1a2050;padding:1px 0 4px;margin:0 0 4px;font-size:8px;font-weight:900;letter-spacing:.85px}' +
-    '.etq-cantidad b,.etq-cantidad strong{font-family:Arial Black,Arial,sans-serif;font-weight:900;font-variant-numeric:tabular-nums}.etq-cantidad b{font-size:26px}.etq-despacho .etq-cantidad b{font-size:34px}' +
-    '.etq-cantidad strong{font-size:20px}.etq-cantidad span{font-size:8px;font-weight:800;letter-spacing:.65px;margin:2px 0}' +
-    '.etq-ubicacion{border-top:1px solid #dbe2ea;margin-top:5px;padding:3px 0;display:flex;align-items:center;justify-content:space-between;gap:8px}' +
-    '.etq-direccion{min-width:0;overflow-wrap:anywhere}.etq-direccion strong,.etq-direccion span{display:block;line-height:1.25}.etq-direccion strong{color:#475569;font-size:7.5px;letter-spacing:.4px;margin-bottom:2px}.etq-direccion span{font-size:9px}' +
-    '.ms-rotulo-mapa{flex-shrink:0;text-align:center;font-size:7px;font-weight:700;color:#475569}.ms-rotulo-mapa a{display:flex;flex-direction:column;align-items:center;gap:1px;color:inherit;text-decoration:none}' +
-    '.ms-rotulo-mapa img{width:var(--etq-qr-lado);height:var(--etq-qr-lado);display:block;image-rendering:pixelated}' +
-    '.etq-footer{border-top:1.5px solid #1a2050;padding-top:4px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:2px 6px;color:#475569;font-size:7px;font-weight:700}.etq-footer strong{color:#1a2050;font-size:8.5px}' +
-    '.noprint{padding:16px;display:flex;align-items:center;justify-content:center;gap:10px;flex-wrap:wrap}.noprint button{border:0;border-radius:8px;padding:10px 18px;font:600 13px Arial;cursor:pointer}.noprint button:first-child{background:#1a2050;color:white}' +
-    '@media print{.noprint{display:none}*{-webkit-print-color-adjust:exact;print-color-adjust:exact}}' +
-    '@media screen{body{padding:0 8px 8px}.ms-rotulo-pagina+.ms-rotulo-pagina{margin-top:7mm}}' +
-    '@media screen and (max-width:600px){.ms-rotulo-pagina{grid-template-columns:minmax(0,1fr)}}' +
-    '</style>';
+  var estilos = '<style>' + `
+    @page { size: A4 portrait; margin: 8mm; }
+    * { box-sizing: border-box; }
+    body {
+      --navy: #142650; --ink: #131c2b; --muted: #354157; --accent: #9e370c;
+      --rule: #adb7c6; --subtle: #d9dfe8; --tint: #f5f7fa;
+      margin: 0; background: white; color: var(--ink);
+      font: 9pt Arial, Helvetica, sans-serif;
+    }
+    body.etq-bn {
+      --navy: #141414; --ink: #151515; --muted: #363636; --accent: #292929;
+      --rule: #a9a9a9; --subtle: #d6d6d6; --tint: #f7f7f7;
+    }
+    .etq-bn .etq-logo { filter: grayscale(1); }
+    .ms-rotulo-pagina { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4mm; }
+    .ms-rotulo-pagina + .ms-rotulo-pagina { break-before: page; }
+    .etq {
+      border: 0.3mm solid var(--navy); border-top: 1.3mm solid var(--navy); border-radius: 2mm;
+      display: flex; flex-direction: column; min-width: 0; overflow: hidden; break-inside: avoid;
+      background: white; padding: 0 3mm;
+    }
+    .etq-hdr {
+      display: flex; align-items: center; justify-content: space-between; gap: 2mm;
+      padding: 1.5mm 0 1.25mm; border-bottom: 0.25mm solid var(--rule);
+    }
+    .etq-marca { min-width: 0; display: flex; align-items: center; gap: 2mm; flex-wrap: wrap; color: var(--navy); }
+    /* El original es cuadrado y tiene margen blanco. Aprovechamos su resolución sin redibujarlo. */
+    .etq-logo-marco { position: relative; display: block; width: 33.8mm; height: 8.9mm; overflow: hidden; }
+    .etq-logo { position: absolute; display: block; width: 44mm; height: 44mm; top: -15.9mm; left: -5mm; }
+    .etq-remitente { color: var(--muted); font-size: 6.4pt; font-weight: 600; white-space: nowrap; }
+    .etq-pedido { text-align: right; min-width: 0; overflow-wrap: anywhere; }
+    .etq-pedido span, .etq-pedido strong { display: block; }
+    .etq-pedido span { font-size: 6.6pt; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .11em; }
+    .etq-pedido strong { font-size: 9pt; color: var(--navy); margin-top: .5mm; }
+    .etq-body {
+      display: grid; grid-template-columns: minmax(0, 1fr) 29mm; align-items: center; gap: 2.5mm;
+      padding: 2.25mm 0 1.8mm; flex: 1;
+    }
+    .etq-info, .etq-direccion { min-width: 0; overflow-wrap: anywhere; }
+    .etq-dest-lbl, .etq-direccion strong {
+      display: block; margin: 0 0 .65mm; font-size: 6.9pt; font-weight: 700;
+      text-transform: uppercase; letter-spacing: .1em; color: var(--accent);
+    }
+    .etq-suc { margin: 0 0 .65mm; font-size: 12.8pt; line-height: 1.08; color: var(--navy); }
+    .etq-rs { font-size: 8pt; font-weight: 700; }
+    .etq-rif { font-size: 7.2pt; color: var(--muted); margin-top: .4mm; }
+    .etq-meta { display: flex; gap: .8mm 3mm; flex-wrap: wrap; margin-top: 1.5mm; }
+    .etq-meta span, .etq-meta strong { display: block; }
+    .etq-meta span { color: var(--muted); font-size: 6.6pt; margin-bottom: .18mm; }
+    .etq-meta strong { font-size: 7.7pt; font-variant-numeric: tabular-nums; }
+    .etq-totales { display: flex; flex-wrap: wrap; gap: .65mm 0; margin-top: 1.6mm; }
+    .etq-stat { display: flex; align-items: baseline; gap: .7mm; padding: 0 1.5mm; }
+    .etq-stat:first-child { padding-left: 0; }
+    .etq-stat + .etq-stat { border-left: .25mm solid var(--subtle); }
+    .etq-stat-val { color: var(--navy); font-size: 8pt; font-weight: 700; font-variant-numeric: tabular-nums; }
+    .etq-stat-lbl { color: var(--muted); font-size: 6.6pt; }
+    .etq-cantidad {
+      border: .55mm solid var(--navy); border-radius: 1.5mm; background: var(--tint); color: var(--navy);
+      min-height: 23mm; width: 100%; padding: 1.5mm .8mm 1.2mm;
+      display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center;
+    }
+    .etq-cantidad-titulo, .etq-cantidad-total {
+      font-weight: 700; text-transform: uppercase; font-size: 7.1pt; letter-spacing: .09em;
+    }
+    .etq-cantidad-titulo { border-bottom: .25mm solid var(--rule); padding-bottom: .8mm; width: calc(100% - 3mm); }
+    .etq-cantidad b { font-size: 28pt; font-weight: 900; line-height: 1; margin: .5mm 0 .2mm; }
+    .etq-despacho .etq-cantidad b { font-size: 32pt; }
+    .etq-cantidad-total strong { font-size: 12pt; letter-spacing: 0; }
+    .etq-cantidad b, .etq-cantidad-total strong { font-variant-numeric: tabular-nums; overflow-wrap: anywhere; max-width: 100%; }
+    .etq-ubicacion {
+      border-top: .25mm solid var(--rule); padding: .9mm 0; display: flex;
+      justify-content: space-between; align-items: center; gap: 2.5mm;
+    }
+    .etq-direccion span { display: block; font-size: 8.3pt; line-height: 1.23; }
+    .ms-rotulo-mapa { flex-shrink: 0; text-align: center; font-size: 6.5pt; font-weight: 700; color: var(--muted); }
+    .ms-rotulo-mapa a { display: flex; flex-direction: column; align-items: center; color: var(--navy); text-decoration: none; }
+    .ms-rotulo-mapa svg { width: var(--etq-qr-lado); height: var(--etq-qr-lado); display: block; shape-rendering: crispEdges; }
+    .etq-footer {
+      border-top: .25mm solid var(--rule); padding: 1mm 0 1.1mm; display: flex;
+      justify-content: space-between; align-items: center; flex-wrap: wrap; gap: .5mm 1.5mm;
+      color: var(--muted); font-size: 6.6pt;
+    }
+    .etq-footer strong { color: var(--ink); font-size: 7.2pt; white-space: nowrap; }
+    .noprint { padding: 14px 6px; display: flex; align-items: center; justify-content: center; gap: 8px 12px; flex-wrap: wrap; }
+    .noprint button { border: 1px solid var(--rule); border-radius: 7px; background: white; color: var(--ink); padding: 8px 12px; font: 600 13px Arial; cursor: pointer; }
+    .noprint button:first-child { background: var(--navy); color: white; border-color: var(--navy); }
+    .noprint label { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; cursor: pointer; }
+    @media print { .noprint { display: none; } * { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
+    @media screen { body { padding: 0 8px 8px; } .ms-rotulo-pagina + .ms-rotulo-pagina { margin-top: 4mm; } }
+    @media screen and (max-width: 640px) { .ms-rotulo-pagina { grid-template-columns: minmax(0, 1fr); } }
+    @media screen and (max-width: 380px) { .etq-body { grid-template-columns: minmax(0, 1fr) 24mm; } }
+  ` + '</style>';
   return '<!doctype html><html lang="es"><head><meta charset="UTF-8"><title>' + titulo + '</title>' + estilos + '</head><body>' +
     '<div class="noprint"><button onclick="window.print()">Imprimir etiquetas (' + etiquetas.length + ')</button>' +
-    '<button onclick="window.close()">Cerrar</button><span>' + titulo + '</span></div>' + contenido + '</body></html>';
+    '<button onclick="window.close()">Cerrar</button><label><input type="checkbox" autocomplete="off" ' +
+    'onchange="document.body.classList.toggle(\'etq-bn\',this.checked)"> Blanco y negro</label></div>' +
+    contenido + '</body></html>';
 }
 
 window.msGenerarEtiquetasPDF = function(sucursales){ msImprimirEtiquetas(sucursales, ['bulto']); };
