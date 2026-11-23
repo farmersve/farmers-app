@@ -124,7 +124,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.11.23.458">
+<meta name="farmers-version" content="2026.11.23.459">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -136,6 +136,7 @@
 <noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;600;700;900&family=Barlow:wght@300;400;500;600&display=swap"></noscript>
 <link rel="preload" href="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js" as="script">
 <link rel="preload" href="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js" as="script">
+<script src="./qrcode-generator-1.4.4.js" defer></script>
 <style>
 :root {
   --navy: #1a2050;
@@ -88919,6 +88920,77 @@ setTimeout(function() {
 }, 2000);
 
 // ═══ ETIQUETAS DE DESPACHO (PARA SOBRES) - VERSIÓN LIMPIA ═══
+// El QR de despacho solo debe apuntar a una sucursal identificada sin ambigüedad.
+function msUbicacionEtiquetaDespacho(clientes, pedido, suc, nombre, rif, razonSocial) {
+  var rifNormalizado = String(rif || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  var tieneRif = /^[A-Z]?\d+$/.test(rifNormalizado);
+  var nombreCliente = _v76NormSuc(razonSocial);
+  var idCliente = (pedido.clientesPorSucursal || {})[suc];
+  var idSucursal = (pedido.sucursalIdsPorHeader || {})[suc];
+  var candidatos = clientes.filter(function(cli) {
+    return tieneRif
+      ? String(cli.rif || '').toUpperCase().replace(/[^A-Z0-9]/g, '') === rifNormalizado
+      : _v76NormSuc(cli.nombre) === nombreCliente;
+  });
+  var clienteVinculado = idCliente && clientes.find(function(cli) { return cli.id === idCliente; });
+  if (clienteVinculado && (!tieneRif || candidatos.includes(clienteVinculado))) {
+    candidatos = [clienteVinculado];
+  } else if (candidatos.length > 1) {
+    var porRazonSocial = candidatos.filter(function(cli) { return _v76NormSuc(cli.nombre) === nombreCliente; });
+    if (porRazonSocial.length === 1) candidatos = porRazonSocial;
+  }
+
+  var ubicaciones = [];
+  candidatos.forEach(function(cli) {
+    var sucursales = cli.sucursales || [];
+    var vinculada = idSucursal && cli === clienteVinculado &&
+      sucursales.find(function(s) { return s.id === idSucursal; });
+    var coincidencias = vinculada ? [vinculada] : [];
+    if (!coincidencias.length) {
+      var nombres = [_v76NormSuc(nombre), _v76NormSuc(suc)];
+      coincidencias = sucursales.filter(function(s) {
+        return _v76NormSuc(s.nombre) && nombres.includes(_v76NormSuc(s.nombre));
+      });
+    }
+    if (!coincidencias.length && sucursales.length === 1 &&
+        (cli === clienteVinculado || [_v76NormSuc(nombre), _v76NormSuc(suc)].includes(_v76NormSuc(cli.nombre)))) {
+      coincidencias = sucursales;
+    }
+    coincidencias.forEach(function(s) { ubicaciones.push({ cliente: cli, sucursal: s }); });
+  });
+  if (ubicaciones.length !== 1) return null;
+
+  var ubicacion = ubicaciones[0];
+  var s = ubicacion.sucursal;
+  var direccion = String(s.despacho || '').trim() || String(s.direccion || '').trim();
+  if (!direccion || /incomplet[ao]|por confirmar|sin direcci[oó]n/i.test(direccion) ||
+      /^[\s\d.,-]+$/.test(direccion)) return null;
+
+  var pais = String(ubicacion.cliente.pais || '').trim();
+  var codigoMaps = direccion.match(/\s+Google Maps:\s*([23456789CFGHJMPQRVWX]{4,8}\+[23456789CFGHJMPQRVWX]{2,3})\.?$/i);
+  var consulta = direccion;
+  if (codigoMaps) {
+    var localidad = direccion.slice(0, codigoMaps.index).replace(/\.\s*$/, '').split(',').slice(-2).join(',').trim();
+    consulta = codigoMaps[1] + ' ' + localidad;
+  }
+  if (pais && !_v76NormSuc(consulta).includes(_v76NormSuc(pais))) consulta += ', ' + pais;
+  return { direccion: direccion, mapa: 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(consulta) };
+}
+
+function msQrEtiquetaDespacho(url) {
+  if (typeof qrcode !== 'function' || url.length > 2048) return '';
+  var qr = qrcode(0, 'M');
+  qr.addData(url);
+  qr.make();
+  return qr.createDataURL(5, 20);
+}
+
+function msEscaparEtiquetaDespacho(texto) {
+  return String(texto).replace(/[&<>"']/g, function(caracter) {
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[caracter];
+  });
+}
+
 window.msGenerarEtiquetasDespacho = function(sucsFiltradas) {
   var sucsAImprimir = (sucsFiltradas && sucsFiltradas.length) ? sucsFiltradas : MS.sucursales;
   var logoB64=typeof FARMERS_LOGO_B64!=='undefined'?FARMERS_LOGO_B64:'';
@@ -88930,21 +89002,12 @@ window.msGenerarEtiquetasDespacho = function(sucsFiltradas) {
   
   var pedidosGuardados = typeof getMsPedidos==='function' ? getMsPedidos() : [];
   var pedidoActual = pedidosGuardados.find(function(p){ return p.numP === numP; });
-  var ptD={};
-  try{
-    var ptRaw=localStorage.getItem('farmers_pt_data');
-    if(ptRaw){
-      var ptArr=JSON.parse(ptRaw);
-      ptArr.forEach(function(x){ptD[x.r]=x;});
-    }
-  }catch(e){}
+  var clientes = getClientsDB();
+  var pedidoParaUbicacion = pedidoActual || MS;
 
   var _etiqFallback={};
   try{ _etiqFallback=JSON.parse(localStorage.getItem('ms_etiq_'+numP)||'{}'); }catch(e){}
-  if(typeof getMsPedidos==='function'){
-    var _pedFB=(getMsPedidos()||[]).find(function(p){return p.numP===numP;});
-    if(_pedFB&&_pedFB.etiqData) Object.assign(_etiqFallback,_pedFB.etiqData);
-  }
+  if (pedidoActual && pedidoActual.etiqData) Object.assign(_etiqFallback, pedidoActual.etiqData);
 
   var etiquetasDespacho=[];
   var _diagDesp = [];   // v.282: diagnóstico por sucursal
@@ -88972,6 +89035,7 @@ window.msGenerarEtiquetasDespacho = function(sucsFiltradas) {
     var razonSocial =((rsInput&&rsInput.value.trim())||_fb.rs||'CLIENTE SIN ESPECIFICAR').toUpperCase();
     var ordenCompra =(ocInput&&ocInput.value.trim())||_fb.oc||'';
     var nomSucursal =(nomInput2&&nomInput2.value.trim())||_fb.nom||suc;
+    var ubicacion = msUbicacionEtiquetaDespacho(clientes, pedidoParaUbicacion, suc, nomSucursal, rifCliente, razonSocial);
 
     // v.141: Origen del despacho (depósito de salida)
     // Si el pedido tiene depositoPrincipal (futuro v.142), úsalo. Si no, default 'NE'.
@@ -88980,7 +89044,7 @@ window.msGenerarEtiquetasDespacho = function(sucsFiltradas) {
     etiquetasDespacho.push({
       suc:suc,nom:nomSucursal,totalBultos:numBultosTotal,refs:totalRef,uds:totalUnd,vol:totalVol,peso:totalPeso,
       numP:numP,fecha:fecha,rif:rifCliente,rs:razonSocial,oc:ordenCompra,
-      depositoOrigen: depositoOrigen
+      depositoOrigen: depositoOrigen, ubicacion: ubicacion
     });
   });
 
@@ -88990,7 +89054,37 @@ window.msGenerarEtiquetasDespacho = function(sucsFiltradas) {
     return;
   }
 
-  var estilos='<style>@page{size:A4 portrait;margin:8mm;}*{box-sizing:border-box;margin:0;padding:0;text-transform:uppercase;-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important;}body{font-family:Arial,sans-serif;background:white;}.grid{display:grid;grid-template-columns:1fr 1fr;gap:7mm;}.etq{border:2.5px solid #1a2050;border-radius:7px;padding:7px;height:auto;display:flex;flex-direction:column;overflow:hidden;page-break-inside:avoid;}.etq-hdr{background:#1a2050;color:white;padding:5px 10px;border-radius:4px;display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;flex-shrink:0;}.etq-logo{height:22px;}.etq-pedido{font-size:8px;font-weight:900;letter-spacing:1px;color:rgba(255,255,255,.9);background:rgba(255,255,255,.15);border-radius:3px;padding:2px 6px;}.etq-body{display:flex;flex:1;gap:8px;min-height:0;}.etq-info{flex:1;display:flex;flex-direction:column;justify-content:space-between;}.etq-empresa{font-size:7.5px;font-weight:700;color:#F47B3E;letter-spacing:.8px;border-bottom:1px solid #f1f5f9;padding-bottom:3px;margin-bottom:3px;}.etq-dest-lbl{font-size:8px;font-weight:700;color:#94a3b8;letter-spacing:.8px;margin-bottom:2px;}.etq-suc{font-size:10px;font-weight:900;color:#1a2050;letter-spacing:.5px;margin-bottom:3px;}.etq-rs{font-size:8.5px;font-weight:700;color:#1a2050;margin-bottom:2px;}.etq-rif{font-size:7.5px;color:#64748b;font-weight:700;margin-bottom:4px;}.etq-meta{display:flex;flex-direction:column;gap:2px;}.etq-fecha{font-size:9px;color:#475569;font-weight:700;}.etq-totales{display:flex;flex-wrap:wrap;gap:4px;margin-top:3px;}.etq-stat{display:flex;flex-direction:column;align-items:center;justify-content:center;background:#f8fafc;border:1px solid #dbe2ea;border-radius:4px;padding:2px 7px;min-width:30px;line-height:1;}.etq-stat-val{font-size:10.5px;font-weight:900;color:#1a2050;font-family:Arial,sans-serif;}.etq-stat-lbl{font-size:5.8px;font-weight:800;color:#94a3b8;letter-spacing:.5px;margin-top:1px;}.etq-footer{border-top:1.5px solid #1a2050;padding-top:4px;margin-top:4px;display:flex;justify-content:space-between;align-items:center;flex-shrink:0;}.etq-dir{font-size:7px;color:#475569;font-weight:700;}.etq-tel{font-size:8.5px;color:#1a2050;font-weight:900;letter-spacing:.3px;}.noprint{display:block;text-align:center;padding:16px;}@media print{.noprint{display:none!important;}body{margin:0;}@page{size:A4 portrait;margin:8mm;}}</style>';
+  var estilos = `<style>@page{size:A4 portrait;margin:8mm;}*{box-sizing:border-box;margin:0;padding:0;text-transform:uppercase;-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important;}body{font-family:Arial,sans-serif;background:white;}
+    .grid{display:grid;grid-template-columns:1fr 1fr;gap:7mm;}
+    .etq{border:2.5px solid #1a2050;border-radius:7px;padding:7px;height:auto;display:flex;flex-direction:column;overflow:hidden;page-break-inside:avoid;}
+    .etq-hdr{background:#1a2050;color:white;padding:5px 10px;border-radius:4px;display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;flex-shrink:0;}
+    .etq-logo{height:22px;}
+    .etq-pedido{font-size:8px;font-weight:900;letter-spacing:1px;color:rgba(255,255,255,.9);background:rgba(255,255,255,.15);border-radius:3px;padding:2px 6px;}
+    .etq-body{display:flex;flex:1;gap:8px;min-height:0;}
+    .etq-info{flex:1;min-width:0;display:flex;flex-direction:column;justify-content:space-between;}
+    .etq-empresa{font-size:7.5px;font-weight:700;color:#F47B3E;letter-spacing:.8px;border-bottom:1px solid #f1f5f9;padding-bottom:3px;margin-bottom:3px;}
+    .etq-dest-lbl{font-size:8px;font-weight:700;color:#94a3b8;letter-spacing:.8px;margin-bottom:2px;}
+    .etq-suc{font-size:10px;font-weight:900;color:#1a2050;letter-spacing:.5px;margin-bottom:3px;}
+    .etq-rs{font-size:8.5px;font-weight:700;color:#1a2050;margin-bottom:2px;}
+    .etq-rif{font-size:7.5px;color:#64748b;font-weight:700;margin-bottom:4px;}
+    .etq-ubicacion{margin:3px 0 4px;font-size:8.5px;line-height:1.25;overflow-wrap:anywhere;color:#1a2050;}
+    .etq-ubicacion strong{display:block;font-size:7px;}
+    .etq-mapa{display:flex;flex-direction:column;align-items:center;gap:3px;flex:0 0 24mm;align-self:center;text-align:center;}
+    .etq-mapa a{color:#1a2050;font-size:7px;font-weight:800;text-decoration:none;}
+    .etq-mapa img{width:24mm;height:24mm;display:block;image-rendering:pixelated;}
+    .etq-bultos{font-size:8px;font-weight:800;color:#1a2050;border:1px solid #1a2050;border-radius:4px;padding:3px 5px;width:100%;}
+    .etq-bultos strong{font-size:13px;margin-right:4px;}
+    .etq-meta{display:flex;flex-direction:column;gap:2px;}
+    .etq-fecha{font-size:9px;color:#475569;font-weight:700;}
+    .etq-totales{display:flex;flex-wrap:wrap;gap:4px;margin-top:3px;}
+    .etq-stat{display:flex;flex-direction:column;align-items:center;justify-content:center;background:#f8fafc;border:1px solid #dbe2ea;border-radius:4px;padding:2px 7px;min-width:30px;line-height:1;}
+    .etq-stat-val{font-size:10.5px;font-weight:900;color:#1a2050;font-family:Arial,sans-serif;}
+    .etq-stat-lbl{font-size:5.8px;font-weight:800;color:#94a3b8;letter-spacing:.5px;margin-top:1px;}
+    .etq-footer{border-top:1.5px solid #1a2050;padding-top:4px;margin-top:4px;display:flex;justify-content:space-between;align-items:center;flex-shrink:0;}
+    .etq-dir{font-size:7px;color:#475569;font-weight:700;}
+    .etq-tel{font-size:8.5px;color:#1a2050;font-weight:900;letter-spacing:.3px;}
+    .noprint{display:block;text-align:center;padding:16px;}
+    @media print{.noprint{display:none!important;}body{margin:0;}@page{size:A4 portrait;margin:8mm;}}</style>`;
 
   var paginas=[];
   for(var i=0;i<etiquetasDespacho.length;i+=8){
@@ -88999,7 +89093,48 @@ window.msGenerarEtiquetasDespacho = function(sucsFiltradas) {
 
   var paginasHtml=paginas.map(function(pag,pi){
     var items=pag.map(function(e){
-      return '<div class="etq"><div class="etq-hdr">'+(logoB64?'<img class="etq-logo" src="'+logoB64+'" alt="Farmers">':'<span style="font-size:10px;font-weight:900;letter-spacing:1.5px;">FARMERS C.A.</span>')+'<span class="etq-pedido">N° '+e.numP+'</span></div><div class="etq-body"><div class="etq-info"><div class="etq-empresa">REMITENTE: FARMERS C.A. · RIF J-401008631</div><div class="etq-dest-lbl">DESTINATARIO:</div><div class="etq-suc">'+e.nom.toUpperCase()+'</div><div class="etq-rs">'+e.rs+'</div><div class="etq-rif">RIF: '+e.rif+'</div>'+(e.oc?'<div style="font-size:9px;font-weight:800;color:#0d9488;margin-top:2px;letter-spacing:.3px;">N° ORDEN DE COMPRA: '+e.oc+'</div>':'')+'<div class="etq-meta"><div class="etq-fecha">FECHA DESPACHO: '+e.fecha+'</div><div class="etq-totales"><div class="etq-stat"><span class="etq-stat-val">'+e.refs+'</span><span class="etq-stat-lbl">REF</span></div><div class="etq-stat"><span class="etq-stat-val">'+e.uds.toLocaleString()+'</span><span class="etq-stat-lbl">UDS</span></div>'+(e.vol>0?'<div class="etq-stat"><span class="etq-stat-val">'+e.vol.toFixed(2)+'</span><span class="etq-stat-lbl">FT³</span></div>':'')+(e.peso>0?'<div class="etq-stat"><span class="etq-stat-val">'+e.peso.toFixed(1)+'</span><span class="etq-stat-lbl">KG</span></div>':'')+'</div></div></div><div class="etq-qr"><div style="width:95px;height:95px;border:2px solid #1a2050;border-radius:5px;display:flex;flex-direction:column;align-items:center;justify-content:center;background:white;"><div style="font-size:8px;font-weight:800;color:#1a2050;text-transform:uppercase;letter-spacing:1px;margin-bottom:2px;">DESPACHO</div><div style="width:100%;height:1px;background:#1a2050;margin-bottom:6px;"></div><div style="font-size:18px;font-weight:900;color:#1a2050;line-height:1;font-family:Arial Black,sans-serif;margin-bottom:2px;">'+e.totalBultos+'</div><div style="font-size:8px;font-weight:800;color:#1a2050;text-transform:uppercase;letter-spacing:1px;">BULTOS</div></div></div></div><div class="etq-footer"><span class="etq-dir">MARGARITA, NUEVA ESPARTA · FARMERSVE@GMAIL.COM</span><span class="etq-tel">0412-044 5797</span></div></div>';
+      var escape = msEscaparEtiquetaDespacho;
+      var ubicacion = e.ubicacion;
+      var direccionHtml = '<div class="etq-ubicacion"><strong>Dirección de despacho</strong>' +
+        (ubicacion ? escape(ubicacion.direccion) : 'Pendiente en el Directorio de Clientes') + '</div>';
+      var qr = ubicacion ? msQrEtiquetaDespacho(ubicacion.mapa) : '';
+      var mapaHtml = ubicacion
+        ? '<a href="' + escape(ubicacion.mapa) + '" target="_blank" rel="noopener noreferrer">' +
+          (qr ? '<img src="' + qr + '" alt="QR de Google Maps para ' + escape(e.nom) + '">' : '') +
+          'Google Maps</a>'
+        : '';
+      var logo = logoB64
+        ? '<img class="etq-logo" src="' + logoB64 + '" alt="Farmers">'
+        : '<span style="font-size:10px;font-weight:900;letter-spacing:1.5px;">FARMERS C.A.</span>';
+      var orden = e.oc
+        ? '<div style="font-size:9px;font-weight:800;color:#0d9488;margin-top:2px;letter-spacing:.3px;">N° ORDEN DE COMPRA: ' + escape(e.oc) + '</div>'
+        : '';
+      var totales = '<div class="etq-stat"><span class="etq-stat-val">' + e.refs +
+        '</span><span class="etq-stat-lbl">REF</span></div>' +
+        '<div class="etq-stat"><span class="etq-stat-val">' + e.uds.toLocaleString() +
+        '</span><span class="etq-stat-lbl">UDS</span></div>';
+      if (e.vol > 0) {
+        totales += '<div class="etq-stat"><span class="etq-stat-val">' + e.vol.toFixed(2) +
+          '</span><span class="etq-stat-lbl">FT³</span></div>';
+      }
+      if (e.peso > 0) {
+        totales += '<div class="etq-stat"><span class="etq-stat-val">' + e.peso.toFixed(1) +
+          '</span><span class="etq-stat-lbl">KG</span></div>';
+      }
+      return '<div class="etq">' +
+        '<div class="etq-hdr">' + logo + '<span class="etq-pedido">N° ' + escape(e.numP) + '</span></div>' +
+        '<div class="etq-body"><div class="etq-info">' +
+        '<div class="etq-empresa">REMITENTE: FARMERS C.A. · RIF J-401008631</div>' +
+        '<div class="etq-dest-lbl">DESTINATARIO:</div>' +
+        '<div class="etq-suc">' + escape(e.nom.toUpperCase()) + '</div>' +
+        '<div class="etq-rs">' + escape(e.rs) + '</div><div class="etq-rif">RIF: ' + escape(e.rif) + '</div>' +
+        direccionHtml + orden + '<div class="etq-meta">' +
+        '<div class="etq-fecha">FECHA DESPACHO: ' + escape(e.fecha) + '</div>' +
+        '<div class="etq-totales">' + totales + '</div></div></div>' +
+        '<div class="etq-mapa">' + mapaHtml +
+        '<div class="etq-bultos"><strong>' + e.totalBultos + '</strong> bultos</div></div></div>' +
+        '<div class="etq-footer"><span class="etq-dir">MARGARITA, NUEVA ESPARTA · FARMERSVE@GMAIL.COM</span>' +
+        '<span class="etq-tel">0412-044 5797</span></div></div>';
     }).join('');
     var pageBreak=pi>0?'style="page-break-before:always;margin-top:0;"':'';
     return '<div class="grid" '+pageBreak+'>'+items+'</div>';
