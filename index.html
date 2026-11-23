@@ -124,7 +124,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.11.23.459">
+<meta name="farmers-version" content="2026.11.23.460">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -34819,6 +34819,8 @@ function clCollectForm(c) {
     s.correo    = v('suc_correo_'+s.id);
     s.direccion = v('suc_dir_'+s.id);
     s.despacho  = v('suc_desp_'+s.id);
+    var pin = document.getElementById('suc_maps_' + s.id);
+    if (pin) s.coordenadasMaps = msCoordenadasEtiquetaDespacho(pin.value);
     s.contacto  = v('suc_contacto_'+s.id);
   });
   return c;
@@ -88966,15 +88968,26 @@ function msUbicacionEtiquetaDespacho(clientes, pedido, suc, nombre, rif, razonSo
   if (!direccion || /incomplet[ao]|por confirmar|sin direcci[oó]n/i.test(direccion) ||
       /^[\s\d.,-]+$/.test(direccion)) return null;
 
+  var pin = msCoordenadasEtiquetaDespacho(s.coordenadasMaps);
+  if (pin) {
+    return { direccion: direccion, mapa: 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(pin) };
+  }
+
   var pais = String(ubicacion.cliente.pais || '').trim();
   var codigoMaps = direccion.match(/\s+Google Maps:\s*([23456789CFGHJMPQRVWX]{4,8}\+[23456789CFGHJMPQRVWX]{2,3})\.?$/i);
-  var consulta = direccion;
+  var consulta = direccion.replace(/\.\s*$/, '');
   if (codigoMaps) {
     var localidad = direccion.slice(0, codigoMaps.index).replace(/\.\s*$/, '').split(',').slice(-2).join(',').trim();
     consulta = codigoMaps[1] + ' ' + localidad;
   }
   if (pais && !_v76NormSuc(consulta).includes(_v76NormSuc(pais))) consulta += ', ' + pais;
   return { direccion: direccion, mapa: 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(consulta) };
+}
+
+function msCoordenadasEtiquetaDespacho(valor) {
+  var match = String(valor || '').trim().match(/^(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)$/);
+  if (!match || Math.abs(Number(match[1])) > 90 || Math.abs(Number(match[2])) > 180) return '';
+  return Number(match[1]) + ',' + Number(match[2]);
 }
 
 function msQrEtiquetaDespacho(url) {
@@ -101774,6 +101787,8 @@ window.mdConfirmarCandidatosIA = async function() {
       +   F('Dirección de la sucursal', 'suc_dir_' + s.id, s.direccion || '', { full: true, ph: 'Avenida, calle, edificio, local, referencia' })
       +   F('Dirección de despacho', 'suc_desp_' + s.id, s.despacho || '', { full: true, ph: 'Si queda vacía se usa la dirección de la sucursal',
             extra: '<button type="button" class="cl4-mini" data-s="' + esc(s.id) + '" onclick="cl4IgualDireccion(this.dataset.s)">' + ic('paste', 13) + 'Igual a la dirección</button>' })
+      +   F('Ubicación exacta en Google Maps', 'suc_maps_' + s.id, s.coordenadasMaps || '', { full: true,
+            ph: 'Ej. 10.4475121, -66.8300965', hint: 'Latitud y longitud del punto de entrega. Si se deja vacío, el QR abre la búsqueda por dirección.' })
       +   F('Persona de contacto', 'suc_contacto_' + s.id, s.contacto || '', { ph: 'Encargado o receptor de mercancía' })
       + '</div></div></div>';
   }
@@ -101923,7 +101938,7 @@ window.mdConfirmarCandidatosIA = async function() {
       var f = t.closest('.cl4-f.err'); if (f) f.classList.remove('err');
       if (t.id === 'cl_nombre') { var hn = document.getElementById('cl4-hname'); if (hn) { var v = t.value.trim(); hn.textContent = v || 'Nuevo cliente'; hn.classList.toggle('vacio', !v); } }
       if (t.id && t.id.indexOf('suc_') === 0) {
-        var sid = t.id.replace(/^suc_(nombre|tel|correo|dir|desp|contacto)_/, '');
+        var sid = t.id.replace(/^suc_(nombre|tel|correo|dir|desp|maps|contacto)_/, '');
         var card = document.getElementById('suc-card-' + sid); if (!card) return;
         if (t.id.indexOf('suc_nombre_') === 0) { var nm = card.querySelector('.cl4-suc-nom'); nm.textContent = t.value.trim() || 'Sucursal sin nombre'; nm.classList.toggle('vacio', !t.value.trim()); }
         card.dataset.q = sinAcento(['nombre', 'dir', 'desp', 'contacto', 'tel'].map(function(k){ var x = document.getElementById('suc_' + k + '_' + sid); return x ? x.value : ''; }).join(' '));
@@ -102056,6 +102071,15 @@ window.mdConfirmarCandidatosIA = async function() {
     if (!nombre) { marcarError('cl_nombre', 'Escribe el nombre o la razón social.'); aviso('Falta el nombre del cliente.'); return; }
     var sinNom = (c.sucursales || []).find(function(s){ return !v('suc_nombre_' + s.id); });
     if (sinNom) { marcarError('suc_nombre_' + sinNom.id, 'Ponle un nombre a la sucursal (ej. Principal, Porlamar).'); aviso('Hay una sucursal sin nombre.'); return; }
+    var pinInvalido = (c.sucursales || []).find(function(s) {
+      var pin = v('suc_maps_' + s.id);
+      return pin && !msCoordenadasEtiquetaDespacho(pin);
+    });
+    if (pinInvalido) {
+      marcarError('suc_maps_' + pinInvalido.id, 'Escribe una latitud y una longitud válidas, separadas por coma.');
+      aviso('Revisa el punto de Google Maps de la sucursal.');
+      return;
+    }
     var rif = v('cl_rif'), rd = digitos(rif);
     if (rif && !RIF_OK.test(rif.replace(/[\s.]/g, '')) && !confirm('El RIF «' + rif + '» no tiene el formato habitual (por ejemplo J-12345678-9).\n\n¿Guardar igual?')) { marcarError('cl_rif', 'Revisa el RIF: letra y 8 o 9 números.'); return; }
     if (rd.length >= 6) {
