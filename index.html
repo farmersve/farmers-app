@@ -124,7 +124,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.11.23.459">
+<meta name="farmers-version" content="2026.11.23.460">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -73322,7 +73322,8 @@ var qrcode = function() {
       var qr = qrcode(0, 'M');
       qr.addData(url);
       qr.make();
-      return qr.createDataURL(5, 20);
+      // Cuatro módulos libres por lado. Los enlaces densos necesitan más superficie.
+      return { fuente: qr.createDataURL(5, 20), ladoMm: Math.max(19, Math.ceil((qr.getModuleCount() + 8) * 0.31)) };
     } catch(e){
       console.warn('[Etiquetas] No se pudo generar el QR de ubicación:', e);
       return '';
@@ -73514,51 +73515,67 @@ function msHtmlEtiquetas(etiquetas, tipo){
   var logo = typeof FARMERS_LOGO_B64 !== 'undefined' ? FARMERS_LOGO_B64 : '';
   var titulo = tipo === 'bulto' ? 'Etiquetas de bulto' : 'Etiquetas de despacho';
   var qrs = new Map();
-  function stat(v, nombre){ return '<span><b>' + esc(v) + '</b> ' + nombre + '</span>'; }
+  function stat(v, nombre){
+    return '<div class="etq-stat"><span class="etq-stat-val">' + esc(v) + '</span><span class="etq-stat-lbl">' + nombre + '</span></div>';
+  }
   function tarjeta(item){
     var e = item.envio, d = e.datos, t = e.totales, u = e.ubicacion;
-    var codigo = item.bulto ? 'BULTO ' + item.bulto + ' / ' + d.cajas : d.cajas + (d.cajas === 1 ? ' BULTO' : ' BULTOS');
     if (u.mapa && !qrs.has(u.mapa)) qrs.set(u.mapa, window.msImagenQrMapa(u.mapa));
     var qr = qrs.get(u.mapa);
-    return '<article class="ms-rotulo">' +
-      '<header>' + (logo ? '<img src="' + esc(logo) + '" alt="Farmers">' : '<strong>FARMERS C.A.</strong>') +
-      '<span>' + (item.bulto ? 'BULTO' : 'DESPACHO') + ' · ' + esc(e.numP) + '</span></header>' +
-      '<div class="ms-rotulo-cuerpo"><div class="ms-rotulo-destino">' +
-      '<div class="ms-rotulo-contador">' + codigo + '</div>' +
-      '<h2>' + esc(d.nom) + '</h2><div class="ms-rotulo-cliente">' + esc(d.rs || 'Cliente sin especificar') +
-      (d.rif ? ' · RIF ' + esc(d.rif) : '') + '</div>' +
-      '<div class="ms-rotulo-direccion"><strong>Dirección de despacho</strong><span>' +
-      esc(u.direccion || (u.tipo === 'gps' ? 'Consultar ubicación GPS' : 'Por registrar')) + '</span></div>' +
-      '<div class="ms-rotulo-meta">' + (d.oc ? '<span>OC ' + esc(d.oc) + '</span>' : '') +
-      '<span>Fecha despacho ' + esc(e.fecha) + '</span></div></div>' +
-      '<div class="ms-rotulo-mapa">' + (qr ?
-        '<a href="' + esc(u.mapa) + '" target="_blank" rel="noopener"><img alt="QR de Google Maps" src="' + qr + '">' +
-        '<span>' + (u.tipo === 'gps' ? 'Ubicación GPS' : 'Buscar dirección') + '</span></a>' :
-        '<span class="ms-rotulo-sin-mapa">Sin QR de ubicación</span>') + '</div></div>' +
-      '<footer><div class="ms-rotulo-stats">' + stat(t.refs, 'REF') + stat(t.uds.toLocaleString('es-VE'), 'UDS') +
+    var cantidad = item.bulto
+      ? '<div class="etq-cantidad-titulo">Bulto</div><b>#' + item.bulto + '</b><span>De</span><strong>#' + d.cajas + '</strong>'
+      : '<div class="etq-cantidad-titulo">Despacho</div><b>' + d.cajas + '</b><span>' + (d.cajas === 1 ? 'Bulto' : 'Bultos') + '</span>';
+    return '<article class="ms-rotulo etq etq-' + tipo + '">' +
+      '<header class="etq-hdr">' + (logo ? '<img class="etq-logo" src="' + esc(logo) + '" alt="Farmers">' : '<strong>FARMERS C.A.</strong>') +
+      '<span class="etq-pedido">N° ' + esc(e.numP) + '</span></header>' +
+      '<div class="etq-body"><div class="etq-info">' +
+      '<div class="etq-empresa">Remitente: Farmers C.A. · RIF J-401008631</div>' +
+      '<div class="etq-dest-lbl">Destinatario:</div><h2 class="etq-suc">' + esc(d.nom) + '</h2>' +
+      '<div class="etq-rs">' + esc(d.rs || 'Cliente sin especificar') + '</div>' +
+      '<div class="etq-rif">RIF: ' + esc(d.rif || 'S/RIF') + '</div>' +
+      (d.oc ? '<div class="etq-oc">N° orden de compra: ' + esc(d.oc) + '</div>' : '') +
+      '<div class="etq-fecha">Fecha despacho: ' + esc(e.fecha) + '</div><div class="etq-totales">' +
+      stat(t.refs, 'REF') + stat(t.uds.toLocaleString('es-VE'), 'UDS') +
       (t.vol > 0 ? stat(t.vol.toFixed(2), 'FT³') : '') + (t.peso > 0 ? stat(t.peso.toFixed(1), 'KG') : '') +
-      '</div><small>FARMERS C.A. · RIF J-401008631 · 0412-044 5797 · FARMERSVE@GMAIL.COM</small></footer></article>';
+      '</div></div><div class="etq-cantidad">' + cantidad + '</div></div>' +
+      '<div class="etq-ubicacion"><div class="etq-direccion"><strong>Dirección de despacho</strong><span>' +
+      esc(u.direccion || (u.tipo === 'gps' ? 'Consultar ubicación GPS' : 'Por registrar')) + '</span></div>' +
+      '<div class="ms-rotulo-mapa">' + (qr ?
+        '<a style="--etq-qr-lado:' + qr.ladoMm + 'mm" href="' + esc(u.mapa) + '" target="_blank" rel="noopener noreferrer">' +
+        '<img alt="QR de Google Maps" src="' + qr.fuente + '"><span>' +
+        (u.tipo === 'gps' ? 'Google Maps' : 'Buscar dirección') + '</span></a>' :
+        '<span>Sin QR de ubicación</span>') + '</div></div>' +
+      '<footer class="etq-footer"><span>Margarita, Nueva Esparta · farmersve@gmail.com</span>' +
+      '<strong>0412-044 5797</strong></footer></article>';
   }
   var paginas = [];
   for (var i = 0; i < etiquetas.length; i += 8) paginas.push(etiquetas.slice(i, i + 8));
   var contenido = paginas.map(function(p){ return '<section class="ms-rotulo-pagina">' + p.map(tarjeta).join('') + '</section>'; }).join('');
   var estilos = '<style>' +
-    '@page{size:A4 portrait;margin:8mm}*{box-sizing:border-box}body{margin:0;color:#111827;font:9pt Arial,sans-serif;background:#fff}' +
-    '.ms-rotulo-pagina{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:3mm;align-items:stretch}' +
-    '.ms-rotulo-pagina+.ms-rotulo-pagina{break-before:page}.ms-rotulo{border:1px solid #25345b;border-radius:3mm;min-height:61mm;break-inside:avoid;display:flex;flex-direction:column;overflow:hidden}' +
-    '.ms-rotulo header{display:flex;align-items:center;justify-content:space-between;gap:2mm;background:#162449;color:#fff;padding:1.8mm 3mm;font-size:8pt;font-weight:bold;min-height:8mm}' +
-    '.ms-rotulo header img{display:block;width:auto;max-width:32mm;height:5mm;object-fit:contain}' +
-    '.ms-rotulo-cuerpo{display:grid;grid-template-columns:minmax(0,1fr) 32mm;gap:2mm;flex:1;align-items:center;padding:2.5mm 2.5mm 2mm 3mm}' +
-    '.ms-rotulo-destino{min-width:0;overflow-wrap:anywhere}.ms-rotulo-contador{display:inline-block;background:#e8eefb;color:#152552;font-size:9pt;font-weight:bold;letter-spacing:.03em;border-radius:1mm;padding:.8mm 1.4mm}' +
-    '.ms-rotulo h2{font-size:13pt;line-height:1.02;margin:1.1mm 0 .7mm}.ms-rotulo-cliente{font-size:8pt;color:#3f4d65}' +
-    '.ms-rotulo-direccion{margin-top:1.7mm}.ms-rotulo-direccion strong{display:block;font-size:7pt;text-transform:uppercase;letter-spacing:.04em;color:#3f4d65;margin-bottom:.5mm}.ms-rotulo-direccion span{display:block;line-height:1.15}' +
-    '.ms-rotulo-meta{margin-top:1.5mm;font-size:7pt;color:#3f4d65;display:flex;flex-wrap:wrap;gap:1mm 2mm}' +
-    '.ms-rotulo-mapa{text-align:center;min-width:0}.ms-rotulo-mapa a{display:inline-flex;flex-direction:column;align-items:center;text-decoration:none;font-weight:bold;color:#162449;font-size:8pt}' +
-    '.ms-rotulo-mapa img{width:31mm;height:31mm;display:block;image-rendering:pixelated}.ms-rotulo-sin-mapa{display:inline-block;border:1px dashed #64748b;border-radius:2mm;padding:2mm;font-size:8pt;color:#3f4d65}' +
-    '.ms-rotulo footer{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;padding:1.2mm 3mm;border-top:1px solid #d6deeb;gap:1mm;color:#3f4d65}.ms-rotulo footer small{font-size:6.2pt}.ms-rotulo-stats{display:flex;gap:1.8mm;flex-wrap:wrap;font-size:7pt}' +
-    '.noprint{padding:5mm;display:flex;align-items:center;justify-content:center;gap:3mm;flex-wrap:wrap}.noprint button{border:0;border-radius:2mm;padding:2mm 4mm;font:600 10pt Arial;cursor:pointer}.noprint button:first-child{background:#162449;color:#fff}' +
+    '@page{size:A4 portrait;margin:8mm}*{box-sizing:border-box}body{margin:0;font-family:Arial,sans-serif;background:white;color:#1a2050}' +
+    '.ms-rotulo-pagina{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7mm}.ms-rotulo-pagina+.ms-rotulo-pagina{break-before:page}' +
+    '.etq{border:2.5px solid #1a2050;border-radius:7px;padding:7px;display:flex;flex-direction:column;break-inside:avoid;text-transform:uppercase;min-width:0}' +
+    '.etq-hdr{background:#1a2050;color:white;padding:5px 10px;border-radius:4px;display:flex;align-items:center;justify-content:space-between;gap:6px;margin-bottom:6px;font-size:10px;letter-spacing:1.2px}' +
+    '.etq-logo{height:22px;max-width:40%;object-fit:contain}.etq-pedido{font-size:8px;font-weight:900;letter-spacing:1px;background:rgba(255,255,255,.15);border-radius:3px;padding:2px 6px;text-align:right}' +
+    '.etq-body{display:flex;align-items:center;gap:8px;flex:1}.etq-info{flex:1;min-width:0;overflow-wrap:anywhere}' +
+    '.etq-empresa{font-size:7.5px;font-weight:700;color:#bb4b17;letter-spacing:.65px;border-bottom:1px solid #e2e8f0;padding-bottom:3px;margin-bottom:3px}' +
+    '.etq-dest-lbl{font-size:8px;font-weight:700;color:#64748b;letter-spacing:.8px;margin-bottom:2px}.etq-suc{font-size:14px;font-weight:900;line-height:1.1;margin:0 0 2px}' +
+    '.etq-rs,.etq-rif,.etq-oc,.etq-fecha{font-size:9px;font-weight:700;line-height:1.25}.etq-rif,.etq-fecha{color:#475569}.etq-oc{color:#0d766e}.etq-fecha{margin-top:4px}' +
+    '.etq-totales{display:flex;flex-wrap:wrap;gap:4px;margin-top:4px}.etq-stat{display:flex;flex-direction:column;align-items:center;gap:2px;background:#f8fafc;border:1px solid #dbe2ea;border-radius:4px;padding:2px 6px;min-width:30px;line-height:1}' +
+    '.etq-stat-val{font-size:10.5px;font-weight:900}.etq-stat-lbl{font-size:6px;font-weight:800;color:#64748b;letter-spacing:.35px}' +
+    '.etq-cantidad{width:95px;min-height:95px;border:2px solid #1a2050;border-radius:5px;display:flex;flex-direction:column;align-items:center;justify-content:center;flex-shrink:0;text-align:center;padding:4px;line-height:1}' +
+    '.etq-cantidad-titulo{width:100%;border-bottom:1px solid #1a2050;padding:1px 0 4px;margin:0 0 4px;font-size:8px;font-weight:900;letter-spacing:.85px}' +
+    '.etq-cantidad b,.etq-cantidad strong{font-family:Arial Black,Arial,sans-serif;font-weight:900;font-variant-numeric:tabular-nums}.etq-cantidad b{font-size:26px}.etq-despacho .etq-cantidad b{font-size:34px}' +
+    '.etq-cantidad strong{font-size:20px}.etq-cantidad span{font-size:8px;font-weight:800;letter-spacing:.65px;margin:2px 0}' +
+    '.etq-ubicacion{border-top:1px solid #dbe2ea;margin-top:5px;padding:3px 0;display:flex;align-items:center;justify-content:space-between;gap:8px}' +
+    '.etq-direccion{min-width:0;overflow-wrap:anywhere}.etq-direccion strong,.etq-direccion span{display:block;line-height:1.25}.etq-direccion strong{color:#475569;font-size:7.5px;letter-spacing:.4px;margin-bottom:2px}.etq-direccion span{font-size:9px}' +
+    '.ms-rotulo-mapa{flex-shrink:0;text-align:center;font-size:7px;font-weight:700;color:#475569}.ms-rotulo-mapa a{display:flex;flex-direction:column;align-items:center;gap:1px;color:inherit;text-decoration:none}' +
+    '.ms-rotulo-mapa img{width:var(--etq-qr-lado);height:var(--etq-qr-lado);display:block;image-rendering:pixelated}' +
+    '.etq-footer{border-top:1.5px solid #1a2050;padding-top:4px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:2px 6px;color:#475569;font-size:7px;font-weight:700}.etq-footer strong{color:#1a2050;font-size:8.5px}' +
+    '.noprint{padding:16px;display:flex;align-items:center;justify-content:center;gap:10px;flex-wrap:wrap}.noprint button{border:0;border-radius:8px;padding:10px 18px;font:600 13px Arial;cursor:pointer}.noprint button:first-child{background:#1a2050;color:white}' +
     '@media print{.noprint{display:none}*{-webkit-print-color-adjust:exact;print-color-adjust:exact}}' +
-    '@media screen{body{padding:0 3mm 3mm}.ms-rotulo-pagina+.ms-rotulo-pagina{margin-top:3mm}}' +
+    '@media screen{body{padding:0 8px 8px}.ms-rotulo-pagina+.ms-rotulo-pagina{margin-top:7mm}}' +
+    '@media screen and (max-width:600px){.ms-rotulo-pagina{grid-template-columns:minmax(0,1fr)}}' +
     '</style>';
   return '<!doctype html><html lang="es"><head><meta charset="UTF-8"><title>' + titulo + '</title>' + estilos + '</head><body>' +
     '<div class="noprint"><button onclick="window.print()">Imprimir etiquetas (' + etiquetas.length + ')</button>' +
