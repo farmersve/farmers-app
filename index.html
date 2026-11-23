@@ -124,7 +124,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.11.23.467">
+<meta name="farmers-version" content="2026.11.23.468">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -105474,8 +105474,11 @@ window.mdConfirmarCandidatosIA = async function() {
     + O + ' .mo-alerta b{display:block;font-weight:600}'
     + O + ' .mo-alerta span{color:var(--mo-ink2)}'
     /* indicadores */
-    + O + ' .mo-kpis{display:grid;grid-template-columns:repeat(10,minmax(0,1fr));gap:12px;margin-bottom:18px}'
-    + O + ' .mo-kpis .mo-kpi{grid-column:span 2}' + O + ' .mo-kpis .mo-kpi-w{grid-column:span 5}'
+    + O + ' .mo-kpis{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:12px;margin-bottom:18px}'
+    + O + ' .mo-kpis .mo-kpi{grid-column:span 3}' + O + ' .mo-kpis .mo-kpi-w{grid-column:span 4}'
+    + O + ' .mo-kpis #mo-kpi-bultos{border-color:var(--mo-ok-dot)}'
+    + O + ' #mo-kpi-bultos span:last-child{white-space:normal}'
+    + '@media (min-width:761px) and (max-width:1180px){' + O + ' .mo-kpis #mo-kpi-bultos{grid-column:1/-1}}'
     + O + ' .mo-kpi-w b{font-size:24px}'
     + O + ' .mo-kpi-k{font-size:12.5px;color:var(--mo-muted);margin:0 0 2px!important}'
     + O + ' .mo-kpi-w span:last-child{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}'
@@ -105675,7 +105678,6 @@ window.mdConfirmarCandidatosIA = async function() {
     var DI = {}; pedidos.forEach(function(p){ DI[p.numP] = msDespachosInfo(p, clDB); });
     var sumD = function(l){ return l.reduce(function(s, p){ return s + ((DI[p.numP] || {}).total || 0); }, 0); };
     var despActivos = sumD(pedRes), despTodos = sumD(pedTodos);
-    var totalEmbaladas = pedRes.reduce(function(n, p){ return n + (p.sucursales || []).filter(function(s){ return ((p.sucursalesEstado || {})[s] || '') === 'EMBALADO'; }).length; }, 0);
     var totalPendSucs = pedRes.reduce(function(n, p){ return n + (p.sucursales || []).filter(function(s){ var e = (p.sucursalesEstado || {})[s] || ''; return e !== 'EMBALADO' && e !== 'DESPACHADO'; }).length; }, 0);
 
     var avancesEntrega = new Map();
@@ -105802,8 +105804,7 @@ window.mdConfirmarCandidatosIA = async function() {
       ['truck', 't-brand', pedRes.length + ' → ' + despActivos, 'Pedidos activos → despachos'],
       ['lock', 't-bad', totalComp, 'Uds. comprometidas'],
       ['list', 't-info', Object.keys(comp).length, 'Referencias activas'],
-      ['clock', 't-warn', totalPendSucs, 'Despachos pendientes' + (masViejo > 0 ? ' · el más antiguo espera ' + pl(masViejo, 'día') : '')],
-      ['box', 't-ok', totalEmbaladas, 'Despachos embalados']
+      ['clock', 't-warn', totalPendSucs, 'Despachos pendientes' + (masViejo > 0 ? ' · el más antiguo espera ' + pl(masViejo, 'día') : '')]
     ];
     var CP = null;
     try {
@@ -105812,8 +105813,14 @@ window.mdConfirmarCandidatosIA = async function() {
     } catch(e){ CP = null; }
     var kd = document.createElement('div'); kd.className = 'mo-kpis';
     var desg = ['TF', 'BCV', 'USD'].filter(function(k){ return porDesp[k] > 0.004; }).map(function(k){ return k + ' ' + usd(porDesp[k]); }).join(' · ');
-    kd.innerHTML = '<div class="mo-kpi mo-kpi-w" title="Valor de lo que falta despachar en los pedidos activos (precios del pedido). Es la suma nominal de las tres listas; abajo, el desglose por lista."><div class="mo-kpi-ic t-brand">' + ic('dollar', 18) + '</div><div><span class="mo-kpi-k">Por despachar</span><b>' + usd(porDespTot) + '</b><span>' + (desg || 'Sin pedidos activos') + '</span></div></div>' +
-      '<div class="mo-kpi mo-kpi-w" id="mo-kpi-carga" title="Carga física de lo que falta despachar en los pedidos activos, calculada con las medidas del Master Data."><div class="mo-kpi-ic t-info">' + ic('truck', 18) + '</div><div><span class="mo-kpi-k">Carga por despachar</span><b>' + (CP && CP.vol > 0 ? nf(CP.vol, 2) + ' ft³' : '—') + '</b><span>' + (CP && CP.uds > 0 ? nf(CP.vol * M3, 2) + ' m³ · ' + nf(CP.bruto, 1) + ' kg · ' + nf(CP.cajas, 1) + ' cajas · ' + nf(CP.uds, 0) + ' piezas' : 'Sin carga pendiente') + '</span></div></div>' + K.map(function(k){ return '<div class="mo-kpi"><div class="mo-kpi-ic ' + k[1] + '">' + ic(k[0], 18) + '</div><div><b>' + esc(k[2]) + '</b><span>' + k[3] + '</span></div></div>'; }).join('');
+    var embalaje = resumenBultosEmbalados(pedidos.filter(FIL.embalado));
+    var sinConteo = embalaje.despachos - embalaje.conEtiqueta;
+    var detalleEmbalaje = embalaje.despachos
+      ? pl(embalaje.despachos, 'despacho') + ' · ' + (sinConteo ? pl(sinConteo, 'despacho') + ' sin conteo de bultos' : 'Conteo de etiquetas')
+      : 'Sin despachos embalados';
+    kd.innerHTML = '<div class="mo-kpi mo-kpi-w" id="mo-kpi-bultos" title="Suma de bultos registrados en las etiquetas de los despachos embalados que aún no han salido."><div class="mo-kpi-ic t-ok">' + ic('box', 18) + '</div><div><span class="mo-kpi-k">Bultos embalados por despachar</span><b>' + (embalaje.despachos && !embalaje.conEtiqueta ? 'Por registrar' : nf(embalaje.bultos, 0)) + '</b><span>' + detalleEmbalaje + '</span></div></div>' +
+      '<div class="mo-kpi mo-kpi-w" title="Valor de lo que falta despachar en los pedidos activos (precios del pedido). Es la suma nominal de las tres listas; abajo, el desglose por lista."><div class="mo-kpi-ic t-brand">' + ic('dollar', 18) + '</div><div><span class="mo-kpi-k">Por despachar</span><b>' + usd(porDespTot) + '</b><span>' + (desg || 'Sin pedidos activos') + '</span></div></div>' +
+      '<div class="mo-kpi mo-kpi-w" id="mo-kpi-carga" title="Carga estimada de los pedidos activos, calculada con las medidas del Master Data."><div class="mo-kpi-ic t-info">' + ic('truck', 18) + '</div><div><span class="mo-kpi-k">Carga estimada por despachar</span><b>' + (CP && CP.vol > 0 ? nf(CP.vol, 2) + ' ft³' : '—') + '</b><span>' + (CP && CP.uds > 0 ? nf(CP.vol * M3, 2) + ' m³ · ' + nf(CP.bruto, 1) + ' kg · ' + nf(CP.cajas, 1) + ' cajas de fábrica · ' + nf(CP.uds, 0) + ' piezas' : 'Sin carga pendiente') + '</span></div></div>' + K.map(function(k){ return '<div class="mo-kpi"><div class="mo-kpi-ic ' + k[1] + '">' + ic(k[0], 18) + '</div><div><b>' + esc(k[2]) + '</b><span>' + k[3] + '</span></div></div>'; }).join('');
     cont.appendChild(kd);
 
     /* buscador y pestañas */
@@ -105909,7 +105916,30 @@ window.mdConfirmarCandidatosIA = async function() {
       });
       return r;
     }
-    function bultosEtiq(ped){ var o = {}, et = etiq(ped); Object.keys(et).forEach(function(sk){ var c = parseInt((et[sk] || {}).cajas); if (!isNaN(c) && c > 0) o[sk] = c; }); return o; }
+    function bultosEtiq(ped){
+      var o = Object.create(null), et = etiq(ped);
+      Object.keys(et).forEach(function(sk){
+        var valor = (et[sk] || {}).cajas;
+        if (typeof valor !== 'number' && typeof valor !== 'string') return;
+        var cantidad = Number(valor);
+        if (Number.isSafeInteger(cantidad) && cantidad > 0) o[sk] = cantidad;
+      });
+      return o;
+    }
+    function resumenBultosEmbalados(pedidosEmbalados){
+      var total = { bultos: 0, despachos: 0, conEtiqueta: 0 };
+      pedidosEmbalados.forEach(function(pedido){
+        var bultos = bultosEtiq(pedido);
+        (pedido.sucursales || []).forEach(function(suc){
+          if (sucEst(pedido, suc) !== 'EMBALADO' || entregaDe(pedido, suc)) return;
+          total.despachos++;
+          if (bultos[suc] === undefined) return;
+          total.conEtiqueta++;
+          total.bultos += bultos[suc];
+        });
+      });
+      return total;
+    }
     // celdas de la ficha: [clave, icono, etiqueta, valor, detalle, ayuda]
     function celdas(r, bul, nSuc, nConEt, corto){
       var vol = r.vol, br = r.bruto;
