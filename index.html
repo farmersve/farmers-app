@@ -124,7 +124,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.11.24.473">
+<meta name="farmers-version" content="2026.11.24.474">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -3077,13 +3077,13 @@ tbody td { padding: 8px 10px; vertical-align: middle; }
     <div class="lt">Sistema de Pedidos</div>
     <div class="ls2">Acceso Autorizado</div>
     <div id="l-msg">❌ Usuario o contraseña incorrectos</div>
-    <div class="lf">
-      <label>Usuario</label>
-      <input id="l-u" type="text" placeholder="Tu usuario" autocomplete="off">
-      <label>Contraseña</label>
-      <input id="l-p" type="password" placeholder="••••••••" autocomplete="off">
-      <button id="l-go" onclick="lLogin()">Ingresar →</button>
-    </div>
+    <form id="lg-form" class="lf" method="post" autocomplete="on" onsubmit="event.preventDefault(); lLogin();">
+      <label for="l-u">Usuario</label>
+      <input id="l-u" name="username" type="text" placeholder="Tu usuario" autocomplete="username" autocapitalize="characters" spellcheck="false">
+      <label for="l-p">Contraseña</label>
+      <input id="l-p" name="password" type="password" placeholder="••••••••" autocomplete="current-password">
+      <button id="l-go" type="submit">Ingresar →</button>
+    </form>
   </div>
 </div>
 
@@ -8214,10 +8214,21 @@ var _lTries = 0;
 var _lMax   = 3;
 var _lUsers = [{u:'OGK',p:'Farmersve2026*!'},{u:'GKK',p:'Farmersve2026*!'},{u:'DEP',p:'Deposito2026*!',rol:'DEPOSITO'},{u:'ADM',p:'Administra2026*!',rol:'ADMINISTRATIVO'}]; // v.394 ADM = administradora (solo Centro de Pedidos)
 
+// En Chrome, el gestor de contraseñas decide si ofrece guardar la credencial.
+function lOfrecerCredencial(usuario, clave) {
+  if (!window.isSecureContext || typeof window.PasswordCredential !== 'function' || !navigator.credentials?.store) return;
+  try {
+    navigator.credentials.store(new window.PasswordCredential({ id: usuario, password: clave })).catch(function(){});
+  } catch(e) {
+    // El gestor puede estar deshabilitado por el navegador o por su configuración.
+  }
+}
+
 function lLogin() {
   try {
   var u = (document.getElementById('l-u').value || '').trim().toUpperCase();
-  var p =  document.getElementById('l-p').value || '';
+  var campoClave = document.getElementById('l-p');
+  var p = campoClave.value || '';
   var _match = _lUsers.find(function(x){ return x.u === u && x.p === p; });
   var ok = !!_match;
   // v.178: rol del usuario (DEPOSITO = acceso solo al Centro de Picking)
@@ -8227,6 +8238,8 @@ function lLogin() {
     msg.style.display = 'none';
     _lTries = 0;
     lShowApp(u);
+    lOfrecerCredencial(u, p);
+    campoClave.value = '';
   } else {
     _lTries++;
     msg.style.display = 'block';
@@ -8728,14 +8741,6 @@ function doLogout() {
   document.getElementById('l-go').disabled = false;
   _lTries = 0;
 }
-
-// Enter key on password field
-document.getElementById('l-p').addEventListener('keydown', function(e){
-  if (e.key === 'Enter') lLogin();
-});
-document.getElementById('l-u').addEventListener('keydown', function(e){
-  if (e.key === 'Enter') document.getElementById('l-p').focus();
-});
 
 /* v.419 — SESIÓN QUE NO SE PIERDE AL ABRIR UN PDF
    Safari (Mac) y Chrome con "Ahorro de memoria" recargan la pestaña del sistema cuando se abre
@@ -104758,8 +104763,7 @@ window.mdConfirmarCandidatosIA = async function() {
 /* ═══ v.435 — PANTALLA DE ENTRADA MODERNIZADA ═════════════════════════════
    Solo capa visual. El acceso sigue siendo el mismo lLogin(): mismos
    usuarios, mismos 3 intentos, misma sesión que se recuerda en la pestaña.
-   Se reutilizan los mismos campos (#l-u, #l-p, #l-go, #l-msg), así que el
-   Enter, el cierre de sesión y la recuperación de sesión funcionan igual. */
+   El mismo formulario conserva los campos y sus atributos de autocompletado. */
 (function(){
   if (window._fkLogin435) return; window._fkLogin435 = true;
   var P = {
@@ -104839,6 +104843,7 @@ window.mdConfirmarCandidatosIA = async function() {
     + '@keyframes lgGiro{to{transform:rotate(360deg)}}'
     + '.lg-nota{display:flex;gap:10px;align-items:flex-start;margin-top:26px;padding-top:20px;border-top:1px solid var(--lg-line);font-size:12.5px;line-height:1.5;color:var(--lg-muted)}'
     + '.lg-nota svg{flex-shrink:0;margin-top:1px}'
+    + '.lg-autofill{margin:11px 0 0;color:var(--lg-muted);font-size:12.5px;line-height:1.5}'
     + '.lg-version{margin-top:22px;font:500 11.5px "Geist Mono",ui-monospace,monospace;color:var(--lg-muted);opacity:.75;text-align:center}'
     /* tableta y teléfono */
     + '@media (max-width:960px){'
@@ -104860,7 +104865,8 @@ window.mdConfirmarCandidatosIA = async function() {
 
   function armar(){
     var ls = document.getElementById('ls'), u = document.getElementById('l-u'), p = document.getElementById('l-p'), go = document.getElementById('l-go'), msg = document.getElementById('l-msg');
-    if (!ls || !u || !p || !go || !msg || ls._lg435) return;
+    var form = document.getElementById('lg-form');
+    if (!ls || !u || !p || !go || !msg || !form || ls._lg435) return;
     ls._lg435 = true;
     try { if (localStorage.getItem('farmers_tema') === 'noche') ls.classList.add('lg-noche'); } catch(e){}
     var cont = document.createElement('div'); cont.className = 'lg';
@@ -104881,19 +104887,23 @@ window.mdConfirmarCandidatosIA = async function() {
       +   '<h1>Inicia sesión</h1>'
       +   '<p class="sub">Entra con tu usuario y contraseña del sistema.</p>'
       +   '<div id="lg-msg-slot"></div>'
-      +   '<form id="lg-form" novalidate autocomplete="off">'
-      +     '<div class="lg-campo"><label for="l-u">Usuario</label><div class="lg-in" id="lg-in-u">' + ic('user') + '</div></div>'
-      +     '<div class="lg-campo"><label for="l-p">Contraseña</label><div class="lg-in" id="lg-in-p">' + ic('lock')
-      +       '<button type="button" class="lg-ver" id="lg-ver" aria-label="Mostrar contraseña" title="Mostrar contraseña">' + ic('eye') + '</button></div>'
-      +       '<div class="lg-caps" id="lg-caps" role="status">' + ic('caps', 14) + 'Bloq Mayús está activado</div></div>'
-      +     '<div id="lg-go-slot"></div>'
-      +   '</form>'
+      +   '<div id="lg-form-slot"></div>'
+      +   '<p class="lg-autofill">Puedes usar una contraseña guardada y confirmarla con el desbloqueo de tu dispositivo.</p>'
       +   '<div class="lg-nota">' + ic('shield', 16) + '<span>Acceso exclusivo para el equipo de Farmers C.A. Después de 3 intentos fallidos el acceso queda bloqueado hasta recargar la página.</span></div>'
       +   '<div class="lg-version">v' + version() + '</div>'
       + '</div></main>';
     ls.appendChild(cont);
-    // se mudan los mismos campos de siempre (conservan sus eventos)
     document.getElementById('lg-msg-slot').appendChild(msg);
+    var campos = document.createElement('template');
+    campos.innerHTML =
+        '<div class="lg-campo"><label for="l-u">Usuario</label><div class="lg-in" id="lg-in-u">' + ic('user') + '</div></div>'
+      + '<div class="lg-campo"><label for="l-p">Contraseña</label><div class="lg-in" id="lg-in-p">' + ic('lock')
+      + '<button type="button" class="lg-ver" id="lg-ver" aria-label="Mostrar contraseña" title="Mostrar contraseña">' + ic('eye') + '</button></div>'
+      + '<div class="lg-caps" id="lg-caps" role="status">' + ic('caps', 14) + 'Bloq Mayús está activado</div></div>'
+      + '<div id="lg-go-slot"></div>';
+    form.replaceChildren(campos.content);
+    form.classList.remove('lf');
+    document.getElementById('lg-form-slot').replaceWith(form);
     var inU = document.getElementById('lg-in-u'); inU.appendChild(u);
     var inP = document.getElementById('lg-in-p'); inP.insertBefore(p, document.getElementById('lg-ver'));
     document.getElementById('lg-go-slot').appendChild(go);
@@ -104902,7 +104912,6 @@ window.mdConfirmarCandidatosIA = async function() {
     p.setAttribute('aria-label', 'Contraseña');
     msg.setAttribute('role', 'alert');
     pintarBoton(false);
-    document.getElementById('lg-form').addEventListener('submit', function(e){ e.preventDefault(); });
     var ver = document.getElementById('lg-ver');
     ver.addEventListener('click', function(){
       var mostrar = p.type === 'password';
