@@ -124,7 +124,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.11.24.479">
+<meta name="farmers-version" content="2026.11.24.480">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -71300,19 +71300,28 @@ function msPickingIdentidadValida(dato, linea) {
     return !!linea.barra && !!dato.codigoLeido && msPickingBarra(dato.codigoLeido) === msPickingBarra(linea.barra);
   }
   return dato.metodo === 'Cotejo manual supervisado' && dato.supervision?.usuario === 'ADM'
-    && ['DAÑADO', 'FALTA'].includes(dato.supervision.tipo) && !!dato.supervision.motivo?.trim();
+    && (['DAÑADO', 'FALTA'].includes(dato.supervision.tipo)
+      || (dato.supervision.tipo === 'NO_LOCALIZADO' && dato.cantidad === 0))
+    && !!dato.supervision.motivo?.trim();
+}
+
+function msPickingRequeridas(lineas, estado, conteoFisico) {
+  return lineas.filter(l => l.previstas > 0 || (l.solicitadas > 0
+    && (conteoFisico || Object.hasOwn(estado?.lineas || {}, l.referencia))));
 }
 
 function msPickingCerrado(pedido, sucursal, lineas) {
   const estado = msPickingEstado(pedido, sucursal);
-  if (!estado?.cierre || !lineas.some(linea => linea.previstas > 0)) return false;
+  if (!estado?.cierre) return false;
+  const requeridas = msPickingRequeridas(lineas, estado, estado.cierre.controlConteoFisico);
+  if (!requeridas.length) return false;
   if (estado.cierre.firma !== JSON.stringify(lineas.map(linea => [linea.referencia, msPickingFirma(linea)]))) return false;
   if (!estado.cierre.controlCamara) {
     // Respeta el cierre anterior únicamente si el pedido ya avanzó al embalaje o al despacho.
     const etapa = String((pedido.sucursalesEstado || {})[sucursal] || pedido.estado || '').toUpperCase();
     return ['EMBALADO', 'DESPACHADO', 'ENTREGADO'].includes(etapa);
   }
-  return lineas.filter(l => l.previstas > 0 || (Object.hasOwn(estado.lineas, l.referencia) && l.solicitadas)).every(l => {
+  return requeridas.every(l => {
     const ficha = estado.lineas[l.referencia];
     return ['picking', 'repaso'].every(paso => msPickingIdentidadValida(ficha?.[paso], l)
       && ficha[paso].cantidad === l.previstas);
@@ -71435,7 +71444,11 @@ window.msAbrirPickingPedido = async function(pedido, primeraSucursal, alVolver) 
       #pk476 .pk-btn.pk-primary,#pk476 .pk-step[aria-pressed=true]{background:#273675;border-color:#273675;color:#fff}
       #pk476 .pk-head .pk-btn{background:#263461;color:#fff;border-color:#7080ae}
       #pk476 .pk-tools{display:grid;gap:12px;background:#fff;border:1px solid #dce2ee;border-radius:12px;padding:14px;margin-bottom:18px}
-      #pk476 .pk-tools[hidden]{display:none}
+      #pk476 .pk-tools[hidden],#pk476 .pk-tools [hidden]{display:none}
+      #pk476 .pk-acciones{display:flex;flex-wrap:wrap;gap:7px}
+      #pk476 .pk-form{border-top:1px solid #e3e8f2;padding-top:10px}
+      #pk476 input[name="cantidad"]{font-variant-numeric:tabular-nums;font-weight:700}
+      #pk476 .pk-btn.pk-camara{border-color:#6476aa}
       #pk476 .pk-tools progress{width:100%;height:9px;accent-color:#31674f}
       #pk476 .pk-muted{font-size:13px;color:#495675}
       #pk476 .pk-scan{display:flex;align-items:end;gap:8px;flex:1 1 300px}
@@ -71489,9 +71502,12 @@ window.msAbrirPickingPedido = async function(pedido, primeraSucursal, alVolver) 
           </select></label>
         </div>
         <div class="pk-row"><div><h2 id="pk476-etapa"></h2><p class="pk-muted" id="pk476-ayuda"></p></div>
-          <button type="button" class="pk-btn pk-primary" id="pk476-continuar"></button>
+          <div class="pk-acciones">
+            <button type="button" class="pk-btn" id="pk476-siguiente" hidden>Siguiente referencia</button>
+            <button type="button" class="pk-btn pk-primary" id="pk476-continuar"></button>
+          </div>
         </div>
-        <div id="pk476-avance"></div><progress id="pk476-barra" max="100" value="0" aria-label="Avance de la revisión"></progress>
+        <div id="pk476-avance" role="status"></div><progress id="pk476-barra" max="100" value="0" aria-label="Avance de la revisión"></progress>
         <form class="pk-scan" id="pk476-scanner">
           <label>Localizar una ficha<input id="pk476-scan" class="pk-field" autocomplete="off" placeholder="Referencia, código interno o código de barras"></label>
           <button type="submit" class="pk-btn">Localizar</button>
@@ -71516,9 +71532,10 @@ window.msAbrirPickingPedido = async function(pedido, primeraSucursal, alVolver) 
         <label>Estado del código<select class="pk-field" name="tipo" required>
           <option value="">Selecciona el motivo</option><option value="DAÑADO">Código dañado o ilegible</option>
           <option value="FALTA">Código ausente en el producto o en el catálogo</option>
+          <option value="NO_LOCALIZADO">Producto no localizado en depósito (0 piezas)</option>
         </select></label>
         <label>Detalle del motivo<textarea class="pk-field" name="detalle" rows="2" maxlength="200" required></textarea></label>
-        <label class="pk-check"><input type="checkbox" name="cotejado" required> Fabiola cotejó físicamente el producto, sus identificadores disponibles y la cantidad indicada.</label>
+        <label class="pk-check"><input type="checkbox" name="cotejado" required> Fabiola verificó el producto y su cantidad, o corroboró que no se localizó en depósito.</label>
         <label>Clave del usuario ADM<input class="pk-field" name="clave" type="password" autocomplete="off" autocapitalize="off" required></label>
         <p id="pk476-manual-mensaje" class="pk-warn" role="status" aria-live="polite"></p>
         <div class="pk-row"><button type="button" id="pk476-manual-cerrar" class="pk-btn">Cancelar</button>
@@ -71540,12 +71557,19 @@ window.msAbrirPickingPedido = async function(pedido, primeraSucursal, alVolver) 
   }
 
   function pendientes() {
-    const guardadas = estadoSucursal(sucursal).lineas;
-    return lineas.filter(l => l.previstas > 0 || (Object.hasOwn(guardadas, l.referencia) && l.solicitadas));
+    const estado = estadoSucursal(sucursal);
+    const cerrado = msPickingCerrado(pedido, sucursal, lineas);
+    return msPickingRequeridas(lineas, estado, !cerrado || estado.cierre.controlConteoFisico);
   }
 
   function puedeRepasar() {
-    return lineas.some(l => l.previstas > 0) && pendientes().every(l => registro(l, 'picking'));
+    const requeridas = pendientes();
+    return requeridas.length > 0 && requeridas.every(l => registro(l, 'picking'));
+  }
+
+  function requiereMotivo(linea, valor, stock) {
+    return valor !== linea.previstas || (stock !== null && valor > stock)
+      || (paso === 'repaso' && valor !== registro(linea, 'picking')?.cantidad);
   }
 
   function disponible(linea, inventario, compromisos) {
@@ -71575,12 +71599,14 @@ window.msAbrirPickingPedido = async function(pedido, primeraSucursal, alVolver) 
 
   function mostrarAvance() {
     const cierre = msPickingCerrado(pedido, sucursal, lineas);
-    const soloLectura = msPickingFolioCerrado(pedido, sucursal) || msEmbalajeRol() === 'REVISION';
+    const cerradaPorEstado = msPickingFolioCerrado(pedido, sucursal);
+    const soloLectura = cerradaPorEstado || msEmbalajeRol() === 'REVISION';
     const requeridas = pendientes();
     const hechas = requeridas.filter(l => registro(l)).length;
     const diferencias = requeridas.filter(l => {
       const primero = registro(l, 'picking'), repaso = registro(l, 'repaso');
-      return (primero && primero.cantidad !== l.previstas) || (repaso && repaso.cantidad !== primero?.cantidad);
+      return (primero && (primero.cantidad !== l.previstas || (primero.disponibleRegistrado != null && primero.cantidad > primero.disponibleRegistrado)))
+        || (repaso && (repaso.cantidad !== primero?.cantidad || (repaso.disponibleRegistrado != null && repaso.cantidad > repaso.disponibleRegistrado)));
     }).length;
     $('picking').setAttribute('aria-pressed', String(paso === 'picking'));
     $('repaso').setAttribute('aria-pressed', String(paso === 'repaso'));
@@ -71590,12 +71616,23 @@ window.msAbrirPickingPedido = async function(pedido, primeraSucursal, alVolver) 
       const firma = estadoSucursal(sucursal).cierre;
       $('etapa').textContent += ' · ' + firma.usuario + ' · ' + hora(firma.fecha);
     }
-    $('ayuda').textContent = cierre ? 'Picking y segundo conteo conciliados con el pedido.'
-      : soloLectura ? 'Sucursal en consulta por su estado operativo.'
-      : paso === 'repaso' ? 'Vuelve a escanear el código de cada producto y registra el segundo conteo.'
-      : 'Escanea el código de cada producto y registra la cantidad realmente preparada.';
-    $('avance').textContent = hechas + ' de ' + requeridas.length + ' referencias registradas' + (diferencias ? ' · ' + diferencias + ' con diferencias' : '');
+    if (cerradaPorEstado) {
+      const estado = estadoOperativo(sucursal);
+      const titulo = { EMBALADO: 'Sucursal embalada', DESPACHADO: 'Sucursal despachada',
+        ENTREGADO: 'Sucursal entregada', CANCELADO: 'Sucursal cancelada' };
+      $('etapa').textContent = (titulo[estado] || 'Despacho en curso') + ' · Solo consulta';
+    }
+    $('picking').hidden = $('repaso').hidden = cerradaPorEstado;
+    $('ayuda').textContent = cerradaPorEstado ? 'Puedes consultar sus productos y el historial registrado desde esta pantalla.'
+      : cierre ? 'Picking y segundo conteo conciliados con el pedido.'
+      : soloLectura ? 'Acceso de revisión operativa. El depósito registra los conteos.'
+      : paso === 'repaso' ? 'Vuelve a contar físicamente, escanea el código y confirma cada referencia.'
+      : 'Escribe cuántas piezas preparaste, escanea el código y confirma la referencia. Registra las diferencias tal como las encontraste.';
+    $('avance').textContent = cerradaPorEstado ? lineas.length + (lineas.length === 1 ? ' referencia en el pedido' : ' referencias en el pedido')
+      : hechas + ' de ' + requeridas.length + ' referencias confirmadas' + (diferencias ? ' · ' + diferencias + ' con diferencias' : '');
+    $('barra').hidden = cerradaPorEstado;
     $('barra').value = requeridas.length ? 100 * hechas / requeridas.length : 0;
+    $('siguiente').hidden = soloLectura || cierre || hechas === requeridas.length;
     const btn = $('continuar');
     btn.hidden = soloLectura || cierre || !requeridas.length;
     btn.textContent = paso === 'picking' ? 'Pasar al segundo repaso' : 'Cerrar verificación';
@@ -71633,11 +71670,11 @@ window.msAbrirPickingPedido = async function(pedido, primeraSucursal, alVolver) 
       const guardado = registro(linea);
       const registros = estadoSucursal(sucursal).lineas;
       const previo = Object.hasOwn(registros, ref) ? registros[ref] : null;
-      const cuenta = previo || linea.previstas > 0;
+      const cuenta = linea.solicitadas > 0 || linea.previstas > 0;
       const stock = disponible(linea, inventario, compromisos);
-      const limite = Math.min(linea.previstas, stock ?? linea.previstas);
-      const diferente = linea.previstas < linea.solicitadas || limite < linea.previstas
-        || (guardado && guardado.cantidad !== linea.previstas)
+      const menorQueReserva = stock !== null && stock < linea.previstas;
+      const diferente = linea.previstas < linea.solicitadas || menorQueReserva
+        || (guardado && (guardado.cantidad !== linea.previstas || (stock !== null && guardado.cantidad > stock)))
         || (paso === 'repaso' && guardado && guardado.cantidad !== registro(linea, 'picking')?.cantidad);
       if (filtro === 'pendientes' && !borradores.has(ref) && (!cuenta || guardado)) return;
       if (filtro === 'diferencias' && !diferente && !borradores.has(ref)) return;
@@ -71657,25 +71694,25 @@ window.msAbrirPickingPedido = async function(pedido, primeraSucursal, alVolver) 
         <dl class="pk-codes"><div><dt>Referencia</dt><dd>${esc(ref)}</dd></div>
           <div><dt>Código interno</dt><dd>${codigoEsc}</dd></div><div><dt>Código de barras</dt><dd>${barraEsc}</dd></div></dl>
         <dl class="pk-metrics"><div><dt>Solicitadas</dt><dd>${fmt(linea.solicitadas)}</dd></div>
-          <div><dt>Previstas</dt><dd>${fmt(linea.previstas)}</dd></div><div><dt>Disponibles¹</dt><dd>${stock === null ? '—' : fmt(stock)}</dd></div></dl>
-        ${limite < linea.previstas ? '<p class="pk-warn">La disponibilidad está por debajo de lo previsto.</p>' : ''}
-        ${!cuenta ? '<p class="pk-muted">Sin unidades asignadas para despacho.</p>' : ''}
-        ${guardado ? `<p class="${guardado.cantidad === linea.previstas ? 'pk-done' : 'pk-warn'}"><strong>${fmt(guardado.cantidad)} uds registradas</strong> · ${esc(guardado.usuario)} · ${esc(hora(guardado.fecha))}${guardado.motivo ? ' · ' + esc(guardado.motivo) : ''}${paso === 'repaso' && registro(linea, 'picking') ? ' · Picking: ' + fmt(registro(linea, 'picking').cantidad) + ' uds' : ''}</p>`
+          <div><dt>Reservadas</dt><dd>${fmt(linea.previstas)}</dd></div><div><dt>Disp. sistema¹</dt><dd>${stock === null ? '—' : fmt(stock)}</dd></div></dl>
+        ${menorQueReserva ? '<p class="pk-warn">El sistema muestra menos piezas que las reservadas.</p>' : ''}
+        ${cuenta && !linea.previstas && !soloLectura ? '<p class="pk-warn">Sin reserva en el sistema. Registra el resultado del conteo físico.</p>' : ''}
+        ${guardado ? `<p class="${!requiereMotivo(linea, guardado.cantidad, stock) ? 'pk-done' : 'pk-warn'}"><strong>${fmt(guardado.cantidad)} uds registradas</strong> · ${esc(guardado.usuario)} · ${esc(hora(guardado.fecha))}${guardado.motivo ? ' · ' + esc(guardado.motivo) : ''}${paso === 'repaso' && registro(linea, 'picking') ? ' · Picking: ' + fmt(registro(linea, 'picking').cantidad) + ' uds' : ''}</p>`
           : previo && previo[paso] ? '<p class="pk-warn">Esta etapa requiere una nueva verificación de identidad.</p>'
             : legacy[ref] && paso === 'picking' ? '<p class="pk-muted">Conteo anterior: ' + fmt(legacy[ref]) + ' uds.</p>' : ''}
         ${cuenta && !soloLectura ? `<form class="pk-form">
-          <label>${paso === 'repaso' ? 'Cantidad del segundo conteo' : 'Cantidad preparada'}<input class="pk-field" name="cantidad" type="number" step="1" min="0" inputmode="numeric" required></label>
+          <label>${paso === 'repaso' ? 'Piezas del segundo conteo' : 'Piezas contadas para el pedido'}<input class="pk-field" name="cantidad" type="number" step="1" min="0" max="${Math.max(linea.solicitadas, linea.previstas)}" inputmode="numeric" placeholder="Escribe el conteo físico" required></label>
           <div class="pk-row"><button type="button" class="pk-btn pk-camara">Escanear código</button>
-            <button type="button" class="pk-btn pk-manual">Código dañado o ausente</button></div>
+            <button type="button" class="pk-btn pk-manual">Pedir cotejo de Fabiola</button></div>
           <p class="pk-verificacion" aria-live="polite"></p>
           <label class="pk-motivo" hidden>Motivo de la diferencia<input class="pk-field" name="motivo" maxlength="180"></label>
-          <div class="pk-row"><button type="submit" class="pk-btn" disabled>${guardado ? 'Actualizar conteo' : 'Guardar conteo'}</button>
+          <div class="pk-row"><button type="submit" class="pk-btn pk-primary" disabled>${guardado ? 'Actualizar conteo' : 'Confirmar referencia'}</button>
             <button type="button" class="pk-btn pk-descartar" hidden>Descartar cambios</button></div>
         </form>` : ''}`;
       tarjeta.appendChild(detalle);
       grid.appendChild(tarjeta);
       const form = detalle.querySelector('form');
-      tarjetas.set(ref, { tarjeta, form, foto, linea, limite });
+      tarjetas.set(ref, { tarjeta, form, foto, linea });
       if (!form) return;
       const draft = borradores.get(ref);
       const descartar = form.querySelector('.pk-descartar');
@@ -71690,8 +71727,7 @@ window.msAbrirPickingPedido = async function(pedido, primeraSucursal, alVolver) 
       mostrarLectura(ref, form);
       function motivoVisible() {
         const valor = form.elements.cantidad.value;
-        const requiere = valor !== '' && (Number(valor) !== linea.previstas
-          || (paso === 'repaso' && Number(valor) !== registro(linea, 'picking')?.cantidad));
+        const requiere = valor !== '' && requiereMotivo(linea, Number(valor), stock);
         form.querySelector('.pk-motivo').hidden = !requiere;
         form.elements.motivo.required = requiere;
       }
@@ -71752,16 +71788,16 @@ window.msAbrirPickingPedido = async function(pedido, primeraSucursal, alVolver) 
   function guardarConteo(linea, form, excepcion = null) {
     const { cantidad, motivo } = form.elements;
     const valor = cantidad.valueAsNumber;
-    if (!Number.isSafeInteger(valor) || valor < 0) {
-      mensaje('Registra la cantidad física en unidades enteras.', true);
+    if (!Number.isSafeInteger(valor) || valor < 0 || valor > Math.max(linea.solicitadas, linea.previstas)) {
+      mensaje('Registra las piezas físicas preparadas para esta referencia, hasta la cantidad del pedido.', true);
       return false;
     }
-    if (motivo.required && !motivo.value.trim()) { mensaje('Escribe el motivo de la diferencia.', true); return false; }
     const leido = excepcion ? '' : lecturas.get(linea.referencia) || '';
     const evidencia = {
       firma: msPickingFirma(linea),
       metodo: excepcion ? 'Cotejo manual supervisado' : 'Cámara',
       codigoLeido: leido,
+      cantidad: valor,
       ...(excepcion ? { supervision: excepcion } : {})
     };
     if (!msPickingIdentidadValida(evidencia, linea)) {
@@ -71769,14 +71805,17 @@ window.msAbrirPickingPedido = async function(pedido, primeraSucursal, alVolver) 
       return false;
     }
     if (!persistir((ficha, marca) => {
-      const maximo = Math.min(linea.previstas, disponible(linea, getInventory(), getComprometido()) ?? linea.previstas);
-      if (valor > maximo) {
-        mensaje(linea.referencia + ' admite hasta ' + fmt(maximo) + ' uds con la asignación y disponibilidad actuales.', true);
+      const stock = disponible(linea, getInventory(), getComprometido());
+      const diferencia = requiereMotivo(linea, valor, stock);
+      if (diferencia && !motivo.value.trim()) {
+        form.querySelector('.pk-motivo').hidden = false;
+        motivo.required = true;
+        mensaje('Escribe el motivo de la diferencia con la reserva, el sistema o el primer conteo.', true);
         return false;
       }
       const auditado = ficha.lineas[linea.referencia] || {};
-      const dato = { ...marca, ...evidencia, cantidad: valor,
-        motivo: motivo.required ? motivo.value.trim() : '' };
+      const dato = { ...marca, ...evidencia, disponibleRegistrado: stock,
+        reservadasRegistradas: linea.previstas, motivo: diferencia ? motivo.value.trim() : '' };
       ficha.lineas = { ...ficha.lineas, [linea.referencia]: paso === 'picking'
         ? { picking: dato } : { ...auditado, repaso: dato } };
       ficha.historial.push({ ...dato, etapa: paso === 'picking' ? 'Picking' : 'Segundo repaso', ref: linea.referencia });
@@ -71786,8 +71825,11 @@ window.msAbrirPickingPedido = async function(pedido, primeraSucursal, alVolver) 
     lecturas.delete(linea.referencia);
     borradores.delete(linea.referencia);
     dibujar();
-    mensaje(linea.referencia + ' · ' + fmt(valor) + ' uds guardadas.');
-    if (!excepcion) $('scan').focus({ preventScroll: true });
+    const guardado = registro(linea);
+    const diferencia = requiereMotivo(linea, valor, guardado?.disponibleRegistrado ?? null);
+    mensaje(linea.referencia + ' · ' + fmt(valor) + ' piezas confirmadas.'
+      + (diferencia ? ' Diferencia registrada para conciliar antes del cierre.' : ''));
+    if (!excepcion && filtro !== 'diferencias') irSiguiente(linea.referencia);
     return true;
   }
 
@@ -71818,10 +71860,17 @@ window.msAbrirPickingPedido = async function(pedido, primeraSucursal, alVolver) 
     mensaje(nuevo === 'repaso' ? 'Vuelve a contar la mercancía físicamente antes de registrar cada referencia.' : '');
   }
 
+  function estadoOperativo(s) {
+    if (String(pedido.estado || '').toUpperCase() === 'CANCELADO') return 'CANCELADO';
+    return String(pedido.sucursalesEstado?.[s] || pedido.estado || '').toUpperCase();
+  }
   $('suc').replaceChildren(...sucursales.map(s => {
     const opcion = document.createElement('option');
     opcion.value = s;
-    opcion.textContent = (pedido.etiqData?.[s]?.nom || s);
+    const estado = estadoOperativo(s);
+    const etiqueta = { RESERVADO: 'Reservada', EMBALADO: 'Embalada', DESPACHADO: 'Despachada',
+      ENTREGADO: 'Entregada', CANCELADO: 'Cancelada' };
+    opcion.textContent = (pedido.etiqData?.[s]?.nom || s) + (etiqueta[estado] ? ' · ' + etiqueta[estado] : '');
     return opcion;
   }));
   $('suc').onchange = () => {
@@ -71847,14 +71896,31 @@ window.msAbrirPickingPedido = async function(pedido, primeraSucursal, alVolver) 
           + '. Corrige el conteo o solicita ajustar el pedido en el Monitor y vuelve a verificar las líneas que cambien.', true);
         return false;
       }
-      ficha.cierre = { ...marca, controlCamara: true, firma: JSON.stringify(lineas.map(l => [l.referencia, msPickingFirma(l)])) };
+      ficha.cierre = { ...marca, controlCamara: true, controlConteoFisico: true,
+        firma: JSON.stringify(lineas.map(l => [l.referencia, msPickingFirma(l)])) };
       ficha.historial.push({ ...marca, etapa: 'Verificación cerrada' });
       return true;
     })) return;
     dibujar();
-    mensaje('Sucursal lista para embalar. Registra los bultos físicos cuando termines.');
-    $('embalaje').scrollIntoView({ block: 'nearest' });
+    if (lineas.some(l => l.previstas > 0)) {
+      mensaje('Sucursal lista para embalar. Registra los bultos físicos cuando termines.');
+      $('embalaje').scrollIntoView({ block: 'nearest' });
+    } else mensaje('Conteos cerrados. Esta sucursal no tiene unidades asignadas para embarque.');
   };
+
+  function irSiguiente(desde) {
+    const requeridas = pendientes();
+    const indice = requeridas.findIndex(l => l.referencia === desde) + 1;
+    const orden = requeridas.slice(indice).concat(requeridas.slice(0, indice));
+    const siguiente = orden.find(l => !registro(l));
+    if (!siguiente) {
+      if (!$('continuar').disabled) $('continuar').focus();
+      return;
+    }
+    const ficha = localizar(siguiente);
+    ficha?.form?.elements.cantidad.focus();
+  }
+  $('siguiente').onclick = () => irSiguiente('');
 
   function localizar(linea) {
     if (!tarjetas.has(linea.referencia)) {
@@ -72030,8 +72096,12 @@ window.msAbrirPickingPedido = async function(pedido, primeraSucursal, alVolver) 
     const clave = campos.clave.value;
     campos.clave.value = '';
     const tipo = campos.tipo.value, motivo = campos.detalle.value.trim();
-    if (!conteoManual || !campos.cotejado.checked || !['DAÑADO', 'FALTA'].includes(tipo) || !motivo) {
+    if (!conteoManual || !campos.cotejado.checked || !['DAÑADO', 'FALTA', 'NO_LOCALIZADO'].includes(tipo) || !motivo) {
       $('manual-mensaje').textContent = 'Indica el motivo y confirma el cotejo físico.';
+      return;
+    }
+    if (tipo === 'NO_LOCALIZADO' && conteoManual.form.elements.cantidad.valueAsNumber !== 0) {
+      $('manual-mensaje').textContent = 'Usa Producto no localizado únicamente para confirmar cero piezas.';
       return;
     }
     if (Date.now() < esperarADM) {
@@ -72050,8 +72120,10 @@ window.msAbrirPickingPedido = async function(pedido, primeraSucursal, alVolver) 
     }
     fallosADM = 0;
     const { linea, form } = conteoManual;
-    if (guardarConteo(linea, form, { usuario: 'ADM', tipo, motivo, fecha: new Date().toISOString() })) cerrarManual();
-    else if (!form.isConnected) cerrarManual();
+    if (guardarConteo(linea, form, { usuario: 'ADM', tipo, motivo, fecha: new Date().toISOString() })) {
+      cerrarManual();
+      if (filtro !== 'diferencias') irSiguiente(linea.referencia);
+    } else if (!form.isConnected) cerrarManual();
     else $('manual-mensaje').textContent = $('mensaje').textContent;
   };
 
@@ -72065,7 +72137,7 @@ window.msAbrirPickingPedido = async function(pedido, primeraSucursal, alVolver) 
   $('suc').focus({ preventScroll: true });
   const nota = document.createElement('p');
   nota.className = 'pk-muted';
-  nota.textContent = '¹ Disponibilidad para esta sucursal según inventario registrado, compromisos de otros pedidos y asignaciones pendientes del mismo pedido.';
+  nota.textContent = '¹ Disponibilidad según el saldo registrado y los compromisos. Confirmar una diferencia guarda el conteo físico; el ajuste de inventario y de reserva se hace por el proceso de conciliación.';
   $('lista').after(nota);
   if (!Object.keys(fotos).length && typeof window.fbGetImages === 'function') {
     Promise.resolve(window.fbGetImages()).then(imagenes => {
