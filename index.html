@@ -124,7 +124,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.11.24.478">
+<meta name="farmers-version" content="2026.11.24.479">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -70985,7 +70985,8 @@ function msEmbalajeAvisos(pedidos, rol) {
   const incluidos = {
     DEPOSITO: ['PICKING', 'CONTEO', 'DEVUELTO'],
     REVISION: ['PICKING', 'CONTEO', 'REVISION', 'DEVUELTO'],
-    APROBADOR: ['APROBACION']
+    APROBADOR: ['APROBACION'],
+    MONITOR: ['PICKING', 'CONTEO', 'DEVUELTO', 'REVISION', 'APROBACION']
   }[rol] || [];
   return pedidos.flatMap(p => {
     if (!['RESERVADO', 'PARCIAL', 'EMBALADO'].includes(String(p.estado || '').toUpperCase()) || p._ligero) return [];
@@ -71000,7 +71001,11 @@ function msEmbalajeAvisos(pedidos, rol) {
         REVISION: 'Conteo recibido · revisar', APROBACION: 'Conteo revisado · aprobar'
       };
       if (estado.fase === 'PICKING' && msPickingEstado(p, suc)?.actualizado && confirmado) avisos.PICKING = 'Picking en proceso';
-      return [{ pedido: p, suc, texto: avisos[estado.fase], cantidad: estado.fase === 'PICKING' ? null : estado.registro?.bultos }];
+      return [{
+        pedido: p, suc, fase: estado.fase, reservaConfirmada: confirmado,
+        nombreSucursal: p.etiqData?.[suc]?.nom || suc, texto: avisos[estado.fase],
+        cantidad: estado.fase === 'PICKING' ? null : estado.registro?.bultos
+      }];
     });
   });
 }
@@ -71040,6 +71045,114 @@ function msEmbalajeMontarAvisos(contenedor, volver) {
   const timer = setInterval(() => {
     if (!panel.isConnected) { clearInterval(timer); return; }
     if (document.visibilityState === 'visible' && !document.getElementById('pk476')) cargarAvisos();
+  }, 5000);
+}
+
+function msEmbalajePanelMonitor(contenedor, volver, icono) {
+  const grupos = [
+    { clave: 'deposito', titulo: 'Depósito', subtitulo: 'Picking y embalaje', icono: 'box', fases: ['PICKING', 'CONTEO', 'DEVUELTO'] },
+    { clave: 'revision', titulo: 'Revisión de Fabiola', subtitulo: 'Conteos por revisar', icono: 'list', fases: ['REVISION'] },
+    { clave: 'aprobacion', titulo: msEmbalajeRol() === 'APROBADOR' ? 'Tu aprobación' : 'Aprobación final', subtitulo: 'Etiquetas por liberar', icono: 'check', fases: ['APROBACION'] }
+  ];
+  const panel = document.createElement('section');
+  panel.className = 'mo-picking';
+  panel.setAttribute('aria-labelledby', 'mo-picking-titulo');
+  panel.innerHTML = `
+    <header class="mo-picking-cabecera">
+      <div class="mo-picking-identidad"><span class="mo-picking-icono">${icono('scan', 19)}</span>
+        <h2 id="mo-picking-titulo">Picking y embalaje</h2>
+      </div>
+      <p class="mo-picking-estado" role="status"></p>
+    </header>
+    <div class="mo-picking-etapas" aria-label="Etapas pendientes por sucursal"></div>
+    <div class="mo-picking-cola" id="mo-picking-cola" hidden></div>`;
+  contenedor.prepend(panel);
+  const etapas = panel.querySelector('.mo-picking-etapas');
+  const cola = panel.querySelector('.mo-picking-cola');
+  const formato = new Intl.NumberFormat('es-VE');
+  const cantidad = (valor, uno, varios) => formato.format(valor) + ' ' + (valor === 1 ? uno : varios);
+  const indicadores = new Map();
+  let seleccion, firma, avisosPorGrupo = new Map();
+  grupos.forEach(g => {
+    const boton = document.createElement('button');
+    boton.type = 'button';
+    boton.className = 'mo-picking-etapa';
+    boton.dataset.grupo = g.clave;
+    boton.setAttribute('aria-controls', 'mo-picking-cola');
+    boton.innerHTML = `<span class="mo-picking-etapa-titulo">${icono(g.icono, 15)} <strong>${g.titulo}</strong></span>
+      <span class="mo-picking-total"></span><span class="mo-picking-sub"></span>`;
+    boton.onclick = () => {
+      seleccion = seleccion === g.clave ? null : g.clave;
+      dibujar();
+    };
+    indicadores.set(g.clave, boton);
+    etapas.appendChild(boton);
+  });
+
+  function dibujar() {
+    grupos.forEach(g => {
+      const avisos = avisosPorGrupo.get(g.clave) || [];
+      const boton = indicadores.get(g.clave);
+      boton.disabled = !avisos.length;
+      boton.setAttribute('aria-pressed', String(g.clave === seleccion));
+      boton.querySelector('.mo-picking-total').textContent = formato.format(avisos.length);
+      const bultos = avisos.reduce((total, aviso) => total + (aviso.cantidad || 0), 0);
+      const porConciliar = avisos.filter(a => a.fase === 'PICKING' && !a.reservaConfirmada).length;
+      boton.querySelector('.mo-picking-sub').textContent = g.clave === 'deposito' && porConciliar
+        ? cantidad(porConciliar, 'reserva por conciliar', 'reservas por conciliar')
+        : bultos && g.clave !== 'deposito' ? cantidad(bultos, 'bulto', 'bultos') : g.subtitulo;
+    });
+    const enAprobacion = (avisosPorGrupo.get('aprobacion') || []).length;
+    const total = Array.from(avisosPorGrupo.values()).reduce((n, avisos) => n + avisos.length, 0);
+    const estado = panel.querySelector('.mo-picking-estado');
+    estado.dataset.tono = enAprobacion ? 'aprobacion' : total ? 'curso' : 'al-dia';
+    estado.textContent = enAprobacion ? cantidad(enAprobacion, 'sucursal por aprobar', 'sucursales por aprobar')
+      : total ? cantidad(total, 'sucursal en proceso', 'sucursales en proceso') : 'Sin tareas pendientes';
+    const avisos = avisosPorGrupo.get(seleccion) || [];
+    cola.hidden = !avisos.length;
+    const actual = cola.querySelector('[data-folio]:focus');
+    const foco = actual ? [actual.dataset.folio, actual.dataset.sucursal] : null;
+    cola.replaceChildren();
+    avisos.forEach(aviso => {
+      const fila = document.createElement('button');
+      fila.type = 'button';
+      fila.className = 'mo-picking-fila';
+      fila.dataset.folio = aviso.pedido.numP;
+      fila.dataset.sucursal = aviso.suc;
+      fila.innerHTML = '<span class="mo-picking-destino"><strong></strong><small></small></span>'
+        + '<span class="mo-picking-detalle"></span><span class="mo-picking-accion"></span>' + icono('chev', 16);
+      fila.querySelector('strong').textContent = aviso.nombreSucursal;
+      fila.querySelector('small').textContent = aviso.pedido.numP;
+      fila.querySelector('.mo-picking-detalle').textContent = aviso.texto
+        + (aviso.cantidad ? ' · ' + cantidad(aviso.cantidad, 'bulto', 'bultos') : '');
+      fila.querySelector('.mo-picking-accion').textContent = aviso.fase === 'APROBACION' && msEmbalajeRol() === 'APROBADOR'
+        ? 'Revisar y aprobar' : 'Ver detalle';
+      fila.onclick = () => {
+        const vigente = getMsPedidos().find(p => p.numP === aviso.pedido.numP);
+        if (vigente) msAbrirPickingPedido(vigente, aviso.suc, volver);
+        else refrescar();
+      };
+      cola.appendChild(fila);
+      if (foco && foco[0] === aviso.pedido.numP && foco[1] === aviso.suc) fila.focus({ preventScroll: true });
+    });
+  }
+
+  function refrescar() {
+    const avisos = msEmbalajeAvisos(getMsPedidos(), 'MONITOR');
+    const nueva = JSON.stringify(avisos.map(a => [a.pedido.numP, a.suc, a.nombreSucursal, a.fase, a.texto, a.cantidad]));
+    if (firma === nueva) return;
+    firma = nueva;
+    avisosPorGrupo = new Map(grupos.map(g => [g.clave, avisos.filter(a => g.fases.includes(a.fase))]));
+    if (seleccion !== null && !avisosPorGrupo.get(seleccion)?.length) {
+      seleccion = ['aprobacion', 'revision', 'deposito'].find(clave => avisosPorGrupo.get(clave).length);
+    }
+    dibujar();
+  }
+
+  refrescar();
+  const timer = setInterval(() => {
+    if (!panel.isConnected) { clearInterval(timer); return; }
+    if (document.visibilityState === 'visible' && !document.getElementById('pk476')) refrescar();
   }, 5000);
 }
 
@@ -106567,6 +106680,48 @@ window.mdConfirmarCandidatosIA = async function() {
     + O + ' .mo-b.ic{width:36px;padding:0;justify-content:center}'
     + O + ' .mo-scroll{flex:1;overflow-y:auto;overscroll-behavior:contain}'
     + O + ' .mo-in{max-width:1560px;margin:0 auto;padding:20px 28px 60px}'
+    + O + " .mo-picking{background:var(--mo-surface);border:1px solid var(--mo-line);border-radius:15px;margin-bottom:16px;overflow:hidden;box-shadow:var(--mo-sh)}"
+    + O + " .mo-picking-cabecera{display:flex;align-items:center;justify-content:space-between;gap:9px 18px;flex-wrap:wrap;padding:12px 16px;border-bottom:1px solid var(--mo-line)}"
+    + O + " .mo-picking-identidad{display:flex;align-items:center;gap:9px}"
+    + O + " .mo-picking-identidad h2{font-size:16px;line-height:1.2;letter-spacing:-.015em;font-weight:650;margin:0;color:var(--mo-ink)}"
+    + O + " .mo-picking-icono{display:grid;place-items:center;width:32px;height:32px;flex:none;border-radius:8px;background:var(--mo-soft);color:var(--mo-brand)}"
+    + O + " .mo-picking-estado{display:flex;align-items:center;gap:7px;margin:0;padding:4px 8px;border-radius:6px;font-size:12px;font-weight:600;color:var(--mo-muted);background:var(--mo-surface2)}"
+    + O + " .mo-picking-estado::before{content:\"\";height:7px;width:7px;border-radius:50%;background:currentColor}"
+    + O + " .mo-picking-estado[data-tono=\"al-dia\"]{color:var(--mo-ok);background:var(--mo-ok-bg)}"
+    + O + " .mo-picking-estado[data-tono=\"aprobacion\"]{color:var(--mo-warn);background:var(--mo-warn-bg)}"
+    + O + " .mo-picking-etapas{display:grid;grid-template-columns:repeat(3,minmax(0,1fr))}"
+    + O + " .mo-picking-etapa{display:grid;grid-template-columns:1fr auto;gap:4px 12px;align-items:start;text-align:left;background:transparent;border:0;border-right:1px solid var(--mo-line);border-bottom:2px solid transparent;padding:12px 16px;min-width:0;color:var(--mo-ink);cursor:pointer}"
+    + O + " .mo-picking-etapa:last-child{border-right:0}"
+    + O + " .mo-picking-etapa:disabled{cursor:default}"
+    + O + " .mo-picking-etapa:not(:disabled):hover{background:var(--mo-surface2)}"
+    + O + " .mo-picking-etapa[aria-pressed=\"true\"]{background:var(--mo-soft);border-bottom-color:var(--mo-brand)}"
+    + O + " .mo-picking-etapa-titulo{display:flex;align-items:center;gap:7px;min-width:0;font-size:13px;color:var(--mo-ink2)}"
+    + O + " .mo-picking-etapa-titulo strong{font-weight:600}"
+    + O + " .mo-picking-total{grid-area:1/2/3/3;align-self:center;font-size:27px;letter-spacing:-.045em;line-height:1;font-weight:650;font-variant-numeric:tabular-nums}"
+    + O + " .mo-picking-etapa[data-grupo=\"aprobacion\"]:not(:disabled) .mo-picking-total{color:var(--mo-brand)}"
+    + O + " .mo-picking-sub{grid-column:1;min-width:0;font-size:12px;color:var(--mo-muted)}"
+    + O + " .mo-picking-cola{border-top:1px solid var(--mo-line);max-height:270px;overflow:auto}"
+    + O + " .mo-picking-cola[hidden]{display:none}"
+    + O + " .mo-picking-fila{display:grid;grid-template-columns:minmax(0,1fr) minmax(100px,1fr) auto 16px;align-items:center;gap:8px 14px;width:100%;text-align:left;border:0;border-bottom:1px solid var(--mo-line2);background:transparent;color:var(--mo-ink);padding:10px 16px;cursor:pointer}"
+    + O + " .mo-picking-fila:last-child{border-bottom:0}"
+    + O + " .mo-picking-fila:hover{background:var(--mo-surface2)}"
+    + O + " .mo-picking button:focus-visible{outline:2px solid var(--mo-brand);outline-offset:-3px}"
+    + O + " .mo-picking-destino{display:grid;gap:2px;min-width:0;overflow-wrap:anywhere}"
+    + O + " .mo-picking-destino strong{font-size:13px;font-weight:650}"
+    + O + " .mo-picking-destino small,.mo-picking-detalle{font-size:12px;color:var(--mo-muted)}"
+    + O + " .mo-picking-accion{font-size:12px;font-weight:650;color:var(--mo-brand)}"
+    + "@media(max-width:620px){"
+    + O + " .mo-picking-cabecera{padding:10px 12px}"
+    + O + " .mo-picking-etapa{grid-template-columns:1fr;gap:4px;padding:9px 8px;align-content:start}"
+    + O + " .mo-picking-total{grid-area:1/1;align-self:start;font-size:22px}"
+    + O + " .mo-picking-etapa-titulo{grid-row:2;font-size:12px;line-height:1.2}"
+    + O + " .mo-picking-etapa-titulo svg{display:none}"
+    + O + " .mo-picking-sub{font-size:11px;line-height:1.25}"
+    + O + " .mo-picking-fila{grid-template-columns:minmax(0,1fr) auto 12px;padding:9px 12px;gap:3px 8px}"
+    + O + " .mo-picking-detalle{grid-column:1;grid-row:2}"
+    + O + " .mo-picking-accion{grid-column:2;grid-row:1/3;max-width:85px;text-align:right}"
+    + O + " .mo-picking-fila>svg{grid-column:3;grid-row:1/3;width:12px}"
+    + "}"
     /* aviso */
     + O + ' .mo-alerta{display:flex;gap:12px;align-items:flex-start;padding:14px 16px;border-radius:12px;background:var(--mo-bad-bg);color:var(--mo-bad);margin-bottom:16px;font-size:13.5px;line-height:1.5}'
     + O + ' .mo-alerta b{display:block;font-weight:600}'
@@ -106875,7 +107030,7 @@ window.mdConfirmarCandidatosIA = async function() {
       '</div>' +
       '<div class="mo-scroll"><div class="mo-in" id="mo-in"></div></div>';
     var cont = ov.querySelector('#mo-in');
-    msEmbalajeMontarAvisos(cont, msAbrirMonitor);
+    msEmbalajePanelMonitor(cont, msAbrirMonitor, ic);
     ov.querySelector('#ms-mon-close').onclick = function(){ ov.remove(); };
     ov.querySelector('#mo-actualizar').onclick = function(){ msAbrirMonitor(); };
     ov.querySelector('#mo-preventas').onclick = function(){ if (typeof pvAbrir === 'function') pvAbrir('ACTIVAS'); };
