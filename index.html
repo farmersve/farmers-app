@@ -124,7 +124,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.11.23.469">
+<meta name="farmers-version" content="2026.11.23.470">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -7627,7 +7627,14 @@ function ventasConciliadas(ventas = getSales(), facturas = hclGetFacturas(), ped
     }
     let equivalentes = buscar(fuertes, () => true);
     if (!equivalentes.length) {
-      equivalentes = buscar(comprobantes, x => !despacho || !x.despacho || despacho === x.despacho);
+      equivalentes = buscar(comprobantes, x => {
+        if (despacho && x.despacho && despacho !== x.despacho) return false;
+        // Dos ventas nativas con huellas distintas y el mismo folio pueden
+        // venir de una reasignación errónea. Se conservan para la auditoría.
+        if (d.origen === 'Historial de ventas' && x.origen === d.origen &&
+            d.id !== x.id && firm && firma(x) && firm !== firma(x)) return false;
+        return true;
+      });
     }
     if (!equivalentes.length && similar && (d.origen === 'Importación en ventas' || d.origen === 'Historial de clientes')) {
       // Los espejos HCL antiguos pueden carecer de folio y llevar otro RIF.
@@ -7761,7 +7768,24 @@ function ventasConciliadas(ventas = getSales(), facturas = hclGetFacturas(), ped
     });
   });
   ventas.filter(v => v?.fuente === 'hcl_import').forEach(agregarVenta);
-  const visibles = docs.filter(d => !d.anulado);
+  const porFolio = new Map();
+  docs.filter(d => !d.anulado).forEach(d => {
+    const folio = fiscal(d.nFactura);
+    const rif = clave(d.rif);
+    if (!folio || !rif) return;
+    const key = rif + ':' + folio;
+    if (!porFolio.has(key)) porFolio.set(key, []);
+    porFolio.get(key).push(d);
+  });
+  const enConflicto = new Set();
+  porFolio.forEach(grupo => {
+    if (grupo.length < 2) return;
+    grupo.forEach(d => {
+      enConflicto.add(d);
+      incidencia(d, 'Folio fiscal repetido en operaciones distintas · ' + d.nFactura);
+    });
+  });
+  const visibles = docs.filter(d => !d.anulado && !enConflicto.has(d));
   visibles.forEach(d => {
     if (d.sinDetalle) incidencia(d, 'Documento sin detalle disponible');
     else if (d.origen === 'Monitor de pedidos') incidencia(d, 'Despacho recuperado del Monitor', true);
