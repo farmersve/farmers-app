@@ -124,7 +124,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.11.23.470">
+<meta name="farmers-version" content="2026.11.23.471">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -7530,6 +7530,11 @@ function ventasConciliadas(ventas = getSales(), facturas = hclGetFacturas(), ped
   const esAnulado = x => x.anulada || x.anulado || /^(ANULAD[AO]|CANCELAD[AO])$/i.test(texto(x.estado));
   const docs = [], incidencias = [], porClave = new Map();
   const cuentas = typeof cxcFacs === 'function' ? cxcFacs() : [];
+  const folioCuenta = f => f.nFactura || (/^\d+$/.test(texto(f.numpedido)) ? f.numpedido : '');
+  const vinculosCxc = cuentas.filter(Boolean).map(f => ({
+    f, pedidos: new Set([texto(f.numpedido).toUpperCase(),
+      ...(texto(f.notas).toUpperCase().match(/\bMS-\d{6}-\d+(?:-[A-Z0-9]+)*/g) || [])])
+  }));
   const notas = typeof ncGetAll === 'function' ? ncGetAll().filter(n => n && !n.anulada && n.tipo === 'devolucion') : [];
   function incidencia(d, motivo, contado = false) {
     incidencias.push({ documento: d.numpedido || d.nFactura || d.hclId || d.id, motivo, contado,
@@ -7580,7 +7585,7 @@ function ventasConciliadas(ventas = getSales(), facturas = hclGetFacturas(), ped
   }
   function identidad(d) {
     const rif = clave(d.rif);
-    const cl = porIdCliente.get(texto(d.clienteId)) || porRif.get(rif) ||
+    const cl = porRif.get(rif) || porIdCliente.get(texto(d.clienteId)) ||
       (!rif && nombreReal(d.cliente) ? porNombre.get(clave(d.cliente)) : null);
     return { rif: texto(cl?.rif || d.rif), cliente: texto(cl?.nombre || d.cliente) || 'Sin identificar' };
   }
@@ -7692,9 +7697,32 @@ function ventasConciliadas(ventas = getSales(), facturas = hclGetFacturas(), ped
   }
 
   function agregarVenta(v) {
-    agregar({ ...v, nFactura: v.nFactura || v.nroFacturaExternal || (/^\d+$/.test(texto(v.numpedido)) ? v.numpedido : ''),
-      origen: v.fuente === 'hcl_import' ? 'Importación en ventas' : 'Historial de ventas', ventaOriginal: true,
-      anulado: esAnulado(v), sinDetalle: Boolean(v._ligero) || !Array.isArray(v.items) || (!v.items.length && num(v.units) !== 0) });
+    const origen = v.fuente === 'hcl_import' ? 'Importación en ventas' : 'Historial de ventas';
+    const numero = v.nFactura || v.nroFacturaExternal || (/^\d+$/.test(texto(v.numpedido)) ? v.numpedido : '');
+    const importe = num(v.total);
+    const fecha = fechaISO(v.fechaEmisionFiscal || v.fecha);
+    let respaldos = [];
+    if (origen === 'Historial de ventas') {
+      respaldos = cuentas.filter(f => f && v.id && texto(f.saleId) === texto(v.id));
+      if (!respaldos.length && numero && fecha && importe !== null) {
+        respaldos = cuentas.filter(f => f && fiscal(folioCuenta(f)) === fiscal(numero) &&
+          fechaISO(f.fechaEmision) === fecha &&
+          [num(f.montoOriginal), num(f.monto)].some(m => m !== null && m.toFixed(2) === importe.toFixed(2)) &&
+          (!v.moneda || !f.moneda || v.moneda === f.moneda));
+      }
+    }
+    const cuenta = respaldos.length === 1 && clave(respaldos[0].rif) ? respaldos[0] : null;
+    const corregirCliente = cuenta && clave(cuenta.rif) !== clave(v.rif);
+    if (corregirCliente && cuenta.clienteNombre) {
+      incidencia({ ...v, cliente: cuenta.clienteNombre, items: lineas(v.items) },
+        'Cliente confirmado con factura de Cuentas por cobrar', true);
+    }
+    agregar({ ...v, nFactura: cuenta ? folioCuenta(cuenta) || numero : numero,
+      cliente: cuenta?.clienteNombre || v.cliente, rif: cuenta?.rif || v.rif,
+      clienteId: cuenta?.clienteId || (corregirCliente ? '' : v.clienteId),
+      origen, ventaOriginal: true,
+      anulado: esAnulado(v) || (cuenta && esAnulado(cuenta)),
+      sinDetalle: Boolean(v._ligero) || !Array.isArray(v.items) || (!v.items.length && num(v.units) !== 0) });
   }
   ventas.filter(v => v && v.fuente !== 'hcl_import').forEach(agregarVenta);
 
@@ -7749,14 +7777,23 @@ function ventasConciliadas(ventas = getSales(), facturas = hclGetFacturas(), ped
       const numpedido = p.numP + '-' + clave(suc);
       const rif = cl?.rif || et.rif;
       const baseFactura = fiscal(df.nFactura);
-      const vinculadas = cuentas.filter(f => f && (
-        texto(f.numpedido).toUpperCase() === numpedido.toUpperCase() ||
-        (baseFactura && fiscal(f.nFactura) === baseFactura && clave(f.rif) && clave(f.rif) === clave(rif))
-      ));
-      const cuenta = vinculadas.length === 1 ? vinculadas[0] : null;
+      const pedido = texto(p.numP).toUpperCase();
+      const original = texto(p._recuperadoDe || (pedido.match(/^(MS-\d{6}-\d+)-[A-Z]$/) || [])[1]).toUpperCase();
+      const sucursal = clave(suc);
+      // Una sucursal recuperada puede conservar en CxC el número del pedido
+      // previo. Si la sucursal también existe allí, el vínculo es ambiguo.
+      const previo = original && !ramas.get(original)?.has(sucursal) ? original + '-' + sucursal : '';
+      const vinculadas = vinculosCxc.filter(({ f, pedidos }) => {
+        if (pedidos.has(numpedido.toUpperCase())) return true;
+        if (!clave(rif) || clave(f.rif) !== clave(rif)) return false;
+        return (previo && pedidos.has(previo)) ||
+          (p.sucursales.length === 1 && pedidos.has(pedido)) ||
+          (baseFactura && fiscal(folioCuenta(f)) === baseFactura);
+      });
+      const cuenta = vinculadas.length === 1 ? vinculadas[0].f : null;
       agregar({ numpedido, msNumPedido: p.numP, sucursalCodigo: suc,
         sucursal: et.nom || suc, fecha: df.fechaEmision || cuenta?.fechaEmision || fechaMarca || p.fechaDespacho,
-        nFactura: df.nFactura || cuenta?.nFactura, nControl: df.nControl || cuenta?.nControl,
+        nFactura: (cuenta && folioCuenta(cuenta)) || df.nFactura, nControl: df.nControl || cuenta?.nControl,
         rif: rif || cuenta?.rif,
         cliente: cl?.nombre || cuenta?.clienteNombre || et.rs || p.clienteNombre || p.cliente,
         clienteId: cl?.id || cuenta?.clienteId, cxcId: cuenta?.id, ventaCxcId: cuenta?.saleId,
