@@ -124,7 +124,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.11.23.468">
+<meta name="farmers-version" content="2026.11.23.469">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -7121,29 +7121,32 @@ function goToHistorial(){
   document.getElementById('panel4').classList.add('active');
   document.getElementById('step4-tab').classList.add('active');
   renderHistorial();
+  ventasCargarArchivo()?.then(() => {
+    if (document.getElementById('panel4')?.classList.contains('active')) renderHistorial();
+  });
 }
 
 function renderHistorial(){
   // v.141: Aplicar filtro por depósito si está activo
   var filtroDeposito = ((document.getElementById('hist-filtro-deposito')||{}).value) || 'TODOS';
-  var allSales = getSales();
+  const { documentos: allSales, incidencias } = ventasConciliadas();
   const sales = filtroDeposito === 'TODOS'
     ? allSales
-    : allSales.filter(function(s){ return (s.depositoPrincipal || 'NE') === filtroDeposito; });
+    : allSales.filter(function(s){ return (s.depositoPrincipal || (s.ventaOriginal ? 'NE' : '')) === filtroDeposito; });
   const ce=document.getElementById('hist-count');
   if(ce) {
     var labelFiltro = filtroDeposito === 'TODOS' ? '' :
                       filtroDeposito === 'NE' ? ' · 📦 Nueva Esparta (NE)' : ' · 📦 Tierra Firme (TF)';
-    ce.textContent = sales.length + ' pedido' + (sales.length!==1?'s':'') + ' registrado' + (sales.length!==1?'s':'') + labelFiltro;
+    ce.textContent = sales.length + ' pedido' + (sales.length!==1?'s':'') + ' registrado' + (sales.length!==1?'s':'') + labelFiltro + (incidencias.length ? ' · ' + incidencias.length + ' anotaciones (ver Excel)' : '');
   }
-  const totalV=sales.reduce((s,v)=>s+v.total,0);
+  const totalV=sales.reduce((s,v)=>s+(v.total || 0),0);
   const totalU=sales.reduce((s,v)=>s+(parseInt(v.units)||0),0);
   const clientesU=new Set(sales.map(v=>v.cliente)).size;
   const cards=document.getElementById('hist-summary-cards');
   if(cards) cards.innerHTML=[
     ['🧾 Pedidos',sales.length,'#1a2050'],
     ['📦 Unidades',totalU,'#e65100'],
-    ['💰 Total $','$ '+fmt(totalV),'#16a34a'],
+    ['💰 Total registrado $','$ '+fmt(totalV),'#16a34a'],
     ['👥 Clientes',clientesU,'#6a1b9a'],
   ].map(([l,v,c])=>`<div style="background:white;border-radius:10px;padding:14px 18px;border:1.5px solid #e0e4f0;text-align:center;"><div style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#8892b0;margin-bottom:6px;">${l}</div><div style="font-family:'Barlow Condensed',sans-serif;font-weight:900;font-size:1.6rem;color:${c};">${v}</div></div>`).join('');
 
@@ -7154,46 +7157,49 @@ function renderHistorial(){
     return;
   }
   const ml={USD:'USD $',BCV:'BCV (ref. USD)',TF:'TF (ref. USD)'};
-  listEl.innerHTML=sales.map(sale=>{
+  listEl.innerHTML=sales.map((sale, docIndex)=>{
     const saleItems = sale.items||[];
     const itemsRows = saleItems.map((it,idx)=>`
               <tr style="background:${idx%2===0?'white':'#f8f9ff'};border-bottom:1px solid #f0f2f8;">
-                <td style="padding:7px 12px;font-family:'Barlow Condensed',sans-serif;font-weight:700;color:#1a2050;">${it.r||''}</td>
-                <td style="padding:7px 12px;color:#2d3a6b;">${it.d||''}</td>
-                <td style="padding:7px 12px;text-align:center;">${BRAND_META[it.br]?.logo?`<img src="${BRAND_META[it.br].logo}" style="height:16px;object-fit:contain;">`:(it.br||'—')}</td>
-                <td style="padding:7px 12px;text-align:center;font-weight:600;color:#1a2050;">$ ${fmt(it.precio||0)}</td>
+                <td style="padding:7px 12px;font-family:'Barlow Condensed',sans-serif;font-weight:700;color:#1a2050;">${ventasEscapeHtml(it.r)}</td>
+                <td style="padding:7px 12px;color:#2d3a6b;">${ventasEscapeHtml(it.d)}</td>
+                <td style="padding:7px 12px;text-align:center;">${BRAND_META[it.br]?.logo?`<img src="${BRAND_META[it.br].logo}" style="height:16px;object-fit:contain;">`:ventasEscapeHtml(it.br||'—')}</td>
+                <td style="padding:7px 12px;text-align:center;font-weight:600;color:#1a2050;">${it.precio === null ? '—' : '$ ' + fmt(it.precio)}</td>
                 <td style="padding:7px 12px;text-align:center;"><span style="background:#1a2050;color:white;border-radius:5px;padding:2px 8px;font-weight:700;">${it.orden||0}</span></td>
-                <td style="padding:7px 12px;text-align:right;font-weight:700;color:#e8692a;">$ ${fmt(it.total||0)}${sale.moneda&&sale.moneda!=='USD'?`<div style="font-size:.65rem;color:#64748b;">${sale.moneda}</div>`:''}</td>
+                <td style="padding:7px 12px;text-align:right;font-weight:700;color:#e8692a;">${it.total === null ? '—' : '$ ' + fmt(it.total)}${sale.moneda&&sale.moneda!=='USD'?`<div style="font-size:.65rem;color:#64748b;">${ventasEscapeHtml(sale.moneda)}</div>`:''}</td>
               </tr>`).join('');
-    const sid = String(sale.id||'');
+    const sid = String(sale.id || 'conciliado-' + docIndex);
+    const idHtml = ventasEscapeHtml(sid);
+    const idJs = ventasEscapeHtml(JSON.stringify(sid));
     return `
-    <div id="sale-card-${sid}" style="border:1.5px solid #e0e4f0;border-radius:12px;margin-bottom:12px;overflow:hidden;transition:box-shadow .2s;">
+    <div id="sale-card-${idHtml}" style="border:1.5px solid #e0e4f0;border-radius:12px;margin-bottom:12px;overflow:hidden;transition:box-shadow .2s;">
 
       <!-- ── HEADER CLICKEABLE ── -->
-      <div onclick="vtToggleSale('${sid}')" style="background:linear-gradient(135deg,#f0f2ff,#e8eaf6);padding:13px 18px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;cursor:pointer;user-select:none;" onmouseover="this.style.background='linear-gradient(135deg,#e4e7ff,#dde0f0)'" onmouseout="this.style.background='linear-gradient(135deg,#f0f2ff,#e8eaf6)'">
+      <div onclick="vtToggleSale(${idJs})" style="background:linear-gradient(135deg,#f0f2ff,#e8eaf6);padding:13px 18px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;cursor:pointer;user-select:none;" onmouseover="this.style.background='linear-gradient(135deg,#e4e7ff,#dde0f0)'" onmouseout="this.style.background='linear-gradient(135deg,#f0f2ff,#e8eaf6)'">
         <div style="display:flex;align-items:center;gap:12px;">
-          <div id="chev-${sid}" style="font-size:1rem;color:#8892b0;transition:transform .25s;">▶</div>
+          <div id="chev-${idHtml}" style="font-size:1rem;color:#8892b0;transition:transform .25s;">▶</div>
           <div>
             <div style="display:flex;align-items:baseline;gap:8px;">
-              <span style="font-family:'Barlow Condensed',sans-serif;font-weight:900;font-size:1.1rem;color:#1a2050;">Pedido #${sale.numpedido||'—'}</span>
-              <span style="font-size:0.72rem;color:#8892b0;">${sale.fecha||''} ${sale.hora||''}</span>
+              <span style="font-family:'Barlow Condensed',sans-serif;font-weight:900;font-size:1.1rem;color:#1a2050;">Pedido #${ventasEscapeHtml(sale.numpedido || sale.nFactura || '—')}</span>
+              <span style="font-size:0.72rem;color:#8892b0;">${ventasEscapeHtml(sale.fecha)} ${ventasEscapeHtml(sale.hora)}</span>
             </div>
             <div style="display:flex;gap:6px;margin-top:5px;flex-wrap:wrap;">
-              <span style="background:#1a2050;color:white;padding:2px 10px;border-radius:12px;font-size:0.72rem;font-weight:700;">${sale.cliente||'Sin nombre'}</span>
-              <span style="background:rgba(232,105,42,0.15);color:#e8692a;padding:2px 10px;border-radius:12px;font-size:0.72rem;font-weight:700;">${ml[sale.moneda]||sale.moneda||'USD'}</span>
-              ${sale.vendedor&&sale.vendedor!=='—'?`<span style="background:#e8f5e9;color:#2e7d32;padding:2px 10px;border-radius:12px;font-size:0.72rem;font-weight:700;">${sale.vendedor}</span>`:''}
+              <span style="background:#1a2050;color:white;padding:2px 10px;border-radius:12px;font-size:0.72rem;font-weight:700;">${ventasEscapeHtml(sale.cliente || 'Sin nombre')}</span>
+              <span style="background:rgba(232,105,42,0.15);color:#e8692a;padding:2px 10px;border-radius:12px;font-size:0.72rem;font-weight:700;">${ventasEscapeHtml(ml[sale.moneda]||sale.moneda||'USD')}</span>
+              ${!sale.ventaOriginal ? '<span style="background:#e0e7ff;color:#3730a3;padding:2px 10px;border-radius:12px;font-size:.72rem;">' + ventasEscapeHtml(sale.origen) + '</span>' : ''}
+              ${sale.vendedor&&sale.vendedor!=='—'?`<span style="background:#e8f5e9;color:#2e7d32;padding:2px 10px;border-radius:12px;font-size:0.72rem;font-weight:700;">${ventasEscapeHtml(sale.vendedor)}</span>`:''}
             </div>
           </div>
         </div>
         <div style="text-align:right;">
-          <div style="font-family:'Barlow Condensed',sans-serif;font-weight:900;font-size:1.45rem;color:#e8692a;">$ ${fmt(sale.total||0)}</div>
+          <div style="font-family:'Barlow Condensed',sans-serif;font-weight:900;font-size:1.45rem;color:#e8692a;">${sale.total === null ? 'Importe sin respaldo' : '$ ' + fmt(sale.total)}</div>
           ${sale.totalBs?`<div style="font-size:0.75rem;color:#16a34a;font-weight:700;">Bs. ${fmt(sale.totalBs)}</div>`:''}
           <div style="font-size:0.72rem;color:#8892b0;margin-top:2px;">${parseInt(sale.units)||0} uds · ${saleItems.length} refs</div>
         </div>
       </div>
 
       <!-- ── DETALLE COLAPSABLE (oculto por defecto) ── -->
-      <div id="sale-detail-${sid}" style="display:none;">
+      <div id="sale-detail-${idHtml}" style="display:none;">
         <div style="overflow-x:auto;">
           <table style="width:100%;border-collapse:collapse;font-size:0.8rem;min-width:500px;">
             <thead><tr style="background:#f8f9ff;border-bottom:1px solid #e0e4f0;">
@@ -7207,11 +7213,11 @@ function renderHistorial(){
             <tbody>${itemsRows||'<tr><td colspan="6" style="text-align:center;padding:12px;color:#94a3b8;">Sin ítems</td></tr>'}</tbody>
           </table>
         </div>
-        <div style="padding:8px 14px;border-top:1px solid #f0f2f8;display:flex;justify-content:flex-end;gap:6px;">
-          <button onclick="ncMostrarModal('${sid}','venta')" style="background:#f0fdf4;border:1px solid #86efac;color:#15803d;border-radius:6px;padding:4px 12px;cursor:pointer;font-size:0.75rem;font-weight:700;">📋 Nota de Crédito</button>
-          <button onclick="vtMostrarDevolucion('${sid}')" style="background:#fff7ed;border:1px solid #fed7aa;color:#c2410c;border-radius:6px;padding:4px 12px;cursor:pointer;font-size:0.75rem;font-weight:700;">↩ Devolución</button>
-          <button onclick="deleteSale('${sid}')" style="background:none;border:1px solid #fca5a5;color:#dc2626;border-radius:6px;padding:4px 12px;cursor:pointer;font-size:0.75rem;font-weight:600;">🗑 Eliminar pedido</button>
-        </div>
+        ${sale.ventaOriginal ? `<div style="padding:8px 14px;border-top:1px solid #f0f2f8;display:flex;justify-content:flex-end;gap:6px;">
+          <button onclick="ncMostrarModal(${idJs},'venta')" style="background:#f0fdf4;border:1px solid #86efac;color:#15803d;border-radius:6px;padding:4px 12px;cursor:pointer;font-size:0.75rem;font-weight:700;">📋 Nota de Crédito</button>
+          <button onclick="vtMostrarDevolucion(${idJs})" style="background:#fff7ed;border:1px solid #fed7aa;color:#c2410c;border-radius:6px;padding:4px 12px;cursor:pointer;font-size:0.75rem;font-weight:700;">↩ Devolución</button>
+          <button onclick="deleteSale(${idJs})" style="background:none;border:1px solid #fca5a5;color:#dc2626;border-radius:6px;padding:4px 12px;cursor:pointer;font-size:0.75rem;font-weight:600;">🗑 Eliminar pedido</button>
+        </div>` : ''}
       </div>
 
     </div>`;
@@ -7465,26 +7471,356 @@ function deleteSale(id){
 }
 
 function confirmClearHistorial(){
-  if(!confirm('¿Limpiar TODO el historial? Esta acción no se puede deshacer.')) return;
+  if(!confirm('¿Limpiar los registros de venta guardados? La consulta seguirá mostrando las facturas importadas y los despachos que constan en el Monitor. Esta acción no se puede deshacer.')) return;
   saveSales([]);
   renderHistorial();
-  showToast('Historial limpiado','success');
+  showToast('Registros de venta limpiados','success');
 }
 
-function exportHistorial(){
-  const sales=getSales();
-  if(!sales.length){ toastInfo('No hay ventas registradas para exportar.', 'Historial vacío'); return; }
+// Los detalles archivados se leen bajo demanda y se conservan en memoria
+// para los informes. Los resúmenes y estados locales siguen vigentes.
+const ventasArchivo = { ventas: new Map(), facturas: new Map(), pedidos: new Map(), carga: null };
+function ventasConDetalleArchivado(registros, mapa, getId) {
+  return registros.map(r => {
+    const completo = r?._ligero && mapa.get(String(getId(r)));
+    if (!completo) return r;
+    return { ...completo, ...r, data: completo.data || r.data,
+      items: completo.items || r.items, lineas: completo.lineas || r.lineas, _ligero: false };
+  });
+}
+function ventasCargarArchivo() {
+  if (ventasArchivo.carga) return ventasArchivo.carga;
+  const fuentes = [
+    [getSales(), ventasArchivo.ventas, r => r.id, () => window._salesV2?.get()],
+    [hclGetFacturas(), ventasArchivo.facturas, r => r.id || r.nroFactura, () => window._hclV2?.get()],
+    [getMsPedidos(), ventasArchivo.pedidos, r => r.numP, () => window.fbGetMsPedidosV2?.()]
+  ].filter(([registros, mapa, getId]) => registros.some(r => r?._ligero && !mapa.has(String(getId(r)))));
+  if (!fuentes.length) return null;
+  ventasArchivo.carga = Promise.allSettled(fuentes.map(async ([registros, mapa, getId, leer]) => {
+    const completos = await leer();
+    (completos || []).forEach(r => {
+      if (r && !r._ligero && getId(r) && (r.items?.length || r.data?.length || r.lineas?.length)) {
+        mapa.set(String(getId(r)), r);
+      }
+    });
+  })).finally(() => { ventasArchivo.carga = null; });
+  return ventasArchivo.carga;
+}
+
+// Historial comercial de solo lectura. Conserva los documentos originales y
+// recupera del Monitor los despachos confirmados sin una venta equivalente.
+function ventasConciliadas(ventas = getSales(), facturas = hclGetFacturas(), pedidos = getMsPedidos()) {
+  ventas = ventasConDetalleArchivado(ventas, ventasArchivo.ventas, r => r.id);
+  facturas = ventasConDetalleArchivado(facturas, ventasArchivo.facturas, r => r.id || r.nroFactura);
+  pedidos = ventasConDetalleArchivado(pedidos, ventasArchivo.pedidos, r => r.numP);
+  const texto = x => String(x ?? '').trim();
+  const clave = x => texto(x).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const fiscal = x => {
+    const n = clave(x);
+    return /\d/.test(n) ? n.replace(/^0+(?=\d)/, '') : '';
+  };
+  const num = x => x !== null && texto(x) && Number.isFinite(Number(x)) ? Number(x) : null;
+  const fechaISO = x => {
+    const s = texto(x);
+    const m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\D|$)/);
+    return m ? m[3] + '-' + m[2].padStart(2, '0') + '-' + m[1].padStart(2, '0') :
+      (s.match(/^\d{4}-\d{2}-\d{2}/) || [''])[0];
+  };
+  const nombreReal = n => !/^FARMERS(?:\s|[.,]|$)/i.test(texto(n)) && !/^SIN IDENTIFICAR/i.test(texto(n));
+  const esAnulado = x => x.anulada || x.anulado || /^(ANULAD[AO]|CANCELAD[AO])$/i.test(texto(x.estado));
+  const docs = [], incidencias = [], porClave = new Map();
+  const cuentas = typeof cxcFacs === 'function' ? cxcFacs() : [];
+  const notas = typeof ncGetAll === 'function' ? ncGetAll().filter(n => n && !n.anulada && n.tipo === 'devolucion') : [];
+  function incidencia(d, motivo, contado = false) {
+    incidencias.push({ documento: d.numpedido || d.nFactura || d.hclId || d.id, motivo, contado,
+      cliente: d.cliente, fecha: d.fecha, items: d.items || [] });
+  }
+  const porIdCliente = new Map(), porRif = new Map(), porNombre = new Map();
+  getClientsDB().forEach(c => {
+    if (c.id) porIdCliente.set(String(c.id), c);
+    if (clave(c.rif) && !porRif.has(clave(c.rif))) porRif.set(clave(c.rif), c);
+    const n = clave(c.nombre);
+    if (n) porNombre.set(n, porNombre.has(n) ? null : c);
+  });
+  const productos = new Map(PRODUCTS.map(p => [texto(p.r).toUpperCase(), p]));
+  const sinCeros = ref => ref.replace(/\d+/g, n => n.replace(/^0+(?=\d)/, ''));
+  const porCodigo = new Map();
+  productos.forEach((p, ref) => {
+    [p.b && 'B:' + texto(p.b).replace(/\D/g, ''), p.c && 'P:' + texto(p.c).toUpperCase(),
+      'R:' + sinCeros(ref)].filter(Boolean).forEach(k => {
+      if (!porCodigo.has(k)) porCodigo.set(k, ref);
+      else if (porCodigo.get(k) !== ref) porCodigo.set(k, null);
+    });
+  });
+  function canonRef(r, item = {}) {
+    const ref = texto(r).toUpperCase();
+    if (productos.has(ref)) return ref;
+    const alias = ref && typeof refAliasResolver === 'function' ? texto(refAliasResolver(ref)).toUpperCase() : '';
+    return (productos.has(alias) && alias) ||
+      porCodigo.get('R:' + sinCeros(ref)) ||
+      porCodigo.get('B:' + texto(item.codigoBarra ?? item.barcode).replace(/\D/g, '')) ||
+      porCodigo.get('P:' + texto(item.codigoProducto ?? item.codProveedor ?? item.c).toUpperCase()) || ref;
+  }
+  function lineas(items) {
+    return (items || []).flatMap(it => {
+      if (!it) return [];
+      const r = canonRef(it.r || it.ref || it.refFarmers || it.referencia || it.codigo, it);
+      const orden = num(it.cantidadEntregada ?? it.orden ?? it.cantidad ?? it.qty);
+      if (!r || orden === null || orden < 0) return [];
+      const precio = num(it.precio ?? it.precioUnitario);
+      const original = num(it.cantidadOriginal ?? it.cantidad ?? it.orden);
+      const total = num(it.total ?? it.totalLinea);
+      const ajustado = original > 0 && orden !== original;
+      return [{ ...it, r, orden, precio,
+        d: it.d || it.descripcion || it.desc || productos.get(r)?.d || '',
+        br: it.br || it.marca || productos.get(r)?.br || '',
+        total: orden === 0 ? 0 : ajustado && precio !== null ? precio * orden :
+          total ?? (precio === null ? null : precio * orden) }];
+    });
+  }
+  function identidad(d) {
+    const rif = clave(d.rif);
+    const cl = porIdCliente.get(texto(d.clienteId)) || porRif.get(rif) ||
+      (!rif && nombreReal(d.cliente) ? porNombre.get(clave(d.cliente)) : null);
+    return { rif: texto(cl?.rif || d.rif), cliente: texto(cl?.nombre || d.cliente) || 'Sin identificar' };
+  }
+  function firma(d) {
+    if (!d.fechaISO || !d.items.length || d.total === null) return '';
+    const refs = new Map();
+    d.items.forEach(i => refs.set(i.r, (refs.get(i.r) || 0) + i.orden));
+    return JSON.stringify([d.fechaISO, d.total.toFixed(2), [...refs].sort()]);
+  }
+  const ramas = new Map();
+  pedidos.forEach(p => {
+    if (!p?.numP) return;
+    const k = texto(p.numP).toUpperCase();
+    if (!ramas.has(k)) ramas.set(k, new Set());
+    (p.sucursales || []).forEach(s => ramas.get(k).add(clave(s)));
+  });
+  function agregar(d) {
+    const identidadCliente = identidad(d);
+    Object.assign(d, identidadCliente);
+    const titular = clave(d.rif) || (nombreReal(d.cliente) ? clave(d.cliente) : '');
+    d.fechaISO = fechaISO(d.fechaISO || d.fecha);
+    d.fecha = d.fechaISO ? d.fechaISO.split('-').reverse().join('/') : texto(d.fecha);
+    d.items = lineas(d.items);
+    d.units = d.items.reduce((n, i) => n + i.orden, 0);
+    d.total = num(d.total);
+    const factura = fiscal(d.nFactura);
+    const control = fiscal(d.nControl);
+    const op = texto(d.numpedido).toUpperCase().match(/^(MS-\d{6}-\d+)(?:-(.+))?$/);
+    const base = texto(d.msNumPedido || op?.[1]).toUpperCase();
+    let suc = clave(d.sucursalCodigo || op?.[2]);
+    const sucursales = ramas.get(base);
+    if (suc.length === 8 && sucursales && !sucursales.has(suc)) {
+      const prefijos = [...sucursales].filter(s => s.startsWith(suc));
+      if (prefijos.length === 1) suc = prefijos[0];
+    }
+    const despacho = base && suc ? 'M:' + base + ':' + suc : '';
+    const firm = firma(d);
+    const idHcl = texto(d.hclId || (String(d.id).startsWith('hcl_sale_') ? String(d.id).slice(9) : ''));
+    const fuertes = [despacho, idHcl && 'H:' + idHcl, d.ventaOriginal && d.id && 'V:' + d.id].filter(Boolean);
+    const comprobantes = [control && 'C:' + control, factura && titular && 'F:' + titular + ':' + factura].filter(Boolean);
+    const similar = firm && 'S:' + firm;
+    function buscar(keys, aceptar) {
+      return [...new Set(keys.flatMap(k => porClave.get(k) || []))].filter(aceptar);
+    }
+    let equivalentes = buscar(fuertes, () => true);
+    if (!equivalentes.length) {
+      equivalentes = buscar(comprobantes, x => !despacho || !x.despacho || despacho === x.despacho);
+    }
+    if (!equivalentes.length && similar && (d.origen === 'Importación en ventas' || d.origen === 'Historial de clientes')) {
+      // Los espejos HCL antiguos pueden carecer de folio y llevar otro RIF.
+      // Un cotejo sin RIF exige nombre idéntico o un único documento sin identificar.
+      equivalentes = buscar([similar], x =>
+        x.origen !== d.origen && (d.origen !== 'Historial de clientes' || Boolean(factura)) && (!factura || !fiscal(x.nFactura) || factura === fiscal(x.nFactura)) &&
+        (!titular || !x.titular || titular === x.titular || clave(d.cliente) === clave(x.cliente)) &&
+        (!despacho || !x.despacho || despacho === x.despacho));
+    }
+    if (equivalentes.length > 1) {
+      incidencia(d, 'Varias coincidencias posibles');
+      return;
+    }
+    if (!equivalentes.length && d.origen === 'Importación en ventas' && !factura && !idHcl) {
+      incidencia(d, 'Importación sin folio verificable');
+      return;
+    }
+    const existente = equivalentes[0];
+    if (!existente && d.origen === 'Monitor de pedidos' && !d.facturaVinculada) {
+      incidencia(d, 'Despacho sin venta ni factura vinculada');
+      return;
+    }
+    if (existente) {
+      if (d.anulado) existente.anulado = true;
+      if (existente.sinDetalle && d.items.length && !d.sinDetalle) {
+        existente.items = d.items;
+        existente.units = d.units;
+        existente.total = existente.total ?? d.total;
+        existente.sinDetalle = false;
+        existente.ventaOriginal = false;
+      }
+      if (!existente.nFactura || (d.facturaVinculada && factura && factura === fiscal(existente.nFactura))) {
+        existente.nFactura = d.nFactura;
+      }
+      if (!existente.despacho && despacho) {
+        existente.despacho = despacho;
+        existente.sucursalCodigo = d.sucursalCodigo;
+        existente.sucursal = d.sucursal || existente.sucursal;
+      }
+      if (!existente.numpedido) existente.numpedido = d.numpedido;
+      if (!nombreReal(existente.cliente) && nombreReal(d.cliente)) {
+        existente.cliente = d.cliente;
+        existente.rif = d.rif;
+      }
+    } else {
+      d.despacho = despacho;
+      d.titular = titular;
+      docs.push(d);
+    }
+    const canon = existente || d;
+    [...fuertes, ...comprobantes, similar].filter(Boolean).forEach(k => {
+      const vinculados = porClave.get(k) || [];
+      if (!vinculados.includes(canon)) porClave.set(k, vinculados.concat(canon));
+    });
+  }
+
+  function agregarVenta(v) {
+    agregar({ ...v, nFactura: v.nFactura || v.nroFacturaExternal || (/^\d+$/.test(texto(v.numpedido)) ? v.numpedido : ''),
+      origen: v.fuente === 'hcl_import' ? 'Importación en ventas' : 'Historial de ventas', ventaOriginal: true,
+      anulado: esAnulado(v), sinDetalle: Boolean(v._ligero) || !Array.isArray(v.items) || (!v.items.length && num(v.units) !== 0) });
+  }
+  ventas.filter(v => v && v.fuente !== 'hcl_import').forEach(agregarVenta);
+
+  facturas.forEach(f => {
+    if (!f) return;
+    const nombre = f.clienteNombre || f.cliente || f.razonSocial;
+    if (!nombreReal(nombre) && !clave(f.rif)) return;
+    agregar({ hclId: f.id, cliente: nombre, rif: f.rif, clienteId: f.clienteId,
+      nFactura: f.nroFactura || f.numero || f.numFactura, nControl: f.nControl || f.numeroControl,
+      fecha: f.fechaEmision || f.fecha, sucursal: f.sucursal || f.tienda,
+      vendedor: f.vendedor, moneda: f.moneda, total: f.totalEntregado ?? f.totalFactura,
+      items: f.items?.length ? f.items : f.lineas || f.items, origen: 'Historial de clientes',
+      anulado: esAnulado(f), sinDetalle: Boolean(f._ligero) || !(f.items?.length || f.lineas?.length) });
+  });
+
+  pedidos.forEach(p => {
+    if (!p?.numP || esAnulado(p)) return;
+    const moneda = texto(p.moneda || 'USD').toUpperCase();
+    const antiguas = new Map((p.items || []).filter(i => i?.ref).map(i => [canonRef(i.ref), i]));
+    const detalle = new Map((p.data || []).filter(i => i?.ref).map(i => [canonRef(i.ref), i]));
+    const refs = new Set([...detalle.keys(), ...antiguas.keys()]);
+    (p.sucursales || []).forEach(suc => {
+      if (!msSucursalDespachada(p, suc)) return;
+      const df = p.datosFiscales?.[suc] || {};
+      const et = p.etiqData?.[suc] || {};
+      const legado = !p.clientesPorSucursal?.[suc] && !et.rif
+        ? (porNombre.get(clave(p.clienteNombre || p.cliente)) || porNombre.get(clave(suc)))
+        : null;
+      const cl = porIdCliente.get(texto(p.clientesPorSucursal?.[suc])) || legado;
+      const items = [];
+      refs.forEach(ref => {
+        const linea = detalle.get(ref) || {};
+        const anterior = antiguas.get(ref) || {};
+        const anteriorSuc = anterior.sucursales?.[suc] || {};
+        const pide = num(linea.pedidos?.[suc] ?? anteriorSuc.pide);
+        let desp = num(linea.dist?.[suc] ?? anteriorSuc.desp);
+        if (desp === null || desp <= 0) return;
+        if (pide !== null) desp = Math.min(pide, desp);
+        if (desp <= 0) return;
+        const override = linea.precioOverride ?? anterior.precioOverride;
+        const precio = num(override === 'cliente' ? (linea.precioNegociado ?? anterior.precioNegociado) : override)
+          ?? num(linea['precioCongelado_' + moneda] ?? anterior['precioCongelado_' + moneda] ?? anterior.precio);
+        items.push({ r: ref, orden: desp, d: linea.desc || anterior.desc, precio, total: precio === null ? null : precio * desp });
+      });
+      const bruto = items.length && items.every(i => i.total !== null) ? items.reduce((s, i) => s + i.total, 0) : null;
+      const desc = Math.max(0, num(df.descValor) || 0);
+      const monto = bruto === null ? null : bruto - Math.min(bruto, df.descTipo === 'PCT' ? bruto * desc / 100 : df.descTipo ? desc : 0);
+      const marca = p.invDescontadoSucs?.[suc];
+      const fechaMarca = typeof marca === 'number' && marca > 0
+        ? new Intl.DateTimeFormat('sv-SE', { timeZone: 'America/Caracas', year: 'numeric', month: '2-digit', day: '2-digit' }).format(marca)
+        : '';
+      const numpedido = p.numP + '-' + clave(suc);
+      const rif = cl?.rif || et.rif;
+      const baseFactura = fiscal(df.nFactura);
+      const vinculadas = cuentas.filter(f => f && (
+        texto(f.numpedido).toUpperCase() === numpedido.toUpperCase() ||
+        (baseFactura && fiscal(f.nFactura) === baseFactura && clave(f.rif) && clave(f.rif) === clave(rif))
+      ));
+      const cuenta = vinculadas.length === 1 ? vinculadas[0] : null;
+      agregar({ numpedido, msNumPedido: p.numP, sucursalCodigo: suc,
+        sucursal: et.nom || suc, fecha: df.fechaEmision || cuenta?.fechaEmision || fechaMarca || p.fechaDespacho,
+        nFactura: df.nFactura || cuenta?.nFactura, nControl: df.nControl || cuenta?.nControl,
+        rif: rif || cuenta?.rif,
+        cliente: cl?.nombre || cuenta?.clienteNombre || et.rs || p.clienteNombre || p.cliente,
+        clienteId: cl?.id || cuenta?.clienteId, cxcId: cuenta?.id, ventaCxcId: cuenta?.saleId,
+        depositoPrincipal: p.depositoPrincipal, vendedor: p.vendedorCodigo || p.vendedor,
+        moneda, total: num(cuenta?.monto) ?? monto, items,
+        origen: 'Monitor de pedidos', sinDetalle: !items.length, facturaVinculada: Boolean(cuenta),
+        anulado: cuenta && esAnulado(cuenta) });
+
+    });
+  });
+  ventas.filter(v => v?.fuente === 'hcl_import').forEach(agregarVenta);
+  const visibles = docs.filter(d => !d.anulado);
+  visibles.forEach(d => {
+    if (d.sinDetalle) incidencia(d, 'Documento sin detalle disponible');
+    else if (d.origen === 'Monitor de pedidos') incidencia(d, 'Despacho recuperado del Monitor', true);
+    if (d.origen === 'Monitor de pedidos' && !clave(d.rif) && !nombreReal(d.cliente)) {
+      incidencia(d, 'Despacho sin cliente identificado');
+    }
+    if (d.origen === 'Historial de clientes') return;
+    const devoluciones = notas.filter(n =>
+      (d.id && String(n.saleId) === String(d.id)) ||
+      (d.ventaCxcId && String(n.saleId) === String(d.ventaCxcId)) ||
+      (d.cxcId && String(n.cxcFacId) === String(d.cxcId)) ||
+      (d.numpedido && n.numpedido && texto(n.numpedido).toUpperCase() === texto(d.numpedido).toUpperCase()));
+    let rebaja = 0;
+    devoluciones.forEach(n => (n.items || []).forEach(it => {
+      let porRestar = num(it.qty) || 0;
+      const r = canonRef(it.r || it.ref);
+      d.items.filter(i => i.r === r).forEach(i => {
+        const cantidad = Math.min(porRestar, i.orden);
+        porRestar -= cantidad;
+        if (!cantidad) return;
+        const bruto = i.total === null ? 0 : i.total * cantidad / i.orden;
+        i.orden -= cantidad;
+        if (i.total !== null) i.total -= bruto;
+        d.units -= cantidad;
+        rebaja += bruto;
+      });
+      if (porRestar > 0) incidencia({ ...d, items: [{ r, orden: porRestar }] }, 'Devolución con unidades por verificar');
+    }));
+    if (rebaja && d.total !== null && !d.cxcId) d.total = Math.max(0, d.total - rebaja);
+  });
+  visibles.sort((a, b) => b.fechaISO.localeCompare(a.fechaISO));
+  return { documentos: visibles, incidencias };
+}
+
+function ventasEscapeHtml(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+async function exportHistorial(){
+  await ventasCargarArchivo();
+  const { documentos: sales, incidencias } = ventasConciliadas();
+  if(!sales.length && !incidencias.length){ toastInfo('No hay ventas registradas para exportar.', 'Historial vacío'); return; }
   const wb=XLSX.utils.book_new();
-  const sum=[['FARMERS C.A. — HISTORIAL DE VENTAS'],['Exportado:',new Date().toLocaleDateString('es-VE')],[],['N° Pedido','Fecha','Hora','Cliente','RIF','Vendedor','Sucursal','Moneda','Tasa BCV','Unidades','Total $','Total Bs.']];
-  sales.forEach(s=>sum.push([s.numpedido,s.fecha,s.hora,s.cliente,s.rif,s.vendedor,s.sucursal,s.moneda,s.tasa||'',s.units,s.total,s.totalBs||'']));
+  const sum=[['FARMERS C.A. — HISTORIAL DE VENTAS'],['Exportado:',new Date().toLocaleDateString('es-VE')],[],['N° Pedido','Fecha','Hora','Cliente','RIF','Vendedor','Sucursal','Moneda','Tasa BCV','Unidades','Total $','Total Bs.','Factura','Origen']];
+  sales.forEach(s=>sum.push([s.numpedido,s.fecha,s.hora,s.cliente,s.rif,s.vendedor,s.sucursal,s.moneda,s.tasa||'',s.units,s.total,s.totalBs||'',s.nFactura,s.origen]));
   const ws1=XLSX.utils.aoa_to_sheet(sum);
   ws1['!cols']=[{wch:12},{wch:12},{wch:8},{wch:30},{wch:16},{wch:14},{wch:20},{wch:8},{wch:12},{wch:10},{wch:12},{wch:14}];
   XLSX.utils.book_append_sheet(wb,ws1,'Resumen');
-  const det=[['DETALLE DE VENTAS'],[],['N° Pedido','Fecha','Cliente','Referencia','Descripción','Marca','Precio','Orden','Total','Exist. Antes','Exist. Después']];
-  sales.forEach(s=>s.items.forEach(it=>det.push([s.numpedido,s.fecha,s.cliente,it.r,it.d,it.br,it.precio,it.orden,it.total,it.ex_antes,it.ex_despues])));
+  const det=[['DETALLE DE VENTAS'],[],['N° Pedido','Fecha','Cliente','Referencia','Descripción','Marca','Precio','Orden','Total','Exist. Antes','Exist. Después','Factura','RIF','Sucursal','Origen']];
+  sales.forEach(s=>s.items.forEach(it=>det.push([s.numpedido,s.fecha,s.cliente,it.r,it.d,it.br,it.precio,it.orden,it.total,it.ex_antes,it.ex_despues,s.nFactura,s.rif,s.sucursal,s.origen])));
   const ws2=XLSX.utils.aoa_to_sheet(det);
   ws2['!cols']=[{wch:12},{wch:12},{wch:30},{wch:12},{wch:40},{wch:12},{wch:10},{wch:8},{wch:12},{wch:12},{wch:14}];
   XLSX.utils.book_append_sheet(wb,ws2,'Detalle');
+  if (incidencias.length) {
+    const auditoria = [['Documento', 'Motivo', 'Incluido en totales', 'Cliente', 'Fecha', 'Referencia', 'Unidades']];
+    incidencias.forEach(a => (a.items.length ? a.items : [{}]).forEach(i =>
+      auditoria.push([a.documento, a.motivo, a.contado ? 'Sí' : 'No', a.cliente, a.fecha, i.r, i.orden])));
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(auditoria), 'Por conciliar');
+  }
   XLSX.writeFile(wb,'FARMERS_Historial_'+new Date().toLocaleDateString('es-VE').replace(/\//g,'-')+'.xlsx');
 }
 
@@ -24078,18 +24414,25 @@ var _crmFiltroBusqueda = '';
 // ──────────────────────────────────────────────────────────────────
 // CRM DATA — extraer ventas históricas unificadas
 // ──────────────────────────────────────────────────────────────────
-// Combina datos de farmers_hcl_v7_facturas + farmers_ms_pedidos + farmers_cxc
+// Usa la misma conciliación que Historial de ventas y Catálogo
 // para construir un dataset normalizado de "ventas por cliente por mes"
 // Devuelve { ventasPorCliente: {clienteId: {meses, totales, productos, sucursales}} }
 window.crmConstruirDataset = function() {
   var ventasPorCliente = {};
 
-  // 1) Cargar facturas HCL (fuente principal y única confiable)
-  var hclFacs = [];
-  try {
-    var raw = localStorage.getItem('farmers_hcl_v7_facturas');
-    if (raw) hclFacs = JSON.parse(raw) || [];
-  } catch(e) { hclFacs = []; }
+  var historial = ventasConciliadas();
+  var hclFacs = historial.documentos.map(function(venta) {
+    return {
+      id: venta.id || venta.hclId || venta.numpedido,
+      clienteNombre: venta.cliente, rif: venta.rif, sucursal: venta.sucursalCodigo || venta.sucursal,
+      fechaEmision: venta.fechaISO, nroFactura: venta.nFactura || venta.numpedido,
+      totalFactura: venta.total,
+      items: venta.items.map(function(it) {
+        return { ref: it.r, descripcion: it.d, cantidad: it.orden,
+          precioUnitario: it.precio, totalLinea: it.total, marca: it.br, codigoBarra: it.codigoBarra };
+      })
+    };
+  });
 
   // Normalizador de RIF (igual que HCL hace)
   var normRif = function(r){ return (r||'').replace(/[-.\s]/g,'').toUpperCase(); };
@@ -24157,7 +24500,7 @@ window.crmConstruirDataset = function() {
 
     // ── TOTAL: HCL guarda en f.totalFactura (NO f.total) ──
     var totalFactura = parseFloat(f.totalFactura) || 0;
-    if (totalFactura === 0) {
+    if (f.totalFactura == null) {
       // Fallback: calcular desde items
       items.forEach(function(it){
         if (!it) return;
@@ -24256,7 +24599,7 @@ window.crmConstruirDataset = function() {
     });
   });
 
-  return { ventasPorCliente: ventasPorCliente, totalFacturas: hclFacs.length };
+  return { ventasPorCliente: ventasPorCliente, totalFacturas: hclFacs.length, porConciliar: historial.incidencias.length };
 };
 
 // ──────────────────────────────────────────────────────────────────
@@ -34368,6 +34711,12 @@ function openClientes() {
   document.getElementById('cl-search').value = '';
   clRenderList();
   clShowEmpty();
+  _crmDashboardData = null;
+  ventasCargarArchivo()?.then(() => {
+    _crmDashboardData = null;
+    if (document.getElementById('clientes-modal')?.classList.contains('open') &&
+        document.getElementById('crm-body-dashboard')?.getClientRects().length) crmRenderDashboard();
+  });
 }
 window.openClientes = openClientes;
 
@@ -35803,7 +36152,7 @@ function filterHistorial(q) {
   q = (q || '').toLowerCase().trim();
   // v.141: Filtro adicional por depósito de origen
   var filtroDeposito = ((document.getElementById('hist-filtro-deposito')||{}).value) || 'TODOS';
-  var sales = getSales();
+  var sales = ventasConciliadas().documentos;
   var filtered = sales.filter(function(s) {
     // Filtro por texto
     if (q) {
@@ -35811,15 +36160,17 @@ function filterHistorial(q) {
         (s.cliente||'').toLowerCase().includes(q) ||
         String(s.numpedido||'').toLowerCase().includes(q) ||
         (s.rif||'').toLowerCase().includes(q) ||
+        String(s.nFactura||'').toLowerCase().includes(q) ||
+        String(s.sucursal||'').toLowerCase().includes(q) ||
         (s.vendedor||'').toLowerCase().includes(q) ||
         (s.items||[]).some(function(it){
-          return (it.r||'').toLowerCase().includes(q) || (it.d||'').toLowerCase().includes(q);
+          return ventasEscapeHtml(it.r).toLowerCase().includes(q) || ventasEscapeHtml(it.d).toLowerCase().includes(q);
         });
       if (!matchTexto) return false;
     }
     // v.141: Filtro por depósito (si la venta no tiene depositoPrincipal, asumimos 'NE' para retrocompatibilidad)
     if (filtroDeposito !== 'TODOS') {
-      var depVenta = s.depositoPrincipal || 'NE';
+      var depVenta = s.depositoPrincipal || (s.ventaOriginal ? 'NE' : '');
       if (depVenta !== filtroDeposito) return false;
     }
     return true;
@@ -35851,7 +36202,7 @@ function buildSaleCard(sale) {
   var hdrLeft = document.createElement('div');
   var titleSpan = document.createElement('span');
   titleSpan.style.cssText = 'font-weight:900;font-size:1.1rem;color:#1a2050;';
-  titleSpan.textContent = 'Pedido #' + (sale.numpedido || 'S/N');
+  titleSpan.textContent = 'Pedido #' + (sale.numpedido || sale.nFactura || 'S/N');
   var dateSpan = document.createElement('span');
   dateSpan.style.cssText = 'font-size:0.72rem;color:#8892b0;margin-left:8px;';
   dateSpan.textContent = (sale.fecha||'') + ' ' + (sale.hora||'');
@@ -35869,12 +36220,13 @@ function buildSaleCard(sale) {
   badges.appendChild(badge(sale.cliente || 'Sin cliente', '#1a2050', 'white'));
   badges.appendChild(badge(ml[sale.moneda] || 'USD $', 'rgba(232,105,42,0.15)', '#e8692a'));
   // v.141: Badge depósito de origen (NE default para retrocompatibilidad)
-  var depVenta = sale.depositoPrincipal || 'NE';
+  var depVenta = sale.depositoPrincipal || (sale.ventaOriginal ? 'NE' : '');
   if (depVenta === 'TF') {
     badges.appendChild(badge('📦 Tierra Firme (TF)', '#fef3c7', '#b45309'));
-  } else {
+  } else if (depVenta === 'NE') {
     badges.appendChild(badge('📦 Nueva Esparta (NE)', '#dbeafe', '#1e40af'));
   }
+  if (!sale.ventaOriginal) badges.appendChild(badge(sale.origen, '#e0e7ff', '#3730a3'));
   if (sale.importado) badges.appendChild(badge('Importado', '#f0fdf4', '#16a34a'));
   if (sale.vendedor && sale.vendedor !== '-') badges.appendChild(badge(sale.vendedor, '#e8f5e9', '#2e7d32'));
   hdrLeft.appendChild(badges);
@@ -35883,7 +36235,7 @@ function buildSaleCard(sale) {
   hdrRight.style.cssText = 'text-align:right;';
   var totalDiv = document.createElement('div');
   totalDiv.style.cssText = 'font-weight:900;font-size:1.4rem;color:#e8692a;';
-  totalDiv.textContent = '$ ' + fmt(sale.total || 0);
+  totalDiv.textContent = sale.total === null ? 'Importe sin respaldo' : '$ ' + fmt(sale.total);
   var unitsDiv = document.createElement('div');
   unitsDiv.style.cssText = 'font-size:0.72rem;color:#8892b0;';
   unitsDiv.textContent = (sale.units||0) + ' uds \u00b7 ' + (sale.items||[]).length + ' refs';
@@ -35913,12 +36265,12 @@ function buildSaleCard(sale) {
     tr.style.background = i % 2 === 0 ? 'white' : '#f8f9ff';
     tr.style.borderBottom = '1px solid #f0f2f8';
     tr.innerHTML =
-      '<td style="padding:7px 12px;font-weight:700;color:#1a2050;">' + (it.r||'') + '</td>' +
-      '<td style="padding:7px 12px;color:#2d3a6b;">' + (it.d||'') + '</td>' +
-      '<td style="padding:7px 12px;text-align:center;font-size:.75rem;font-weight:700;color:#5a6080;">' + (it.br||'-') + '</td>' +
-      '<td style="padding:7px 12px;text-align:center;">$ ' + fmt(it.precio||0) + '</td>' +
+      '<td style="padding:7px 12px;font-weight:700;color:#1a2050;">' + ventasEscapeHtml(it.r) + '</td>' +
+      '<td style="padding:7px 12px;color:#2d3a6b;">' + ventasEscapeHtml(it.d) + '</td>' +
+      '<td style="padding:7px 12px;text-align:center;font-size:.75rem;font-weight:700;color:#5a6080;">' + ventasEscapeHtml(it.br || '-') + '</td>' +
+      '<td style="padding:7px 12px;text-align:center;">' + (it.precio === null ? '—' : '$ ' + fmt(it.precio)) + '</td>' +
       '<td style="padding:7px 12px;text-align:center;"><span style="background:#1a2050;color:white;border-radius:5px;padding:2px 8px;font-weight:700;">' + (it.orden||0) + '</span></td>' +
-      '<td style="padding:7px 12px;text-align:right;font-weight:700;color:#e8692a;">$ ' + fmt(it.total||0) + '</td>';
+      '<td style="padding:7px 12px;text-align:right;font-weight:700;color:#e8692a;">' + (it.total === null ? '—' : '$ ' + fmt(it.total)) + '</td>';
     tbody.appendChild(tr);
   });
   tbl.appendChild(thead);
@@ -35951,7 +36303,7 @@ function buildSaleCard(sale) {
 
   card.appendChild(hdr);
   card.appendChild(tableWrap);
-  card.appendChild(actions);
+  if (sale.ventaOriginal) card.appendChild(actions);
   return card;
 }
 
@@ -38974,77 +39326,54 @@ function openSearch() {
 window.openSearch = openSearch;
 
 // ── CONEXIÓN 3: clientes que compraron un producto ───────────
-function catVerClientesRef(ref) {
+function catVerClientesRef(ref, archivoCargado) {
   var prod = PRODUCTS.find(function(p){ return p.r === ref; });
   if (!prod) return;
-  // v.236 — FUENTE OFICIAL DE VENTAS: facturas cargadas en HISTORIAL DE CLIENTES
-  // (farmers_hcl_v7_facturas), NO el registro interno de pedidos (getSales).
-  var hclFacs = [];
-  try { var _raw = localStorage.getItem('farmers_hcl_v7_facturas'); if (_raw) hclFacs = JSON.parse(_raw) || []; } catch(e) { hclFacs = []; }
-  var refU = String(ref).trim().toUpperCase();
-  var refN = refU.replace(/(\d+)/g, function(num){ return String(parseInt(num, 10)); }); // sin ceros de relleno
-  var barraProd = (prod.b || '').replace(/[^0-9]/g,'');
-  var codProvProd = String(prod.codigoProveedor || prod.cp || prod.c || '').trim().toUpperCase().replace(/\s+/g,'');
-  // Buscar facturas que contengan esta referencia.
-  // Orden de confianza: código de proveedor → ref exacta → ref normalizada (sin ceros) → código de barra.
-  var hits = [];
-  hclFacs.forEach(function(f){
-    if (!f) return;
-    var items = f.items || f.lineas || [];
-    var item = items.find(function(it){
-      if (!it) return false;
-      var icp = String(it.codigoProducto || it.codProveedor || '').trim().toUpperCase().replace(/\s+/g,'');
-      if (codProvProd && icp && icp === codProvProd) return true;
-      var ir = String(it.ref || it.refFarmers || it.codigo || '').trim().toUpperCase();
-      if (ir && ir === refU) return true;
-      var irN = ir.replace(/(\d+)/g, function(num){ return String(parseInt(num, 10)); });
-      if (irN && irN === refN) return true;
-      var ib = String(it.codigoBarra || '').replace(/[^0-9]/g,'');
-      return barraProd && ib && ib === barraProd;
-    });
-    if (item) hits.push({ sale: f, item: item });
+  document.getElementById('cat-clientes-ref-overlay')?.remove();
+  const historial = ventasConciliadas();
+  const refU = String(ref).trim().toUpperCase();
+  const esc = ventasEscapeHtml;
+  const hits = historial.documentos.flatMap(venta => {
+    const items = venta.items.filter(i => i.r === refU && i.orden > 0);
+    if (!items.length || /^FARMERS(?:[ .,]|$)/i.test(venta.cliente)) return [];
+    return [{ venta, unidades: items.reduce((n, i) => n + i.orden, 0),
+      monto: items.reduce((n, i) => n + (i.total || 0), 0),
+      importeIncompleto: items.some(i => i.total === null) }];
   });
-
+  const pendientes = historial.incidencias.filter(a => !a.contado && (!a.items.length || a.items.some(i => i.r === refU)));
   // Construir modal overlay
   var overlay = document.createElement('div');
   overlay.id = 'cat-clientes-ref-overlay';
   overlay.style.cssText = 'position:fixed;inset:0;z-index:999999;background:rgba(4,8,28,.88);display:flex;align-items:center;justify-content:center;padding:20px;';
   overlay.onclick = function(e){ if(e.target===overlay) overlay.remove(); };
 
-  // Helpers para leer cantidad y total de línea de una factura HCL
-  function _qty(it){ return parseInt(it.cantidad != null ? it.cantidad : it.orden) || 0; }
-  function _tot(it){ var q=_qty(it); return parseFloat(it.totalLinea) || (parseFloat(it.precioUnitario || it.precio || 0) * q) || 0; }
-
-  var totalUds  = hits.reduce(function(s,h){ return s + _qty(h.item); }, 0);
-  var totalUSD  = hits.reduce(function(s,h){ return s + _tot(h.item); }, 0);
-
-  // Agrupar por cliente
-  var porCliente = {};
-  hits.forEach(function(h){
-    var f = h.sale;
-    var key = f.rif || f.clienteNombre || f.cliente || '—';
-    var nom = f.clienteNombre || f.cliente || f.razonSocial || '—';
-    if (!porCliente[key]) porCliente[key] = { nombre: nom, rif: f.rif||'', uds:0, total:0, pedidos:0, ultimaFecha:'' };
-    porCliente[key].uds    += _qty(h.item);
-    porCliente[key].total  += _tot(h.item);
-    porCliente[key].pedidos++;
-    var fch = f.fechaEmision || f.fecha || f.fechaFactura || '';
-    if (fch && fch > porCliente[key].ultimaFecha) porCliente[key].ultimaFecha = fch;
+  const porCliente = new Map();
+  hits.forEach(({ venta, unidades, monto, importeIncompleto }) => {
+    const key = (venta.rif || venta.cliente).toUpperCase().replace(/[^A-Z0-9]/g, '');
+    if (!porCliente.has(key)) porCliente.set(key, {
+      nombre: venta.cliente, rif: venta.rif, uds: 0, total: 0, ultimaFecha: '', importeIncompleto: false, docs: []
+    });
+    const cliente = porCliente.get(key);
+    cliente.uds += unidades;
+    cliente.total += monto;
+    cliente.importeIncompleto ||= importeIncompleto;
+    cliente.docs.push({ ...venta, unidades });
+    if (venta.fechaISO > cliente.ultimaFecha) cliente.ultimaFecha = venta.fechaISO;
   });
-  var clientes = Object.values(porCliente)
-    .filter(function(cl){ return (cl.nombre||'').toUpperCase().indexOf('FARMERS') < 0; })
-    .sort(function(a,b){ return b.uds - a.uds; });
-
+  const clientes = [...porCliente.values()].sort((a, b) => b.uds - a.uds);
+  const totalUds = clientes.reduce((n, c) => n + c.uds, 0);
+  const totalUSD = clientes.reduce((n, c) => n + c.total, 0);
+  const compradores = clientes.filter(c => !/^SIN IDENTIFICAR/i.test(c.nombre)).length;
   var filas = hits.length === 0
-    ? '<tr><td colspan="6" style="text-align:center;padding:36px;color:#64748b;font-size:.85rem;">&#128721; Este producto no aparece en ninguna factura cargada del historial</td></tr>'
+    ? '<tr><td colspan="6" style="text-align:center;padding:36px;color:#64748b;font-size:.85rem;">&#128721; Esta referencia no tiene ventas verificadas en el historial</td></tr>'
     : clientes.map(function(cl){
         return '<tr style="border-bottom:1px solid rgba(255,255,255,.06);">' +
-          '<td style="padding:11px 18px;font-size:.85rem;color:#e2e8f0;font-weight:700;">' + cl.nombre + '</td>' +
-          '<td style="padding:11px 18px;font-size:.78rem;color:#94a3b8;">' + (cl.rif||'—') + '</td>' +
+          '<td style="padding:11px 18px;font-size:.85rem;color:#e2e8f0;font-weight:700;">' + '<details><summary>' + esc(cl.nombre) + '</summary>' + cl.docs.map(d => '<div style="padding:5px 0;font-size:.73rem;color:#94a3b8;">' + esc([d.fecha, d.sucursalCodigo || d.sucursal, d.numpedido, d.nFactura ? 'Factura ' + d.nFactura : '', d.origen, d.unidades + ' uds'].filter(Boolean).join(' · ')) + '</div>').join('') + '</details>' + '</td>' +
+          '<td style="padding:11px 18px;font-size:.78rem;color:#94a3b8;">' + esc(cl.rif||'—') + '</td>' +
           '<td style="padding:11px 18px;text-align:center;font-size:.82rem;color:#60a5fa;font-weight:800;">' + cl.uds + ' uds</td>' +
-          '<td style="padding:11px 18px;text-align:center;font-size:.78rem;color:#94a3b8;font-weight:600;">' + cl.pedidos + '</td>' +
-          '<td style="padding:11px 18px;text-align:right;font-size:.78rem;color:#64748b;">' + (cl.ultimaFecha||'—') + '</td>' +
-          '<td style="padding:11px 18px;text-align:right;font-size:.85rem;font-weight:800;color:#f9a87a;">$ ' + (cl.total||0).toFixed(2) + '</td>' +
+          '<td style="padding:11px 18px;text-align:center;font-size:.78rem;color:#94a3b8;font-weight:600;">' + cl.docs.length + '</td>' +
+          '<td style="padding:11px 18px;text-align:right;font-size:.78rem;color:#64748b;">' + (cl.ultimaFecha ? cl.ultimaFecha.split('-').reverse().join('/') : '—') + '</td>' +
+          '<td style="padding:11px 18px;text-align:right;font-size:.85rem;font-weight:800;color:#f9a87a;">$ ' + cl.total.toFixed(2) + (cl.importeIncompleto ? ' + sin importe' : '') + '</td>' +
         '</tr>';
       }).join('');
 
@@ -39052,8 +39381,8 @@ function catVerClientesRef(ref) {
     '<div style="background:#0d1130;border-radius:16px;width:100%;max-width:900px;max-height:88vh;display:flex;flex-direction:column;overflow:hidden;border:1.5px solid rgba(99,102,241,.25);">' +
       '<div style="background:linear-gradient(135deg,#312e81,#4338ca);padding:16px 22px;display:flex;align-items:center;justify-content:space-between;">' +
         '<div>' +
-          '<div style="font-family:Barlow Condensed,sans-serif;font-weight:900;font-size:1.3rem;color:white;letter-spacing:1px;">👥 Clientes · ' + ref + '</div>' +
-          '<div style="font-size:.72rem;color:rgba(255,255,255,.65);margin-top:2px;">' + prod.d + '</div>' +
+          '<div style="font-family:Barlow Condensed,sans-serif;font-weight:900;font-size:1.3rem;color:white;letter-spacing:1px;">👥 Clientes · ' + esc(ref) + '</div>' +
+          '<div style="font-size:.72rem;color:rgba(255,255,255,.65);margin-top:2px;">' + esc(prod.d) + '</div>' +
         '</div>' +
         '<button onclick="document.getElementById(\'cat-clientes-ref-overlay\').remove()" style="background:rgba(255,255,255,.1);border:none;color:white;border-radius:8px;padding:6px 12px;cursor:pointer;font-size:.8rem;">\u2715 Cerrar</button>' +
       '</div>' +
@@ -39061,18 +39390,20 @@ function catVerClientesRef(ref) {
         '<div style="display:flex;gap:10px;padding:12px 22px;background:rgba(99,102,241,.06);border-bottom:1px solid rgba(99,102,241,.15);">' +
           '<div style="background:rgba(99,102,241,.15);border-radius:8px;padding:7px 14px;text-align:center;">' +
             '<div style="font-size:.6rem;color:#818cf8;font-weight:700;text-transform:uppercase;letter-spacing:.5px;">Clientes</div>' +
-            '<div style="font-weight:900;color:white;font-size:1.1rem;">' + clientes.length + '</div>' +
+            '<div style="font-weight:900;color:white;font-size:1.1rem;">' + compradores + '</div>' +
           '</div>' +
           '<div style="background:rgba(96,165,250,.12);border-radius:8px;padding:7px 14px;text-align:center;">' +
-            '<div style="font-size:.6rem;color:#60a5fa;font-weight:700;text-transform:uppercase;letter-spacing:.5px;">Uds vendidas</div>' +
+            '<div style="font-size:.6rem;color:#60a5fa;font-weight:700;text-transform:uppercase;letter-spacing:.5px;">Uds. verificadas</div>' +
             '<div style="font-weight:900;color:white;font-size:1.1rem;">' + totalUds + '</div>' +
           '</div>' +
           '<div style="background:rgba(249,168,122,.1);border-radius:8px;padding:7px 14px;text-align:center;">' +
-            '<div style="font-size:.6rem;color:#f9a87a;font-weight:700;text-transform:uppercase;letter-spacing:.5px;">Total facturado</div>' +
-            '<div style="font-weight:900;color:white;font-size:1.1rem;">$ ' + totalUSD.toFixed(2) + '</div>' +
+            '<div style="font-size:.6rem;color:#f9a87a;font-weight:700;text-transform:uppercase;letter-spacing:.5px;">Importe registrado</div>' +
+            '<div style="font-weight:900;color:white;font-size:1.1rem;">$ ' + totalUSD.toFixed(2) + (clientes.some(c => c.importeIncompleto) ? ' + sin importe' : '') + '</div>' +
           '</div>' +
         '</div>'
       : '') +
+      (pendientes.length ? '<div role="status" style="padding:10px 22px;color:#fcd34d;font-size:.8rem;">' +
+        pendientes.length + ' documento(s) por conciliar. Revisa la hoja «Por conciliar» del Historial de ventas.</div>' : '') +
       '<div style="overflow-y:auto;flex:1;">' +
         '<table style="width:100%;border-collapse:collapse;">' +
           '<thead style="position:sticky;top:0;background:#1a2050;">' +
@@ -39080,7 +39411,7 @@ function catVerClientesRef(ref) {
               '<th style="padding:10px 18px;text-align:left;font-size:.72rem;color:#94a3b8;text-transform:uppercase;letter-spacing:.6px;font-weight:700;">Cliente</th>' +
               '<th style="padding:10px 18px;text-align:left;font-size:.72rem;color:#94a3b8;text-transform:uppercase;letter-spacing:.6px;font-weight:700;">RIF</th>' +
               '<th style="padding:10px 18px;text-align:center;font-size:.72rem;color:#94a3b8;text-transform:uppercase;letter-spacing:.6px;font-weight:700;">Uds</th>' +
-              '<th style="padding:10px 18px;text-align:center;font-size:.72rem;color:#94a3b8;text-transform:uppercase;letter-spacing:.6px;font-weight:700;">Pedidos</th>' +
+              '<th style="padding:10px 18px;text-align:center;font-size:.72rem;color:#94a3b8;text-transform:uppercase;letter-spacing:.6px;font-weight:700;">Documentos</th>' +
               '<th style="padding:10px 18px;text-align:right;font-size:.72rem;color:#94a3b8;text-transform:uppercase;letter-spacing:.6px;font-weight:700;">Última Compra</th>' +
               '<th style="padding:10px 18px;text-align:right;font-size:.72rem;color:#94a3b8;text-transform:uppercase;letter-spacing:.6px;font-weight:700;">Total $</th>' +
             '</tr>' +
@@ -39091,6 +39422,9 @@ function catVerClientesRef(ref) {
     '</div>';
 
   document.body.appendChild(overlay);
+  if (!archivoCargado) ventasCargarArchivo()?.then(() => {
+    if (document.getElementById(overlay.id) === overlay) catVerClientesRef(ref, true);
+  });
 }
 window.catVerClientesRef = catVerClientesRef;
 
