@@ -124,7 +124,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.11.23.471">
+<meta name="farmers-version" content="2026.11.23.472">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -7624,7 +7624,7 @@ function ventasConciliadas(ventas = getSales(), facturas = hclGetFacturas(), ped
     const despacho = base && suc ? 'M:' + base + ':' + suc : '';
     const firm = firma(d);
     const idHcl = texto(d.hclId || (String(d.id).startsWith('hcl_sale_') ? String(d.id).slice(9) : ''));
-    const fuertes = [despacho, idHcl && 'H:' + idHcl, d.ventaOriginal && d.id && 'V:' + d.id].filter(Boolean);
+    const fuertes = [despacho, d.despachoLegado, d.cxcId && 'X:' + d.cxcId, idHcl && 'H:' + idHcl, d.ventaOriginal && d.id && 'V:' + d.id].filter(Boolean);
     const comprobantes = [control && 'C:' + control, factura && titular && 'F:' + titular + ':' + factura].filter(Boolean);
     const similar = firm && 'S:' + firm;
     function buscar(keys, aceptar) {
@@ -7720,7 +7720,7 @@ function ventasConciliadas(ventas = getSales(), facturas = hclGetFacturas(), ped
     agregar({ ...v, nFactura: cuenta ? folioCuenta(cuenta) || numero : numero,
       cliente: cuenta?.clienteNombre || v.cliente, rif: cuenta?.rif || v.rif,
       clienteId: cuenta?.clienteId || (corregirCliente ? '' : v.clienteId),
-      origen, ventaOriginal: true,
+      cxcId: cuenta?.id, origen, ventaOriginal: true,
       anulado: esAnulado(v) || (cuenta && esAnulado(cuenta)),
       sinDetalle: Boolean(v._ligero) || !Array.isArray(v.items) || (!v.items.length && num(v.units) !== 0) });
   }
@@ -7791,7 +7791,9 @@ function ventasConciliadas(ventas = getSales(), facturas = hclGetFacturas(), ped
           (baseFactura && fiscal(folioCuenta(f)) === baseFactura);
       });
       const cuenta = vinculadas.length === 1 ? vinculadas[0].f : null;
-      agregar({ numpedido, msNumPedido: p.numP, sucursalCodigo: suc,
+      const despachoLegado = cuenta && previo && vinculadas[0].pedidos.has(previo)
+        ? 'M:' + original + ':' + sucursal : '';
+      agregar({ numpedido, despachoLegado, msNumPedido: p.numP, sucursalCodigo: suc,
         sucursal: et.nom || suc, fecha: df.fechaEmision || cuenta?.fechaEmision || fechaMarca || p.fechaDespacho,
         nFactura: (cuenta && folioCuenta(cuenta)) || df.nFactura, nControl: df.nControl || cuenta?.nControl,
         rif: rif || cuenta?.rif,
@@ -7851,7 +7853,7 @@ function ventasConciliadas(ventas = getSales(), facturas = hclGetFacturas(), ped
       });
       if (porRestar > 0) incidencia({ ...d, items: [{ r, orden: porRestar }] }, 'Devolución con unidades por verificar');
     }));
-    if (rebaja && d.total !== null && !d.cxcId) d.total = Math.max(0, d.total - rebaja);
+    if (rebaja && d.total !== null && !(d.origen === 'Monitor de pedidos' && d.cxcId)) d.total = Math.max(0, d.total - rebaja);
   });
   visibles.sort((a, b) => b.fechaISO.localeCompare(a.fechaISO));
   return { documentos: visibles, incidencias };
