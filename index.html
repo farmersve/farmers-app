@@ -124,7 +124,7 @@
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📦&lt;/text&gt;&lt;/svg&gt;">
 <!-- Versión actual del sistema. Cambiar este valor en cada nuevo deploy
      para que el sistema detecte automáticamente que hay una versión más nueva. -->
-<meta name="farmers-version" content="2026.11.23.472">
+<meta name="farmers-version" content="2026.11.24.473">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -78871,6 +78871,254 @@ function cxcPagoKpi(label,val,sub){
 //  NOTIFICACIÓN DE COBRANZA
 // ══════════════════════════════════════════════════════════
 
+// Estilos de impresión compartidos por las notificaciones de cobranza.
+const CXC_NOTIF_ESTILOS = `
+*, *::before, *::after {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+  print-color-adjust: exact;
+  -webkit-print-color-adjust: exact;
+}
+@page { size: A4 portrait; margin: 14mm 13mm; }
+:root {
+  --ink: #172b48;
+  --text: #293c54;
+  --muted: #50637a;
+  --line: #a0afc1;
+  --fine: #c8d2df;
+  --tint: #eef3f8;
+  --alert: #942e32;
+  --font: "Helvetica Neue", Arial, sans-serif;
+}
+body { background: #fff; color: var(--text); font: 11.3px/1.52 var(--font); min-height: 0; }
+.page { width: 100%; max-width: 794px; margin: 0 auto; padding: 0 16px 24px; }
+.doc { border: 1px solid var(--line); overflow: visible; box-shadow: none; }
+.doc-top-bar { height: 5px; background: var(--ink); }
+.hdr { padding: 0; background: white; border-bottom: 1px solid var(--line); }
+.hdr::after { display: none; }
+.hdr-row { display: grid; grid-template-columns: 1fr 1fr; align-items: stretch; gap: 0; }
+.hdr-logo-block, .hdr-title {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  text-align: center; gap: 6px; min-height: 138px; padding: 12px 16px;
+}
+.hdr-title { border-left: 1px solid var(--line); background: var(--tint); }
+.hdr-logo { align-self: center; display: grid; place-items: center; border: 0; padding: 0; margin: 0; border-radius: 0; width: 180px; height: 53px; overflow: hidden; }
+.hdr-logo img { width: 179px; height: auto; max-width: none; }
+.hdr-contact { color: var(--muted); font: 10px/1.45 var(--font); text-transform: none; letter-spacing: .05px; }
+.hdr-title-overline { color: var(--muted); font: 700 8.8px/1.1 var(--font); letter-spacing: 1.45px; margin: 0; }
+.hdr-title h1 { color: var(--ink); font: 700 23px/1.06 var(--font); letter-spacing: -.42px; }
+.hdr-title-divider { width: 30px; height: 2px; background: #bd6838; margin: 0; }
+.hdr-doc-num { color: var(--ink); border: 1px solid var(--fine); background: white; padding: 3px 10px; margin: 0; font: 650 10.2px/1.25 var(--font); letter-spacing: .55px; border-radius: 0; }
+.hdr-date { color: var(--muted); font: 650 8.4px/1.25 var(--font); margin: 0; letter-spacing: .45px; }
+.banner { display: grid; grid-template-columns: 1fr 1fr; place-items: center; padding: 0; background: var(--estado-bg, var(--tint)); border: 0; border-bottom: 1px solid var(--line); }
+.banner-label, .banner-total { width: 100%; text-align: center; padding: 10px 8px; color: var(--estado-ink, var(--ink)); }
+.banner-label { font: 750 11px/1.4 var(--font); letter-spacing: 1.05px; }
+.banner-total { border-left: 1px solid var(--line); font: 750 16px/1.4 var(--font); font-variant-numeric: tabular-nums; }
+.banner-total span { font: 650 10px/1.4 var(--font); letter-spacing: .25px; }
+.info-strip { display: grid; padding: 0; gap: 0; grid-template-columns: 1fr 1fr; align-items: stretch; border-bottom: 1px solid var(--line); }
+.info-strip > div:first-child { display: grid; align-content: center; justify-items: center; padding: 14px 13px; text-align: center; }
+.info-label { color: var(--muted); border: 0; margin: 0 0 5px; padding: 0; font: 700 9px/1.3 var(--font); letter-spacing: 1px; }
+.info-name { color: var(--ink); font: 730 17px/1.24 var(--font); letter-spacing: -.2px; }
+.info-sub { color: var(--muted); font: 500 10px/1.4 var(--font); margin: 5px 0 0; letter-spacing: .25px; }
+.summary-box { border: 0; border-left: 1px solid var(--line); border-radius: 0; background: white; padding: 0; min-width: 0; }
+.summary-box::before, .summary-box::after { display: none; }
+.summary-box .info-label { display: block; margin: 0; text-align: center; padding: 6px 3px; background: var(--tint); border-bottom: 1px solid var(--line); }
+.summary-row { display: grid; grid-template-columns: 62% 38%; padding: 0; border: 0; border-bottom: 1px solid var(--fine); }
+.summary-row .k, .summary-row .v { display: block; text-align: center; padding: 5px 4px; line-height: 1.28; }
+.summary-row .k { font-size: 9.5px; text-transform: none; color: var(--muted); letter-spacing: .02px; }
+.summary-row .v, .summary-row .v.green { color: var(--ink); font: 700 11px/1.28 var(--font); border-left: 1px solid var(--fine); font-variant-numeric: tabular-nums; }
+.body-text, .contact { text-align: left; padding: 14px 19px; color: var(--text); font: 11.3px/1.58 var(--font); border: 0; }
+.body-text strong, .contact strong { color: var(--ink); }
+.tbl-wrap { padding: 0 19px 13px; }
+.tbl-title { background: var(--ink); margin: 0; padding: 7px 10px; border: 0; color: white; text-align: center; font: 720 10px/1.3 var(--font); letter-spacing: 1px; break-after: avoid; }
+.tbl-wrap table { table-layout: fixed; width: 100%; border-collapse: collapse; border: 1px solid var(--line); font: 10.25px/1.36 var(--font); }
+.tbl-wrap table thead { display: table-header-group; }
+.tbl-wrap table thead th { background: var(--tint); color: var(--ink); font: 710 8.6px/1.24 var(--font); letter-spacing: .02px; padding: 8px 3px; white-space: normal; }
+.tbl-wrap table th, .tbl-wrap table td, .tbl-wrap table thead th[style] { text-align: center !important; vertical-align: middle; border: 1px solid var(--line); }
+.tbl-wrap table tbody td, .tbl-wrap table tfoot td { padding: 10px 4px; }
+.tbl-wrap table tfoot { display: table-row-group; }
+.tbl-wrap table tfoot td { background: var(--tint); color: var(--ink); }
+.tbl-wrap table tfoot td.label { font: 700 9.5px/1.35 var(--font); letter-spacing: .5px; }
+.tbl-wrap table tbody td.mono, .tbl-wrap table tbody td.status { font: 680 9.8px/1.36 var(--font); letter-spacing: 0; text-transform: none; }
+
+.tbl-wrap table tbody td.r, .tbl-wrap table tbody td.saldo, .tbl-wrap table tbody td.abono,
+.tbl-wrap table tfoot td.r, .tbl-wrap table tfoot td.total { font: 700 10.5px/1.35 var(--font); color: var(--ink) !important; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.tbl-wrap table tbody td:nth-child(2) { overflow-wrap: anywhere; color: var(--ink) !important; }
+.tbl-wrap table thead th:nth-child(1) { width: 13%; }
+.tbl-wrap table thead th:nth-child(2) { width: 19%; }
+.tbl-wrap table thead th:nth-child(3) { width: 11.5%; }
+.tbl-wrap table thead th:nth-child(4) { width: 13%; }
+.tbl-wrap table thead th:nth-child(5) { width: 14.5%; }
+.tbl-wrap table thead th:nth-child(n+6) { width: 9.66%; }
+.saldo-bar { margin: 0 19px; display: grid; grid-template-columns: 1fr 34%; align-items: stretch; padding: 0; background: var(--ink); border: 1px solid var(--ink); }
+.saldo-bar .label { display: grid; place-items: center; color: white; font: 700 10px/1.4 var(--font); letter-spacing: 1px; padding: 10px 7px; }
+.saldo-bar .amount { text-align: center; color: white; background: #213b5f; border-left: 1px solid #7588a4; font: 730 22px/1.35 var(--font); padding: 7px 5px; letter-spacing: -.12px; font-variant-numeric: tabular-nums; }
+.saldo-bar .amount span { font: 650 9.5px/1.4 var(--font); letter-spacing: .15px; }
+.contact { border-bottom: 1px solid var(--line); }
+.firmas-wrap { padding: 0; border: 0; }
+.firmas-title { text-align: center; color: var(--ink); font: 700 9px/1.3 var(--font); letter-spacing: .9px; padding: 6px; margin: 0; background: var(--tint); border-bottom: 1px solid var(--line); }
+.firmas-title::before, .firmas-title::after { display: none; }
+.firmas { display: grid; grid-template-columns: 1fr 1fr; gap: 0; }
+.firma { text-align: center; padding: 0 25px 9px; }
+.firma + .firma { border-left: 1px solid var(--line); }
+.firma-line { border-top: 1px solid var(--line); padding-top: 6px; margin-top: 30px; }
+.firma-role { color: var(--ink); font: 700 8.9px/1.3 var(--font); letter-spacing: .55px; }
+.firma-name { color: var(--muted); font: 500 8.8px/1.36 var(--font); letter-spacing: .16px; margin-top: 3px; }
+.doc-footer { display: grid; grid-template-columns: 52% 22% 26%; align-items: stretch; background: var(--tint); padding: 0; gap: 0; border-top: 1px solid var(--line); }
+.doc-footer span, .doc-footer .doc-num-foot, .doc-footer .date { display: grid; place-items: center; padding: 7px 5px; text-align: center; color: var(--ink); font: 650 8px/1.3 var(--font); letter-spacing: .13px; }
+.doc-footer span + span { border-left: 1px solid var(--line); }
+.tbl-wrap tr, .saldo-bar, .firmas-wrap, .doc-footer { break-inside: avoid; }
+@media print { .doc { border: 1px solid var(--line); } }
+.hdr-logo { display: flex; justify-content: center; align-items: center; }
+.hdr-logo img { flex: none; }
+.hdr-title .hdr-title-divider { margin: 0 auto !important; align-self: center; }
+.tbl-wrap .tbl-title { display: block; width: 100%; text-align: center; }
+.doc-footer { grid-template-columns: 55% 21% 24%; }
+.doc-footer span:first-child { font-size: 7.4px; }
+
+.hdr-row { grid-template-columns: 1fr 1fr; }
+.hdr-logo-block {
+  min-height: 0;
+  padding: 0;
+  gap: 0;
+  justify-content: stretch;
+}
+.hdr-logo {
+  width: 202px;
+  height: 71px;
+  min-height: 71px;
+  margin: 3px 0;
+}
+.hdr-logo img {
+  width: 199px;
+}
+.hdr-contact {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  width: 100%;
+  border-top: 1px solid var(--line);
+  margin-top: auto;
+}
+.hdr-contact-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  padding: 6px 8px 7px;
+  text-align: center;
+  min-width: 0;
+}
+.hdr-contact-item + .hdr-contact-item:not(.hdr-contact-location) {
+  border-left: 1px solid var(--fine);
+}
+.hdr-contact-location {
+  grid-column: 1 / -1;
+  border-top: 1px solid var(--fine);
+  flex-direction: row;
+  gap: 8px;
+  background: var(--tint);
+  padding: 6px 8px;
+}
+.hdr-contact-label {
+  color: var(--muted);
+  font: 700 8px/1.3 var(--font);
+  text-transform: uppercase;
+  letter-spacing: .75px;
+}
+.hdr-contact-value, .hdr-contact-value:visited {
+  color: var(--ink);
+  font: 650 10.2px/1.4 var(--font);
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+.hdr-contact-location .hdr-contact-value {
+  font-size: 9.7px;
+  font-weight: 550;
+}
+
+.print-controls {
+  display: flex;
+  justify-content: flex-end;
+  max-width: 794px;
+  margin: 14px auto 9px;
+  padding: 0 16px;
+}
+.print-controls button {
+  border: 0;
+  border-radius: 4px;
+  background: var(--ink);
+  color: #fff;
+  padding: 9px 14px;
+  font: 700 11px/1.3 var(--font);
+  cursor: pointer;
+}
+[data-estado="VENCIDA"] { --estado-ink: var(--alert); --estado-bg: #f9eff0; }
+[data-estado="POR_VENCER"] { --estado-ink: #815418; --estado-bg: #faf3e5; }
+[data-estado="VIGENTE"] { --estado-ink: #275a49; --estado-bg: #f0f5f2; }
+.tbl-wrap table tbody td.status { color: var(--estado-ink, var(--text)); }
+.tbl-wrap table tbody tr:nth-child(even) { background: #fafbfd; }
+.tbl-wrap table tfoot tr { border-top: 2px solid var(--ink); }
+.tbl-wrap table tbody td.mono, .hdr-doc-num { overflow-wrap: anywhere; }
+.tbl-wrap table .sucursal { font-weight: 700; }
+.tbl-wrap table .nota-credito {
+  display: block;
+  color: var(--alert);
+  font-size: 8.6px;
+  font-weight: 650;
+  margin-top: 2px;
+}
+.summary-row .v.nota-credito { color: var(--alert); }
+.hdr-title { min-width: 0; }
+.info-name, .firma-name { overflow-wrap: anywhere; }
+@media screen and (max-width: 635px) {
+  .page, .print-controls { padding-inline: 8px; }
+  .hdr-logo, .hdr-logo img { max-width: 100%; }
+  .hdr-title h1 { font-size: 19px; }
+  .table-scroll { overflow-x: auto; }
+  .tbl-wrap table { min-width: 630px; }
+}
+@media screen and (max-width: 395px) {
+  .hdr-contact { grid-template-columns: 1fr; }
+  .hdr-contact-item + .hdr-contact-item:not(.hdr-contact-location) {
+    border-left: 0;
+    border-top: 1px solid var(--fine);
+  }
+  .hdr-contact-location { flex-direction: column; gap: 2px; }
+  .saldo-bar { grid-template-columns: 1fr 42%; }
+  .saldo-bar .amount { font-size: 18px; }
+}
+@media print {
+  .no-print { display: none !important; }
+  .page { max-width: none; padding: 0; }
+  .table-scroll { overflow: visible; }
+  .saldo-bar { break-before: avoid; }
+}
+`;
+
+const CXC_NOTIF_CONTROLES = '<div class="no-print print-controls">'
+  + '<button type="button" onclick="window.print()">Imprimir / Guardar PDF</button></div>';
+
+function cxcNotifEncabezado(docNum, fecha) {
+  return '<div class="doc-top-bar"></div>'
+    + '<div class="hdr"><div class="hdr-row"><div class="hdr-logo-block">'
+    + '<div class="hdr-logo"><img src="' + FARMERS_LOGO_B64 + '" alt="Farmers C.A."></div>'
+    + '<div class="hdr-contact">'
+    + '<div class="hdr-contact-item"><span class="hdr-contact-label">Teléfono</span>'
+    + '<a class="hdr-contact-value" href="tel:+584120445797">0412-0445797</a></div>'
+    + '<div class="hdr-contact-item"><span class="hdr-contact-label">Correo</span>'
+    + '<a class="hdr-contact-value" href="mailto:farmersve@gmail.com">farmersve@gmail.com</a></div>'
+    + '<div class="hdr-contact-item hdr-contact-location"><span class="hdr-contact-label">Ubicación</span>'
+    + '<span class="hdr-contact-value">Margarita, Nueva Esparta — Venezuela</span></div>'
+    + '</div></div><div class="hdr-title">'
+    + '<div class="hdr-title-overline">Documento Oficial</div>'
+    + '<h1>Notificación<br>de Cobranza</h1><div class="hdr-title-divider"></div>'
+    + '<div class="hdr-doc-num">' + docNum + '</div>'
+    + '<div class="hdr-date">FECHA DE EMISIÓN: ' + fecha + '</div>'
+    + '</div></div></div>';
+}
+
 // ── Notificación individual por factura ──────────────────────────
 // Una notificación = una factura = un número de pedido + sucursal
 // Nunca mezcla facturas de distintas sucursales ni distintos pedidos
@@ -78899,28 +79147,7 @@ function cxcNotifFactura(facId) {
   var saldo     = fac.saldo||0;
   var monto     = fac.monto||0;
 
-  // ── Paleta Farmers ──────────────────────────────────────────
-  var C_NAVY    = '#0f1547';
-  var C_NAVY2   = '#1B1F6B';
-  var C_BLUE    = '#2d35a0';
-  var C_RED     = '#c91d1d';
-  var C_RED2    = '#ef4444';
-  var C_AMBER   = '#92400e';
-  var C_AMBERBG = '#fffbeb';
-  var C_GREEN   = '#065f46';
-  var C_GREENBG = '#ecfdf5';
-  var C_GRAY    = '#64748b';
-  var C_BORDER  = '#e2e8f0';
-  var C_BG      = '#f8faff';
-
-  var accentColor  = tieneVenc ? C_RED    : tienePxV ? C_AMBER : C_NAVY2;
-  var accentBg     = tieneVenc ? '#fef2f2': tienePxV ? C_AMBERBG : C_GREENBG;
-  var accentTxt    = tieneVenc ? C_RED    : tienePxV ? C_AMBER : C_GREEN;
-  var accentLabel  = tieneVenc ? '⚠ FACTURA VENCIDA' : tienePxV ? '⏰ PRÓXIMA A VENCER' : '✓ AL DÍA';
-  var diasColor    = tieneVenc ? C_RED    : tienePxV ? C_AMBER+'bb' : C_GREEN;
-  var headerGrad   = tieneVenc
-    ? 'linear-gradient(135deg, '+C_RED+' 0%, #7f1d1d 100%)'
-    : 'linear-gradient(135deg, '+C_NAVY+' 0%, '+C_NAVY2+' 50%, '+C_BLUE+' 100%)';
+  var accentLabel = tieneVenc ? '⚠ FACTURA VENCIDA' : tienePxV ? '⏰ PRÓXIMA A VENCER' : '✓ AL DÍA';
 
   var nombreArch = nombre.replace(/[^A-Z0-9]/gi,'_').substring(0,28)+'_'+numpedido.replace(/[^A-Z0-9]/gi,'_');
 
@@ -78933,174 +79160,13 @@ function cxcNotifFactura(facId) {
   +'<meta charset="UTF-8">'
   +'<meta name="viewport" content="width=device-width, initial-scale=1.0">'
   +'<title>NOTIFICACIÓN DE COBRANZA — '+nombre.toUpperCase()+_tituloParen+'</title>'
-  +'<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;500;600;700;800;900&family=Barlow:wght@300;400;500;600;700&family=Playfair+Display:wght@700;800;900&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">'
-  +'<style>'
-  +'*, *::before, *::after { margin:0; padding:0; box-sizing:border-box; }'
-  +'*, *::before, *::after { -webkit-print-color-adjust:exact !important; print-color-adjust:exact !important; color-adjust:exact !important; }'
-  +':root {'
-  +'  --navy: '+C_NAVY+'; --navy2: '+C_NAVY2+'; --blue: '+C_BLUE+';'
-  +'  --red: '+C_RED+'; --accent: '+accentColor+';'
-  +'  --gold: #F47B3E; --gold-soft: #fbbf99;'
-  +'  --gray: '+C_GRAY+'; --border: #d4d8e3; --border-strong:#9ca3af; --bg: '+C_BG+';'
-  +'  --font: "Barlow", system-ui, sans-serif;'
-  +'  --font-cond: "Barlow Condensed", sans-serif;'
-  +'  --mono: "DM Mono", monospace;'
-  +'  --display: "Playfair Display", serif;'
-  +'}'
-  +'body { font-family: var(--font); color: #1e293b; background: #eef2f7; min-height:100vh; }'
-  +'.page { max-width: 794px; margin: 0 auto; padding: 24px 0 40px; }'
-  +'.doc { background: #fff; overflow: hidden;'
-  +'       border: 2px solid var(--navy);'
-  +'       box-shadow: 0 1px 3px rgba(0,0,0,.08), 0 8px 32px rgba(15,21,71,.18); }'
-
-  /* Filete dorado superior decorativo */
-  +'.doc-top-bar { height:4px; background:linear-gradient(90deg, var(--gold) 0%, var(--gold-soft) 50%, var(--gold) 100%); }'
-
-  /* HEADER reorganizado */
-  +'.hdr { background: '+headerGrad+'; padding: 26px 40px 20px; position:relative; }'
-  +'.hdr::after { content:""; position:absolute; bottom:0; left:0; right:0; height:2px; background:var(--gold); }'
-  +'.hdr-row { display:flex; justify-content:space-between; align-items:flex-start; gap:24px; }'
-  +'.hdr-logo-block { display:flex; flex-direction:column; gap:8px; }'
-  +'.hdr-logo { background:#fff; border-radius:6px; padding:8px 14px; display:flex; align-items:center; justify-content:center; align-self:flex-start; border:2px solid var(--gold-soft); }'
-  +'.hdr-logo img { height:52px; width:auto; display:block; }'
-  +'.hdr-contact { font-size:9.5px; color:rgba(255,255,255,.78); line-height:1.7; letter-spacing:.4px; font-weight:500; text-transform:uppercase; }'
-  +'.hdr-title { text-align:right; }'
-  +'.hdr-title-overline { font-family:var(--font-cond); font-size:10px; font-weight:600; letter-spacing:4px; color:rgba(255,255,255,.6); text-transform:uppercase; margin-bottom:4px; }'
-  +'.hdr-title h1 { font-family:var(--display); font-size:30px; font-weight:800; color:#fff; letter-spacing:.5px; line-height:1; }'
-  +'.hdr-title-divider { width:60px; height:2px; background:var(--gold); margin:8px 0 8px auto; }'
-  +'.hdr-doc-num { font-family:var(--mono); font-size:10px; font-weight:500; color:#fff; letter-spacing:1.5px; background:rgba(255,255,255,.12); padding:4px 10px; border-radius:3px; display:inline-block; border:1px solid rgba(255,255,255,.2); }'
-  +'.hdr-date { font-size:9px; color:rgba(255,255,255,.6); margin-top:6px; letter-spacing:1.2px; text-transform:uppercase; font-weight:600; }'
-
-  /* Banner */
-  +'.banner { background:'+accentBg+'; border-top: 1px solid '+accentColor+'40; border-bottom: 2px solid '+accentColor+';'
-  +'          padding: 14px 40px; display:flex; justify-content:space-between; align-items:center; position:relative; }'
-  +'.banner-label { font-family:var(--font-cond); font-size:14px; font-weight:800; color:'+accentTxt+'; letter-spacing:2px; text-transform:uppercase; }'
-  +'.banner-total { font-family:var(--font-cond); font-size:22px; font-weight:800; color:'+accentTxt+'; letter-spacing:-.3px; }'
-  +'.banner-total span { font-size:13px; font-weight:600; margin-right:5px; letter-spacing:1px; }'
-
-  /* Info strip - DESTINATARIO */
-  +'.info-strip { display:grid; grid-template-columns:1fr auto; gap:20px; padding:24px 40px; border-bottom:1px solid var(--border); background:#fff; }'
-  +'.info-label { font-family:var(--font-cond); font-size:9.5px; font-weight:800; text-transform:uppercase; letter-spacing:2.5px; color:var(--gold); margin-bottom:8px; padding-bottom:4px; border-bottom:1px solid var(--gold-soft); display:inline-block; }'
-  +'.info-name { font-family:var(--font-cond); font-size:24px; font-weight:800; color:var(--navy); line-height:1.1; text-transform:uppercase; letter-spacing:.5px; }'
-  +'.info-sub { font-family:var(--mono); font-size:10px; color:var(--gray); margin-top:6px; line-height:1.7; letter-spacing:.5px; text-transform:uppercase; font-weight:500; }'
-
-  /* Caja resumen */
-  +'.summary-box { background:#fafbfd; border:1.5px solid var(--border); border-radius:4px;'
-  +'               padding:14px 18px; min-width:220px; position:relative; }'
-  +'.summary-box::before { content:""; position:absolute; top:-1.5px; left:-1.5px; width:30px; height:1.5px; background:var(--gold); }'
-  +'.summary-box::after { content:""; position:absolute; top:-1.5px; left:-1.5px; width:1.5px; height:30px; background:var(--gold); }'
-  +'.summary-row { display:flex; justify-content:space-between; align-items:center;'
-  +'               font-size:10.5px; padding:5px 0; border-bottom:1px dashed var(--border); }'
-  +'.summary-row:last-child { border-bottom:none; }'
-  +'.summary-row .k { color:var(--gray); text-transform:uppercase; font-size:9px; letter-spacing:.6px; font-weight:600; }'
-  +'.summary-row .v { font-weight:700; color:var(--navy); font-family:var(--font-cond); font-size:13px; }'
-  +'.summary-row .v.green { color:'+C_GREEN+'; }'
-
-  /* Body text formal (mantener tipografía legible para prosa) */
-  +'.body-text { padding:20px 40px; font-size:11px; color:#374151; line-height:1.85;'
-  +'             border-bottom:1px solid var(--border); background:#fff;'
-  +'             text-align:justify; }'
-  +'.body-text strong { color:var(--navy); font-weight:700; }'
-
-  /* Tabla — estilo corporativo serio */
-  +'.tbl-wrap { padding:16px 40px 24px; background:#fff; }'
-  +'.tbl-title { font-family:var(--font-cond); font-size:11px; font-weight:800; text-transform:uppercase; letter-spacing:2px; color:var(--navy); margin-bottom:10px; padding-bottom:6px; border-bottom:1.5px solid var(--gold); display:inline-block; }'
-  +'table { width:100%; border-collapse:collapse; font-size:10.5px; border:1.5px solid var(--navy); }'
-  +'thead tr { background:var(--navy); }'
-  +'thead th { padding:11px 12px; font-family:var(--font-cond); font-size:9.5px; font-weight:700; color:#fff;'
-  +'           letter-spacing:1.5px; text-transform:uppercase; white-space:nowrap; border-right:1px solid rgba(255,255,255,.15); }'
-  +'thead th:last-child { border-right:none; }'
-  +'thead th:first-child { text-align:left; }'
-  +'thead th.r { text-align:right; }'
-  +'tbody tr.data { background:#fff; }'
-  +'tbody tr.data:nth-child(even) { background:#fafbfd; }'
-  +'tbody td { padding:12px 12px; border-bottom:1px solid var(--border); color:#374151; vertical-align:middle; border-right:1px solid var(--border); }'
-  +'tbody td:last-child { border-right:none; }'
-  +'tbody td.mono { font-family:var(--mono); font-weight:600; color:var(--navy); font-size:10px; letter-spacing:.5px; }'
-  +'tbody td.status { font-weight:700; font-size:9.5px; text-transform:uppercase; letter-spacing:.8px; font-family:var(--font-cond); }'
-  +'tbody td.r { text-align:right; }'
-  +'tbody td.saldo { text-align:right; font-weight:800; font-size:13px; color:'+C_RED+'; font-family:var(--font-cond); }'
-  +'tbody td.abono { text-align:right; color:'+C_GREEN+'; font-weight:700; font-family:var(--font-cond); font-size:11px; }'
-  +'tfoot tr { background:linear-gradient(180deg, #f8faff 0%, '+C_BG+' 100%); border-top:2px solid var(--navy); }'
-  +'tfoot td { padding:13px 12px; font-weight:700; font-size:11px; }'
-  +'tfoot td.label { color:var(--navy); font-size:10px; text-transform:uppercase; letter-spacing:1.5px; font-family:var(--font-cond); font-weight:800; }'
-  +'tfoot td.r { text-align:right; font-family:var(--font-cond); font-size:13px; font-weight:700; }'
-  +'tfoot td.total { text-align:right; font-size:16px; font-weight:800; color:'+C_RED+'; font-family:var(--font-cond); }'
-
-  /* Footer saldo - DESTACADO */
-  +'.saldo-bar { background:'+headerGrad+'; padding:22px 40px;'
-  +'             display:flex; justify-content:space-between; align-items:center; position:relative; border-top:2px solid var(--gold); }'
-  +'.saldo-bar .label { font-family:var(--font-cond); font-size:12px; font-weight:700; color:rgba(255,255,255,.8);'
-  +'                    text-transform:uppercase; letter-spacing:3px; }'
-  +'.saldo-bar .amount { font-family:var(--display); font-size:36px; font-weight:800;'
-  +'                     color:#fff; letter-spacing:-.5px; }'
-  +'.saldo-bar .amount span { font-size:18px; font-weight:500; margin-right:5px; opacity:.85; letter-spacing:1px; }'
-
-  /* Contact (texto cierre) */
-  +'.contact { padding:22px 40px; font-size:11px; color:#374151; line-height:1.85;'
-  +'           border-bottom:1px solid var(--border); background:#fff; text-align:justify; }'
-  +'.contact strong { color:var(--navy); font-weight:700; }'
-
-  /* Firmas - bloque enmarcado profesional */
-  +'.firmas-wrap { padding:32px 50px 24px; background:#fff; border-bottom:1px solid var(--border); }'
-  +'.firmas-title { text-align:center; font-family:var(--font-cond); font-size:9.5px; font-weight:800; color:var(--gray); letter-spacing:3px; text-transform:uppercase; margin-bottom:20px; position:relative; }'
-  +'.firmas-title::before, .firmas-title::after { content:""; position:absolute; top:50%; width:80px; height:1px; background:var(--border-strong); }'
-  +'.firmas-title::before { left:calc(50% - 130px); }'
-  +'.firmas-title::after { right:calc(50% - 130px); }'
-  +'.firmas { display:grid; grid-template-columns:1fr 1fr; gap:50px; }'
-  +'.firma { text-align:center; padding:0 16px; }'
-  +'.firma-line { border-top:1.5px solid var(--navy); padding-top:10px; margin-top:42px; }'
-  +'.firma-role { font-family:var(--font-cond); font-size:10px; font-weight:800; text-transform:uppercase; letter-spacing:1.8px; color:var(--navy); }'
-  +'.firma-name { font-size:9.5px; color:var(--gray); margin-top:3px; text-transform:uppercase; letter-spacing:.8px; font-weight:600; }'
-
-  /* Doc footer */
-  +'.doc-footer { background:var(--navy); padding:12px 40px;'
-  +'              display:flex; justify-content:space-between; align-items:center; gap:16px; }'
-  +'.doc-footer span { font-size:8.5px; color:rgba(255,255,255,.55); letter-spacing:.6px; text-transform:uppercase; font-weight:500; }'
-  +'.doc-footer .doc-num-foot { font-family:var(--mono); font-weight:600; color:#fff; letter-spacing:1.2px; }'
-  +'.doc-footer .date { font-family:var(--font-cond); font-weight:700; color:var(--gold-soft); text-transform:uppercase; letter-spacing:1.5px; }'
-
-  /* Print */
-  +'@media print {'
-  +'  body { background:#fff !important; }'
-  +'  .no-print { display:none !important; }'
-  +'  .page { padding:0; }'
-  +'  .doc { box-shadow:none; border:none; }'
-  +'  @page { size:A4 portrait; margin:0; }'
-  +'}'
-  +'</style>'
-  +'</head>'
-  +'<body>'
-
-  // Print btn
-  +'<div class="no-print" style="max-width:794px;margin:16px auto 0;padding:0 0 8px;display:flex;justify-content:flex-end;gap:8px;">'
-  +'<button onclick="window.print()" style="background:var(--navy,#0f1547);color:#fff;border:none;padding:10px 24px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:Barlow Condensed,sans-serif;letter-spacing:1.2px;text-transform:uppercase;display:flex;align-items:center;gap:6px;">🖨 Imprimir / Guardar PDF</button>'
-  +'</div>'
-
+  +'<style>'+CXC_NOTIF_ESTILOS+'</style></head><body>'
+  +CXC_NOTIF_CONTROLES
   +'<div class="page"><div class="doc">'
-
-  // FILETE DORADO SUPERIOR
-  +'<div class="doc-top-bar"></div>'
-
-  // HEADER REORGANIZADO
-  +'<div class="hdr">'
-    +'<div class="hdr-row">'
-      +'<div class="hdr-logo-block">'
-        +'<div class="hdr-logo"><img src="'+FARMERS_LOGO_B64+'" /></div>'
-        +'<div class="hdr-contact">Tel: 0412-0445797 &nbsp;·&nbsp; farmersve@gmail.com<br>Margarita, Nueva Esparta — Venezuela</div>'
-      +'</div>'
-      +'<div class="hdr-title">'
-        +'<div class="hdr-title-overline">Documento Oficial</div>'
-        +'<h1>Notificación<br>de Cobranza</h1>'
-        +'<div class="hdr-title-divider" style="margin-left:auto;margin-right:0;"></div>'
-        +'<div class="hdr-doc-num">'+docNum+'</div>'
-        +'<div class="hdr-date">FECHA DE EMISIÓN: '+hoyUpper+'</div>'
-      +'</div>'
-    +'</div>'
-  +'</div>'
+  +cxcNotifEncabezado(docNum, hoyUpper)
 
   // BANNER ESTADO
-  +'<div class="banner">'
+  +'<div class="banner" data-estado="'+est+'">'
     +'<span class="banner-label">'+accentLabel+'</span>'
     +'<span class="banner-total"><span>USD $</span>'+cxcFmt(saldo)+'</span>'
   +'</div>'
@@ -79115,10 +79181,10 @@ function cxcNotifFactura(facId) {
       +'</div>'
     +'</div>'
     +'<div class="summary-box">'
-      +'<div class="info-label" style="margin-bottom:10px;">RESUMEN DE CUENTA</div>'
+      +'<div class="info-label">RESUMEN DE CUENTA</div>'
       +'<div class="summary-row"><span class="k">Facturas pendientes</span><span class="v">1</span></div>'
       +'<div class="summary-row"><span class="k">Total facturado</span><span class="v">$ '+cxcFmt((fac.montoOriginal != null ? fac.montoOriginal : monto))+'</span></div>'
-      +(fac.totalNC && fac.totalNC > 0 ? '<div class="summary-row"><span class="k">Notas de crédito</span><span class="v" style="color:#c91d1d;">−$ '+cxcFmt(fac.totalNC)+'</span></div>' : '')
+      +(fac.totalNC && fac.totalNC > 0 ? '<div class="summary-row"><span class="k">Notas de crédito</span><span class="v nota-credito">−$ '+cxcFmt(fac.totalNC)+'</span></div>' : '')
       +'<div class="summary-row"><span class="k">Abonos recibidos</span><span class="v green">$ '+cxcFmt(pagado)+'</span></div>'
     +'</div>'
   +'</div>'
@@ -79132,24 +79198,24 @@ function cxcNotifFactura(facId) {
   // TABLA
   +'<div class="tbl-wrap">'
   +'<div class="tbl-title">DETALLE DE FACTURAS</div>'
-  +'<table>'
+  +'<div class="table-scroll"><table>'
   +'<thead><tr>'
-  +'<th style="text-align:left;">Nº FACTURA</th>'
-  +'<th style="text-align:left;">SUCURSAL</th>'
-  +'<th style="text-align:left;">EMISIÓN</th>'
-  +'<th style="text-align:left;">VENCIMIENTO</th>'
-  +'<th style="text-align:left;">ESTATUS</th>'
-  +'<th class="r">MONTO</th>'
-  +'<th class="r">ABONADO</th>'
-  +'<th class="r">SALDO</th>'
+  +'<th scope="col">Nº FACTURA</th>'
+  +'<th scope="col">SUCURSAL</th>'
+  +'<th scope="col">EMISIÓN</th>'
+  +'<th scope="col">VENCIMIENTO</th>'
+  +'<th scope="col">ESTATUS</th>'
+  +'<th scope="col" class="r">MONTO</th>'
+  +'<th scope="col" class="r">ABONADO</th>'
+  +'<th scope="col" class="r">SALDO</th>'
   +'</tr></thead>'
   +'<tbody>'
   +'<tr class="data">'
   +'<td class="mono">'+(fac.nFactura||fac.nroFactura||fac.numero||fac.numFactura||numpedido)+'</td>'
-  +'<td style="font-weight:800;color:#1B1F6B;">'+(cxcSucCodigo(fac)||fac.sucursal||'—')+'</td>'
+  +'<td class="sucursal">'+(cxcSucCodigo(fac)||fac.sucursal||'—')+'</td>'
   +'<td>'+cxcFecha(fac.fechaEmision)+'</td>'
   +'<td>'+cxcFecha(fac.fechaVencimiento)+'</td>'
-  +'<td class="status" style="color:'+diasColor+';">'+diasTxt+'</td>'
+  +'<td class="status" data-estado="'+est+'">'+diasTxt+'</td>'
   +'<td class="r">$ '+cxcFmt(monto)+'</td>'
   +'<td class="abono">$ '+cxcFmt(pagado)+'</td>'
   +'<td class="saldo">$ '+cxcFmt(saldo)+'</td>'
@@ -79158,10 +79224,10 @@ function cxcNotifFactura(facId) {
   +'<tfoot><tr>'
   +'<td colspan="5" class="label">TOTAL PENDIENTE</td>'
   +'<td class="r">$ '+cxcFmt(monto)+'</td>'
-  +'<td class="r" style="color:'+C_GREEN+';">$ '+cxcFmt(pagado)+'</td>'
+  +'<td class="r">$ '+cxcFmt(pagado)+'</td>'
   +'<td class="total">$ '+cxcFmt(saldo)+'</td>'
   +'</tr></tfoot>'
-  +'</table>'
+  +'</table></div>'
   +'</div>'
 
   // BARRA SALDO
@@ -79254,31 +79320,7 @@ function cxcNotifCliente(id,nombreEnc){
     else _tituloParen=' ('+facs.length+' facturas)';
   }
 
-  // Filas tabla
-  var rows=facs.map(function(f,i){
-    var est=cxcEstado(f);
-    var dias=cxcDias(f);
-    var diasTxt=dias===null?'—':dias<0?'Vencida hace '+Math.abs(dias)+'d':dias===0?'Vence hoy':'Vence en '+dias+'d';
-    var diasCol=est==='VENCIDA'?'#dc2626':est==='POR_VENCER'?'#b45309':'#16a34a';
-    var rowBg=i%2===0?'#fff':'#f8faff';
-    return '<tr style="background:'+rowBg+';">'
-      +'<td style="padding:7px 12px;border-bottom:1px solid #e8eaf6;font-size:10px;font-family:monospace;font-weight:700;color:#1B1F6B;">'+(f.nFactura||f.nroFactura||f.numero||f.numFactura||f.numpedido)+'</td>'
-      +'<td style="padding:7px 12px;border-bottom:1px solid #e8eaf6;font-size:10px;color:#374151;">'+cxcFecha(f.fechaEmision)+'</td>'
-      +'<td style="padding:7px 12px;border-bottom:1px solid #e8eaf6;font-size:10px;color:#374151;">'+cxcFecha(f.fechaVencimiento)+'</td>'
-      +'<td style="padding:7px 12px;border-bottom:1px solid #e8eaf6;font-size:10px;font-weight:700;color:'+diasCol+';">'+diasTxt+'</td>'
-      +'<td style="padding:7px 12px;border-bottom:1px solid #e8eaf6;font-size:10px;text-align:right;color:#374151;">$ '+cxcFmt(f.monto)+'</td>'
-      +'<td style="padding:7px 12px;border-bottom:1px solid #e8eaf6;font-size:10px;text-align:right;color:#6b7280;">$ '+cxcFmt(f.monto-f.saldo)+'</td>'
-      +'<td style="padding:7px 12px;border-bottom:1px solid #e8eaf6;font-size:11px;text-align:right;font-weight:900;color:#dc2626;">$ '+cxcFmt(f.saldo)+'</td>'
-      +'</tr>';
-  }).join('');
-
-  var accentColor=tieneVenc?'#c91d1d':'#0f1547';
-  var accentBg=tieneVenc?'#fee2e2':'#ecfdf5';
-  var accentTxt=tieneVenc?'#c91d1d':'#065f46';
   var accentLabel=tieneVenc?'⚠ CUENTA CON FACTURAS VENCIDAS':'✓ CUENTA AL DÍA';
-  var headerGrad=tieneVenc
-    ? 'linear-gradient(135deg,#c91d1d 0%,#7f1d1d 100%)'
-    : 'linear-gradient(135deg,#0f1547 0%,#1B1F6B 50%,#2d35a0 100%)';
   var hoyUpper=hoy.toUpperCase();
 
   // Número de documento estilizado
@@ -79286,19 +79328,18 @@ function cxcNotifCliente(id,nombreEnc){
   var docNum='NC-'+new Date().getFullYear()+'-CL-'+clienteIdShort;
 
   // Filas tabla rediseñadas con estilo profesional
-  var rowsNuevas=facs.map(function(f,i){
+  var rowsNuevas=facs.map(function(f){
     var est=cxcEstado(f);
     var dias=cxcDias(f);
     var diasTxt=dias===null?'—':dias<0?'Vencida hace '+Math.abs(dias)+'d':dias===0?'Vence hoy':'Vence en '+dias+'d';
-    var diasCol=est==='VENCIDA'?'#c91d1d':est==='POR_VENCER'?'#92400e':'#065f46';
     var montoMostrar = f.montoOriginal != null ? parseFloat(f.montoOriginal) : (f.monto||0);
-    var ncTxt = f.totalNC && f.totalNC > 0 ? ' <span style="color:#c91d1d;font-size:9px;">(NC -$'+cxcFmt(f.totalNC)+')</span>' : '';
+    var ncTxt = f.totalNC && f.totalNC > 0 ? '<span class="nota-credito">(NC -$'+cxcFmt(f.totalNC)+')</span>' : '';
     return '<tr class="data">'
       +'<td class="mono">'+(f.nFactura||f.nroFactura||f.numero||f.numFactura||f.numpedido)+'</td>'
-      +'<td style="font-weight:800;color:#1B1F6B;">'+(cxcSucCodigo(f)||f.sucursal||'—')+'</td>'
+      +'<td class="sucursal">'+(cxcSucCodigo(f)||f.sucursal||'—')+'</td>'
       +'<td>'+cxcFecha(f.fechaEmision)+'</td>'
       +'<td>'+cxcFecha(f.fechaVencimiento)+'</td>'
-      +'<td class="status" style="color:'+diasCol+';">'+diasTxt+'</td>'
+      +'<td class="status" data-estado="'+est+'">'+diasTxt+'</td>'
       +'<td class="r">$ '+cxcFmt(montoMostrar)+ncTxt+'</td>'
       +'<td class="abono">$ '+cxcFmt((f.monto||0)-(f.saldo||0))+'</td>'
       +'<td class="saldo">$ '+cxcFmt(f.saldo)+'</td>'
@@ -79306,172 +79347,15 @@ function cxcNotifCliente(id,nombreEnc){
   }).join('');
 
   var html='<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8">'
+    +'<meta name="viewport" content="width=device-width, initial-scale=1.0">'
     +'<title>NOTIFICACIÓN DE COBRANZA — '+nombre.toUpperCase()+_tituloParen+'</title>'
-    +'<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;500;600;700;800;900&family=Barlow:wght@300;400;500;600;700&family=Playfair+Display:wght@700;800;900&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">'
-    +'<style>'
-    +'*, *::before, *::after { margin:0; padding:0; box-sizing:border-box; }'
-    +'*, *::before, *::after { -webkit-print-color-adjust:exact !important; print-color-adjust:exact !important; color-adjust:exact !important; }'
-    +':root {'
-    +'  --navy: #0f1547; --navy2: #1B1F6B; --blue: #2d35a0;'
-    +'  --red: #c91d1d; --accent: '+accentColor+';'
-    +'  --gold: #F47B3E; --gold-soft: #fbbf99;'
-    +'  --gray: #64748b; --border: #d4d8e3; --border-strong:#9ca3af; --bg: #f8faff;'
-    +'  --green: #065f46;'
-    +'  --font: "Barlow", system-ui, sans-serif;'
-    +'  --font-cond: "Barlow Condensed", sans-serif;'
-    +'  --mono: "DM Mono", monospace;'
-    +'  --display: "Playfair Display", serif;'
-    +'}'
-    +'body { font-family: var(--font); color: #1e293b; background: #eef2f7; min-height:100vh; }'
-    +'.page { max-width: 794px; margin: 0 auto; padding: 24px 0 40px; }'
-    +'.doc { background: #fff; overflow: hidden;'
-    +'       border: 2px solid var(--navy);'
-    +'       box-shadow: 0 1px 3px rgba(0,0,0,.08), 0 8px 32px rgba(15,21,71,.18); }'
-    +'.doc-top-bar { height:4px; background:linear-gradient(90deg, var(--gold) 0%, var(--gold-soft) 50%, var(--gold) 100%); }'
-
-    /* HEADER */
-    +'.hdr { background: '+headerGrad+'; padding: 26px 40px 20px; position:relative; }'
-    +'.hdr::after { content:""; position:absolute; bottom:0; left:0; right:0; height:2px; background:var(--gold); }'
-    +'.hdr-row { display:flex; justify-content:space-between; align-items:flex-start; gap:24px; }'
-    +'.hdr-logo-block { display:flex; flex-direction:column; gap:8px; }'
-    +'.hdr-logo { background:#fff; border-radius:6px; padding:8px 14px; align-self:flex-start; border:2px solid var(--gold-soft); display:flex; align-items:center; justify-content:center; }'
-    +'.hdr-logo img { height:52px; width:auto; display:block; }'
-    +'.hdr-contact { font-size:9.5px; color:rgba(255,255,255,.78); line-height:1.7; letter-spacing:.4px; font-weight:500; text-transform:uppercase; }'
-    +'.hdr-title { text-align:right; }'
-    +'.hdr-title-overline { font-family:var(--font-cond); font-size:10px; font-weight:600; letter-spacing:4px; color:rgba(255,255,255,.6); text-transform:uppercase; margin-bottom:4px; }'
-    +'.hdr-title h1 { font-family:var(--display); font-size:30px; font-weight:800; color:#fff; letter-spacing:.5px; line-height:1; }'
-    +'.hdr-title-divider { width:60px; height:2px; background:var(--gold); margin:8px 0 8px auto; }'
-    +'.hdr-doc-num { font-family:var(--mono); font-size:10px; font-weight:500; color:#fff; letter-spacing:1.5px; background:rgba(255,255,255,.12); padding:4px 10px; border-radius:3px; display:inline-block; border:1px solid rgba(255,255,255,.2); }'
-    +'.hdr-date { font-size:9px; color:rgba(255,255,255,.6); margin-top:6px; letter-spacing:1.2px; text-transform:uppercase; font-weight:600; }'
-
-    /* Banner */
-    +'.banner { background:'+accentBg+'; border-top: 1px solid '+accentColor+'40; border-bottom: 2px solid '+accentColor+';'
-    +'          padding: 14px 40px; display:flex; justify-content:space-between; align-items:center; }'
-    +'.banner-label { font-family:var(--font-cond); font-size:14px; font-weight:800; color:'+accentTxt+'; letter-spacing:2px; text-transform:uppercase; }'
-    +'.banner-total { font-family:var(--font-cond); font-size:22px; font-weight:800; color:'+accentTxt+'; letter-spacing:-.3px; }'
-    +'.banner-total span { font-size:13px; font-weight:600; margin-right:5px; letter-spacing:1px; }'
-
-    /* Info strip */
-    +'.info-strip { display:grid; grid-template-columns:1fr auto; gap:20px; padding:24px 40px; border-bottom:1px solid var(--border); background:#fff; }'
-    +'.info-label { font-family:var(--font-cond); font-size:9.5px; font-weight:800; text-transform:uppercase; letter-spacing:2.5px; color:var(--gold); margin-bottom:8px; padding-bottom:4px; border-bottom:1px solid var(--gold-soft); display:inline-block; }'
-    +'.info-name { font-family:var(--font-cond); font-size:24px; font-weight:800; color:var(--navy); line-height:1.1; text-transform:uppercase; letter-spacing:.5px; }'
-    +'.info-sub { font-family:var(--mono); font-size:10px; color:var(--gray); margin-top:6px; line-height:1.7; letter-spacing:.5px; text-transform:uppercase; font-weight:500; }'
-
-    +'.summary-box { background:#fafbfd; border:1.5px solid var(--border); border-radius:4px;'
-    +'               padding:14px 18px; min-width:220px; position:relative; }'
-    +'.summary-box::before { content:""; position:absolute; top:-1.5px; left:-1.5px; width:30px; height:1.5px; background:var(--gold); }'
-    +'.summary-box::after { content:""; position:absolute; top:-1.5px; left:-1.5px; width:1.5px; height:30px; background:var(--gold); }'
-    +'.summary-row { display:flex; justify-content:space-between; align-items:center;'
-    +'               font-size:10.5px; padding:5px 0; border-bottom:1px dashed var(--border); }'
-    +'.summary-row:last-child { border-bottom:none; }'
-    +'.summary-row .k { color:var(--gray); text-transform:uppercase; font-size:9px; letter-spacing:.6px; font-weight:600; }'
-    +'.summary-row .v { font-weight:700; color:var(--navy); font-family:var(--font-cond); font-size:13px; }'
-    +'.summary-row .v.green { color:var(--green); }'
-
-    /* Body text */
-    +'.body-text { padding:20px 40px; font-size:11px; color:#374151; line-height:1.85;'
-    +'             border-bottom:1px solid var(--border); background:#fff;'
-    +'             text-align:justify; }'
-    +'.body-text strong { color:var(--navy); font-weight:700; }'
-
-    /* Tabla */
-    +'.tbl-wrap { padding:16px 40px 24px; background:#fff; }'
-    +'.tbl-title { font-family:var(--font-cond); font-size:11px; font-weight:800; text-transform:uppercase; letter-spacing:2px; color:var(--navy); margin-bottom:10px; padding-bottom:6px; border-bottom:1.5px solid var(--gold); display:inline-block; }'
-    +'table { width:100%; border-collapse:collapse; font-size:10.5px; border:1.5px solid var(--navy); }'
-    +'thead tr { background:var(--navy); }'
-    +'thead th { padding:11px 12px; font-family:var(--font-cond); font-size:9.5px; font-weight:700; color:#fff;'
-    +'           letter-spacing:1.5px; text-transform:uppercase; white-space:nowrap; border-right:1px solid rgba(255,255,255,.15); }'
-    +'thead th:last-child { border-right:none; }'
-    +'thead th:first-child { text-align:left; }'
-    +'thead th.r { text-align:right; }'
-    +'tbody tr.data { background:#fff; }'
-    +'tbody tr.data:nth-child(even) { background:#fafbfd; }'
-    +'tbody td { padding:10px 12px; border-bottom:1px solid var(--border); color:#374151; vertical-align:middle; border-right:1px solid var(--border); }'
-    +'tbody td:last-child { border-right:none; }'
-    +'tbody td.mono { font-family:var(--mono); font-weight:600; color:var(--navy); font-size:10px; letter-spacing:.5px; }'
-    +'tbody td.status { font-weight:700; font-size:9.5px; text-transform:uppercase; letter-spacing:.8px; font-family:var(--font-cond); }'
-    +'tbody td.r { text-align:right; }'
-    +'tbody td.saldo { text-align:right; font-weight:800; font-size:13px; color:var(--red); font-family:var(--font-cond); }'
-    +'tbody td.abono { text-align:right; color:var(--green); font-weight:700; font-family:var(--font-cond); font-size:11px; }'
-    +'tfoot tr { background:linear-gradient(180deg, #f8faff 0%, var(--bg) 100%); border-top:2px solid var(--navy); }'
-    +'tfoot td { padding:13px 12px; font-weight:700; font-size:11px; }'
-    +'tfoot td.label { color:var(--navy); font-size:10px; text-transform:uppercase; letter-spacing:1.5px; font-family:var(--font-cond); font-weight:800; }'
-    +'tfoot td.r { text-align:right; font-family:var(--font-cond); font-size:13px; font-weight:700; }'
-    +'tfoot td.total { text-align:right; font-size:16px; font-weight:800; color:var(--red); font-family:var(--font-cond); }'
-
-    /* Barra saldo */
-    +'.saldo-bar { background:'+headerGrad+'; padding:22px 40px;'
-    +'             display:flex; justify-content:space-between; align-items:center; border-top:2px solid var(--gold); }'
-    +'.saldo-bar .label { font-family:var(--font-cond); font-size:12px; font-weight:700; color:rgba(255,255,255,.8);'
-    +'                    text-transform:uppercase; letter-spacing:3px; }'
-    +'.saldo-bar .amount { font-family:var(--display); font-size:36px; font-weight:800;'
-    +'                     color:#fff; letter-spacing:-.5px; }'
-    +'.saldo-bar .amount span { font-size:18px; font-weight:500; margin-right:5px; opacity:.85; letter-spacing:1px; }'
-
-    /* Contact */
-    +'.contact { padding:22px 40px; font-size:11px; color:#374151; line-height:1.85;'
-    +'           border-bottom:1px solid var(--border); background:#fff; text-align:justify; }'
-    +'.contact strong { color:var(--navy); font-weight:700; }'
-
-    /* Firmas */
-    +'.firmas-wrap { padding:32px 50px 24px; background:#fff; border-bottom:1px solid var(--border); }'
-    +'.firmas-title { text-align:center; font-family:var(--font-cond); font-size:9.5px; font-weight:800; color:var(--gray); letter-spacing:3px; text-transform:uppercase; margin-bottom:20px; position:relative; }'
-    +'.firmas-title::before, .firmas-title::after { content:""; position:absolute; top:50%; width:80px; height:1px; background:var(--border-strong); }'
-    +'.firmas-title::before { left:calc(50% - 130px); }'
-    +'.firmas-title::after { right:calc(50% - 130px); }'
-    +'.firmas { display:grid; grid-template-columns:1fr 1fr; gap:50px; }'
-    +'.firma { text-align:center; padding:0 16px; }'
-    +'.firma-line { border-top:1.5px solid var(--navy); padding-top:10px; margin-top:42px; }'
-    +'.firma-role { font-family:var(--font-cond); font-size:10px; font-weight:800; text-transform:uppercase; letter-spacing:1.8px; color:var(--navy); }'
-    +'.firma-name { font-size:9.5px; color:var(--gray); margin-top:3px; text-transform:uppercase; letter-spacing:.8px; font-weight:600; }'
-
-    /* Doc footer */
-    +'.doc-footer { background:var(--navy); padding:12px 40px;'
-    +'              display:flex; justify-content:space-between; align-items:center; gap:16px; }'
-    +'.doc-footer span { font-size:8.5px; color:rgba(255,255,255,.55); letter-spacing:.6px; text-transform:uppercase; font-weight:500; }'
-    +'.doc-footer .doc-num-foot { font-family:var(--mono); font-weight:600; color:#fff; letter-spacing:1.2px; }'
-    +'.doc-footer .date { font-family:var(--font-cond); font-weight:700; color:var(--gold-soft); text-transform:uppercase; letter-spacing:1.5px; }'
-
-    +'@media print {'
-    +'  body { background:#fff !important; }'
-    +'  .no-print { display:none !important; }'
-    +'  .page { padding:0; }'
-    +'  .doc { box-shadow:none; border:none; }'
-    +'  @page { size:A4 portrait; margin:0; }'
-    +'  .wrap { box-shadow:none!important; border-radius:0!important; margin:0!important; max-width:100%!important; }'
-    +'}'
-    +'</style>'
-    +'</head><body>'
-
-    // Botón imprimir
-    +'<div class="no-print" style="max-width:794px;margin:16px auto 0;padding:0 0 8px;display:flex;justify-content:flex-end;gap:8px;">'
-    +'<button onclick="window.print()" style="background:var(--navy,#0f1547);color:#fff;border:none;padding:10px 24px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:Barlow Condensed,sans-serif;letter-spacing:1.2px;text-transform:uppercase;display:flex;align-items:center;gap:6px;">🖨 Imprimir / Guardar PDF</button>'
-    +'</div>'
-
+    +'<style>'+CXC_NOTIF_ESTILOS+'</style></head><body>'
+    +CXC_NOTIF_CONTROLES
     +'<div class="page"><div class="doc">'
+    +cxcNotifEncabezado(docNum, hoyUpper)
 
-    // FILETE DORADO
-    +'<div class="doc-top-bar"></div>'
-
-    // HEADER
-    +'<div class="hdr">'
-      +'<div class="hdr-row">'
-        +'<div class="hdr-logo-block">'
-          +'<div class="hdr-logo"><img src="'+FARMERS_LOGO_B64+'" /></div>'
-          +'<div class="hdr-contact">Tel: 0412-0445797 &nbsp;·&nbsp; farmersve@gmail.com<br>Margarita, Nueva Esparta — Venezuela</div>'
-        +'</div>'
-        +'<div class="hdr-title">'
-          +'<div class="hdr-title-overline">Documento Oficial</div>'
-          +'<h1>Notificación<br>de Cobranza</h1>'
-          +'<div class="hdr-title-divider" style="margin-left:auto;margin-right:0;"></div>'
-          +'<div class="hdr-doc-num">'+docNum+'</div>'
-          +'<div class="hdr-date">FECHA DE EMISIÓN: '+hoyUpper+'</div>'
-        +'</div>'
-      +'</div>'
-    +'</div>'
-
-    // BANNER ESTADO
-    +'<div class="banner">'
+  // BANNER ESTADO
+    +'<div class="banner" data-estado="'+(tieneVenc?'VENCIDA':'VIGENTE')+'">'
       +'<span class="banner-label">'+accentLabel+'</span>'
       +'<span class="banner-total"><span>USD $</span>'+cxcFmt(total)+'</span>'
     +'</div>'
@@ -79484,10 +79368,10 @@ function cxcNotifCliente(id,nombreEnc){
         +(rif?'<div class="info-sub">RIF: '+rif+'</div>':'')
       +'</div>'
       +'<div class="summary-box">'
-        +'<div class="info-label" style="margin-bottom:10px;">RESUMEN DE CUENTA</div>'
+        +'<div class="info-label">RESUMEN DE CUENTA</div>'
         +'<div class="summary-row"><span class="k">Facturas pendientes</span><span class="v">'+facs.length+'</span></div>'
         +'<div class="summary-row"><span class="k">Total facturado</span><span class="v">$ '+cxcFmt(totalMontoOriginal)+'</span></div>'
-        +(totalNC > 0 ? '<div class="summary-row"><span class="k">Notas de crédito</span><span class="v" style="color:#c91d1d;">−$ '+cxcFmt(totalNC)+'</span></div>' : '')
+        +(totalNC > 0 ? '<div class="summary-row"><span class="k">Notas de crédito</span><span class="v nota-credito">−$ '+cxcFmt(totalNC)+'</span></div>' : '')
         +'<div class="summary-row"><span class="k">Abonos recibidos</span><span class="v green">$ '+cxcFmt(totalPagado)+'</span></div>'
       +'</div>'
     +'</div>'
@@ -79501,25 +79385,25 @@ function cxcNotifCliente(id,nombreEnc){
     // TABLA
     +'<div class="tbl-wrap">'
     +'<div class="tbl-title">DETALLE DE FACTURAS PENDIENTES</div>'
-    +'<table>'
+    +'<div class="table-scroll"><table>'
     +'<thead><tr>'
-    +'<th style="text-align:left;">Nº FACTURA</th>'
-    +'<th style="text-align:left;">SUCURSAL</th>'
-    +'<th style="text-align:left;">EMISIÓN</th>'
-    +'<th style="text-align:left;">VENCIMIENTO</th>'
-    +'<th style="text-align:left;">ESTATUS</th>'
-    +'<th class="r">MONTO</th>'
-    +'<th class="r">ABONADO</th>'
-    +'<th class="r">SALDO</th>'
+    +'<th scope="col">Nº FACTURA</th>'
+    +'<th scope="col">SUCURSAL</th>'
+    +'<th scope="col">EMISIÓN</th>'
+    +'<th scope="col">VENCIMIENTO</th>'
+    +'<th scope="col">ESTATUS</th>'
+    +'<th scope="col" class="r">MONTO</th>'
+    +'<th scope="col" class="r">ABONADO</th>'
+    +'<th scope="col" class="r">SALDO</th>'
     +'</tr></thead>'
     +'<tbody>'+rowsNuevas+'</tbody>'
     +'<tfoot><tr>'
     +'<td colspan="5" class="label">TOTAL PENDIENTE ('+facs.length+' factura'+(facs.length!==1?'s':'')+')</td>'
     +'<td class="r">$ '+cxcFmt(totalMonto)+'</td>'
-    +'<td class="r" style="color:var(--green);">$ '+cxcFmt(totalPagado)+'</td>'
+    +'<td class="r">$ '+cxcFmt(totalPagado)+'</td>'
     +'<td class="total">$ '+cxcFmt(total)+'</td>'
     +'</tr></tfoot>'
-    +'</table>'
+    +'</table></div>'
     +'</div>'
 
     // BARRA SALDO
@@ -79567,7 +79451,7 @@ function cxcNotifCliente(id,nombreEnc){
 
   // Descargar y abrir
   var nombreArch=(nombre||'cliente').replace(/[^a-zA-Z0-9áéíóúÁÉÍÓÚñÑ\s]/g,'').replace(/\s+/g,'_').substring(0,40);
-  var blob=new Blob([_fkKit419(html, true)],{type:'text/html;charset=utf-8'});
+  var blob=new Blob([_fkKit419(html)],{type:'text/html;charset=utf-8'});
   var url=URL.createObjectURL(blob);
   window.open(url,'_blank','width=900,height=720,menubar=no,toolbar=no,location=no');
   var a=document.createElement('a');
